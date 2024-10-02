@@ -14,6 +14,6 @@ Example image showing a SAR SICD chip. This is the image space
     you need to know where the phd data actually is for the sake of the processing space
     over multiple algorithms. Usage of the class is referenced in the class file. 
     
-    ![alt text](https://github.com/GEOINT/grdl/blob/smalleyd/example_images/phd_data_cut.png?raw=true)
+![alt text](https://github.com/GEOINT/grdl/blob/smalleyd/example_images/phd_data_cut.png?raw=true)
 
 
