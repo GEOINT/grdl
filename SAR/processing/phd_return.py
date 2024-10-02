@@ -17,7 +17,15 @@ class PHD_Return():
     usage:
         
         from sarpy.io.complex.sicd import SICDReader
+        from SAR.processing.phd_return import PHD_Return
+                        
+        file_name = '/absolute/path/to/file/filename.nitf'
         
+        reader = SICDReader( file_name )
+        meta = reader.sicd_meta
+        
+        phd_R = PHD_Return(meta)
+        phd_dat_range = phd_R.get_phd_data_pixel_range([1785,3272])        
     
     '''
     def __init__(self, meta):
@@ -72,7 +80,54 @@ class PHD_Return():
         
         return phd
         
-    
+'''
+import matplotlib
+matplotlib.rcParams['figure.dpi'] = 200 
+
+from sarpy.visualization.remap import Density
+from sarpy.io.complex.sicd import SICDReader
+from SAR.processing.phd_return import PHD_Return
+
+import matplotlib.pyplot as plt
+
+rm = Density( bit_depth = 16)
+
+file_name = 'D:/SAR_Data/2024-06-21-03-32-06_UMBRA-04_SICD.nitf'
+
+reader = SICDReader( file_name )
+
+meta = reader.sicd_meta
+
+phd_R = PHD_Return(meta)
+
+phd_dat_range = phd_R.get_phd_data_pixel_range([1785,3272])
+
+rsize = 1785
+rstart = 3000
+rend = rstart + rsize
+
+csize = 3272
+cstart = 3000
+cend = cstart + csize
+
+dat_chip = reader[rstart:rend, cstart:cend]
+
+phd_dat_range_chip = phd_R.get_phd_data_pixel_range(dat_chip.shape)
+
+phd_dat = phd_R.get_phd_data( dat_chip )
+
+plt.figure()
+plt.imshow(rm(dat_chip), cmap='gray', aspect='auto')
+plt.title('image data')
+
+plt.figure()
+plt.imshow(rm(phd_dat), cmap='gray', aspect='auto')
+plt.hlines(phd_dat_range_chip[0], 0, phd_dat.shape[1]-1, color='r')
+plt.hlines(phd_dat_range_chip[1], 0, phd_dat.shape[1]-1, color='r')
+plt.vlines(phd_dat_range_chip[2], 0, phd_dat.shape[0]-1, color='r')
+plt.vlines(phd_dat_range_chip[3], 0, phd_dat.shape[0]-1, color='r')
+plt.title('phd data')
+'''
         
         
         

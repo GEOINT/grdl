@@ -1,0 +1,22 @@
+{   
+    "file_name":["2024-06-21-03-32-06_UMBRA-04_CPHD.cphd",
+                 "2024-08-02-18-26-02_UMBRA-04_MM.cphd",
+                 "2024-06-04-03-46-24_UMBRA-07_MM.cphd",
+                 "2023-07-19-15-33-46_UMBRA-04(1).cphd",
+                 "CAPELLA_C10_SS_CPHD_HH_20240906142501_20240906142519.cphd",
+                 "CAPELLA_C09_SP_CPHD_HH_20240626191040_20240626191105.cphd",
+                 "CAPELLA_C09_SP_CPHD_HH_20240401175135_20240401175201.cphd"], 
+    "descriptor":["small data set",
+                  "large top gun data set",
+                  "Large data set from ft eisenhower",
+                  "medium data set from ft eisenhower",
+                  "Capella Sliding Spot collection",
+                  "Capella spot collection",
+                  "capella spot collection"],
+    "data_path":"D:/SAR_Data/",
+    "range_compression":1.2,
+    "azimuth_compression":2.5,
+    "Grid_Inscription":"False",
+    "IFP_Projection":"Ground"
+    
+}
