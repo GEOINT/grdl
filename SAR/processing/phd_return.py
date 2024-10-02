@@ -25,6 +25,25 @@ class phd_return():
         a = 1
         
     def get_phd_pixels(self, chip_shape):
+        '''
+
+        Parameters
+        ----------
+        chip_shape : list
+            A list of the image space size of the chip. 
+            
+        
+
+        Returns
+        -------
+        rstart : int
+            the row start position of where the data begins. This is the span into
+            the phase history data of where the zero padded region is.
+        cstart : int
+            the column start position of where the data begins. This is the span into
+            the phase history data of where the zero padded region is.
+
+        '''
         nrows = chip_shape[0]
         ncols = chip_shape[1]
         
