@@ -14,8 +14,8 @@
                   "Capella spot collection",
                   "capella spot collection"],
     "data_path":"D:/SAR_Data/",
-    "range_compression":1.2,
-    "azimuth_compression":2.5,
+    "range_compression":1.0,
+    "azimuth_compression":1.0,
     "Grid_Inscription":"False",
     "IFP_Projection":"Ground"
     

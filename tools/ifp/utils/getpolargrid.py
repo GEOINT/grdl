@@ -213,7 +213,7 @@ class Get_Polar_Grid:
     def polar_grid(self):
 
         self.proc_sf = np.abs( np.diff( self.kv_bounds ))
-        self.procbw = (self.kv_bounds[1]-self.kv_bounds[0])/self.sf_conv        
+        self.procbw = np.abs((self.kv_bounds[1]-self.kv_bounds[0])/self.sf_conv  )      
         
         
         
@@ -244,7 +244,7 @@ class Get_Polar_Grid:
         azimuth_resolution = centerWL / (2*self.coord.Theta)*self.azimuth_compression
         self.azimuth_resolution = azimuth_resolution
         self.range_resolution = range_resolution
-
+        print( f'range_resolution: {range_resolution}, azimuth resolution: {azimuth_resolution}')
         ### get the azimuth spatial frequency sampling
         ## using the keystone grid, find the lowest sample, get absolute difference
         ## of the samples and then find the closest spaced azimuth samples.

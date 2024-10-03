@@ -17,7 +17,7 @@ from utils.getcoordinates import Get_Coordinates
 from utils.getpolargrid import Get_Polar_Grid
 
 from utils.pfa import PFA
-#from utils.rma_algo import RMA_Algo
+from utils.rma_algo import RMA_Algo
 from utils.compress_phd_data import compress_phd_data
 
 from utils.make_sicd import Make_SICD
@@ -100,11 +100,11 @@ class IFP_Proc():
     def plot_image(self):
         import matplotlib.pyplot as plt
         from sarpy.visualization.remap import Density
-        
+        import numpy as np
         rm = Density(bit_depth = 16)
         
         plt.figure()
-        plt.imshow(rm(self.sicd), aspect='auto', cmap='gray')
+        plt.imshow(rm(np.fliplr(np.flipud(self.sicd))), aspect='auto', cmap='gray')
         plt.title(f'Processed image, {self.file_name}')
         
     def save_sicd(self):

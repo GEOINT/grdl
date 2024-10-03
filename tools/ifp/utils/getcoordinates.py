@@ -333,7 +333,7 @@ class Get_Coordinates:
         self.range_vec_COA = self.range_vec[center_Index]
         
         ## this projects the data to be north up
-        #self.range_vec_COA = np.dot( self.range_vec_COA, -self.uNOR) / norm( self.uNOR) * -self.uNOR
+        #self.range_vec_COA = np.dot( self.range_vec_COA, self.uNOR) / norm( self.uNOR) * self.uNOR
         
         self.SlantRange_COA = norm( self.range_vec_COA)
         #slant range vector 

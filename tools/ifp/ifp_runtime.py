@@ -24,9 +24,10 @@ ifp = IFP_Proc(run_dict_input)
 ifp.populate_metadata()
 ifp.populate_geometry(plot_collection_geo = True)
 
+ifp.populate_polargrid()
+
 #ifp.perform_rma()
 
-ifp.populate_polargrid()
 ifp.perform_pfa()
 
 ifp.save_sicd()
