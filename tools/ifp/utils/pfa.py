@@ -5,7 +5,7 @@ Created on Fri Aug  2 18:57:22 2024
 @author: User
 """
 
-from interpolation.polyphaseinterpolation import Polyphase_Interpolation
+from grdl.interpolation.polyphaseinterpolation import Polyphase_Interpolation
 
 import numpy as np
 

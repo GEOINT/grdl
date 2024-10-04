@@ -6,7 +6,7 @@ Created on Monday Sep 30 13:01:37 2024
 """
 
 import numpy as np
-from SAR.processing.phd_return import PHD_Return
+from grdl.SAR.processing.phd_return import PHD_Return
 
 class sub_aperture():
     '''

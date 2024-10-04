@@ -11,7 +11,7 @@ from utils.compress_phd_data import compress_phd_data
 
 
 input_info = json.load( open( "run_file.json"))
-index = 0
+index = 6
 
 run_dict_input = { 'file_name':input_info['file_name'][index],
                    'data_path':input_info['data_path'],
