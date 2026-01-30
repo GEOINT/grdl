@@ -47,6 +47,7 @@ from grdl.IO.biomass import (
 # Import catalog tools
 from grdl.IO.catalog import (
     BIOMASSCatalog,
+    load_credentials,
 )
 
 # Public API
@@ -61,4 +62,5 @@ __all__ = [
     'open_biomass',
     # Catalog tools
     'BIOMASSCatalog',
+    'load_credentials',
 ]

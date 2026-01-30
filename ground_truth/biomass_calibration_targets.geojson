@@ -1,0 +1,112 @@
+{
+  "type": "FeatureCollection",
+  "name": "BIOMASS Calibration Targets",
+  "description": "Known calibration and validation sites for the ESA BIOMASS mission. Coordinates are WGS84 (EPSG:4326).",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "New Norcia BCT",
+        "site": "New Norcia",
+        "country": "Australia",
+        "type": "transponder",
+        "description": "Biomass Calibration Transponder (BCT). 5 m phased-array P-band antenna in radome. Primary instrument calibration target for the BIOMASS mission. Built by C-CORE (Canada), antenna by IDS/Fincantieri NexTech.",
+        "operator": "ESA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [116.191, -31.048]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "New Norcia DSA-1",
+        "site": "New Norcia",
+        "country": "Australia",
+        "type": "ground_station",
+        "description": "ESA Deep Space Antenna 1 (35 m). New Norcia ground station complex where the BCT is co-located.",
+        "operator": "ESA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [116.1915, -31.0482]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Remningstorp Forest",
+        "site": "Remningstorp",
+        "country": "Sweden",
+        "type": "forest_calval",
+        "description": "Hemi-boreal forest test site (~1200 ha). Used for BioSAR 2007 and BioSAR 2010 airborne campaigns. Two 5 m trihedral corner reflectors deployed by FOI for SAR calibration.",
+        "operator": "Swedish University of Agricultural Sciences"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [13.63, 58.47]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Lope National Park",
+        "site": "Lope",
+        "country": "Gabon",
+        "type": "forest_calval",
+        "description": "Tropical forest validation site. AfriSAR campaign (2015-2016). Forest-savanna mosaic with extensive ground truth biomass measurements.",
+        "operator": "ANPN Gabon / ESA / NASA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [11.54, -0.44]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Mondah Forest",
+        "site": "Mondah",
+        "country": "Gabon",
+        "type": "forest_calval",
+        "description": "Coastal tropical forest validation site near Libreville. AfriSAR campaign. Dense tropical forest with lidar and ground-truth data.",
+        "operator": "ANPN Gabon / ESA / NASA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [9.33, 0.56]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Mabounie",
+        "site": "Mabounie",
+        "country": "Gabon",
+        "type": "forest_calval",
+        "description": "Tropical forest validation site. AfriSAR campaign. Dense equatorial forest with ground-truth biomass inventory.",
+        "operator": "ANPN Gabon / ESA / NASA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [10.57, -1.50]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Rabi",
+        "site": "Rabi",
+        "country": "Gabon",
+        "type": "forest_calval",
+        "description": "Tropical forest validation site. AfriSAR campaign. Oil-field adjacent forest with well-characterized biomass plots.",
+        "operator": "ANPN Gabon / ESA / NASA"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [9.88, -1.90]
+      }
+    }
+  ]
+}

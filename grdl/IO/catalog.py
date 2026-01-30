@@ -26,11 +26,12 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-01-30 - MAAP STAC API integration for search and download
 """
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, Any
+import os
 import sqlite3
 import json
 import warnings
@@ -48,6 +49,67 @@ except ImportError:
 
 from grdl.IO.base import CatalogInterface
 
+# Default credentials file path (repo-agnostic, shared across projects)
+_CREDENTIALS_PATH = Path.home() / ".config" / "geoint" / "credentials.json"
+
+
+def load_credentials(
+    provider: str = "esa_maap",
+    credentials_file: Optional[Union[str, Path]] = None
+) -> Dict[str, str]:
+    """
+    Load credentials from the shared geoint config file.
+
+    For ``esa_maap``, returns a dict with ``offline_token``.
+    For ``esa_copernicus``, returns a dict with ``username`` and ``password``.
+    Falls back to environment variables if the file entry is empty.
+
+    Parameters
+    ----------
+    provider : str, default="esa_maap"
+        Key in the credentials JSON for the provider block.
+    credentials_file : Optional[Union[str, Path]], default=None
+        Path to credentials JSON. If None, uses
+        ``~/.config/geoint/credentials.json``.
+
+    Returns
+    -------
+    Dict[str, str]
+        Credential fields for the requested provider.
+
+    Raises
+    ------
+    ValueError
+        If credentials are empty or missing for the requested provider.
+    """
+    cred_path = Path(credentials_file) if credentials_file else _CREDENTIALS_PATH
+
+    if cred_path.exists():
+        with open(cred_path, 'r') as f:
+            creds = json.load(f)
+
+        block = creds.get(provider, {})
+
+        # Check for non-empty values
+        if all(v for v in block.values()):
+            return dict(block)
+
+    # Fallback to environment variables
+    if provider == "esa_maap":
+        token = os.environ.get("ESA_MAAP_OFFLINE_TOKEN", "")
+        if token:
+            return {"offline_token": token}
+    elif provider == "esa_copernicus":
+        username = os.environ.get("ESA_BIOMASS_USER", "")
+        password = os.environ.get("ESA_BIOMASS_PASSWORD", "")
+        if username and password:
+            return {"username": username, "password": password}
+
+    raise ValueError(
+        f"No credentials found for '{provider}'. "
+        f"Set them in {_CREDENTIALS_PATH} or via environment variables."
+    )
+
 
 class BIOMASSCatalog(CatalogInterface):
     """
@@ -55,39 +117,51 @@ class BIOMASSCatalog(CatalogInterface):
 
     Provides integrated capabilities for:
     - Local file system discovery of BIOMASS products
-    - Remote querying of ESA data hubs
-    - Product download from ESA
+    - Remote querying via ESA MAAP STAC catalog
+    - Product download with OAuth2 authentication
     - SQLite database tracking of products
+
+    Credentials are loaded from ``~/.config/geoint/credentials.json``.
 
     Attributes
     ----------
     search_path : Path
-        Root directory for local product searches
+        Root directory for local product searches and downloads.
     db_path : Path
-        Path to SQLite database file for product tracking
+        Path to SQLite database file for product tracking.
     conn : sqlite3.Connection
-        Database connection
+        Database connection.
 
     Examples
     --------
-    >>> catalog = BIOMASSCatalog('/data/biomass', db_path='biomass_catalog.db')
+    >>> catalog = BIOMASSCatalog('/data/biomass')
     >>>
-    >>> # Discover local products
-    >>> local_products = catalog.discover_local()
-    >>> print(f"Found {len(local_products)} local products")
-    >>>
-    >>> # Query ESA for products in date range
-    >>> remote_products = catalog.query_esa(
-    ...     start_date='2025-11-01',
-    ...     end_date='2025-11-30'
+    >>> # Search for products near New Norcia, Australia
+    >>> products = catalog.query_esa(
+    ...     bbox=(115.5, -31.5, 116.8, -30.5),
+    ...     max_results=10
     ... )
+    >>> print(f"Found {len(products)} products")
     >>>
-    >>> # Download a product
-    >>> catalog.download_product(remote_products[0]['id'])
+    >>> # Download the most recent product
+    >>> catalog.download_product(products[0]['id'])
     """
 
-    # ESA Data Hub API endpoint (update with actual BIOMASS endpoint when available)
-    ESA_API_BASE = "https://catalogue.dataspace.copernicus.eu/resto/api/collections/BIOMASS/search.json"
+    # ESA MAAP STAC API for BIOMASS product search and download
+    MAAP_STAC_URL = "https://catalog.maap.eo.esa.int/catalogue"
+    MAAP_IAM_URL = (
+        "https://iam.maap.eo.esa.int/realms/esa-maap"
+        "/protocol/openid-connect/token"
+    )
+    MAAP_TOKEN_CLIENT_ID = "offline-token"
+    # Public client secret for the MAAP offline-token application.
+    # Shared by all MAAP users; published in ESA documentation.
+    MAAP_TOKEN_CLIENT_SECRET = "p1eL7uonXs6MDxtGbgKdPVRAmnGxHpVE"
+
+    # STAC collection IDs (operational, open-access)
+    COLLECTION_L1A = "BiomassLevel1a"
+    COLLECTION_L1B = "BiomassLevel1b"
+    COLLECTION_L2A = "BiomassLevel2a"
 
     def __init__(
         self,
@@ -280,120 +354,208 @@ class BIOMASSCatalog(CatalogInterface):
                 total += item.stat().st_size
         return total
 
+    def _get_access_token(
+        self,
+        credentials_file: Optional[Union[str, Path]] = None
+    ) -> str:
+        """
+        Exchange an ESA MAAP offline token for a short-lived access token.
+
+        Parameters
+        ----------
+        credentials_file : Optional[Union[str, Path]], default=None
+            Path to credentials JSON file.
+
+        Returns
+        -------
+        str
+            Bearer access token for MAAP API requests.
+
+        Raises
+        ------
+        RuntimeError
+            If token exchange fails.
+        """
+        if not REQUESTS_AVAILABLE:
+            raise ImportError(
+                "Requests library required. Install with: pip install requests"
+            )
+
+        creds = load_credentials("esa_maap", credentials_file)
+        offline_token = creds["offline_token"]
+
+        response = requests.post(
+            self.MAAP_IAM_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": offline_token,
+                "client_id": self.MAAP_TOKEN_CLIENT_ID,
+                "client_secret": self.MAAP_TOKEN_CLIENT_SECRET,
+                "scope": "offline_access openid",
+            },
+            timeout=30,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"MAAP token exchange failed ({response.status_code}): "
+                f"{response.text[:300]}"
+            )
+
+        return response.json()["access_token"]
+
     def query_esa(
         self,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
         orbit: Optional[int] = None,
-        max_results: int = 100
+        max_results: int = 50,
+        collection: Optional[str] = None,
+        product_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Query ESA data hub for available BIOMASS products.
+        Query ESA MAAP STAC catalog for BIOMASS products.
 
         Parameters
         ----------
         start_date : Optional[str], default=None
-            Start date in ISO format (YYYY-MM-DD)
+            Start date in ISO format (YYYY-MM-DD).
         end_date : Optional[str], default=None
-            End date in ISO format (YYYY-MM-DD)
+            End date in ISO format (YYYY-MM-DD).
         bbox : Optional[Tuple[float, float, float, float]], default=None
-            Bounding box as (min_lon, min_lat, max_lon, max_lat)
+            Bounding box as (min_lon, min_lat, max_lon, max_lat).
         orbit : Optional[int], default=None
-            Orbit number to search for
-        max_results : int, default=100
-            Maximum number of results to return
+            Absolute orbit number filter.
+        max_results : int, default=50
+            Maximum number of results to return.
+        collection : Optional[str], default=None
+            STAC collection ID. If None, uses ``COLLECTION_L1A``.
+        product_type : Optional[str], default=None
+            BIOMASS product type filter. Common values:
+            ``S3_SCS__1S`` (single-pol processing),
+            ``S3_SCS__1M`` (multi-pol processing).
+            If None, returns all product types.
 
         Returns
         -------
         List[Dict[str, Any]]
-            List of product metadata dictionaries from ESA
+            List of STAC feature dicts, each with ``id``, ``properties``,
+            ``geometry``, and ``assets`` keys.
 
         Raises
         ------
         ImportError
-            If requests library is not installed
+            If requests library is not installed.
         RuntimeError
-            If API query fails
-
-        Notes
-        -----
-        This is a placeholder implementation. The actual ESA API endpoint
-        for BIOMASS may differ. Update ESA_API_BASE when official API is
-        available.
+            If STAC query fails.
         """
         if not REQUESTS_AVAILABLE:
-            raise ImportError("Requests library required for ESA queries. Install with: pip install requests")
+            raise ImportError(
+                "Requests library required for ESA queries. "
+                "Install with: pip install requests"
+            )
 
-        # Build query parameters
-        params = {
-            'maxRecords': max_results,
-            'productType': 'SCS',  # L1 SCS products
+        if collection is None:
+            collection = self.COLLECTION_L1A
+
+        search_url = f"{self.MAAP_STAC_URL}/search"
+
+        payload: Dict[str, Any] = {
+            "collections": [collection],
+            "limit": max_results,
+            "sortby": [{"field": "datetime", "direction": "desc"}],
         }
 
-        if start_date and end_date:
-            params['startDate'] = start_date
-            params['completionDate'] = end_date
-
         if bbox:
-            params['box'] = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+            payload["bbox"] = list(bbox)
 
-        if orbit:
-            params['orbitNumber'] = orbit
+        if start_date or end_date:
+            start = start_date or ".."
+            end = end_date or ".."
+            payload["datetime"] = f"{start}/{end}"
+
+        # STAC CQL2 filter for product type and orbit
+        filters = []
+        if product_type:
+            filters.append({
+                "op": "=",
+                "args": [{"property": "product:type"}, product_type]
+            })
+        if orbit is not None:
+            filters.append({
+                "op": "=",
+                "args": [{"property": "sat:absolute_orbit"}, orbit]
+            })
+
+        if filters:
+            if len(filters) == 1:
+                payload["filter"] = filters[0]
+            else:
+                payload["filter"] = {"op": "and", "args": filters}
+            payload["filter-lang"] = "cql2-json"
 
         try:
-            response = requests.get(self.ESA_API_BASE, params=params, timeout=30)
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(
+                search_url, json=payload, headers=headers, timeout=30
+            )
             response.raise_for_status()
 
             data = response.json()
+            products = data.get("features", [])
 
-            # Extract products from response
-            # Note: Actual response format depends on ESA API
-            products = data.get('features', [])
-
-            # Store query results in database
+            # Index results in local database
             for product in products:
                 self._index_remote_product(product)
 
             return products
 
         except requests.RequestException as e:
-            raise RuntimeError(f"ESA API query failed: {e}") from e
+            raise RuntimeError(f"MAAP STAC query failed: {e}") from e
 
-    def _index_remote_product(self, product_data: Dict[str, Any]) -> None:
+    def _index_remote_product(self, feature: Dict[str, Any]) -> None:
         """
-        Index a remote product in the database.
+        Index a STAC feature in the local database.
 
         Parameters
         ----------
-        product_data : Dict[str, Any]
-            Product metadata from ESA API
+        feature : Dict[str, Any]
+            GeoJSON Feature from MAAP STAC search response.
         """
         try:
-            # Extract fields from ESA response
-            # Note: Field names depend on actual ESA API response format
-            properties = product_data.get('properties', {})
-            product_id = properties.get('id', product_data.get('id'))
+            props = feature.get("properties", {})
+            product_id = feature.get("id", "")
+
+            # Extract download URL from the 'product' asset (ZIP)
+            assets = feature.get("assets", {})
+            product_asset = assets.get("product", {})
+            remote_url = product_asset.get("href", "")
+
+            # Corner coordinates from geometry
+            geom = feature.get("geometry", {})
+            corner_coords = json.dumps(geom.get("coordinates", []))
 
             cursor = self.conn.cursor()
-
             cursor.execute("""
-                INSERT OR IGNORE INTO products
+                INSERT OR REPLACE INTO products
                 (id, product_name, product_type, processing_level,
-                 orbit_number, start_time, stop_time, remote_url, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 orbit_number, orbit_pass, start_time, stop_time,
+                 corner_coords, remote_url, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product_id,
-                properties.get('title', ''),
-                properties.get('productType', 'SCS'),
-                properties.get('processingLevel', 'L1'),
-                properties.get('orbitNumber', 0),
-                properties.get('startDate', ''),
-                properties.get('completionDate', ''),
-                product_data.get('downloadUrl', ''),
-                json.dumps(product_data)
+                props.get("title", product_id),
+                props.get("product:type", "SCS"),
+                props.get("processing:level", "L1A"),
+                props.get("sat:absolute_orbit", 0),
+                props.get("sat:orbit_state", ""),
+                props.get("start_datetime", ""),
+                props.get("end_datetime", ""),
+                corner_coords,
+                remote_url,
+                json.dumps(feature),
             ))
-
             self.conn.commit()
 
         except Exception as e:
@@ -402,45 +564,45 @@ class BIOMASSCatalog(CatalogInterface):
     def download_product(
         self,
         product_id: str,
-        destination: Optional[Path] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None
+        destination: Optional[Union[str, Path]] = None,
+        extract: bool = True
     ) -> Path:
         """
-        Download a BIOMASS product from ESA.
+        Download a BIOMASS product ZIP from the ESA MAAP.
+
+        Uses the MAAP offline token (from ``~/.config/geoint/credentials.json``)
+        to authenticate via OAuth2 Bearer token.
 
         Parameters
         ----------
         product_id : str
-            Product ID to download
-        destination : Optional[Path], default=None
-            Destination directory. If None, uses search_path
-        username : Optional[str], default=None
-            ESA account username for authentication
-        password : Optional[str], default=None
-            ESA account password for authentication
+            STAC item ID (e.g. ``BIO_S1_SCS__1S_20251208T221918_...``).
+            Must exist in the local database (run ``query_esa`` first).
+        destination : Optional[Union[str, Path]], default=None
+            Directory to save the product. If None, uses ``search_path``.
+        extract : bool, default=True
+            If True, extract the ZIP and return the extracted directory path.
 
         Returns
         -------
         Path
-            Path to downloaded product directory
+            Path to extracted product directory (if extract=True) or
+            downloaded ZIP file.
 
         Raises
         ------
         ValueError
-            If product not found in database
-        ImportError
-            If requests library not installed
+            If product not found in database or has no download URL.
         RuntimeError
-            If download fails
-
-        Notes
-        -----
-        This is a placeholder implementation. Actual download may require
-        authentication and ESA-specific download protocols.
+            If download or authentication fails.
         """
+        import zipfile
+
         if not REQUESTS_AVAILABLE:
-            raise ImportError("Requests library required for downloads. Install with: pip install requests")
+            raise ImportError(
+                "Requests library required for downloads. "
+                "Install with: pip install requests"
+            )
 
         # Get product info from database
         cursor = self.conn.cursor()
@@ -448,37 +610,63 @@ class BIOMASSCatalog(CatalogInterface):
         row = cursor.fetchone()
 
         if not row:
-            raise ValueError(f"Product {product_id} not found in catalog")
+            raise ValueError(
+                f"Product {product_id} not found in catalog. "
+                f"Run query_esa() first to populate the database."
+            )
 
-        remote_url = row['remote_url']
+        remote_url = row["remote_url"]
         if not remote_url:
-            raise ValueError(f"No download URL available for product {product_id}")
+            raise ValueError(
+                f"No download URL for product {product_id}"
+            )
 
-        # Set destination
         if destination is None:
             destination = self.search_path
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
 
-        # Download product
-        # Note: Actual implementation depends on ESA download API
+        # Get MAAP access token
+        access_token = self._get_access_token()
+
+        zip_path = destination / f"{product_id}.zip"
+
         try:
             print(f"Downloading {product_id}...")
 
-            # Authenticate if credentials provided
             session = requests.Session()
-            if username and password:
-                session.auth = (username, password)
+            session.headers["Authorization"] = f"Bearer {access_token}"
 
-            # Download (simplified - actual implementation may need chunked download)
-            response = session.get(remote_url, stream=True, timeout=300)
+            response = session.get(remote_url, stream=True, timeout=600)
             response.raise_for_status()
 
-            # Save to destination
-            product_path = destination / f"{product_id}.zip"
-            with open(product_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
+            # Stream to disk
+            total = int(response.headers.get("content-length", 0))
+            downloaded = 0
+            with open(zip_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = downloaded / total * 100
+                        print(
+                            f"\r  {downloaded / 1e6:.1f} / "
+                            f"{total / 1e6:.1f} MB ({pct:.0f}%)",
+                            end="", flush=True
+                        )
+            print()
 
-            print(f"Downloaded to {product_path}")
+            print(f"Downloaded to {zip_path}")
+
+            # Extract if requested
+            product_path = zip_path
+            if extract and zipfile.is_zipfile(zip_path):
+                extract_dir = destination / product_id
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+                zip_path.unlink()
+                product_path = extract_dir
+                print(f"Extracted to {product_path}")
 
             # Update database
             cursor.execute("""
@@ -491,6 +679,8 @@ class BIOMASSCatalog(CatalogInterface):
             return product_path
 
         except requests.RequestException as e:
+            if zip_path.exists():
+                zip_path.unlink()
             raise RuntimeError(f"Download failed: {e}") from e
 
     def get_metadata_summary(
