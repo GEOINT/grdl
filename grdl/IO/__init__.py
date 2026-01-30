@@ -3,12 +3,14 @@
 IO Module - Input/Output Operations for Geospatial Imagery.
 
 Handles reading and writing various geospatial data formats including SAR,
-EO imagery, and geospatial vector data.
+EO imagery, and geospatial vector data. Includes catalog search and download
+via the ESA MAAP STAC API.
 
 Dependencies
 ------------
 rasterio
 sarpy
+requests
 
 Author
 ------

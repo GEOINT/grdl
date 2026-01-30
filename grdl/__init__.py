@@ -1,17 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-GRDL - Geospatial Remote Sensing and Deep Learning Library
+GRDL - GEOINT Rapid Development Library.
 
-A modular Python library for geospatial remote sensing data processing, designed
-for SAR, EO, and multi-spectral imagery analysis.
+A modular Python library of fundamental building blocks for deriving geospatial
+intelligence from any 2D correlated imagery -- SAR, EO, MSI, hyperspectral,
+space-based, or terrestrial.
 
-Dependencies:
-    Core: numpy, scipy
+Dependencies
+------------
+numpy
+scipy
 
-Author: Duane Smalley
-License: MIT
-Created: 2026-01-30
-Modified: 2026-01-30
+Author
+------
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-01-30
+
+Modified
+--------
+2026-01-30
 """
 
 __version__ = "0.1.0"

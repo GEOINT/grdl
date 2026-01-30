@@ -24,18 +24,32 @@ Roadmap and planned features for the IO module.
 - [x] Catalog system (`catalog.py`)
   - [x] `BIOMASSCatalog` - BIOMASS-specific catalog and download manager
   - [x] Local file system discovery
-  - [x] ESA data hub query interface
-  - [x] Product download capability
+  - [x] ESA MAAP STAC API search (`query_esa()`)
+  - [x] CQL2 filtering (product type, orbit, bbox, date)
+  - [x] OAuth2 authentication (offline token exchange)
+  - [x] Streaming product download with ZIP extraction
   - [x] SQLite database for product tracking
   - [x] Metadata extraction and indexing
   - [x] Spatial overlap detection
+  - [x] `load_credentials()` utility (repo-agnostic `~/.config/geoint/`)
+  - [x] Operational collection support (`BiomassLevel1a/1b/2a`)
+- [x] Geolocation integration
+  - [x] GCP-based coordinate transforms via `grdl.geolocation`
+  - [x] Vectorized batch transforms
+  - [x] `Geolocation.from_reader()` factory
 - [x] Documentation
-  - [x] README.md with examples (including BIOMASS)
+  - [x] README.md with examples (including BIOMASS and catalog)
   - [x] ARCHITECTURE.md with design decisions
   - [x] This TODO.md
+- [x] Example scripts (`example/catalog/`)
+  - [x] `discover_and_download.py` - MAAP catalog search and download
+  - [x] `view_product.py` - Pauli RGB and HH dB viewer with interactive markers
+- [x] Ground truth data (`ground_truth/`)
+  - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
 - [x] Testing
   - [x] Test suite structure (`tests/`)
   - [x] BIOMASS L1 reader tests
+  - [x] Geolocation tests with interactive marker plotting
 
 ## High Priority
 
@@ -109,9 +123,11 @@ Roadmap and planned features for the IO module.
 
 - [x] **BIOMASSCatalog** - BIOMASS data management (COMPLETED)
   - Local discovery and indexing
-  - ESA API integration
-  - Download management
+  - ESA MAAP STAC API search with CQL2 filtering
+  - OAuth2 authentication (offline token exchange)
+  - Streaming download with ZIP extraction and progress reporting
   - SQLite database tracking
+  - `load_credentials()` utility with env var fallback
 
 - [ ] **Generic ImageCatalog** - Multi-format catalog
   - Support SAR, EO, and other formats
@@ -389,18 +405,24 @@ Track user-requested features here:
 ## Version Milestones
 
 ### v0.1.0 (Current)
-- [x] Base classes
-- [x] Basic SAR readers (SICD, CPHD, GRD)
+- [x] Base classes (ImageReader, ImageWriter, CatalogInterface ABCs)
+- [x] SAR readers (SICD, CPHD, GRD)
+- [x] BIOMASS L1 SCS reader (complex P-band SAR)
+- [x] BIOMASS catalog (MAAP STAC search, OAuth2 download, SQLite tracking)
+- [x] Geolocation module (GCP interpolation, batch transforms)
+- [x] Example scripts (catalog discovery, Pauli viewer)
+- [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework
 
 ### v0.2.0 (Next)
-- [ ] Complete SAR readers (CRSD, SLC, SIDD)
+- [ ] Additional SAR readers (CRSD, SLC, SIDD)
 - [ ] Basic EO readers (GeoTIFF, NITF)
+- [ ] Orthorectification (slant plane to ground projection)
 - [ ] Test coverage >80%
 
 ### v0.3.0
 - [ ] Geospatial readers/writers (GeoJSON, Shapefile)
-- [ ] Basic catalog implementation
+- [ ] Generic multi-format catalog
 - [ ] Performance optimizations
 
 ### v1.0.0 (Stable)

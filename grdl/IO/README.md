@@ -44,10 +44,12 @@ The IO module provides a unified interface for reading and writing various geosp
 
 | Feature | Status |
 |---------|--------|
-| BIOMASS catalog & download | ✅ Implemented |
+| BIOMASS catalog & download (MAAP STAC API) | ✅ Implemented |
+| OAuth2 credential management | ✅ Implemented |
 | File discovery by extension | ✅ Implemented |
 | Metadata extraction | ✅ Implemented |
 | Spatial overlap detection | ✅ Implemented |
+| SQLite product tracking | ✅ Implemented |
 | Multi-format catalog | 🔄 Planned |
 
 ## Installation
@@ -69,7 +71,7 @@ pip install rasterio
 
 # For BIOMASS ESA satellite products
 pip install rasterio  # For L1 SCS magnitude/phase TIFFs
-pip install requests  # For ESA data hub queries and downloads
+pip install requests  # For ESA MAAP STAC queries and downloads
 ```
 
 ### EO Support (Planned)
@@ -207,46 +209,45 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
 
 #### BIOMASS Data Catalog & Download
 
+Requires an ESA MAAP offline token stored in `~/.config/geoint/credentials.json`.
+See the top-level [README](../../README.md#credentials) for setup instructions.
+
 ```python
 from grdl.IO import BIOMASSCatalog
 
-# Initialize catalog
-catalog = BIOMASSCatalog(
-    search_path='/data/biomass',
-    db_path='biomass_catalog.db'
-)
+# Initialize catalog (SQLite DB created automatically)
+catalog = BIOMASSCatalog('/data/biomass')
 
-# Discover local products
+# Discover local products on disk
 local_products = catalog.discover_local(update_db=True)
 print(f"Found {len(local_products)} local products")
 
-# Query ESA data hub for products
-remote_products = catalog.query_esa(
-    start_date='2025-11-01',
-    end_date='2025-11-30',
-    orbit=3019,
-    max_results=50
+# Search ESA MAAP STAC catalog
+products = catalog.query_esa(
+    bbox=(115.5, -31.5, 116.8, -30.5),  # (min_lon, min_lat, max_lon, max_lat)
+    product_type="S3_SCS__1S",           # Single-pol processing
+    max_results=20,
 )
-print(f"Found {len(remote_products)} remote products")
+print(f"Found {len(products)} products")
 
-# Query local database
-products = catalog.query_database(
-    start_date='2025-11-01',
-    end_date='2025-11-30',
-    has_local=False  # Products not yet downloaded
+# Filter and inspect results
+for p in products:
+    props = p.get("properties", {})
+    print(f"  {p['id']}")
+    print(f"    Date:  {props.get('datetime', '?')}")
+    print(f"    Orbit: {props.get('sat:absolute_orbit', '?')}")
+    print(f"    Pols:  {props.get('sar:polarizations', '?')}")
+
+# Download a product (OAuth2 Bearer token, auto-extracted)
+product_path = catalog.download_product(
+    products[0]['id'],
+    destination='/data/biomass',
+    extract=True,
 )
-
-# Download a product
-for product in products[:3]:  # Download first 3
-    path = catalog.download_product(
-        product['id'],
-        username='your_esa_username',
-        password='your_esa_password'
-    )
-    print(f"Downloaded: {path}")
+print(f"Downloaded: {product_path}")
 
 # Find overlapping products
-bbox = (-24.0, 17.0, -23.0, 18.0)  # min_lat, min_lon, max_lat, max_lon
+bbox = (115.5, -31.5, 116.8, -30.5)
 overlapping = catalog.find_overlapping(bbox, local_products)
 print(f"Found {len(overlapping)} products overlapping bbox")
 
@@ -352,10 +353,9 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
 
-Additional examples in `/examples/io/`:
-- `sicd_processing.py` - SICD chip reading and visualization
-- `cphd_analysis.py` - Phase history data analysis
-- `grd_geocoding.py` - Working with geocoded products
+See `example/catalog/` for working BIOMASS workflows:
+- `discover_and_download.py` - Search ESA MAAP catalog, download products
+- `view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
 
 ## Contributing
 

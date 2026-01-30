@@ -103,7 +103,8 @@ Abstract class for image discovery and spatial queries.
   - Enables multi-sensor workflows
   - Simplifies collection management
 
-**Not Yet Implemented** - planned for catalog.py
+**Implemented**: `BIOMASSCatalog` in `catalog.py` provides local discovery,
+ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
 
 ## SAR Readers Implementation
 
@@ -303,36 +304,49 @@ class BIOMASSL1Reader(ImageReader):
 
 ```python
 class BIOMASSCatalog(CatalogInterface):
-    """Catalog and download manager for BIOMASS products."""
+    """Catalog and download manager for BIOMASS products.
+
+    Uses ESA MAAP STAC API for search and OAuth2 for downloads.
+    """
 ```
 
 **Key Features:**
 
 1. **Local Discovery**: Scans file system for BIOMASS product directories
-   - Pattern matching on directory names (BIO_S1_SCS*)
+   - Pattern matching on directory names (BIO_S*_SCS*)
    - Indexes products in SQLite database
    - Extracts metadata without loading pixel data
 
-2. **ESA API Integration**: Queries ESA data hub for products
-   - REST API for product search (placeholder - update when official API available)
-   - Filters by date, orbit, bounding box
-   - Stores results in database for offline access
+2. **ESA MAAP STAC API**: Queries the operational MAAP catalog
+   - POST-based STAC search at `catalog.maap.eo.esa.int/catalogue`
+   - CQL2 filtering by product type, orbit, bounding box, date range
+   - Collection IDs: `BiomassLevel1a`, `BiomassLevel1b`, `BiomassLevel2a`
+   - Stores results in local database for offline access
 
-3. **Download Management**: Automated product download
-   - Authentication support (ESA credentials)
-   - Progress tracking (implementation pending)
-   - Updates database with local paths
+3. **OAuth2 Authentication**: Token-based access to ESA data
+   - Offline token stored in `~/.config/geoint/credentials.json` (repo-agnostic)
+   - Exchanged for short-lived access tokens via MAAP IAM endpoint
+   - Public client secret shared by all MAAP users (published in ESA docs)
+   - Fallback to environment variables (`ESA_MAAP_OFFLINE_TOKEN`)
+   - `load_credentials()` utility exported from `grdl.IO`
 
-4. **SQLite Database**: Unified tracking of local and remote products
+4. **Download Management**: Streaming product download with extraction
+   - Bearer token authentication on download requests
+   - Streaming to disk with progress reporting
+   - Automatic ZIP extraction to product directory
+   - Database updated with local path on completion
+
+5. **SQLite Database**: Unified tracking of local and remote products
    - Schema supports all BIOMASS product levels
    - Indexed on common query fields (date, orbit, processing level)
-   - Enables fast queries without re-scanning file system
+   - Tracks download URL, corner coordinates, full STAC metadata JSON
+   - Enables fast queries without re-scanning file system or re-querying API
 
 **Design Decisions:**
 
 1. **Mission-Specific Catalog**: `BIOMASSCatalog` instead of generic `ImageCatalog`
    - BIOMASS has specific product naming conventions
-   - ESA API endpoints are mission-specific
+   - ESA MAAP API endpoints are mission-specific
    - Allows optimized schema for BIOMASS metadata
    - Generic catalog planned for future (multi-mission support)
 
@@ -346,6 +360,11 @@ class BIOMASSCatalog(CatalogInterface):
    - Enables "download missing products" workflows
    - Tracks download status
    - Supports offline work (query database without ESA access)
+
+4. **Repo-Agnostic Credentials**: `~/.config/geoint/credentials.json`
+   - Shared across all projects using ESA data (not tied to GRDL)
+   - Never committed to version control
+   - Follows XDG Base Directory convention
 
 ## Memory Management
 
@@ -525,11 +544,11 @@ Add support for cloud-native formats:
 - Zarr for chunked array storage
 - S3/GCS readers with fsspec backend
 
-### Catalog Implementation
+### Catalog Extension
 
-Database-backed image cataloging:
-- SQLite for local collections
-- PostGIS for large-scale deployments
+The BIOMASS catalog is implemented. Future catalog work:
+- Generic `ImageCatalog` supporting multiple missions and formats
+- PostGIS backend for large-scale deployments
 - Spatial indexing (R-tree, quad-tree)
 - Metadata caching for fast queries
 
