@@ -1,0 +1,8 @@
+# GRDL Core Dependencies
+# Required for basic functionality
+
+# Core numerical computing
+numpy>=1.20.0
+
+# Geolocation interpolation (GCP-based coordinate transforms)
+scipy>=1.7.0

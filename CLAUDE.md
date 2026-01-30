@@ -6,6 +6,15 @@ GRDL (GEOINT Rapid Development Library) is a modular Python library for geospati
 
 This is a **library, not a framework**. Every module must be independently usable.
 
+## Development Environment
+
+**Python Environment:** Always use the `starlight` conda environment for all Python operations (testing, development, package installation).
+
+```bash
+conda activate starlight
+python tests/test_io_biomass.py --quick
+```
+
 ## Architecture Rules
 
 ### Module Design
@@ -256,10 +265,82 @@ from grdl.image_processing.base import ImageFilter
 - Do not add logging, telemetry, or print statements unless the module's purpose requires it.
 - Do not create utility grab-bag modules. If a helper doesn't belong to a domain, the domain is missing.
 
+## Performance Optimization
+
+Performance is critical for processing large geospatial imagery. Follow these guidelines:
+
+### Vectorized Operations
+
+- **Always prefer vectorized numpy operations over Python loops.** Vectorized code is 10-100x faster for array operations.
+- Use numpy broadcasting and universal functions (ufuncs) wherever possible.
+- Process data in batches rather than element-by-element.
+
+**Bad (loops):**
+```python
+def transform_pixels(rows, cols):
+    lats = []
+    lons = []
+    for i in range(len(rows)):
+        lat, lon = pixel_to_latlon(rows[i], cols[i])
+        lats.append(lat)
+        lons.append(lon)
+    return np.array(lats), np.array(lons)
+```
+
+**Good (vectorized):**
+```python
+def transform_pixels_batch(rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    points = np.column_stack([rows, cols])
+    lats = self._lat_interp(points)  # Vectorized interpolation
+    lons = self._lon_interp(points)
+    return lats, lons
+```
+
+### Batch Processing Methods
+
+- Provide `*_batch()` methods alongside single-element methods for operations on arrays.
+- Document batch methods as the preferred approach for processing multiple values.
+- If a base class provides a default loop implementation, concrete subclasses should override with vectorized versions.
+
+**Example:**
+```python
+class Geolocation(ABC):
+    @abstractmethod
+    def pixel_to_latlon(self, row: float, col: float) -> Tuple[float, float, float]:
+        """Transform single pixel. For batch processing, use pixel_to_latlon_batch()."""
+        pass
+
+    def pixel_to_latlon_batch(self, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Vectorized batch transform. Subclasses should override for performance."""
+        # Default implementation - subclasses should provide vectorized version
+        ...
+```
+
+### NumPy Best Practices
+
+- Use `np.column_stack()`, `np.vstack()`, `np.hstack()` for array construction instead of loops
+- Use array slicing and boolean indexing for filtering instead of loops
+- Leverage `np.where()`, `np.select()` for conditional operations
+- Use `np.apply_along_axis()` only as a last resort (still slower than pure vectorization)
+- Pre-allocate arrays when size is known: `result = np.empty((n, m))` instead of appending
+
+### Memory Efficiency
+
+- Avoid unnecessary array copies. Use views where possible.
+- Process data in chunks for very large arrays that don't fit in memory.
+- Be explicit about dtypes to avoid unnecessary conversions: `dtype=np.float32` vs `dtype=np.float64`
+
+### Performance Testing
+
+- For performance-critical code, verify speedup with `%%timeit` in notebooks or `timeit` module
+- Target at least 10x speedup for vectorized versions over naive loops
+- Document performance characteristics in docstrings when relevant (e.g., "< 1ms per transform")
+
 ## Dependencies
 
 - `numpy` is always available. It is the common data type across all modules.
 - All imports go at the top of the file. If a dependency is not installed, the module must fail immediately on import with a clear `ImportError`.
+- **Optional dependencies** (e.g., `sarpy`, `rasterio`, `scipy`) may use a `try`/`except` guard at the module level to allow partial installation. In this case, the module must raise a clear `ImportError` with installation instructions at construction time (i.e., in `__init__`), not silently degrade. This pattern allows `import grdl` to succeed even when only a subset of optional dependencies are installed.
 - Each module that requires dependencies beyond numpy must document them in the file header's Dependencies section.
 - Never add dependencies for convenience. Prefer numpy over pulling in pandas for a single operation.
 

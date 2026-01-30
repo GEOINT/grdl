@@ -1,0 +1,17 @@
+# GRDL Development Dependencies
+# Install these for testing and development
+
+# Include core dependencies
+-r requirements.txt
+
+# Testing framework
+pytest>=7.0.0
+pytest-cov>=3.0.0
+
+# Code quality
+flake8>=4.0.0
+black>=22.0.0
+mypy>=0.950
+
+# Optional: Install all optional dependencies for full testing
+# -r requirements-optional.txt
