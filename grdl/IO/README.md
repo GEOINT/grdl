@@ -1,0 +1,277 @@
+# IO Module
+
+Input/Output operations for geospatial imagery and vector data.
+
+## Overview
+
+The IO module provides a unified interface for reading and writing various geospatial data formats, with a focus on remote sensing imagery. All readers inherit from abstract base classes defined in `base.py`, ensuring consistent APIs across different formats.
+
+## Supported Formats
+
+### SAR (Synthetic Aperture Radar)
+
+| Format | Type | Reader Class | Status |
+|--------|------|-------------|--------|
+| SICD | NGA Standard Complex | `SICDReader` | ✅ Implemented |
+| CPHD | NGA Phase History | `CPHDReader` | ✅ Implemented |
+| CRSD | NGA Received Signal | - | 🔄 Planned |
+| GRD | Ground Range Detected | `GRDReader` | ✅ Implemented |
+| SLC | Single Look Complex | - | 🔄 Planned |
+
+### EO (Electro-Optical)
+
+| Format | Type | Reader Class | Status |
+|--------|------|-------------|--------|
+| GeoTIFF | Raster | - | 🔄 Planned |
+| NITF | Container | - | 🔄 Planned |
+| COG | Cloud-Optimized GeoTIFF | - | 🔄 Planned |
+
+### Geospatial Vector
+
+| Format | Type | Support | Status |
+|--------|------|---------|--------|
+| GeoJSON | Vector | Reader/Writer | 🔄 Planned |
+| Shapefile | Vector | Reader/Writer | 🔄 Planned |
+| KML/KMZ | Vector | Reader | 🔄 Planned |
+
+### Catalog & Discovery
+
+| Feature | Status |
+|---------|--------|
+| File discovery by extension | 🔄 Planned |
+| Metadata extraction | 🔄 Planned |
+| Spatial overlap detection | 🔄 Planned |
+| Multi-format catalog | 🔄 Planned |
+
+## Installation
+
+### Core Dependencies
+
+```bash
+pip install numpy
+```
+
+### SAR Support
+
+```bash
+# For SICD/CPHD (NGA standards)
+pip install sarpy
+
+# For GRD products (GeoTIFF)
+pip install rasterio
+```
+
+### EO Support (Planned)
+
+```bash
+pip install rasterio gdal pillow
+```
+
+### Geospatial Support (Planned)
+
+```bash
+pip install geopandas shapely fiona
+```
+
+## Quick Start
+
+### Reading SAR Data
+
+#### Auto-detect Format
+
+```python
+from grdl.IO import open_sar
+
+# Automatically detect and open SAR file
+with open_sar('image.nitf') as reader:
+    print(f"Format: {reader.metadata['format']}")
+    print(f"Shape: {reader.get_shape()}")
+
+    # Read a spatial chip
+    chip = reader.read_chip(0, 1024, 0, 1024)
+    print(f"Chip shape: {chip.shape}")
+```
+
+#### SICD - Complex SAR Imagery
+
+```python
+from grdl.IO import SICDReader
+import numpy as np
+
+with SICDReader('sicd_image.nitf') as reader:
+    # Access metadata
+    print(f"Collector: {reader.metadata['collector_name']}")
+    print(f"Center Freq: {reader.metadata['center_frequency']} Hz")
+    print(f"Bandwidth: {reader.metadata['bandwidth']} Hz")
+
+    # Read complex data
+    chip = reader.read_chip(1000, 2000, 1000, 2000)
+
+    # Convert to magnitude image
+    magnitude = np.abs(chip)
+
+    # Convert to dB
+    magnitude_db = 20 * np.log10(magnitude + 1e-10)
+
+    # Get geolocation
+    geo = reader.get_geolocation()
+    print(f"Scene Center: {geo['scp_llh']}")  # [lat, lon, height]
+```
+
+#### CPHD - Phase History Data
+
+```python
+from grdl.IO import CPHDReader
+
+with CPHDReader('cphd_data.cphd') as reader:
+    print(f"Channels: {reader.metadata['num_channels']}")
+    print(f"Collector: {reader.metadata['collector_name']}")
+
+    # Access channel information
+    for channel_id, info in reader.metadata['channels'].items():
+        print(f"Channel {channel_id}:")
+        print(f"  Vectors: {info['num_vectors']}")
+        print(f"  Samples: {info['num_samples']}")
+
+    # Read phase history data
+    ph_data = reader.read_full(bands=[0])  # First channel
+```
+
+#### GRD - Geocoded SAR Products
+
+```python
+from grdl.IO import GRDReader
+
+with GRDReader('sentinel1_grd.tif') as reader:
+    # Access geolocation
+    geo = reader.get_geolocation()
+    print(f"CRS: {geo['crs']}")
+    print(f"Bounds: {geo['bounds']}")
+    print(f"Resolution: {geo['resolution']}")
+
+    # Read data (real-valued, not complex)
+    chip = reader.read_chip(0, 1000, 0, 1000)
+
+    # Multi-band support
+    if reader.metadata['bands'] > 1:
+        # Read specific bands (0-based indexing)
+        vv_vh = reader.read_chip(0, 1000, 0, 1000, bands=[0, 1])
+```
+
+## Architecture
+
+### Base Classes
+
+All readers inherit from abstract base classes in `base.py`:
+
+- **`ImageReader`** - Base for all imagery readers
+  - `read_chip()` - Read spatial subset (memory efficient)
+  - `read_full()` - Read entire image
+  - `get_shape()` - Get image dimensions
+  - `get_dtype()` - Get data type
+  - `get_geolocation()` - Get georeferencing info
+  - Context manager support (`with` statements)
+
+- **`ImageWriter`** - Base for all imagery writers
+  - `write()` - Write full image
+  - `write_chip()` - Write spatial subset
+  - Context manager support
+
+- **`CatalogInterface`** - Base for image discovery
+  - `discover_images()` - Find images by extension
+  - `get_metadata_summary()` - Batch metadata extraction
+  - `find_overlapping()` - Spatial overlap queries
+
+### Design Principles
+
+1. **Lazy Loading** - Data only loaded when explicitly requested
+2. **Consistent API** - All readers share common interface
+3. **Context Managers** - Automatic resource cleanup with `with` statements
+4. **Type Safety** - Full type hints for all public APIs
+5. **Format Agnostic** - Abstract interfaces hide format-specific details
+6. **Graceful Degradation** - Works with subset of dependencies installed
+
+## Memory Considerations
+
+### Large Images
+
+For large SAR or EO images that don't fit in memory:
+
+```python
+# BAD - Loads entire image into memory
+with SICDReader('large_image.nitf') as reader:
+    full_image = reader.read_full()  # May cause OOM
+
+# GOOD - Process in chunks
+with SICDReader('large_image.nitf') as reader:
+    rows, cols = reader.get_shape()
+    chip_size = 1024
+
+    for r in range(0, rows, chip_size):
+        for c in range(0, cols, chip_size):
+            chip = reader.read_chip(
+                r, min(r + chip_size, rows),
+                c, min(c + chip_size, cols)
+            )
+            # Process chip...
+```
+
+### Complex vs. Magnitude
+
+SICD data is complex-valued (I+jQ), requiring 2x memory:
+
+```python
+# Complex data: 8 bytes per pixel (float32 real + float32 imag)
+complex_chip = sicd_reader.read_chip(0, 1000, 0, 1000)  # ~8 MB
+
+# Magnitude: 4 bytes per pixel (float32)
+magnitude_chip = np.abs(complex_chip)  # ~4 MB
+
+# dB magnitude (in-place to save memory)
+db_chip = 20 * np.log10(np.abs(complex_chip) + 1e-10)
+```
+
+## Error Handling
+
+All readers raise specific exceptions:
+
+```python
+from grdl.IO import open_sar
+
+try:
+    reader = open_sar('image.dat')
+except FileNotFoundError:
+    print("File does not exist")
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+except ValueError as e:
+    print(f"Invalid format: {e}")
+```
+
+## API Reference
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design decisions.
+
+See [TODO.md](TODO.md) for planned features and roadmap.
+
+## Examples
+
+Additional examples in `/examples/io/`:
+- `sicd_processing.py` - SICD chip reading and visualization
+- `cphd_analysis.py` - Phase history data analysis
+- `grd_geocoding.py` - Working with geocoded products
+
+## Contributing
+
+When adding new readers:
+
+1. Inherit from `ImageReader` or `ImageWriter` base class
+2. Implement all abstract methods
+3. Follow file header standard from `/CLAUDE.md`
+4. Add full type hints and NumPy-style docstrings
+5. Include usage examples in docstrings
+6. Update this README and `__init__.py`'s `__all__` export
+
+## License
+
+MIT License - See [LICENSE](../../LICENSE) for details.
