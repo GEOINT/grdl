@@ -1,18 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-IO Base Classes - Abstract interfaces for imagery readers and writers
+IO Base Classes - Abstract interfaces for imagery readers and writers.
 
 Defines abstract base classes for reading and writing geospatial imagery data.
 All concrete implementations (SAR, EO, etc.) must inherit from these classes.
 
-Dependencies:
-    Standard: abc, pathlib, typing
-    Third-party: numpy
+Author
+------
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
 
-Author: Duane Smalley
-License: MIT
-Created: 2026-01-30
-Modified: 2026-01-30
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-01-30
+
+Modified
+--------
+2026-01-30
 """
 
 from abc import ABC, abstractmethod

@@ -18,6 +18,12 @@ The IO module provides a unified interface for reading and writing various geosp
 | GRD | Ground Range Detected | `GRDReader` | ✅ Implemented |
 | SLC | Single Look Complex | - | 🔄 Planned |
 
+### Mission-Specific Readers
+
+| Mission | Type | Reader Class | Status |
+|---------|------|-------------|--------|
+| BIOMASS L1 SCS | ESA P-band SAR | `BIOMASSL1Reader` | ✅ Implemented |
+
 ### EO (Electro-Optical)
 
 | Format | Type | Reader Class | Status |
@@ -38,9 +44,10 @@ The IO module provides a unified interface for reading and writing various geosp
 
 | Feature | Status |
 |---------|--------|
-| File discovery by extension | 🔄 Planned |
-| Metadata extraction | 🔄 Planned |
-| Spatial overlap detection | 🔄 Planned |
+| BIOMASS catalog & download | ✅ Implemented |
+| File discovery by extension | ✅ Implemented |
+| Metadata extraction | ✅ Implemented |
+| Spatial overlap detection | ✅ Implemented |
 | Multi-format catalog | 🔄 Planned |
 
 ## Installation
@@ -59,6 +66,10 @@ pip install sarpy
 
 # For GRD products (GeoTIFF)
 pip install rasterio
+
+# For BIOMASS ESA satellite products
+pip install rasterio  # For L1 SCS magnitude/phase TIFFs
+pip install requests  # For ESA data hub queries and downloads
 ```
 
 ### EO Support (Planned)
@@ -156,6 +167,91 @@ with GRDReader('sentinel1_grd.tif') as reader:
     if reader.metadata['bands'] > 1:
         # Read specific bands (0-based indexing)
         vv_vh = reader.read_chip(0, 1000, 0, 1000, bands=[0, 1])
+```
+
+### BIOMASS ESA Satellite Data
+
+#### BIOMASS L1 SCS - Complex P-band SAR
+
+```python
+from grdl.IO import BIOMASSL1Reader, open_biomass
+import numpy as np
+
+# Auto-detect and open BIOMASS product
+with open_biomass('BIO_S1_SCS__1S_...') as reader:
+    print(f"Mission: {reader.metadata['mission']}")
+    print(f"Swath: {reader.metadata['swath']}")
+    print(f"Polarizations: {reader.metadata['polarizations']}")  # [HH, HV, VH, VV]
+    print(f"Orbit: {reader.metadata['orbit_number']} ({reader.metadata['orbit_pass']})")
+    print(f"Dimensions: {reader.metadata['rows']} x {reader.metadata['cols']}")
+
+    # Read HH polarization chip (band 0)
+    hh_chip = reader.read_chip(0, 1024, 0, 1024, bands=[0])
+
+    # Convert to magnitude in dB
+    hh_mag_db = 20 * np.log10(np.abs(hh_chip) + 1e-10)
+
+    # Read all polarizations
+    all_pols = reader.read_chip(0, 512, 0, 512)  # Shape: (4, 512, 512)
+
+    for i, pol in enumerate(reader.polarizations):
+        mag = np.abs(all_pols[i])
+        print(f"{pol}: magnitude range [{mag.min():.2f}, {mag.max():.2f}]")
+
+    # Get geolocation (slant range geometry)
+    geo = reader.get_geolocation()
+    print(f"Projection: {geo['projection']}")  # Slant Range
+    print(f"Range spacing: {geo['range_pixel_spacing']:.2f} m")
+    print(f"Azimuth spacing: {geo['azimuth_pixel_spacing']:.2f} m")
+```
+
+#### BIOMASS Data Catalog & Download
+
+```python
+from grdl.IO import BIOMASSCatalog
+
+# Initialize catalog
+catalog = BIOMASSCatalog(
+    search_path='/data/biomass',
+    db_path='biomass_catalog.db'
+)
+
+# Discover local products
+local_products = catalog.discover_local(update_db=True)
+print(f"Found {len(local_products)} local products")
+
+# Query ESA data hub for products
+remote_products = catalog.query_esa(
+    start_date='2025-11-01',
+    end_date='2025-11-30',
+    orbit=3019,
+    max_results=50
+)
+print(f"Found {len(remote_products)} remote products")
+
+# Query local database
+products = catalog.query_database(
+    start_date='2025-11-01',
+    end_date='2025-11-30',
+    has_local=False  # Products not yet downloaded
+)
+
+# Download a product
+for product in products[:3]:  # Download first 3
+    path = catalog.download_product(
+        product['id'],
+        username='your_esa_username',
+        password='your_esa_password'
+    )
+    print(f"Downloaded: {path}")
+
+# Find overlapping products
+bbox = (-24.0, 17.0, -23.0, 18.0)  # min_lat, min_lon, max_lat, max_lon
+overlapping = catalog.find_overlapping(bbox, local_products)
+print(f"Found {len(overlapping)} products overlapping bbox")
+
+# Clean up
+catalog.close()
 ```
 
 ## Architecture

@@ -1,18 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-SAR Readers - Synthetic Aperture Radar imagery readers
+SAR Readers - Synthetic Aperture Radar imagery readers.
 
 Provides readers for various SAR formats including NGA standards (SICD, CPHD, CRSD)
 and common SAR products (GRD). Built on SARPY for NGA format compliance.
 
-Dependencies:
-    Standard: pathlib, typing, warnings
-    Third-party: numpy, sarpy, rasterio (for GRD)
+Dependencies
+------------
+sarpy
+rasterio
 
-Author: Duane Smalley
-License: MIT
-Created: 2026-01-30
-Modified: 2026-01-30
+Author
+------
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-01-30
+
+Modified
+--------
+2026-01-30
 """
 
 from pathlib import Path

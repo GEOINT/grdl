@@ -16,10 +16,11 @@ The IO module is built on three core principles:
 grdl/IO/
 ├── __init__.py           # Public API exports
 ├── base.py               # Abstract base classes (ABCs)
-├── sar.py                # SAR format readers
+├── sar.py                # SAR format readers (SICD, CPHD, GRD)
+├── biomass.py            # BIOMASS mission readers (L1 SCS)
+├── catalog.py            # BIOMASS catalog and download manager
 ├── eo.py                 # EO imagery readers (planned)
 ├── geospatial.py         # Vector data readers/writers (planned)
-├── catalog.py            # Image discovery and cataloging (planned)
 ├── README.md             # User documentation
 ├── ARCHITECTURE.md       # This file
 └── TODO.md               # Roadmap and planned features
@@ -233,6 +234,118 @@ Convenience function that tries readers in order:
 **Not Recommended:**
 - High-performance pipelines (use specific reader)
 - Large batch jobs (overhead adds up)
+
+## Mission-Specific Readers
+
+### BIOMASS Implementation
+
+**Format Background:**
+- BIOMASS is ESA's P-band SAR satellite mission (435 MHz)
+- L1 SCS (Single-look Complex Slant) products store complex data
+- Unlike other SAR formats, uses magnitude + phase GeoTIFFs (not complex-valued TIFFs)
+- SAFE-like directory structure with XML annotation
+
+**Implementation Details:**
+
+```python
+class BIOMASSL1Reader(ImageReader):
+    """Reader for BIOMASS L1 SCS products."""
+
+    def __init__(self, filepath):
+        # filepath is a directory (SAFE-like structure)
+        # annotation/: XML metadata
+        # measurement/: magnitude and phase TIFFs
+```
+
+**Key Decisions:**
+
+1. **Mission-Specific Module**: Created `biomass.py` instead of adding to generic `sar.py`
+   - **Rationale**: BIOMASS has mission-specific processing levels (L1a/b/c, L2a/b, L3)
+   - Users expect mission-specific interfaces, not generic format readers
+   - Sets precedent for future satellite readers (Sentinel-1, RADARSAT, etc.)
+   - Decision deferred on whether to create readers for other missions
+
+2. **Complex Data Reconstruction**: Magnitude and phase stored separately
+   - Phase TIFFs store phase in radians
+   - Reconstruct complex: `complex = magnitude * exp(1j * phase)`
+   - Handled transparently in `read_chip()` and `read_full()`
+
+3. **Multi-Polarization**: All 4 polarizations in same TIFF files
+   - Band 1: HH, Band 2: HV, Band 3: VH, Band 4: VV
+   - `bands` parameter selects polarizations (0-based indexing)
+   - Consistent with multi-band imagery convention
+
+4. **Metadata Format**: Mission-specific fields
+   - Standard fields: `rows`, `cols`, `polarizations`, `orbit_number`
+   - BIOMASS-specific: `swath`, `product_type`, pixel spacings
+   - Enables multi-sensor fusion with consistent metadata keys
+
+5. **Geolocation**: Slant range geometry with GCPs
+   - BIOMASS L1 is not geocoded (unlike GRD products)
+   - GCPs provided for geolocation transforms
+   - Compatible with SICD geolocation format
+
+**Format vs. Mission Trade-off:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Format-based (sar.py) | Consistent with current code | Loses mission context and processing levels |
+| Mission-specific (biomass.py) | Captures mission structure | Different pattern, may proliferate files |
+
+**Decision**: Mission-specific for BIOMASS
+- Mission processing levels (L1a/b/c, L2a/b, L3) are important to users
+- Rich mission metadata doesn't fit generic readers
+- Pattern may be adopted for other missions in future
+
+### BIOMASS Catalog System
+
+**Implementation Details:**
+
+```python
+class BIOMASSCatalog(CatalogInterface):
+    """Catalog and download manager for BIOMASS products."""
+```
+
+**Key Features:**
+
+1. **Local Discovery**: Scans file system for BIOMASS product directories
+   - Pattern matching on directory names (BIO_S1_SCS*)
+   - Indexes products in SQLite database
+   - Extracts metadata without loading pixel data
+
+2. **ESA API Integration**: Queries ESA data hub for products
+   - REST API for product search (placeholder - update when official API available)
+   - Filters by date, orbit, bounding box
+   - Stores results in database for offline access
+
+3. **Download Management**: Automated product download
+   - Authentication support (ESA credentials)
+   - Progress tracking (implementation pending)
+   - Updates database with local paths
+
+4. **SQLite Database**: Unified tracking of local and remote products
+   - Schema supports all BIOMASS product levels
+   - Indexed on common query fields (date, orbit, processing level)
+   - Enables fast queries without re-scanning file system
+
+**Design Decisions:**
+
+1. **Mission-Specific Catalog**: `BIOMASSCatalog` instead of generic `ImageCatalog`
+   - BIOMASS has specific product naming conventions
+   - ESA API endpoints are mission-specific
+   - Allows optimized schema for BIOMASS metadata
+   - Generic catalog planned for future (multi-mission support)
+
+2. **SQLite vs. Other Databases**: Chose SQLite for simplicity
+   - No server setup required
+   - File-based, portable
+   - Sufficient for most use cases (thousands of products)
+   - Can migrate to PostgreSQL/PostGIS for large-scale deployments
+
+3. **Dual Index**: Products tracked both locally and remotely
+   - Enables "download missing products" workflows
+   - Tracks download status
+   - Supports offline work (query database without ESA access)
 
 ## Memory Management
 

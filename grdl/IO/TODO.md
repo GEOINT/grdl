@@ -15,10 +15,27 @@ Roadmap and planned features for the IO module.
   - [x] `CPHDReader` - CPHD format via SARPY
   - [x] `GRDReader` - GRD GeoTIFF via rasterio
   - [x] `open_sar()` - Auto-detection utility
+- [x] BIOMASS readers (`biomass.py`)
+  - [x] `BIOMASSL1Reader` - BIOMASS L1 SCS format (magnitude/phase GeoTIFFs)
+  - [x] `open_biomass()` - Auto-detection utility
+  - [x] Full quad-pol support (HH, HV, VH, VV)
+  - [x] XML annotation metadata parsing
+  - [x] Complex data reconstruction from magnitude/phase
+- [x] Catalog system (`catalog.py`)
+  - [x] `BIOMASSCatalog` - BIOMASS-specific catalog and download manager
+  - [x] Local file system discovery
+  - [x] ESA data hub query interface
+  - [x] Product download capability
+  - [x] SQLite database for product tracking
+  - [x] Metadata extraction and indexing
+  - [x] Spatial overlap detection
 - [x] Documentation
-  - [x] README.md with examples
+  - [x] README.md with examples (including BIOMASS)
   - [x] ARCHITECTURE.md with design decisions
   - [x] This TODO.md
+- [x] Testing
+  - [x] Test suite structure (`tests/`)
+  - [x] BIOMASS L1 reader tests
 
 ## High Priority
 
@@ -88,16 +105,22 @@ Roadmap and planned features for the IO module.
   - Extract style information
   - Handle KMZ (zipped KML)
 
-### Catalog (catalog.py) - NEW MODULE
+### Catalog (catalog.py)
 
-- [ ] **ImageCatalog** - Basic file discovery
-  - Recursive directory scanning
-  - Filter by extension
-  - Extract basic metadata (size, timestamp)
+- [x] **BIOMASSCatalog** - BIOMASS data management (COMPLETED)
+  - Local discovery and indexing
+  - ESA API integration
+  - Download management
+  - SQLite database tracking
 
-- [ ] **MetadataCatalog** - Rich metadata extraction
-  - Parallel metadata reading
-  - Cache metadata to SQLite
+- [ ] **Generic ImageCatalog** - Multi-format catalog
+  - Support SAR, EO, and other formats
+  - Unified database schema
+  - Format-agnostic queries
+
+- [ ] **Parallel Metadata Extraction**
+  - Thread/process pool for batch operations
+  - Progress tracking for large collections
   - Query by sensor, date, location
 
 - [ ] **SpatialCatalog** - Geospatial queries
