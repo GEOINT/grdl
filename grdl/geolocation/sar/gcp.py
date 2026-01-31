@@ -158,119 +158,32 @@ class GCPGeolocation(Geolocation):
         self._row_interp = LinearNDInterpolator(geo_points, rows, fill_value=np.nan)
         self._col_interp = LinearNDInterpolator(geo_points, cols, fill_value=np.nan)
 
-    def pixel_to_latlon(
-        self,
-        row: float,
-        col: float,
-        height: float = 0.0
-    ) -> Tuple[float, float, float]:
-        """
-        Transform pixel coordinates to geographic coordinates using GCP interpolation.
-
-        Parameters
-        ----------
-        row : float
-            Row coordinate (0-based, top-down)
-        col : float
-            Column coordinate (0-based, left-right)
-        height : float, default=0.0
-            Height parameter (not used in GCP interpolation, returned from GCP data)
-
-        Returns
-        -------
-        Tuple[float, float, float]
-            (latitude, longitude, height) in WGS84 coordinates
-
-        Raises
-        ------
-        ValueError
-            If pixel coordinates are outside image bounds or if interpolation
-            returns NaN (point outside GCP convex hull)
-        """
-        # Check bounds (with some tolerance for edge pixels)
-        check_pixel_bounds(row, col, self.shape, tolerance=1.0)
-
-        # Interpolate geographic coordinates
-        lat = float(self._lat_interp(row, col))
-        lon = float(self._lon_interp(row, col))
-        h = float(self._height_interp(row, col))
-
-        # Check for NaN (outside GCP convex hull)
-        if np.isnan(lat) or np.isnan(lon):
-            raise ValueError(
-                f"Pixel ({row}, {col}) is outside the GCP coverage area. "
-                "Cannot interpolate geolocation."
-            )
-
-        return (lat, lon, h)
-
-    def latlon_to_pixel(
-        self,
-        lat: float,
-        lon: float,
-        height: float = 0.0
-    ) -> Tuple[float, float]:
-        """
-        Transform geographic coordinates to pixel coordinates using GCP interpolation.
-
-        Parameters
-        ----------
-        lat : float
-            Latitude in degrees North (-90 to +90)
-        lon : float
-            Longitude in degrees East (-180 to +180)
-        height : float, default=0.0
-            Height parameter (not used in 2D interpolation)
-
-        Returns
-        -------
-        Tuple[float, float]
-            (row, col) pixel coordinates
-
-        Raises
-        ------
-        ValueError
-            If geographic coordinates are outside GCP coverage area
-        """
-        # Interpolate pixel coordinates
-        row = float(self._row_interp(lat, lon))
-        col = float(self._col_interp(lat, lon))
-
-        # Check for NaN (outside GCP convex hull)
-        if np.isnan(row) or np.isnan(col):
-            raise ValueError(
-                f"Geographic location ({lat}, {lon}) is outside the GCP coverage area. "
-                "Cannot interpolate pixel coordinates."
-            )
-
-        return (row, col)
-
-    def pixel_to_latlon_batch(
+    def _pixel_to_latlon_array(
         self,
         rows: np.ndarray,
         cols: np.ndarray,
         height: float = 0.0
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Transform multiple pixel coordinates to geographic coordinates (vectorized).
+        Transform pixel coordinate arrays to geographic coordinate arrays.
+
+        Vectorized implementation using scipy LinearNDInterpolator.
 
         Parameters
         ----------
         rows : np.ndarray
-            Row coordinates (1D array)
+            Row coordinates (1D array, float64).
         cols : np.ndarray
-            Column coordinates (1D array)
+            Column coordinates (1D array, float64).
         height : float, default=0.0
-            Height parameter (not used)
+            Height parameter (not used in GCP interpolation, heights come
+            from the GCP data itself).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray, np.ndarray]
-            (lats, lons, heights) arrays in WGS84 coordinates
-
-        Notes
-        -----
-        Vectorized implementation is significantly faster than looping.
+            (lats, lons, heights) arrays in WGS84 coordinates.
+            Points outside the GCP convex hull return NaN.
         """
         points = np.column_stack([rows, cols])
 
@@ -280,32 +193,31 @@ class GCPGeolocation(Geolocation):
 
         return lats, lons, heights
 
-    def latlon_to_pixel_batch(
+    def _latlon_to_pixel_array(
         self,
         lats: np.ndarray,
         lons: np.ndarray,
         height: float = 0.0
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Transform multiple geographic coordinates to pixel coordinates (vectorized).
+        Transform geographic coordinate arrays to pixel coordinate arrays.
+
+        Vectorized implementation using scipy LinearNDInterpolator.
 
         Parameters
         ----------
         lats : np.ndarray
-            Latitudes in degrees North (1D array)
+            Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
-            Longitudes in degrees East (1D array)
+            Longitudes in degrees East (1D array, float64).
         height : float, default=0.0
-            Height parameter (not used)
+            Height parameter (not used in 2D interpolation).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
-            (rows, cols) pixel coordinate arrays
-
-        Notes
-        -----
-        Vectorized implementation is significantly faster than looping.
+            (rows, cols) pixel coordinate arrays.
+            Points outside the GCP convex hull return NaN.
         """
         geo_points = np.column_stack([lats, lons])
 

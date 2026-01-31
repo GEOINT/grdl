@@ -249,8 +249,8 @@ def test_round_trip_grid(geo):
 # Batch operations
 # ---------------------------------------------------------------------------
 
-def test_batch_pixel_to_latlon(geo):
-    """Test vectorized batch pixel-to-latlon conversion."""
+def test_array_pixel_to_latlon(geo):
+    """Test array pixel-to-latlon conversion (unified API accepts arrays)."""
     rows, cols = geo.shape
     margin_r = int(rows * 0.1)
     margin_c = int(cols * 0.1)
@@ -258,13 +258,14 @@ def test_batch_pixel_to_latlon(geo):
     sample_rows = np.linspace(margin_r, rows - 1 - margin_r, 10)
     sample_cols = np.linspace(margin_c, cols - 1 - margin_c, 10)
 
-    lats, lons, heights = geo.pixel_to_latlon_batch(sample_rows, sample_cols)
+    # Same method handles both scalars and arrays
+    lats, lons, heights = geo.pixel_to_latlon(sample_rows, sample_cols)
 
     assert lats.shape == (10,)
     assert lons.shape == (10,)
     assert heights.shape == (10,)
 
-    # Verify against individual calls
+    # Verify against individual scalar calls
     for i in range(len(sample_rows)):
         lat_single, lon_single, h_single = geo.pixel_to_latlon(
             float(sample_rows[i]), float(sample_cols[i])

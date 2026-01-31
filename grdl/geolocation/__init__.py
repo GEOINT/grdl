@@ -12,15 +12,24 @@ Key Classes
 
 Usage
 -----
-Create a geolocation object from an imagery reader:
+Create a geolocation object from an imagery reader. The ``pixel_to_latlon``
+and ``latlon_to_pixel`` methods accept scalar, list, or ndarray inputs and
+return matching types (scalar in → scalar out, array in → array out):
 
     >>> from grdl.IO import open_biomass
     >>> from grdl.geolocation import Geolocation
+    >>> import numpy as np
     >>>
     >>> with open_biomass('path/to/biomass_product') as reader:
     >>>     geo = Geolocation.from_reader(reader)
+    >>>
+    >>>     # Single pixel (returns scalars)
     >>>     lat, lon, height = geo.pixel_to_latlon(1000, 500)
-    >>>     print(f"Pixel (1000, 500) -> ({lat:.6f}, {lon:.6f})")
+    >>>
+    >>>     # Array of pixels (returns arrays, vectorized)
+    >>>     lats, lons, heights = geo.pixel_to_latlon(
+    ...         np.array([100, 200, 300]), np.array([400, 500, 600])
+    ...     )
 
 Modules
 -------
