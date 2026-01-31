@@ -22,7 +22,7 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 |--------|-------------|--------|
 | **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, GRD, BIOMASS) | Implemented |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
-| **Image Processing** | Filtering, enhancement, normalization, and transforms for any raster imagery | Planned |
+| **Image Processing** | Orthorectification, polarimetric decomposition, filtering, enhancement | Implemented |
 | **Data Preparation** | Chunking, tiling, resampling, and formatting for ML/AI pipelines | Planned |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
@@ -37,21 +37,32 @@ GRDL/
 │   │   ├── sar.py                   #   SICDReader, CPHDReader, GRDReader, open_sar()
 │   │   ├── biomass.py               #   BIOMASSL1Reader, open_biomass()
 │   │   └── catalog.py               #   BIOMASSCatalog, load_credentials()
-│   └── geolocation/                 # Coordinate transform module
-│       ├── base.py                  #   Geolocation ABC, NoGeolocation
-│       ├── utils.py                 #   Footprint, bounds, distance helpers
-│       ├── sar/
-│       │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
-│       └── eo/                      #   EO geolocation (planned)
+│   ├── geolocation/                 # Coordinate transform module
+│   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
+│   │   ├── utils.py                 #   Footprint, bounds, distance helpers
+│   │   ├── sar/
+│   │   │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
+│   │   └── eo/                      #   EO geolocation (planned)
+│   └── image_processing/            # Image transforms module
+│       ├── base.py                  #   ImageTransform ABC
+│       ├── ortho/
+│       │   └── ortho.py             #   Orthorectifier, OutputGrid
+│       └── decomposition/
+│           ├── base.py              #   PolarimetricDecomposition ABC
+│           └── pauli.py             #   PauliDecomposition (quad-pol)
 ├── example/                         # Example scripts
-│   └── catalog/
-│       ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
-│       └── view_product.py          #   BIOMASS viewer with Pauli decomposition
+│   ├── catalog/
+│   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
+│   │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
+│   └── ortho/
+│       └── ortho_biomass.py         #   Orthorectification with Pauli RGB
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
 │   ├── test_io_biomass.py           #   BIOMASS reader tests
-│   └── test_geolocation_biomass.py  #   Geolocation tests with interactive markers
+│   ├── test_geolocation_biomass.py  #   Geolocation tests with interactive markers
+│   ├── test_image_processing_ortho.py        #   Orthorectification tests
+│   └── test_image_processing_decomposition.py #  Pauli decomposition tests
 ├── example_images/                  # Small sample data for tests and demos
 ├── requirements.txt                 # Core: numpy, scipy
 ├── requirements-dev.txt             # Dev: pytest, black, flake8, mypy
@@ -106,20 +117,60 @@ catalog.close()
 ```python
 from grdl.IO import open_biomass
 from grdl.geolocation import Geolocation
+import numpy as np
 
 with open_biomass('path/to/product') as reader:
     geo = Geolocation.from_reader(reader)
 
-    # Single pixel
+    # Single pixel (returns scalars)
     lat, lon, height = geo.pixel_to_latlon(500, 1000)
 
-    # Batch (vectorized, much faster)
+    # Array of pixels (returns arrays, vectorized)
     rows = np.array([100, 200, 300])
     cols = np.array([400, 500, 600])
-    lats, lons, heights = geo.pixel_to_latlon_batch(rows, cols)
+    lats, lons, heights = geo.pixel_to_latlon(rows, cols)
 
-    # Inverse: geographic to pixel
+    # Inverse: geographic to pixel (also accepts scalar or array)
     row, col = geo.latlon_to_pixel(-31.05, 116.19)
+```
+
+### Pauli Decomposition (Quad-Pol SAR)
+
+```python
+from grdl.IO import BIOMASSL1Reader
+from grdl.image_processing import PauliDecomposition
+
+with BIOMASSL1Reader('path/to/product') as reader:
+    rows, cols = reader.get_shape()
+    shh = reader.read_chip(0, rows, 0, cols, bands=[0])
+    shv = reader.read_chip(0, rows, 0, cols, bands=[1])
+    svh = reader.read_chip(0, rows, 0, cols, bands=[2])
+    svv = reader.read_chip(0, rows, 0, cols, bands=[3])
+
+pauli = PauliDecomposition()
+components = pauli.decompose(shh, shv, svh, svv)
+
+# Complex-valued components (phase preserved)
+surface = components['surface']            # (S_HH + S_VV) / sqrt(2)
+double_bounce = components['double_bounce']  # (S_HH - S_VV) / sqrt(2)
+volume = components['volume']              # (S_HV + S_VH) / sqrt(2)
+
+# Convert to display representations
+db = pauli.to_db(components)          # Dict of dB arrays
+rgb = pauli.to_rgb(components)        # (rows, cols, 3) float32 [0, 1]
+```
+
+### Orthorectification
+
+```python
+from grdl.image_processing import Orthorectifier, OutputGrid
+
+geo = Geolocation.from_reader(reader)
+grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
+                                   pixel_size_lon=0.001)
+ortho = Orthorectifier(geo, grid, interpolation='nearest')
+ortho.compute_mapping()
+result = ortho.apply(hh_db, nodata=np.nan)
 ```
 
 ## Installation

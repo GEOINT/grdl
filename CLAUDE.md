@@ -89,12 +89,12 @@ Domain directories map to the module areas defined in the README:
 
 | Directory | Domain |
 |-----------|--------|
-| `image_processing/` | Filtering, enhancement, normalization, transforms |
-| `geospatial/` | Coordinate conversions, projections, pixel-to-geo mapping |
+| `IO/` | Format readers and writers |
+| `geolocation/` | Pixel-to-geographic coordinate transforms |
+| `image_processing/` | Orthorectification, polarimetric decomposition, filtering, transforms |
 | `data_prep/` | Chunking, tiling, resampling, ML pipeline formatting |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) |
 | `ml/` | Feature extraction, annotation, dataset builders |
-| `io/` | Format readers and writers |
 
 ## File Header Standard
 
@@ -277,43 +277,54 @@ Performance is critical for processing large geospatial imagery. Follow these gu
 
 **Bad (loops):**
 ```python
-def transform_pixels(rows, cols):
+def transform_pixels(geo, rows, cols):
     lats = []
     lons = []
     for i in range(len(rows)):
-        lat, lon = pixel_to_latlon(rows[i], cols[i])
+        lat, lon, _ = geo.pixel_to_latlon(rows[i], cols[i])
         lats.append(lat)
         lons.append(lon)
     return np.array(lats), np.array(lons)
 ```
 
-**Good (vectorized):**
+**Good (pass arrays directly -- the same method handles both):**
 ```python
-def transform_pixels_batch(rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    points = np.column_stack([rows, cols])
-    lats = self._lat_interp(points)  # Vectorized interpolation
-    lons = self._lon_interp(points)
+def transform_pixels(geo, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    lats, lons, _ = geo.pixel_to_latlon(rows, cols)
     return lats, lons
 ```
 
-### Batch Processing Methods
+### Unified Scalar/Array Methods
 
-- Provide `*_batch()` methods alongside single-element methods for operations on arrays.
-- Document batch methods as the preferred approach for processing multiple values.
-- If a base class provides a default loop implementation, concrete subclasses should override with vectorized versions.
+- Public methods should accept scalar, list, or ndarray inputs and return matching types.
+- Implement a single abstract method operating on arrays. The base class handles scalar/array dispatch.
+- Do not provide separate `*_batch()` methods. One method handles both cases.
 
 **Example:**
 ```python
 class Geolocation(ABC):
     @abstractmethod
-    def pixel_to_latlon(self, row: float, col: float) -> Tuple[float, float, float]:
-        """Transform single pixel. For batch processing, use pixel_to_latlon_batch()."""
+    def _pixel_to_latlon_array(
+        self, rows: np.ndarray, cols: np.ndarray, height: float = 0.0
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Subclasses implement vectorized array transform."""
         pass
 
-    def pixel_to_latlon_batch(self, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Vectorized batch transform. Subclasses should override for performance."""
-        # Default implementation - subclasses should provide vectorized version
-        ...
+    def pixel_to_latlon(
+        self,
+        row: Union[float, list, np.ndarray],
+        col: Union[float, list, np.ndarray],
+        height: float = 0.0
+    ) -> Union[Tuple[float, float, float],
+               Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Public method: scalar in → scalar out, array in → array out."""
+        scalar = _is_scalar(row) and _is_scalar(col)
+        rows_arr = _to_array(row)
+        cols_arr = _to_array(col)
+        lats, lons, heights = self._pixel_to_latlon_array(rows_arr, cols_arr, height)
+        if scalar:
+            return (float(lats[0]), float(lons[0]), float(heights[0]))
+        return lats, lons, heights
 ```
 
 ### NumPy Best Practices

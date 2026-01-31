@@ -4,7 +4,10 @@ BIOMASS Product Viewer Example.
 
 Loads a downloaded BIOMASS L1A SCS product and displays:
   1. HH magnitude (dB) with geolocation and calibration markers
-  2. Pauli decomposition RGB (R=|HH-VV|, G=|HV|, B=|HH+VV|)
+  2. Pauli decomposition RGB (R=double-bounce, G=volume, B=surface)
+
+Uses the PauliDecomposition class for a true quad-pol decomposition with
+proper 1/sqrt(2) normalization and all four channels (HH, HV, VH, VV).
 
 Markers are interactive -- click any marker to open its location in
 Google Maps.  Uses the QtAgg backend for interactive windowed display.
@@ -56,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.IO import BIOMASSL1Reader
 from grdl.geolocation import Geolocation
+from grdl.image_processing import PauliDecomposition
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -149,14 +153,6 @@ def _to_db(arr: np.ndarray) -> np.ndarray:
     return 20.0 * np.log10(np.abs(arr) + 1e-10)
 
 
-def _normalize(arr: np.ndarray, plow: float = 2, phigh: float = 98) -> np.ndarray:
-    """Percentile-stretch an array to [0, 1]."""
-    vmin = np.nanpercentile(arr, plow)
-    vmax = np.nanpercentile(arr, phigh)
-    out = (arr - vmin) / (vmax - vmin + 1e-10)
-    return np.clip(out, 0, 1)
-
-
 # ---------------------------------------------------------------------------
 # View product
 # ---------------------------------------------------------------------------
@@ -189,32 +185,28 @@ def view_product(product_path: Path) -> None:
     # Read polarization channels
     # ------------------------------------------------------------------
     # Band indices: 0=HH, 1=HV, 2=VH, 3=VV
-    print(f"Reading all polarizations ({rows} x {cols})...")
-    hh = reader.read_chip(0, rows, 0, cols, bands=[0])
-    hv = reader.read_chip(0, rows, 0, cols, bands=[1])
-    vv = reader.read_chip(0, rows, 0, cols, bands=[3])
+    print(f"Reading all four polarizations ({rows} x {cols})...")
+    shh = reader.read_chip(0, rows, 0, cols, bands=[0])
+    shv = reader.read_chip(0, rows, 0, cols, bands=[1])
+    svh = reader.read_chip(0, rows, 0, cols, bands=[2])
+    svv = reader.read_chip(0, rows, 0, cols, bands=[3])
 
     # HH magnitude in dB
-    hh_db = _to_db(hh)
+    hh_db = _to_db(shh)
     vmin = np.nanpercentile(hh_db, 2)
     vmax = np.nanpercentile(hh_db, 98)
 
     # ------------------------------------------------------------------
-    # Pauli decomposition
-    #   Red   = |HH - VV|  (double-bounce)
-    #   Green = |HV|        (volume scattering)
-    #   Blue  = |HH + VV|  (surface / single-bounce)
+    # True quad-pol Pauli decomposition (complex domain)
+    # Uses all four S-matrix elements with 1/sqrt(2) normalization.
+    # Phase relationships between channels drive the separation of
+    # surface vs. double-bounce scattering.
     # ------------------------------------------------------------------
     print("Computing Pauli decomposition...")
-    pauli_r = _to_db(hh - vv)     # double-bounce
-    pauli_g = _to_db(hv)          # volume
-    pauli_b = _to_db(hh + vv)     # surface
+    pauli = PauliDecomposition()
+    pauli_rgb = pauli.to_rgb(pauli.decompose(shh, shv, svh, svv))
 
-    pauli_rgb = np.dstack([
-        _normalize(pauli_r),
-        _normalize(pauli_g),
-        _normalize(pauli_b),
-    ])
+    del shh, shv, svh, svv
 
     # ------------------------------------------------------------------
     # Compute marker locations
@@ -360,8 +352,8 @@ def view_product(product_path: Path) -> None:
             )
 
     ax_pauli.set_title(
-        "Pauli Decomposition\n"
-        "R=|HH\u2212VV| (dbl-bounce)  G=|HV| (volume)  B=|HH+VV| (surface)",
+        "Pauli Decomposition (quad-pol)\n"
+        "R=double-bounce  G=volume  B=surface",
         fontsize=9,
     )
     ax_pauli.set_xlabel("Column (range)")
