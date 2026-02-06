@@ -85,6 +85,9 @@ GRDL/
       base.py                # Subdomain ABCs
       models.py              # Data models (if applicable)
       __init__.py            # Subdomain exports
+  imagej/                    # ImageJ/Fiji ports (special domain -- uses ImageTransform from image_processing)
+    __init__.py              # Expose all 12 ported components
+    <algorithm>.py           # One file per algorithm, mirrors ImageJ source structure
   tests/
     test_<domain>_<module>.py
   example_images/            # Small sample data for tests and demos
@@ -97,6 +100,7 @@ Domain directories map to the module areas defined in the README:
 | `IO/` | Format readers and writers |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
 | `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, filtering, transforms |
+| `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms for remote sensing (inherits ImageTransform) |
 | `data_prep/` | Chunking, tiling, resampling, ML pipeline formatting |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) |
 | `ml/` | Feature extraction, annotation, dataset builders |

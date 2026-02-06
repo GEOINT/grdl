@@ -47,6 +47,17 @@ Roadmap and planned features for the IO module.
   - [x] `ImageDetector` ABC with geo-registration helpers
   - [x] `Detection`, `DetectionSet`, `Geometry`, `OutputSchema`, `OutputField` data models
   - [x] GeoJSON export and optional DataFrame conversion
+- [x] ImageJ/Fiji algorithm ports (`imagej/`)
+  - [x] 12 classic algorithms ported from ImageJ/Fiji (all inherit `ImageTransform`)
+  - [x] Spatial filters: RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter
+  - [x] Contrast & enhancement: CLAHE, GammaCorrection
+  - [x] Thresholding & segmentation: AutoLocalThreshold, StatisticalRegionMerging
+  - [x] Edge & feature detection: EdgeDetector, FindMaxima
+  - [x] Frequency domain: FFTBandpassFilter
+  - [x] Stack operations: ZProjection
+  - [x] Full attribution to original ImageJ/Fiji authors
+  - [x] Version strings mirroring original source versions
+  - [x] 124 tests covering all 12 components
 - [x] Documentation
   - [x] README.md with examples (including BIOMASS and catalog)
   - [x] ARCHITECTURE.md with design decisions
@@ -66,6 +77,7 @@ Roadmap and planned features for the IO module.
   - [x] Detection model and geo-registration tests
   - [x] Processor versioning tests
   - [x] Tunable parameter tests
+  - [x] ImageJ/Fiji ports tests (124 tests across 12 components)
 
 ## High Priority
 
@@ -435,6 +447,9 @@ Track user-requested features here:
   - [x] Processor versioning (`@processor_version` decorator)
   - [x] Tunable parameter system (TunableParameterSpec)
   - [x] Detection input chaining (DetectionInputSpec)
+- [x] ImageJ/Fiji algorithm ports (12 components, 124 tests)
+  - [x] Spatial filters, contrast enhancement, thresholding, segmentation
+  - [x] Edge detection, peak detection, frequency-domain filtering, stack projection
 - [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow)
 - [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework

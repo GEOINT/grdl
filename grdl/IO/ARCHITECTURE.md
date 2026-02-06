@@ -114,6 +114,12 @@ IO readers integrate with the image processing module through composable pattern
 - **Orthorectification**: `Orthorectifier.apply_from_reader()` reads chips directly from a reader
 - **Decomposition**: Complex data from `BIOMASSL1Reader` feeds directly into `PauliDecomposition`
 - **Detection**: `ImageDetector._geo_register_detections()` uses Geolocation for pixel-to-latlon transforms
+- **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
+  direct use in processing pipelines alongside orthorectification and decomposition. Includes spatial filters
+  (RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter), contrast enhancement (CLAHE,
+  GammaCorrection), thresholding/segmentation (AutoLocalThreshold, StatisticalRegionMerging), edge/feature
+  detection (EdgeDetector, FindMaxima), frequency-domain filtering (FFTBandpassFilter), and stack operations
+  (ZProjection). Each port carries `__imagej_source__` and `__imagej_version__` attributes for provenance.
 
 ## SAR Readers Implementation
 
@@ -506,6 +512,7 @@ Each reader/module has a dedicated test suite:
 - `tests/test_image_processing_detection.py` - Detection models, geo-registration, GeoJSON
 - `tests/test_image_processing_versioning.py` - Processor versioning decorator
 - `tests/test_image_processing_tunable.py` - Tunable parameter validation
+- `tests/test_imagej.py` - ImageJ/Fiji port tests (124 tests across 12 components)
 
 ### Test Data
 

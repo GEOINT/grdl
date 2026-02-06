@@ -23,6 +23,7 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 | **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, GRD, BIOMASS) | Implemented |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
 | **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
+| **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
 | **Data Preparation** | Chunking, tiling, resampling, and formatting for ML/AI pipelines | Planned |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
@@ -43,17 +44,31 @@ GRDL/
 │   │   ├── sar/
 │   │   │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
 │   │   └── eo/                      #   EO geolocation (planned)
-│   └── image_processing/            # Image transforms module
-│       ├── base.py                  #   ImageProcessor, ImageTransform ABCs
-│       ├── versioning.py            #   @processor_version, DetectionInputSpec, TunableParameterSpec
-│       ├── ortho/
-│       │   └── ortho.py             #   Orthorectifier, OutputGrid
-│       ├── decomposition/
-│       │   ├── base.py              #   PolarimetricDecomposition ABC
-│       │   └── pauli.py             #   PauliDecomposition (quad-pol)
-│       └── detection/
-│           ├── base.py              #   ImageDetector ABC
-│           └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
+│   ├── image_processing/            # Image transforms module
+│   │   ├── base.py                  #   ImageProcessor, ImageTransform ABCs
+│   │   ├── versioning.py            #   @processor_version, DetectionInputSpec, TunableParameterSpec
+│   │   ├── ortho/
+│   │   │   └── ortho.py             #   Orthorectifier, OutputGrid
+│   │   ├── decomposition/
+│   │   │   ├── base.py              #   PolarimetricDecomposition ABC
+│   │   │   └── pauli.py             #   PauliDecomposition (quad-pol)
+│   │   └── detection/
+│   │       ├── base.py              #   ImageDetector ABC
+│   │       └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
+│   └── imagej/                      # ImageJ/Fiji algorithm ports
+│       ├── __init__.py              #   Module exports (12 components)
+│       ├── rolling_ball.py          #   RollingBallBackground (Sternberg background subtraction)
+│       ├── clahe.py                 #   CLAHE (Contrast Limited Adaptive Histogram Equalization)
+│       ├── auto_local_threshold.py  #   AutoLocalThreshold (8 local thresholding methods)
+│       ├── unsharp_mask.py          #   UnsharpMask (Gaussian-based sharpening)
+│       ├── fft_bandpass.py          #   FFTBandpassFilter (frequency-domain bandpass + stripe suppression)
+│       ├── z_projection.py          #   ZProjection (stack projection: max, mean, median, etc.)
+│       ├── rank_filters.py          #   RankFilters (median, min, max, mean, variance, despeckle)
+│       ├── morphology.py            #   MorphologicalFilter (erode, dilate, open, close, tophat, etc.)
+│       ├── edge_detection.py        #   EdgeDetector (Sobel, Prewitt, Roberts, LoG, Scharr)
+│       ├── gamma.py                 #   GammaCorrection (power-law intensity transform)
+│       ├── find_maxima.py           #   FindMaxima (prominence-based peak/target detection)
+│       └── statistical_region_merging.py  #   StatisticalRegionMerging (SRM segmentation)
 ├── example/                         # Example scripts
 │   ├── catalog/
 │   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
@@ -69,7 +84,8 @@ GRDL/
 │   ├── test_image_processing_decomposition.py   #   Pauli decomposition tests
 │   ├── test_image_processing_detection.py       #   Detection models & geo-registration tests
 │   ├── test_image_processing_versioning.py      #   Processor versioning tests
-│   └── test_image_processing_tunable.py         #   Tunable parameter tests
+│   ├── test_image_processing_tunable.py         #   Tunable parameter tests
+│   └── test_imagej.py                           #   ImageJ/Fiji ports (124 tests, 12 components)
 ├── example_images/                  # Small sample data for tests and demos
 ├── requirements.txt                 # Core: numpy, scipy
 ├── requirements-dev.txt             # Dev: pytest, black, flake8, mypy
@@ -231,6 +247,45 @@ class MyDetector(ImageDetector):
         ...
 ```
 
+### ImageJ/Fiji Algorithm Ports
+
+12 classic image processing algorithms ported from ImageJ/Fiji, selected for relevance to remotely sensed imagery. All inherit from `ImageTransform`, carry attribution to original authors, and mirror the original source version.
+
+```python
+from grdl.imagej import (
+    RollingBallBackground, CLAHE, UnsharpMask, FFTBandpassFilter,
+    RankFilters, MorphologicalFilter, EdgeDetector, GammaCorrection,
+    FindMaxima, AutoLocalThreshold, StatisticalRegionMerging, ZProjection,
+)
+
+# Background subtraction for SAR amplitude
+rb = RollingBallBackground(radius=50)
+corrected = rb.apply(sar_amplitude)
+
+# Local contrast enhancement for thermal imagery
+clahe = CLAHE(block_size=127, max_slope=3.0)
+enhanced = clahe.apply(thermal_band)
+
+# Edge detection in PAN imagery
+edges = EdgeDetector(method='sobel').apply(pan_image)
+
+# Frequency-domain stripe removal from pushbroom sensor artifacts
+bp = FFTBandpassFilter(suppress_stripes='horizontal', stripe_tolerance=5.0)
+cleaned = bp.apply(msi_band)
+
+# Peak/target detection in SAR amplitude
+fm = FindMaxima(prominence=20.0)
+targets = fm.find_peaks(sar_amplitude)  # (N, 2) array of [row, col]
+
+# Region segmentation for land cover analysis
+srm = StatisticalRegionMerging(Q=50)
+labels = srm.apply(msi_band)
+
+# Stack projection for multi-temporal composites
+zp = ZProjection(method='median')
+composite = zp.apply(image_stack)  # (slices, rows, cols) -> (rows, cols)
+```
+
 ## Installation
 
 ```bash
@@ -249,7 +304,7 @@ sys.path.insert(0, "/path/to/GRDL")
 Core dependencies vary by module. Each module documents its own requirements.
 
 - `numpy` -- Used across all modules
-- `scipy` -- Geolocation interpolation
+- `scipy` -- Geolocation interpolation, ImageJ port filters (rank filters, morphology, peak detection)
 - `rasterio` -- GeoTIFF / raster I/O (optional)
 - `sarpy` -- SICD / CPHD format support (optional)
 - `requests` -- ESA MAAP catalog & download (optional)

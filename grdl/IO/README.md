@@ -358,6 +358,36 @@ See `example/` for working BIOMASS workflows:
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
 
+## ImageJ/Fiji Algorithm Ports
+
+GRDL includes 12 classic image processing algorithms ported from ImageJ/Fiji under `grdl.imagej`, selected for relevance to remotely sensed imagery (PAN, MSI, HSI, SAR, thermal). All inherit from `ImageTransform` and can be used directly in processing pipelines.
+
+| Category | Components | Use Cases |
+|----------|-----------|-----------|
+| Spatial Filters | RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter | Background subtraction, sharpening, noise removal, morphological analysis |
+| Contrast & Enhancement | CLAHE, GammaCorrection | Dynamic range adjustment, local contrast enhancement |
+| Thresholding & Segmentation | AutoLocalThreshold, StatisticalRegionMerging | Land cover segmentation, OBIA, target region extraction |
+| Edge & Feature Detection | EdgeDetector, FindMaxima | Boundary detection, target/peak detection in SAR/thermal |
+| Frequency Domain | FFTBandpassFilter | Bandpass filtering, pushbroom stripe removal |
+| Stack Operations | ZProjection | Multi-temporal composites (max, mean, median, etc.) |
+
+```python
+from grdl.imagej import CLAHE, FindMaxima, StatisticalRegionMerging
+
+# Enhance local contrast for thermal imagery
+enhanced = CLAHE(block_size=127, max_slope=3.0).apply(thermal_band)
+
+# Detect bright targets in SAR amplitude
+targets = FindMaxima(prominence=20.0).find_peaks(sar_amplitude)
+
+# Segment MSI band into land cover regions
+labels = StatisticalRegionMerging(Q=50).apply(msi_band)
+```
+
+Each ported component carries `__imagej_source__` and `__imagej_version__` attributes for provenance tracking. ImageJ 1.x ports are public domain; Fiji plugin ports (CLAHE, AutoLocalThreshold, SRM) are independent NumPy reimplementations of published algorithms.
+
+See `tests/test_imagej.py` for 124 tests covering all 12 components.
+
 ## Contributing
 
 When adding new readers:
