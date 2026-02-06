@@ -2,17 +2,26 @@
 """
 Image Processing Module - Geometric and radiometric transforms for imagery.
 
-Provides interfaces and implementations for image transforms including
-orthorectification (geometric reprojection to ground-referenced grids),
-filtering, enhancement, and normalization.
+Provides interfaces and implementations for image processors including
+dense raster transforms (orthorectification, filtering, enhancement),
+polarimetric decompositions, and sparse vector detectors. All processor
+types inherit from ``ImageProcessor`` which provides version checking
+and detection input flow.
 
 Key Classes
 -----------
-- ImageTransform: Abstract base class for all image transforms
+- ImageProcessor: Common base class for all processor types
+- ImageTransform: ABC for dense raster transforms (ndarray -> ndarray)
+- ImageDetector: ABC for sparse vector detectors (ndarray -> DetectionSet)
 - Orthorectifier: Orthorectify imagery from native geometry to geographic grid
 - OutputGrid: Specification for an orthorectified output grid
 - PolarimetricDecomposition: ABC for polarimetric decomposition methods
 - PauliDecomposition: Quad-pol Pauli basis decomposition
+- Detection, DetectionSet, Geometry: Detection output data models
+- OutputField, OutputSchema: Self-declared output format declarations
+- processor_version: Version decorator for all processor types
+- DetectionInputSpec: Declaration of detection inputs a processor accepts
+- TunableParameterSpec: Declaration of tunable parameters a processor accepts
 
 Usage
 -----
@@ -57,20 +66,43 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-06
 """
 
-from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.ortho import Orthorectifier, OutputGrid
 from grdl.image_processing.decomposition import (
     PolarimetricDecomposition,
     PauliDecomposition,
 )
+from grdl.image_processing.detection import (
+    ImageDetector,
+    Detection,
+    DetectionSet,
+    Geometry,
+    OutputField,
+    OutputSchema,
+)
+from grdl.image_processing.versioning import (
+    processor_version,
+    DetectionInputSpec,
+    TunableParameterSpec,
+)
 
 __all__ = [
+    'ImageProcessor',
     'ImageTransform',
     'Orthorectifier',
     'OutputGrid',
     'PolarimetricDecomposition',
     'PauliDecomposition',
+    'ImageDetector',
+    'Detection',
+    'DetectionSet',
+    'Geometry',
+    'OutputField',
+    'OutputSchema',
+    'processor_version',
+    'DetectionInputSpec',
+    'TunableParameterSpec',
 ]

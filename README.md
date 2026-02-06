@@ -22,7 +22,7 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 |--------|-------------|--------|
 | **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, GRD, BIOMASS) | Implemented |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
-| **Image Processing** | Orthorectification, polarimetric decomposition, filtering, enhancement | Implemented |
+| **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
 | **Data Preparation** | Chunking, tiling, resampling, and formatting for ML/AI pipelines | Planned |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
@@ -44,12 +44,16 @@ GRDL/
 │   │   │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
 │   │   └── eo/                      #   EO geolocation (planned)
 │   └── image_processing/            # Image transforms module
-│       ├── base.py                  #   ImageTransform ABC
+│       ├── base.py                  #   ImageProcessor, ImageTransform ABCs
+│       ├── versioning.py            #   @processor_version, DetectionInputSpec, TunableParameterSpec
 │       ├── ortho/
 │       │   └── ortho.py             #   Orthorectifier, OutputGrid
-│       └── decomposition/
-│           ├── base.py              #   PolarimetricDecomposition ABC
-│           └── pauli.py             #   PauliDecomposition (quad-pol)
+│       ├── decomposition/
+│       │   ├── base.py              #   PolarimetricDecomposition ABC
+│       │   └── pauli.py             #   PauliDecomposition (quad-pol)
+│       └── detection/
+│           ├── base.py              #   ImageDetector ABC
+│           └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
 ├── example/                         # Example scripts
 │   ├── catalog/
 │   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
@@ -59,10 +63,13 @@ GRDL/
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
-│   ├── test_io_biomass.py           #   BIOMASS reader tests
-│   ├── test_geolocation_biomass.py  #   Geolocation tests with interactive markers
-│   ├── test_image_processing_ortho.py        #   Orthorectification tests
-│   └── test_image_processing_decomposition.py #  Pauli decomposition tests
+│   ├── test_io_biomass.py                       #   BIOMASS reader tests
+│   ├── test_geolocation_biomass.py              #   Geolocation tests with interactive markers
+│   ├── test_image_processing_ortho.py           #   Orthorectification tests
+│   ├── test_image_processing_decomposition.py   #   Pauli decomposition tests
+│   ├── test_image_processing_detection.py       #   Detection models & geo-registration tests
+│   ├── test_image_processing_versioning.py      #   Processor versioning tests
+│   └── test_image_processing_tunable.py         #   Tunable parameter tests
 ├── example_images/                  # Small sample data for tests and demos
 ├── requirements.txt                 # Core: numpy, scipy
 ├── requirements-dev.txt             # Dev: pytest, black, flake8, mypy
@@ -171,6 +178,57 @@ grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
 ortho = Orthorectifier(geo, grid, interpolation='nearest')
 ortho.compute_mapping()
 result = ortho.apply(hh_db, nodata=np.nan)
+```
+
+### Detection Data Models
+
+```python
+from grdl.image_processing import Detection, DetectionSet, Geometry, OutputSchema, OutputField
+
+# Define what your detector outputs
+schema = OutputSchema([
+    OutputField('confidence', 'float', 'Detection confidence [0, 1]'),
+    OutputField('label', 'str', 'Target class label'),
+])
+
+# Create geo-registered detections
+det = Detection(
+    geometry=Geometry.point(row=500, col=300, lat=-31.05, lon=116.19),
+    properties={'confidence': 0.92, 'label': 'vehicle'},
+)
+results = DetectionSet(output_schema=schema)
+results.append(det)
+
+# Export to GeoJSON FeatureCollection
+geojson = results.to_geojson()
+```
+
+### Processor Versioning & Tunable Parameters
+
+```python
+from grdl.image_processing import processor_version, TunableParameterSpec
+from grdl.image_processing import ImageDetector, DetectionSet, OutputSchema
+
+@processor_version('1.0.0')
+class MyDetector(ImageDetector):
+    """Versioned detector with tunable parameters."""
+
+    @property
+    def tunable_parameter_specs(self):
+        return [
+            TunableParameterSpec('threshold', float, default=0.5,
+                                 min_value=0.0, max_value=1.0,
+                                 description='Detection confidence threshold'),
+        ]
+
+    @property
+    def output_schema(self):
+        return OutputSchema([...])
+
+    def detect(self, source, geolocation=None, **kwargs):
+        self._validate_tunable_parameters(kwargs)
+        threshold = self._get_tunable_parameter('threshold', kwargs)
+        ...
 ```
 
 ## Installation

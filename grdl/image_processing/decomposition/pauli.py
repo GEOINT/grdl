@@ -36,7 +36,7 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-06
 """
 
 # Standard library
@@ -47,8 +47,10 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.versioning import processor_version
 
 
+@processor_version('0.1.0')
 class PauliDecomposition(PolarimetricDecomposition):
     """
     Quad-pol Pauli basis decomposition.

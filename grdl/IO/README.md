@@ -353,9 +353,10 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
 
-See `example/catalog/` for working BIOMASS workflows:
-- `discover_and_download.py` - Search ESA MAAP catalog, download products
-- `view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
+See `example/` for working BIOMASS workflows:
+- `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
+- `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
+- `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
 
 ## Contributing
 

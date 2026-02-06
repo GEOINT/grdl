@@ -27,10 +27,12 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-06
 """
 
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+
+from grdl.image_processing.versioning import processor_version
 
 import numpy as np
 
@@ -263,6 +265,7 @@ class OutputGrid:
         )
 
 
+@processor_version('0.1.0')
 class Orthorectifier(ImageTransform):
     """
     Orthorectify imagery from native geometry to a regular geographic grid.

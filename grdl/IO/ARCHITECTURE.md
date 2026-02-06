@@ -106,6 +106,15 @@ Abstract class for image discovery and spatial queries.
 **Implemented**: `BIOMASSCatalog` in `catalog.py` provides local discovery,
 ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
 
+### Integration with Image Processing
+
+IO readers integrate with the image processing module through composable patterns:
+
+- **Geolocation**: `Geolocation.from_reader(reader)` constructs coordinate transforms
+- **Orthorectification**: `Orthorectifier.apply_from_reader()` reads chips directly from a reader
+- **Decomposition**: Complex data from `BIOMASSL1Reader` feeds directly into `PauliDecomposition`
+- **Detection**: `ImageDetector._geo_register_detections()` uses Geolocation for pixel-to-latlon transforms
+
 ## SAR Readers Implementation
 
 ### Technology Choices
@@ -489,10 +498,14 @@ def read_chip(
 
 ### Unit Tests
 
-Each reader has dedicated test suite:
-- `tests/test_io_sar.py` - SAR readers
-- `tests/test_io_eo.py` - EO readers (planned)
-- `tests/test_io_catalog.py` - Catalog (planned)
+Each reader/module has a dedicated test suite:
+- `tests/test_io_biomass.py` - BIOMASS reader, metadata, chip I/O, geolocation
+- `tests/test_geolocation_biomass.py` - GCP geolocation, round-trip accuracy
+- `tests/test_image_processing_ortho.py` - Orthorectification with synthetic data
+- `tests/test_image_processing_decomposition.py` - Pauli decomposition
+- `tests/test_image_processing_detection.py` - Detection models, geo-registration, GeoJSON
+- `tests/test_image_processing_versioning.py` - Processor versioning decorator
+- `tests/test_image_processing_tunable.py` - Tunable parameter validation
 
 ### Test Data
 
@@ -546,7 +559,8 @@ Add support for cloud-native formats:
 
 ### Catalog Extension
 
-The BIOMASS catalog is implemented. Future catalog work:
+`BIOMASSCatalog` is fully implemented with local discovery, ESA MAAP STAC search,
+OAuth2 download, and SQLite tracking. Future catalog work:
 - Generic `ImageCatalog` supporting multiple missions and formats
 - PostGIS backend for large-scale deployments
 - Spatial indexing (R-tree, quad-tree)

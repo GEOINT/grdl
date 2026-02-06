@@ -37,19 +37,35 @@ Roadmap and planned features for the IO module.
   - [x] GCP-based coordinate transforms via `grdl.geolocation`
   - [x] Vectorized batch transforms
   - [x] `Geolocation.from_reader()` factory
+- [x] Image processing module (`image_processing/`)
+  - [x] `ImageProcessor` / `ImageTransform` ABCs
+  - [x] `@processor_version()` decorator and versioning system
+  - [x] `TunableParameterSpec` for runtime-adjustable parameters
+  - [x] `DetectionInputSpec` for detection input chaining
+  - [x] `Orthorectifier` / `OutputGrid` - slant-to-ground projection
+  - [x] `PauliDecomposition` - quad-pol Pauli basis decomposition
+  - [x] `ImageDetector` ABC with geo-registration helpers
+  - [x] `Detection`, `DetectionSet`, `Geometry`, `OutputSchema`, `OutputField` data models
+  - [x] GeoJSON export and optional DataFrame conversion
 - [x] Documentation
   - [x] README.md with examples (including BIOMASS and catalog)
   - [x] ARCHITECTURE.md with design decisions
   - [x] This TODO.md
-- [x] Example scripts (`example/catalog/`)
-  - [x] `discover_and_download.py` - MAAP catalog search and download
-  - [x] `view_product.py` - Pauli RGB and HH dB viewer with interactive markers
+- [x] Example scripts (`example/`)
+  - [x] `catalog/discover_and_download.py` - MAAP catalog search and download
+  - [x] `catalog/view_product.py` - Pauli RGB and HH dB viewer with interactive markers
+  - [x] `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB
 - [x] Ground truth data (`ground_truth/`)
   - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
 - [x] Testing
   - [x] Test suite structure (`tests/`)
   - [x] BIOMASS L1 reader tests
   - [x] Geolocation tests with interactive marker plotting
+  - [x] Orthorectification tests
+  - [x] Pauli decomposition tests
+  - [x] Detection model and geo-registration tests
+  - [x] Processor versioning tests
+  - [x] Tunable parameter tests
 
 ## High Priority
 
@@ -410,14 +426,23 @@ Track user-requested features here:
 - [x] BIOMASS L1 SCS reader (complex P-band SAR)
 - [x] BIOMASS catalog (MAAP STAC search, OAuth2 download, SQLite tracking)
 - [x] Geolocation module (GCP interpolation, batch transforms)
-- [x] Example scripts (catalog discovery, Pauli viewer)
+- [x] Image processing module
+  - [x] ImageProcessor / ImageTransform ABCs
+  - [x] Orthorectification (Orthorectifier, OutputGrid)
+  - [x] Polarimetric decomposition (PauliDecomposition)
+  - [x] Detection data models (Geometry, Detection, DetectionSet, OutputSchema)
+  - [x] ImageDetector ABC with geo-registration helpers
+  - [x] Processor versioning (`@processor_version` decorator)
+  - [x] Tunable parameter system (TunableParameterSpec)
+  - [x] Detection input chaining (DetectionInputSpec)
+- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow)
 - [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework
 
 ### v0.2.0 (Next)
 - [ ] Additional SAR readers (CRSD, SLC, SIDD)
 - [ ] Basic EO readers (GeoTIFF, NITF)
-- [ ] Orthorectification (slant plane to ground projection)
+- [ ] Concrete ImageDetector implementations
 - [ ] Test coverage >80%
 
 ### v0.3.0

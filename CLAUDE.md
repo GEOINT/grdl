@@ -78,8 +78,13 @@ class MedianFilter(ImageFilter):
 GRDL/
   <domain>/                  # Top-level module area (e.g. image_processing/)
     base.py                  # ABCs defining the domain's contracts
+    versioning.py            # Cross-cutting: @processor_version, TunableParameterSpec
     <submodule>.py           # Concrete implementations
     __init__.py              # Expose public API
+    <subdomain>/             # Nested subdomains (e.g. detection/, ortho/, decomposition/)
+      base.py                # Subdomain ABCs
+      models.py              # Data models (if applicable)
+      __init__.py            # Subdomain exports
   tests/
     test_<domain>_<module>.py
   example_images/            # Small sample data for tests and demos
@@ -91,7 +96,7 @@ Domain directories map to the module areas defined in the README:
 |-----------|--------|
 | `IO/` | Format readers and writers |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
-| `image_processing/` | Orthorectification, polarimetric decomposition, filtering, transforms |
+| `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, filtering, transforms |
 | `data_prep/` | Chunking, tiling, resampling, ML pipeline formatting |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) |
 | `ml/` | Feature extraction, annotation, dataset builders |

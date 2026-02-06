@@ -28,18 +28,21 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-06
 """
 
 # Standard library
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Dict, Tuple
 
 # Third-party
 import numpy as np
 
+# GRDL internal
+from grdl.image_processing.base import ImageProcessor
 
-class PolarimetricDecomposition(ABC):
+
+class PolarimetricDecomposition(ImageProcessor):
     """
     Abstract base class for polarimetric decomposition methods.
 
