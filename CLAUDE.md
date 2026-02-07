@@ -76,20 +76,45 @@ class MedianFilter(ImageFilter):
 
 ```
 GRDL/
-  <domain>/                  # Top-level module area (e.g. image_processing/)
-    base.py                  # ABCs defining the domain's contracts
-    versioning.py            # Cross-cutting: @processor_version, TunableParameterSpec
-    <submodule>.py           # Concrete implementations
-    __init__.py              # Expose public API
-    <subdomain>/             # Nested subdomains (e.g. detection/, ortho/, decomposition/)
-      base.py                # Subdomain ABCs
-      models.py              # Data models (if applicable)
-      __init__.py            # Subdomain exports
-  imagej/                    # ImageJ/Fiji ports (special domain -- uses ImageTransform from image_processing)
-    __init__.py              # Expose all 12 ported components
-    <algorithm>.py           # One file per algorithm, mirrors ImageJ source structure
+  grdl/
+    exceptions.py            # Custom exception hierarchy (GrdlError → ValidationError, ProcessorError, etc.)
+    py.typed                 # PEP 561 type stub marker
+    <domain>/                # Top-level module area (e.g. image_processing/)
+      base.py                # ABCs defining the domain's contracts
+      versioning.py          # Cross-cutting: @processor_version, @processor_tags, TunableParameterSpec
+      pipeline.py            # Pipeline (sequential transform composition with progress rescaling)
+      <submodule>.py         # Concrete implementations
+      __init__.py            # Expose public API
+      <subdomain>/           # Nested subdomains (e.g. detection/, ortho/, decomposition/)
+        base.py              # Subdomain ABCs
+        models.py            # Data models (if applicable)
+        __init__.py          # Subdomain exports
+    imagej/                  # ImageJ/Fiji ports (organized by ImageJ menu category)
+      __init__.py            # Barrel re-exports all 12 components (backward compat)
+      _taxonomy.py           # Category constants shared with GRDK
+      filters/               # Process > Filters (RankFilters, UnsharpMask)
+      background/            # Process > Subtract Background (RollingBallBackground)
+      binary/                # Process > Binary (MorphologicalFilter)
+      enhance/               # Process > Enhance Contrast (CLAHE, GammaCorrection)
+      edges/                 # Process > Find Edges (EdgeDetector)
+      fft/                   # Process > FFT (FFTBandpassFilter)
+      find_maxima/           # Process > Find Maxima (FindMaxima)
+      threshold/             # Image > Adjust > Threshold (AutoLocalThreshold)
+      segmentation/          # Plugins > Segmentation (StatisticalRegionMerging)
+      stacks/                # Image > Stacks (ZProjection)
+    data_prep/               # ML/AI data preparation
+      tiler.py               # Tiler (overlapping tile extraction and reconstruction)
+      chip_extractor.py      # ChipExtractor (point/polygon chip extraction)
+      normalizer.py          # Normalizer (minmax, zscore, percentile, unit_norm)
+    coregistration/          # Image alignment and registration
+      affine.py              # Affine transform alignment
+      projective.py          # Projective transform alignment
+      feature_match.py       # Feature-based matching (OpenCV)
   tests/
+    conftest.py              # Shared pytest fixtures (synthetic images)
     test_<domain>_<module>.py
+    test_benchmarks.py       # Performance benchmarks (pytest-benchmark)
+  pyproject.toml             # Package config, dependencies, tool settings
   example_images/            # Small sample data for tests and demos
 ```
 
@@ -99,11 +124,13 @@ Domain directories map to the module areas defined in the README:
 |-----------|--------|
 | `IO/` | Format readers and writers |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
-| `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, filtering, transforms |
-| `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms for remote sensing (inherits ImageTransform) |
-| `data_prep/` | Chunking, tiling, resampling, ML pipeline formatting |
-| `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) |
-| `ml/` | Feature extraction, annotation, dataset builders |
+| `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, pipeline, transforms |
+| `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms in 10 subdirectories matching ImageJ menu hierarchy |
+| `data_prep/` | Tiling, chip extraction, normalization for ML/AI pipelines |
+| `coregistration/` | Affine, projective, and feature-matching image alignment |
+| `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
+| `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |
+| `ml/` | Feature extraction, annotation, dataset builders -- planned |
 
 ## File Header Standard
 
@@ -125,8 +152,8 @@ Dependencies
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+<Author name and email. Retrieve from the local OS user profile or
+prompt the user at the start of the session. Do not assume a default.>
 
 License
 -------
@@ -149,7 +176,7 @@ Modified
 - **Encoding declaration**: Always include `# -*- coding: utf-8 -*-` as the first line.
 - **Module title**: First line of the docstring is a concise summary (one line, under 79 characters).
 - **Dependencies**: List only non-numpy third-party packages. Omit this section if only numpy is required.
-- **Author**: `Duane Smalley, PhD` and `duane.d.smalley@gmail.com` for all original work. Additional contributors append their name and email on new lines.
+- **Author**: Retrieve the author name and email from the local OS user profile, IDE settings, or git config. If unavailable, prompt the user at the start of the session. Do not hardcode a default author. Additional contributors append their name and email on new lines.
 - **License**: Always `MIT License` with the copyright line. Do not duplicate the full license text.
 - **Created**: The date the file was first written, in `YYYY-MM-DD` format.
 - **Modified**: The date of the most recent substantive change, in `YYYY-MM-DD` format. Update this on every edit.
@@ -170,8 +197,8 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+<Your Name>
+<your.email@example.com>
 
 License
 -------
@@ -353,6 +380,8 @@ class Geolocation(ABC):
 ### Performance Testing
 
 - For performance-critical code, verify speedup with `%%timeit` in notebooks or `timeit` module
+- Use `pytest-benchmark` for repeatable benchmarks: `pytest tests/test_benchmarks.py --benchmark-only`
+- Skip benchmarks during normal test runs: `pytest tests/ --benchmark-disable`
 - Target at least 10x speedup for vectorized versions over naive loops
 - Document performance characteristics in docstrings when relevant (e.g., "< 1ms per transform")
 
@@ -375,7 +404,9 @@ class Geolocation(ABC):
 ### Running Tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v                               # Full suite
+pytest tests/ -v --benchmark-disable           # Skip benchmarks
+pytest tests/test_benchmarks.py --benchmark-only  # Benchmarks only
 ```
 
 ## Git Practices

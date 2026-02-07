@@ -28,8 +28,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -63,7 +62,7 @@ from scipy.ndimage import (
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
 MORPHOLOGY_OPERATIONS = (
@@ -107,6 +106,7 @@ def _make_structuring_element(shape: str, radius: int) -> np.ndarray:
     raise ValueError(f"Unknown shape: {shape}")
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='binary')
 @processor_version('1.54j')
 class MorphologicalFilter(ImageTransform):
     """Binary and grayscale morphological operations, ported from ImageJ 1.54j.
@@ -167,6 +167,7 @@ class MorphologicalFilter(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/filter/Binary.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = False
 
     def __init__(
         self,

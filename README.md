@@ -24,7 +24,8 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
 | **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
 | **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
-| **Data Preparation** | Chunking, tiling, resampling, and formatting for ML/AI pipelines | Planned |
+| **Data Preparation** | Tiling, chip extraction, normalization for ML/AI pipelines | Implemented |
+| **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
 
@@ -33,6 +34,8 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 ```
 GRDL/
 ├── grdl/                            # Library source
+│   ├── exceptions.py                # Custom exception hierarchy (GrdlError, ValidationError, etc.)
+│   ├── py.typed                     # PEP 561 type stub marker
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
 │   │   ├── sar.py                   #   SICDReader, CPHDReader, GRDReader, open_sar()
@@ -45,8 +48,9 @@ GRDL/
 │   │   │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
 │   │   └── eo/                      #   EO geolocation (planned)
 │   ├── image_processing/            # Image transforms module
-│   │   ├── base.py                  #   ImageProcessor, ImageTransform ABCs
-│   │   ├── versioning.py            #   @processor_version, DetectionInputSpec, TunableParameterSpec
+│   │   ├── base.py                  #   ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
+│   │   ├── versioning.py            #   @processor_version, @processor_tags, TunableParameterSpec
+│   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
 │   │   │   └── ortho.py             #   Orthorectifier, OutputGrid
 │   │   ├── decomposition/
@@ -55,20 +59,44 @@ GRDL/
 │   │   └── detection/
 │   │       ├── base.py              #   ImageDetector ABC
 │   │       └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
-│   └── imagej/                      # ImageJ/Fiji algorithm ports
-│       ├── __init__.py              #   Module exports (12 components)
-│       ├── rolling_ball.py          #   RollingBallBackground (Sternberg background subtraction)
-│       ├── clahe.py                 #   CLAHE (Contrast Limited Adaptive Histogram Equalization)
-│       ├── auto_local_threshold.py  #   AutoLocalThreshold (8 local thresholding methods)
-│       ├── unsharp_mask.py          #   UnsharpMask (Gaussian-based sharpening)
-│       ├── fft_bandpass.py          #   FFTBandpassFilter (frequency-domain bandpass + stripe suppression)
-│       ├── z_projection.py          #   ZProjection (stack projection: max, mean, median, etc.)
-│       ├── rank_filters.py          #   RankFilters (median, min, max, mean, variance, despeckle)
-│       ├── morphology.py            #   MorphologicalFilter (erode, dilate, open, close, tophat, etc.)
-│       ├── edge_detection.py        #   EdgeDetector (Sobel, Prewitt, Roberts, LoG, Scharr)
-│       ├── gamma.py                 #   GammaCorrection (power-law intensity transform)
-│       ├── find_maxima.py           #   FindMaxima (prominence-based peak/target detection)
-│       └── statistical_region_merging.py  #   StatisticalRegionMerging (SRM segmentation)
+│   ├── imagej/                      # ImageJ/Fiji algorithm ports (organized by ImageJ menu)
+│   │   ├── __init__.py              #   Barrel re-exports all 12 components
+│   │   ├── _taxonomy.py             #   Category constants shared with GRDK
+│   │   ├── filters/                 #   Process > Filters
+│   │   │   ├── rank_filters.py      #     RankFilters (median, min, max, mean, variance, despeckle)
+│   │   │   └── unsharp_mask.py      #     UnsharpMask (Gaussian-based sharpening)
+│   │   ├── background/              #   Process > Subtract Background
+│   │   │   └── rolling_ball.py      #     RollingBallBackground (Sternberg background subtraction)
+│   │   ├── binary/                  #   Process > Binary
+│   │   │   └── morphology.py        #     MorphologicalFilter (erode, dilate, open, close, tophat)
+│   │   ├── enhance/                 #   Process > Enhance Contrast
+│   │   │   ├── clahe.py             #     CLAHE (vectorized CLAHE + reference implementation)
+│   │   │   └── gamma.py             #     GammaCorrection (power-law intensity transform)
+│   │   ├── edges/                   #   Process > Find Edges
+│   │   │   └── edge_detection.py    #     EdgeDetector (Sobel, Prewitt, Roberts, LoG, Scharr)
+│   │   ├── fft/                     #   Process > FFT
+│   │   │   └── fft_bandpass.py      #     FFTBandpassFilter (frequency-domain bandpass + stripe suppression)
+│   │   ├── find_maxima/             #   Process > Find Maxima
+│   │   │   └── find_maxima.py       #     FindMaxima (prominence-based peak/target detection)
+│   │   ├── threshold/               #   Image > Adjust > Threshold
+│   │   │   └── auto_local_threshold.py  #  AutoLocalThreshold (8 local thresholding methods)
+│   │   ├── segmentation/            #   Plugins > Segmentation
+│   │   │   └── statistical_region_merging.py  #  StatisticalRegionMerging (vectorized SRM)
+│   │   └── stacks/                  #   Image > Stacks
+│   │       └── z_projection.py      #     ZProjection (stack projection: max, mean, median, etc.)
+│   ├── data_prep/                   # Data preparation for ML/AI pipelines
+│   │   ├── __init__.py              #   Module exports (Tiler, ChipExtractor, Normalizer)
+│   │   ├── base.py                  #   Base utilities
+│   │   ├── tiler.py                 #   Tiler (overlapping tile extraction and reconstruction)
+│   │   ├── chip_extractor.py        #   ChipExtractor (point/polygon chip extraction)
+│   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
+│   └── coregistration/              # Image alignment and registration
+│       ├── __init__.py              #   Module exports
+│       ├── base.py                  #   Base coregistration classes
+│       ├── affine.py                #   Affine transform alignment
+│       ├── projective.py            #   Projective transform alignment
+│       ├── feature_match.py         #   Feature-based matching (OpenCV)
+│       └── utils.py                 #   Coregistration utilities
 ├── example/                         # Example scripts
 │   ├── catalog/
 │   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
@@ -78,6 +106,7 @@ GRDL/
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
+│   ├── conftest.py                              #   Shared pytest fixtures (synthetic images)
 │   ├── test_io_biomass.py                       #   BIOMASS reader tests
 │   ├── test_geolocation_biomass.py              #   Geolocation tests with interactive markers
 │   ├── test_image_processing_ortho.py           #   Orthorectification tests
@@ -85,11 +114,11 @@ GRDL/
 │   ├── test_image_processing_detection.py       #   Detection models & geo-registration tests
 │   ├── test_image_processing_versioning.py      #   Processor versioning tests
 │   ├── test_image_processing_tunable.py         #   Tunable parameter tests
-│   └── test_imagej.py                           #   ImageJ/Fiji ports (124 tests, 12 components)
+│   ├── test_imagej.py                           #   ImageJ/Fiji ports (12 components)
+│   ├── test_coregistration.py                   #   Coregistration tests
+│   └── test_benchmarks.py                       #   Performance benchmarks (pytest-benchmark)
 ├── example_images/                  # Small sample data for tests and demos
-├── requirements.txt                 # Core: numpy, scipy
-├── requirements-dev.txt             # Dev: pytest, black, flake8, mypy
-├── requirements-optional.txt        # Optional: sarpy, rasterio, requests
+├── pyproject.toml                   # Package config, dependencies, and tool settings
 └── CLAUDE.md                        # Development standards and coding guide
 ```
 
@@ -249,7 +278,7 @@ class MyDetector(ImageDetector):
 
 ### ImageJ/Fiji Algorithm Ports
 
-12 classic image processing algorithms ported from ImageJ/Fiji, selected for relevance to remotely sensed imagery. All inherit from `ImageTransform`, carry attribution to original authors, and mirror the original source version.
+12 classic image processing algorithms ported from ImageJ/Fiji, selected for relevance to remotely sensed imagery. All inherit from `ImageTransform`, carry `@processor_tags` metadata for capability discovery, and declare `__gpu_compatible__` for downstream GPU dispatch.
 
 ```python
 from grdl.imagej import (
@@ -286,28 +315,104 @@ zp = ZProjection(method='median')
 composite = zp.apply(image_stack)  # (slices, rows, cols) -> (rows, cols)
 ```
 
+### Pipeline Composition
+
+Chain multiple transforms into a single callable pipeline:
+
+```python
+from grdl.imagej import GammaCorrection, UnsharpMask, EdgeDetector
+from grdl.image_processing import Pipeline
+
+pipe = Pipeline([
+    GammaCorrection(gamma=0.5),
+    UnsharpMask(sigma=2.0, weight=0.6),
+    EdgeDetector(method='sobel'),
+])
+result = pipe.apply(image)
+
+# With progress reporting
+result = pipe.apply(image, progress_callback=lambda f: print(f"{f:.0%}"))
+```
+
+### Data Preparation
+
+Tiling, chip extraction, and normalization for ML/AI pipelines:
+
+```python
+from grdl.data_prep import Tiler, ChipExtractor, Normalizer
+
+# Split a large image into overlapping tiles
+tiler = Tiler(tile_size=256, stride=128)
+tiles = tiler.tile(image)
+reconstructed = tiler.untile(tiles, image.shape)
+
+# Extract chips at point locations
+extractor = ChipExtractor(chip_size=64)
+chips = extractor.extract_at_points(image, points)
+
+# Normalize to [0, 1] range
+norm = Normalizer(method='minmax')
+normalized = norm.normalize(image)
+```
+
+### Processor Tags & GPU Compatibility
+
+Processors declare their capabilities for downstream discovery and dispatch:
+
+```python
+from grdl.image_processing import processor_tags
+
+# Query processor capabilities
+print(CLAHE.__processor_tags__)
+# {'modalities': ('SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'), 'category': 'enhance', ...}
+
+print(CLAHE.__gpu_compatible__)   # True  (pure numpy, CuPy-friendly)
+print(RollingBallBackground.__gpu_compatible__)  # False (scipy dependency)
+```
+
+### Custom Exceptions
+
+GRDL-specific exceptions for clean error handling:
+
+```python
+from grdl.exceptions import GrdlError, ValidationError, ProcessorError, DependencyError
+
+try:
+    result = processor.apply(bad_input)
+except ValidationError as e:
+    print(f"Invalid input: {e}")
+except ProcessorError as e:
+    print(f"Processing failed: {e}")
+```
+
 ## Installation
 
 ```bash
 git clone https://github.com/geoint-org/GRDL.git
-```
+cd GRDL
 
-Add the library to your Python path:
+# Install core library
+pip install -e .
 
-```python
-import sys
-sys.path.insert(0, "/path/to/GRDL")
+# Install with optional dependencies
+pip install -e ".[sar]"         # SAR format readers (sarpy)
+pip install -e ".[eo]"          # EO format readers (rasterio)
+pip install -e ".[biomass]"     # BIOMASS catalog (rasterio + requests)
+pip install -e ".[coregistration]"  # Image alignment (opencv-python-headless)
+pip install -e ".[all]"         # Everything
+pip install -e ".[dev]"         # Development tools (pytest, ruff, mypy, etc.)
 ```
 
 ### Dependencies
 
-Core dependencies vary by module. Each module documents its own requirements.
+Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extras by module:
 
-- `numpy` -- Used across all modules
-- `scipy` -- Geolocation interpolation, ImageJ port filters (rank filters, morphology, peak detection)
-- `rasterio` -- GeoTIFF / raster I/O (optional)
-- `sarpy` -- SICD / CPHD format support (optional)
-- `requests` -- ESA MAAP catalog & download (optional)
+- `numpy` -- Used across all modules (core)
+- `scipy` -- Geolocation interpolation, ImageJ port filters (core)
+- `sarpy` -- SICD / CPHD format support (`[sar]` extra)
+- `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
+- `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
+- `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
 
 ## Credentials
 

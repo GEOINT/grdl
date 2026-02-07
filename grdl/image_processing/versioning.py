@@ -11,8 +11,7 @@ parameters with type checking and constraint validation.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -30,7 +29,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Optional, Sequence, Tuple, Type, TypeVar, Union
 
 T = TypeVar('T')
 
@@ -68,6 +67,51 @@ def processor_version(version: str):
     """
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_version__ = version
+        return cls
+    return decorator
+
+
+def processor_tags(
+    modalities: Optional[Sequence[str]] = None,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+):
+    """Class decorator for processor capability metadata.
+
+    Stamps ``__processor_tags__`` on the class with modality, category,
+    and description metadata. Used by downstream tools (e.g., GRDK's
+    OWProcessor widget) to filter and discover processors by capability.
+
+    Parameters
+    ----------
+    modalities : Sequence[str], optional
+        Imagery modalities this processor is designed for.
+        Common values: ``'SAR'``, ``'PAN'``, ``'MSI'``, ``'HSI'``,
+        ``'thermal'``, ``'EO'``.
+    category : str, optional
+        Processing category. Common values: ``'spatial_filter'``,
+        ``'contrast_enhancement'``, ``'thresholding'``, ``'segmentation'``,
+        ``'edge_detection'``, ``'feature_detection'``, ``'frequency_domain'``,
+        ``'stack_operation'``, ``'decomposition'``, ``'orthorectification'``.
+    description : str, optional
+        Short human-readable description of the processor's purpose.
+
+    Examples
+    --------
+    >>> @processor_version('1.0.0')
+    ... @processor_tags(modalities=['SAR', 'PAN'], category='spatial_filter')
+    ... class MyFilter(ImageTransform):
+    ...     def apply(self, source, **kwargs):
+    ...         return source
+    >>> MyFilter.__processor_tags__
+    {'modalities': ('SAR', 'PAN'), 'category': 'spatial_filter', 'description': None}
+    """
+    def decorator(cls: Type[T]) -> Type[T]:
+        cls.__processor_tags__ = {
+            'modalities': tuple(modalities) if modalities else (),
+            'category': category,
+            'description': description,
+        }
         return cls
     return decorator
 

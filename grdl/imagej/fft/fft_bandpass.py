@@ -26,8 +26,7 @@ ImageJ 1.x source is in the public domain.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -52,7 +51,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, TunableParameterSpec
+from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
 
 
 def _make_bandpass_mask(
@@ -168,6 +167,7 @@ def _make_stripe_mask(
     return mask
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'thermal'], category='fft')
 @processor_version('1.54j')
 class FFTBandpassFilter(ImageTransform):
     """FFT bandpass filter, ported from ImageJ 1.54j.
@@ -222,6 +222,7 @@ class FFTBandpassFilter(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/filter/FFTFilter.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = True
 
     def __init__(
         self,

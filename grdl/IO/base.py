@@ -123,7 +123,6 @@ class ImageReader(ABC):
         """
         pass
 
-    @abstractmethod
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """
         Read the entire image.
@@ -141,9 +140,12 @@ class ImageReader(ABC):
         Notes
         -----
         Use with caution for large images as this loads the entire
-        dataset into memory.
+        dataset into memory. Subclasses may override for more efficient
+        full-image reads.
         """
-        pass
+        shape = self.get_shape()
+        rows, cols = shape[0], shape[1]
+        return self.read_chip(0, rows, 0, cols, bands=bands)
 
     @abstractmethod
     def get_shape(self) -> Tuple[int, ...]:

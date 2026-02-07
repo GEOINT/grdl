@@ -41,8 +41,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -68,7 +67,7 @@ from scipy.ndimage import uniform_filter, median_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, TunableParameterSpec
+from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
 
 
 def _local_stats(image: np.ndarray, radius: int):
@@ -129,6 +128,7 @@ METHODS = (
 )
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='threshold')
 @processor_version('1.10.1')
 class AutoLocalThreshold(ImageTransform):
     """Auto Local Threshold, ported from Fiji's Auto_Local_Threshold v1.10.1.
@@ -210,6 +210,7 @@ class AutoLocalThreshold(ImageTransform):
 
     __imagej_source__ = 'fiji/Auto_Local_Threshold.java'
     __imagej_version__ = '1.10.1'
+    __gpu_compatible__ = False
 
     def __init__(
         self,

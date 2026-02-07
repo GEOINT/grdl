@@ -31,8 +31,7 @@ independent NumPy reimplementation following the published algorithm.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -57,7 +56,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
 class _UnionFind:
@@ -136,6 +135,7 @@ def _srm_predicate(
     return abs(mean_a - mean_b) <= (threshold_a + threshold_b)
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI'], category='segmentation')
 @processor_version('1.0')
 class StatisticalRegionMerging(ImageTransform):
     """Statistical Region Merging segmentation, ported from Fiji.
@@ -194,6 +194,7 @@ class StatisticalRegionMerging(ImageTransform):
 
     __imagej_source__ = 'fiji/Statistical_Region_Merging.java'
     __imagej_version__ = '1.0'
+    __gpu_compatible__ = False
 
     def __init__(
         self,
@@ -247,30 +248,28 @@ class StatisticalRegionMerging(ImageTransform):
             else:
                 return image.copy()
 
-        # Build edge list: all 4-connected neighbor pairs
-        # Each edge: (pixel_a_idx, pixel_b_idx, abs_diff)
+        # Build edge list: all 4-connected neighbor pairs (vectorized)
         flat = image.ravel()
+        pixel_idx = np.arange(n, dtype=np.int32).reshape(rows, cols)
 
-        edges_list = []
+        # Horizontal edges: each pixel with its right neighbor
+        h_a = pixel_idx[:, :-1].ravel()
+        h_b = pixel_idx[:, 1:].ravel()
+        h_diff = np.abs(flat[h_a] - flat[h_b])
 
-        # Horizontal edges (each pixel with its right neighbor)
-        for r in range(rows):
-            for c in range(cols - 1):
-                idx_a = r * cols + c
-                idx_b = r * cols + c + 1
-                diff = abs(flat[idx_a] - flat[idx_b])
-                edges_list.append((diff, idx_a, idx_b))
+        # Vertical edges: each pixel with its bottom neighbor
+        v_a = pixel_idx[:-1, :].ravel()
+        v_b = pixel_idx[1:, :].ravel()
+        v_diff = np.abs(flat[v_a] - flat[v_b])
 
-        # Vertical edges (each pixel with its bottom neighbor)
-        for r in range(rows - 1):
-            for c in range(cols):
-                idx_a = r * cols + c
-                idx_b = (r + 1) * cols + c
-                diff = abs(flat[idx_a] - flat[idx_b])
-                edges_list.append((diff, idx_a, idx_b))
-
-        # Sort edges by difference (ascending) -- greedy merging
-        edges_list.sort(key=lambda e: e[0])
+        # Combine and sort by difference (ascending) -- greedy merging
+        edge_diffs = np.concatenate([h_diff, v_diff])
+        edge_a = np.concatenate([h_a, v_a])
+        edge_b = np.concatenate([h_b, v_b])
+        sort_idx = np.argsort(edge_diffs, kind='mergesort')
+        edge_diffs = edge_diffs[sort_idx]
+        edge_a = edge_a[sort_idx]
+        edge_b = edge_b[sort_idx]
 
         # Initialize union-find and per-region statistics
         uf = _UnionFind(n)
@@ -278,7 +277,13 @@ class StatisticalRegionMerging(ImageTransform):
 
         # Merge pass
         q = self.Q
-        for diff, idx_a, idx_b in edges_list:
+        total_edges = len(edge_a)
+        report_interval = max(1, total_edges // 20)
+        for edge_i in range(total_edges):
+            if edge_i % report_interval == 0:
+                self._report_progress(kwargs, edge_i / total_edges)
+            idx_a = int(edge_a[edge_i])
+            idx_b = int(edge_b[edge_i])
             ra = uf.find(idx_a)
             rb = uf.find(idx_b)
             if ra == rb:
@@ -295,6 +300,8 @@ class StatisticalRegionMerging(ImageTransform):
                 uf.union(ra, rb)
                 new_root = uf.find(ra)
                 region_sum[new_root] = total_sum
+
+        self._report_progress(kwargs, 1.0)
 
         # Build output
         if self.output == 'labels':

@@ -35,8 +35,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -62,7 +61,7 @@ from scipy.ndimage import uniform_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, TunableParameterSpec
+from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
 
 
 def _build_ball_profile(radius: int) -> np.ndarray:
@@ -306,6 +305,7 @@ def _roll_paraboloid_vectorized(image: np.ndarray, radius: int) -> np.ndarray:
     return bg2
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'thermal'], category='background')
 @processor_version('1.54j')
 class RollingBallBackground(ImageTransform):
     """Rolling-ball background subtraction, ported from ImageJ 1.54j.
@@ -345,6 +345,7 @@ class RollingBallBackground(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/filter/BackgroundSubtracter.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = False
 
     def __init__(
         self,

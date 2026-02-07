@@ -30,8 +30,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -57,9 +56,10 @@ from scipy.ndimage import maximum_filter, label
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'thermal'], category='find_maxima')
 @processor_version('1.54j')
 class FindMaxima(ImageTransform):
     """Prominence-based local maximum detection, ported from ImageJ 1.54j.
@@ -116,6 +116,7 @@ class FindMaxima(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/filter/MaximumFinder.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = False
 
     def __init__(
         self,

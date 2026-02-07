@@ -34,5 +34,42 @@ Modified
 __version__ = "0.1.0"
 __author__ = "Duane Smalley"
 
-# Package will be populated as modules are implemented
-__all__ = []
+from grdl.exceptions import (
+    GrdlError,
+    ValidationError,
+    ProcessorError,
+    DependencyError,
+    GeolocationError,
+)
+
+# Re-export coregistration classes for convenience
+try:
+    from grdl.coregistration import (
+        CoRegistration,
+        AffineCoRegistration,
+        ProjectiveCoRegistration,
+        RegistrationResult,
+    )
+    _COREG_EXPORTS = [
+        'CoRegistration',
+        'AffineCoRegistration',
+        'ProjectiveCoRegistration',
+        'RegistrationResult',
+    ]
+except ImportError:
+    _COREG_EXPORTS = []
+
+try:
+    from grdl.coregistration import FeatureMatchCoRegistration
+    _COREG_EXPORTS.append('FeatureMatchCoRegistration')
+except ImportError:
+    pass
+
+__all__ = [
+    'GrdlError',
+    'ValidationError',
+    'ProcessorError',
+    'DependencyError',
+    'GeolocationError',
+    *_COREG_EXPORTS,
+]

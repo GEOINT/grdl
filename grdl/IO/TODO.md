@@ -50,14 +50,33 @@ Roadmap and planned features for the IO module.
 - [x] ImageJ/Fiji algorithm ports (`imagej/`)
   - [x] 12 classic algorithms ported from ImageJ/Fiji (all inherit `ImageTransform`)
   - [x] Spatial filters: RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter
-  - [x] Contrast & enhancement: CLAHE, GammaCorrection
-  - [x] Thresholding & segmentation: AutoLocalThreshold, StatisticalRegionMerging
+  - [x] Contrast & enhancement: CLAHE (vectorized), GammaCorrection
+  - [x] Thresholding & segmentation: AutoLocalThreshold, StatisticalRegionMerging (vectorized edges)
   - [x] Edge & feature detection: EdgeDetector, FindMaxima
   - [x] Frequency domain: FFTBandpassFilter
   - [x] Stack operations: ZProjection
   - [x] Full attribution to original ImageJ/Fiji authors
   - [x] Version strings mirroring original source versions
-  - [x] 124 tests covering all 12 components
+  - [x] `@processor_tags` metadata on all 12 components (modality, category)
+  - [x] `__gpu_compatible__` flag on all 12 components
+  - [x] Tests covering all 12 components
+- [x] Data preparation module (`data_prep/`)
+  - [x] Tiler -- overlapping tile extraction and reconstruction
+  - [x] ChipExtractor -- point/polygon chip extraction
+  - [x] Normalizer -- minmax, zscore, percentile, unit_norm with fit/transform
+- [x] Coregistration module (`coregistration/`)
+  - [x] Affine transform alignment
+  - [x] Projective transform alignment
+  - [x] Feature-based matching (OpenCV)
+- [x] Pipeline composition (`image_processing/pipeline.py`)
+  - [x] Sequential transform chaining with progress callback rescaling
+- [x] BandwiseTransformMixin for automatic 3D stack support
+- [x] Custom exception hierarchy (`grdl/exceptions.py`)
+  - [x] GrdlError, ValidationError, ProcessorError, DependencyError, GeolocationError
+- [x] PEP 561 type marker (`grdl/py.typed`)
+- [x] `pyproject.toml` with setuptools backend and optional dependency extras
+- [x] Shared test fixtures (`tests/conftest.py`)
+- [x] Performance benchmarks (`tests/test_benchmarks.py`, pytest-benchmark)
 - [x] Documentation
   - [x] README.md with examples (including BIOMASS and catalog)
   - [x] ARCHITECTURE.md with design decisions
@@ -367,18 +386,19 @@ Roadmap and planned features for the IO module.
 
 ## Dependencies TODO
 
-- [ ] **Package Setup**
-  - [ ] setup.py or pyproject.toml
-  - [ ] Declare optional dependencies
-    - `pip install grdl[sar]` → sarpy + rasterio
-    - `pip install grdl[eo]` → rasterio + pillow
-    - `pip install grdl[vector]` → geopandas + fiona
+- [x] **Package Setup**
+  - [x] `pyproject.toml` with setuptools backend
+  - [x] Declare optional dependencies
+    - `pip install grdl[sar]` → sarpy
+    - `pip install grdl[eo]` → rasterio
+    - `pip install grdl[biomass]` → rasterio + requests
+    - `pip install grdl[coregistration]` → opencv-python-headless
+    - `pip install grdl[all]` → all optional deps
+    - `pip install grdl[dev]` → pytest, pytest-benchmark, ruff, mypy, black
   - [ ] Continuous integration (GitHub Actions)
 
-- [ ] **Dependency Pinning**
-  - [ ] requirements.txt for development
-  - [ ] requirements-test.txt for testing
-  - [ ] Broad version ranges in setup.py (don't over-constrain)
+- [x] **Dependency Pinning**
+  - [x] Broad version ranges in pyproject.toml (don't over-constrain)
 
 - [ ] **Compatibility Testing**
   - [ ] Test with multiple NumPy versions
@@ -394,7 +414,7 @@ Track here for next major version:
 - [ ] **Standardize band indexing**: All 0-based (currently GRD converts internally)
 - [ ] **Geolocation format**: Unified dict structure across all readers
 - [ ] **Metadata standardization**: Common keys across formats (e.g., 'acquisition_time')
-- [ ] **Error handling**: Custom exception hierarchy instead of built-ins
+- [x] **Error handling**: Custom exception hierarchy (`grdl.exceptions`) -- implemented
 
 ### API Additions (Non-Breaking)
 
@@ -439,17 +459,28 @@ Track user-requested features here:
 - [x] BIOMASS catalog (MAAP STAC search, OAuth2 download, SQLite tracking)
 - [x] Geolocation module (GCP interpolation, batch transforms)
 - [x] Image processing module
-  - [x] ImageProcessor / ImageTransform ABCs
+  - [x] ImageProcessor / ImageTransform / BandwiseTransformMixin ABCs
   - [x] Orthorectification (Orthorectifier, OutputGrid)
   - [x] Polarimetric decomposition (PauliDecomposition)
   - [x] Detection data models (Geometry, Detection, DetectionSet, OutputSchema)
   - [x] ImageDetector ABC with geo-registration helpers
   - [x] Processor versioning (`@processor_version` decorator)
+  - [x] Processor capability tags (`@processor_tags` decorator)
   - [x] Tunable parameter system (TunableParameterSpec)
   - [x] Detection input chaining (DetectionInputSpec)
-- [x] ImageJ/Fiji algorithm ports (12 components, 124 tests)
+  - [x] Pipeline composition (sequential transform chaining)
+  - [x] Progress callback protocol (`_report_progress()`)
+- [x] ImageJ/Fiji algorithm ports (12 components, all with tags and GPU flags)
   - [x] Spatial filters, contrast enhancement, thresholding, segmentation
   - [x] Edge detection, peak detection, frequency-domain filtering, stack projection
+  - [x] Vectorized CLAHE and SRM edge construction
+- [x] Data preparation module (Tiler, ChipExtractor, Normalizer)
+- [x] Coregistration module (affine, projective, feature-matching)
+- [x] Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.)
+- [x] PEP 561 type marker (py.typed)
+- [x] pyproject.toml with optional dependency extras
+- [x] Shared test fixtures (conftest.py)
+- [x] Performance benchmarks (pytest-benchmark)
 - [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow)
 - [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework

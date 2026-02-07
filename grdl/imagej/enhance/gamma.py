@@ -25,8 +25,7 @@ in ImageJ 1.54j. ImageJ 1.x source is in the public domain.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -51,10 +50,12 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
 @processor_version('1.54j')
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
+                category='enhance')
 class GammaCorrection(ImageTransform):
     """Power-law gamma correction, ported from ImageJ 1.54j.
 
@@ -98,6 +99,7 @@ class GammaCorrection(ImageTransform):
 
     __imagej_source__ = 'ij/process/FloatProcessor.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = True
 
     def __init__(self, gamma: float = 0.5) -> None:
         if gamma <= 0:

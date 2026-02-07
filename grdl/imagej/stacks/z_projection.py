@@ -21,8 +21,7 @@ ImageJ 1.x source is in the public domain.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -47,7 +46,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, TunableParameterSpec
+from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
 
 
 PROJECTION_METHODS = (
@@ -55,6 +54,7 @@ PROJECTION_METHODS = (
 )
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='stacks')
 @processor_version('1.54j')
 class ZProjection(ImageTransform):
     """Z-Projection of image stacks, ported from ImageJ 1.54j.
@@ -112,6 +112,7 @@ class ZProjection(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/ZProjector.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = True
 
     def __init__(
         self,

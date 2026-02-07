@@ -69,7 +69,7 @@ Modified
 2026-02-06
 """
 
-from grdl.image_processing.base import ImageProcessor, ImageTransform
+from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
 from grdl.image_processing.ortho import Orthorectifier, OutputGrid
 from grdl.image_processing.decomposition import (
     PolarimetricDecomposition,
@@ -83,8 +83,10 @@ from grdl.image_processing.detection import (
     OutputField,
     OutputSchema,
 )
+from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
     processor_version,
+    processor_tags,
     DetectionInputSpec,
     TunableParameterSpec,
 )
@@ -92,6 +94,7 @@ from grdl.image_processing.versioning import (
 __all__ = [
     'ImageProcessor',
     'ImageTransform',
+    'BandwiseTransformMixin',
     'Orthorectifier',
     'OutputGrid',
     'PolarimetricDecomposition',
@@ -102,7 +105,9 @@ __all__ = [
     'Geometry',
     'OutputField',
     'OutputSchema',
+    'Pipeline',
     'processor_version',
+    'processor_tags',
     'DetectionInputSpec',
     'TunableParameterSpec',
 ]

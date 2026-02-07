@@ -13,17 +13,28 @@ The IO module is built on three core principles:
 ## Module Structure
 
 ```
-grdl/IO/
-├── __init__.py           # Public API exports
-├── base.py               # Abstract base classes (ABCs)
-├── sar.py                # SAR format readers (SICD, CPHD, GRD)
-├── biomass.py            # BIOMASS mission readers (L1 SCS)
-├── catalog.py            # BIOMASS catalog and download manager
-├── eo.py                 # EO imagery readers (planned)
-├── geospatial.py         # Vector data readers/writers (planned)
-├── README.md             # User documentation
-├── ARCHITECTURE.md       # This file
-└── TODO.md               # Roadmap and planned features
+grdl/
+├── exceptions.py            # Custom exception hierarchy (GrdlError, ValidationError, etc.)
+├── py.typed                 # PEP 561 type stub marker
+├── IO/
+│   ├── __init__.py          # Public API exports
+│   ├── base.py              # Abstract base classes (ABCs)
+│   ├── sar.py               # SAR format readers (SICD, CPHD, GRD)
+│   ├── biomass.py           # BIOMASS mission readers (L1 SCS)
+│   ├── catalog.py           # BIOMASS catalog and download manager
+│   ├── eo.py                # EO imagery readers (planned)
+│   ├── geospatial.py        # Vector data readers/writers (planned)
+│   ├── README.md            # User documentation
+│   ├── ARCHITECTURE.md      # This file
+│   └── TODO.md              # Roadmap and planned features
+├── image_processing/
+│   ├── base.py              # ImageProcessor, ImageTransform, BandwiseTransformMixin
+│   ├── versioning.py        # @processor_version, @processor_tags, TunableParameterSpec
+│   ├── pipeline.py          # Pipeline (sequential transform composition)
+│   └── ...                  # ortho/, decomposition/, detection/ subdomains
+├── imagej/                  # 12 ImageJ/Fiji ports (10 subdirs matching ImageJ menu hierarchy)
+├── data_prep/               # Tiler, ChipExtractor, Normalizer
+└── coregistration/          # Affine, projective, feature-matching alignment
 ```
 
 ## Base Class Hierarchy
@@ -114,12 +125,21 @@ IO readers integrate with the image processing module through composable pattern
 - **Orthorectification**: `Orthorectifier.apply_from_reader()` reads chips directly from a reader
 - **Decomposition**: Complex data from `BIOMASSL1Reader` feeds directly into `PauliDecomposition`
 - **Detection**: `ImageDetector._geo_register_detections()` uses Geolocation for pixel-to-latlon transforms
+- **Pipeline**: `Pipeline` chains multiple `ImageTransform` instances into a single callable with progress
+  callback rescaling. Pipelines are themselves `ImageTransform` instances and can be nested.
+- **BandwiseTransformMixin**: Mixin that auto-applies 2D transforms across 3D `(bands, rows, cols)` stacks,
+  enabling all single-band processors to work on multi-band imagery without manual band looping.
+- **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
+  `progress_callback` keyword argument for real-time progress reporting.
+- **Data Preparation**: `Tiler`, `ChipExtractor`, and `Normalizer` in `grdl.data_prep` prepare imagery
+  for ML/AI pipelines with configurable tiling, chip extraction, and normalization.
 - **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
   direct use in processing pipelines alongside orthorectification and decomposition. Includes spatial filters
   (RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter), contrast enhancement (CLAHE,
   GammaCorrection), thresholding/segmentation (AutoLocalThreshold, StatisticalRegionMerging), edge/feature
   detection (EdgeDetector, FindMaxima), frequency-domain filtering (FFTBandpassFilter), and stack operations
-  (ZProjection). Each port carries `__imagej_source__` and `__imagej_version__` attributes for provenance.
+  (ZProjection). Each port carries `__imagej_source__`, `__imagej_version__`, `__gpu_compatible__`, and
+  `@processor_tags` metadata for provenance tracking and capability discovery.
 
 ## SAR Readers Implementation
 
@@ -435,14 +455,25 @@ This pattern is enabled by:
 
 ### Exception Hierarchy
 
+GRDL provides a custom exception hierarchy in `grdl.exceptions` that subclasses both
+`GrdlError` and the appropriate built-in exception for backward compatibility:
+
 ```
-Exception
+GrdlError (base)
+├── ValidationError(GrdlError, ValueError)    # Bad inputs (shape, dtype, parameter range)
+├── ProcessorError(GrdlError, RuntimeError)   # Algorithm failures in apply()/detect()
+├── DependencyError(GrdlError, ImportError)   # Missing optional dependency
+└── GeolocationError(GrdlError, RuntimeError) # Coordinate transform failures
+
+Built-in exceptions (still raised by IO module):
 ├── FileNotFoundError       # File doesn't exist
 ├── NotADirectoryError      # Expected directory, got file
-├── ImportError             # Missing dependency (sarpy, rasterio)
-├── ValueError              # Invalid format, bad parameters
 └── IOError                 # Disk read/write failure
 ```
+
+Downstream consumers (e.g., GRDK's `WorkflowExecutor`) can catch `GrdlError` to handle
+all GRDL-specific errors distinctly from Python builtins, or catch the built-in base
+class (`ValueError`, `ImportError`, etc.) for backward-compatible handling.
 
 ### Graceful Degradation
 
@@ -504,7 +535,7 @@ def read_chip(
 
 ### Unit Tests
 
-Each reader/module has a dedicated test suite:
+Each reader/module has a dedicated test suite. Shared fixtures live in `tests/conftest.py`:
 - `tests/test_io_biomass.py` - BIOMASS reader, metadata, chip I/O, geolocation
 - `tests/test_geolocation_biomass.py` - GCP geolocation, round-trip accuracy
 - `tests/test_image_processing_ortho.py` - Orthorectification with synthetic data
@@ -512,7 +543,9 @@ Each reader/module has a dedicated test suite:
 - `tests/test_image_processing_detection.py` - Detection models, geo-registration, GeoJSON
 - `tests/test_image_processing_versioning.py` - Processor versioning decorator
 - `tests/test_image_processing_tunable.py` - Tunable parameter validation
-- `tests/test_imagej.py` - ImageJ/Fiji port tests (124 tests across 12 components)
+- `tests/test_imagej.py` - ImageJ/Fiji port tests (12 components)
+- `tests/test_coregistration.py` - Coregistration tests
+- `tests/test_benchmarks.py` - Performance benchmarks (pytest-benchmark)
 
 ### Test Data
 

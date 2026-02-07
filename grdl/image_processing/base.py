@@ -29,12 +29,15 @@ Modified
 """
 
 # Standard library
+import logging
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.image_processing.versioning import DetectionInputSpec, TunableParameterSpec
@@ -81,6 +84,11 @@ class ImageProcessor(ABC):
     # Track which classes have been checked to warn only once per class.
     _version_warned_classes: set = set()
 
+    #: Whether this processor uses only numpy operations (True) or
+    #: depends on scipy/other CPU-only libraries (False). Used by
+    #: GRDK's GpuBackend to skip futile GPU attempts.
+    __gpu_compatible__: bool = False
+
     def __new__(cls, *args: Any, **kwargs: Any) -> 'ImageProcessor':
         if cls not in ImageProcessor._version_warned_classes:
             ImageProcessor._version_warned_classes.add(cls)
@@ -94,6 +102,7 @@ class ImageProcessor(ABC):
                     UserWarning,
                     stacklevel=2,
                 )
+        logger.debug("Instantiating %s", cls.__qualname__)
         return super().__new__(cls)
 
     @property
@@ -281,6 +290,28 @@ class ImageProcessor(ABC):
         return None
 
 
+    def _report_progress(
+        self, kwargs: Dict[str, Any], fraction: float
+    ) -> None:
+        """Report progress to an optional callback.
+
+        Call this from long-running ``apply()`` or ``detect()`` methods.
+        If the caller provided a ``progress_callback`` keyword argument,
+        it is called with the current fraction (0.0 to 1.0). If no
+        callback is provided, this is a no-op.
+
+        Parameters
+        ----------
+        kwargs : Dict[str, Any]
+            The keyword arguments passed to the processor method.
+        fraction : float
+            Progress fraction in [0.0, 1.0].
+        """
+        cb = kwargs.get('progress_callback')
+        if cb is not None:
+            cb(float(fraction))
+
+
 class ImageTransform(ImageProcessor):
     """
     Abstract base class for image transforms.
@@ -311,5 +342,68 @@ class ImageTransform(ImageProcessor):
         -------
         np.ndarray
             Transformed image.
+        """
+        ...
+
+
+class BandwiseTransformMixin:
+    """Mixin that auto-applies a 2D transform across bands of a 3D stack.
+
+    When mixed into an ``ImageTransform`` subclass, this overrides
+    ``apply()`` to accept 3D ``(bands, rows, cols)`` arrays by
+    iterating over the band axis and applying the subclass's 2D
+    implementation to each band independently.
+
+    2D inputs pass through unchanged. The mixin delegates to
+    ``_apply_2d()``, which subclasses must implement (typically
+    by renaming their existing ``apply()`` method or having it
+    called by the mixin).
+
+    Usage
+    -----
+    Subclasses should inherit from both the mixin and ``ImageTransform``::
+
+        class MyFilter(BandwiseTransformMixin, ImageTransform):
+            def _apply_2d(self, source, **kwargs):
+                # 2D-only implementation
+                ...
+
+    When ``apply()`` is called with a ``(bands, rows, cols)`` array,
+    the mixin calls ``_apply_2d()`` for each band and stacks results.
+    """
+
+    def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
+        """Apply the transform, handling both 2D and 3D inputs.
+
+        Parameters
+        ----------
+        source : np.ndarray
+            2D ``(rows, cols)`` or 3D ``(bands, rows, cols)`` array.
+
+        Returns
+        -------
+        np.ndarray
+            Transformed image with same dimensionality as input.
+        """
+        if source.ndim == 3:
+            return np.stack(
+                [self._apply_2d(source[b], **kwargs)
+                 for b in range(source.shape[0])]
+            )
+        return self._apply_2d(source, **kwargs)
+
+    @abstractmethod
+    def _apply_2d(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
+        """Apply the transform to a single 2D band.
+
+        Parameters
+        ----------
+        source : np.ndarray
+            2D image array, shape ``(rows, cols)``.
+
+        Returns
+        -------
+        np.ndarray
+            Transformed 2D image.
         """
         ...

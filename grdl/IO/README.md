@@ -54,36 +54,16 @@ The IO module provides a unified interface for reading and writing various geosp
 
 ## Installation
 
-### Core Dependencies
+Install GRDL with the desired optional dependency extras via `pyproject.toml`:
 
 ```bash
-pip install numpy
-```
-
-### SAR Support
-
-```bash
-# For SICD/CPHD (NGA standards)
-pip install sarpy
-
-# For GRD products (GeoTIFF)
-pip install rasterio
-
-# For BIOMASS ESA satellite products
-pip install rasterio  # For L1 SCS magnitude/phase TIFFs
-pip install requests  # For ESA MAAP STAC queries and downloads
-```
-
-### EO Support (Planned)
-
-```bash
-pip install rasterio gdal pillow
-```
-
-### Geospatial Support (Planned)
-
-```bash
-pip install geopandas shapely fiona
+pip install -e .                     # Core (numpy + scipy)
+pip install -e ".[sar]"              # SAR readers (+ sarpy)
+pip install -e ".[eo]"               # EO readers (+ rasterio)
+pip install -e ".[biomass]"          # BIOMASS catalog (+ rasterio, requests)
+pip install -e ".[coregistration]"   # Image alignment (+ opencv-python-headless)
+pip install -e ".[all]"              # All optional dependencies
+pip install -e ".[dev]"              # Development tools (pytest, ruff, mypy, etc.)
 ```
 
 ## Quick Start
@@ -330,19 +310,23 @@ db_chip = 20 * np.log10(np.abs(complex_chip) + 1e-10)
 
 ## Error Handling
 
-All readers raise specific exceptions:
+GRDL provides a custom exception hierarchy in `grdl.exceptions`. All custom exceptions
+subclass both `GrdlError` and the appropriate built-in exception for backward compatibility:
 
 ```python
 from grdl.IO import open_sar
+from grdl.exceptions import GrdlError, DependencyError, ValidationError
 
 try:
     reader = open_sar('image.dat')
 except FileNotFoundError:
     print("File does not exist")
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-except ValueError as e:
-    print(f"Invalid format: {e}")
+except DependencyError as e:
+    print(f"Missing dependency: {e}")   # subclass of both GrdlError and ImportError
+except ValidationError as e:
+    print(f"Invalid input: {e}")        # subclass of both GrdlError and ValueError
+except GrdlError as e:
+    print(f"GRDL error: {e}")           # catch-all for GRDL-specific errors
 ```
 
 ## API Reference
@@ -360,19 +344,24 @@ See `example/` for working BIOMASS workflows:
 
 ## ImageJ/Fiji Algorithm Ports
 
-GRDL includes 12 classic image processing algorithms ported from ImageJ/Fiji under `grdl.imagej`, selected for relevance to remotely sensed imagery (PAN, MSI, HSI, SAR, thermal). All inherit from `ImageTransform` and can be used directly in processing pipelines.
+GRDL includes 12 classic image processing algorithms ported from ImageJ/Fiji under `grdl.imagej`, selected for relevance to remotely sensed imagery (PAN, MSI, HSI, SAR, thermal). All inherit from `ImageTransform`, carry `@processor_tags` metadata for capability discovery, and declare `__gpu_compatible__` for downstream GPU dispatch.
 
-| Category | Components | Use Cases |
-|----------|-----------|-----------|
-| Spatial Filters | RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter | Background subtraction, sharpening, noise removal, morphological analysis |
-| Contrast & Enhancement | CLAHE, GammaCorrection | Dynamic range adjustment, local contrast enhancement |
-| Thresholding & Segmentation | AutoLocalThreshold, StatisticalRegionMerging | Land cover segmentation, OBIA, target region extraction |
-| Edge & Feature Detection | EdgeDetector, FindMaxima | Boundary detection, target/peak detection in SAR/thermal |
-| Frequency Domain | FFTBandpassFilter | Bandpass filtering, pushbroom stripe removal |
-| Stack Operations | ZProjection | Multi-temporal composites (max, mean, median, etc.) |
+| Subdirectory | ImageJ Menu | Components | GPU | Use Cases |
+|-------------|------------|-----------|-----|-----------|
+| `filters/` | Process > Filters | RankFilters, UnsharpMask | No | Noise removal, sharpening |
+| `background/` | Process > Subtract Background | RollingBallBackground | No | Background subtraction |
+| `binary/` | Process > Binary | MorphologicalFilter | No | Morphological operations |
+| `enhance/` | Process > Enhance Contrast | CLAHE, GammaCorrection | Yes | Dynamic range, local contrast |
+| `edges/` | Process > Find Edges | EdgeDetector | No | Boundary detection |
+| `fft/` | Process > FFT | FFTBandpassFilter | Yes | Bandpass filtering, stripe removal |
+| `find_maxima/` | Process > Find Maxima | FindMaxima | No | Target/peak detection |
+| `threshold/` | Image > Adjust > Threshold | AutoLocalThreshold | No | Local thresholding, OBIA |
+| `segmentation/` | Plugins > Segmentation | StatisticalRegionMerging | No | Land cover segmentation |
+| `stacks/` | Image > Stacks | ZProjection | Yes | Multi-temporal composites |
 
 ```python
 from grdl.imagej import CLAHE, FindMaxima, StatisticalRegionMerging
+from grdl.image_processing import Pipeline
 
 # Enhance local contrast for thermal imagery
 enhanced = CLAHE(block_size=127, max_slope=3.0).apply(thermal_band)
@@ -382,11 +371,33 @@ targets = FindMaxima(prominence=20.0).find_peaks(sar_amplitude)
 
 # Segment MSI band into land cover regions
 labels = StatisticalRegionMerging(Q=50).apply(msi_band)
+
+# Compose a multi-step pipeline
+pipe = Pipeline([CLAHE(block_size=63), FindMaxima(prominence=10.0)])
 ```
 
-Each ported component carries `__imagej_source__` and `__imagej_version__` attributes for provenance tracking. ImageJ 1.x ports are public domain; Fiji plugin ports (CLAHE, AutoLocalThreshold, SRM) are independent NumPy reimplementations of published algorithms.
+Each ported component carries `__imagej_source__`, `__imagej_version__`, `__gpu_compatible__`, and `@processor_tags` metadata. ImageJ 1.x ports are public domain; Fiji plugin ports (CLAHE, AutoLocalThreshold, SRM) are independent NumPy reimplementations of published algorithms.
 
-See `tests/test_imagej.py` for 124 tests covering all 12 components.
+## Data Preparation
+
+The `grdl.data_prep` module provides utilities for formatting imagery into ML/AI pipeline-ready formats:
+
+```python
+from grdl.data_prep import Tiler, ChipExtractor, Normalizer
+
+# Split image into overlapping tiles
+tiler = Tiler(tile_size=256, stride=128)
+tiles = tiler.tile(image)
+reconstructed = tiler.untile(tiles, image.shape)
+
+# Extract chips at point locations
+extractor = ChipExtractor(chip_size=64)
+chips = extractor.extract_at_points(image, points)
+
+# Normalize intensity values
+norm = Normalizer(method='minmax')
+normalized = norm.normalize(image)
+```
 
 ## Contributing
 

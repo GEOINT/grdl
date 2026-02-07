@@ -28,8 +28,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -60,12 +59,13 @@ from scipy.ndimage import (
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
 RANK_METHODS = ('median', 'min', 'max', 'mean', 'variance', 'despeckle')
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='filters')
 @processor_version('1.54j')
 class RankFilters(ImageTransform):
     """Rank-order spatial filters, ported from ImageJ 1.54j.
@@ -121,6 +121,7 @@ class RankFilters(ImageTransform):
 
     __imagej_source__ = 'ij/plugin/filter/RankFilters.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = False
 
     def __init__(
         self,

@@ -11,30 +11,38 @@ All ported components inherit from ``ImageTransform`` and carry attribution
 to the original ImageJ/Fiji authors. Version strings mirror the original
 source version from which the port was derived.
 
-Components
-----------
-Spatial Filters:
-- RollingBallBackground: Background subtraction via Sternberg's rolling ball
-- UnsharpMask: Gaussian-based sharpening
+Components (organized by ImageJ menu category)
+------------------------------------------------
+Process > Filters (filters/):
 - RankFilters: Median, Min, Max, Mean, Variance, Despeckle
+- UnsharpMask: Gaussian-based sharpening
+
+Process > Subtract Background (background/):
+- RollingBallBackground: Background subtraction via Sternberg's rolling ball
+
+Process > Binary (binary/):
 - MorphologicalFilter: Erode, Dilate, Open, Close, TopHat, BlackHat, Gradient
 
-Contrast & Enhancement:
+Process > Enhance Contrast (enhance/):
 - CLAHE: Contrast Limited Adaptive Histogram Equalization
 - GammaCorrection: Power-law intensity transform
 
-Thresholding & Segmentation:
-- AutoLocalThreshold: Local thresholding (Bernsen, Niblack, Sauvola, etc.)
-- StatisticalRegionMerging: SRM region-based segmentation
-
-Edge & Feature Detection:
+Process > Find Edges (edges/):
 - EdgeDetector: Sobel, Prewitt, Roberts, LoG, Scharr
-- FindMaxima: Prominence-based peak/target detection
 
-Frequency Domain:
+Process > FFT (fft/):
 - FFTBandpassFilter: Frequency-domain bandpass and stripe suppression
 
-Stack Operations:
+Process > Find Maxima (find_maxima/):
+- FindMaxima: Prominence-based peak/target detection
+
+Image > Adjust > Threshold (threshold/):
+- AutoLocalThreshold: Local thresholding (Bernsen, Niblack, Sauvola, etc.)
+
+Plugins > Segmentation (segmentation/):
+- StatisticalRegionMerging: SRM region-based segmentation
+
+Image > Stacks (stacks/):
 - ZProjection: Stack projection (max, mean, median, min, sum, std)
 
 Attribution
@@ -49,8 +57,7 @@ published algorithms and cites the original authors.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -67,18 +74,35 @@ Modified
 2026-02-06
 """
 
-from grdl.imagej.rolling_ball import RollingBallBackground
-from grdl.imagej.clahe import CLAHE
-from grdl.imagej.auto_local_threshold import AutoLocalThreshold
-from grdl.imagej.unsharp_mask import UnsharpMask
-from grdl.imagej.fft_bandpass import FFTBandpassFilter
-from grdl.imagej.z_projection import ZProjection
-from grdl.imagej.rank_filters import RankFilters
-from grdl.imagej.morphology import MorphologicalFilter
-from grdl.imagej.edge_detection import EdgeDetector
-from grdl.imagej.gamma import GammaCorrection
+# Process > Filters
+from grdl.imagej.filters import RankFilters, UnsharpMask
+
+# Process > Subtract Background
+from grdl.imagej.background import RollingBallBackground
+
+# Process > Binary
+from grdl.imagej.binary import MorphologicalFilter
+
+# Process > Enhance Contrast
+from grdl.imagej.enhance import CLAHE, GammaCorrection
+
+# Process > Find Edges
+from grdl.imagej.edges import EdgeDetector
+
+# Process > FFT
+from grdl.imagej.fft import FFTBandpassFilter
+
+# Process > Find Maxima
 from grdl.imagej.find_maxima import FindMaxima
-from grdl.imagej.statistical_region_merging import StatisticalRegionMerging
+
+# Image > Adjust > Threshold
+from grdl.imagej.threshold import AutoLocalThreshold
+
+# Plugins > Segmentation
+from grdl.imagej.segmentation import StatisticalRegionMerging
+
+# Image > Stacks
+from grdl.imagej.stacks import ZProjection
 
 __all__ = [
     'RollingBallBackground',

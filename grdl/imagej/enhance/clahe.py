@@ -30,8 +30,7 @@ Dependencies
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -56,7 +55,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, TunableParameterSpec
+from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
 
 
 def _clip_histogram(hist: np.ndarray, clip_limit: int) -> np.ndarray:
@@ -121,6 +120,7 @@ def _compute_cdf(hist: np.ndarray) -> np.ndarray:
     return cdf
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='enhance')
 @processor_version('0.5.0')
 class CLAHE(ImageTransform):
     """Contrast Limited Adaptive Histogram Equalization, ported from Fiji.
@@ -156,6 +156,7 @@ class CLAHE(ImageTransform):
 
     __imagej_source__ = 'mpicbg/ij/clahe/CLAHE.java'
     __imagej_version__ = '0.5.0'
+    __gpu_compatible__ = True
 
     def __init__(
         self,
@@ -175,7 +176,11 @@ class CLAHE(ImageTransform):
         self.max_slope = max_slope
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
-        """Apply CLAHE to a 2D image.
+        """Apply CLAHE to a 2D image (vectorized).
+
+        Uses vectorized NumPy operations for the CDF lookup and
+        bilinear interpolation steps for good performance on large
+        images.
 
         Parameters
         ----------
@@ -193,142 +198,6 @@ class CLAHE(ImageTransform):
         ------
         ValueError
             If source is not 2D.
-        """
-        if source.ndim != 2:
-            raise ValueError(
-                f"Expected 2D image, got shape {source.shape}"
-            )
-
-        image = source.astype(np.float64)
-
-        # Normalize to [0, 1]
-        vmin = image.min()
-        vmax = image.max()
-        if vmax - vmin < 1e-15:
-            return np.zeros_like(image, dtype=np.float64)
-        image = (image - vmin) / (vmax - vmin)
-
-        rows, cols = image.shape
-        bs = self.block_size
-        n_bins = self.n_bins
-
-        # Compute tile grid: centers spaced by block_size
-        # Pad so tiles cover entire image
-        n_tiles_r = max(1, (rows + bs - 1) // bs)
-        n_tiles_c = max(1, (cols + bs - 1) // bs)
-
-        # Tile center positions
-        tile_centers_r = np.linspace(
-            bs // 2, rows - 1 - bs // 2, n_tiles_r
-        ).astype(int)
-        tile_centers_c = np.linspace(
-            bs // 2, cols - 1 - bs // 2, n_tiles_c
-        ).astype(int)
-
-        if len(tile_centers_r) < 1:
-            tile_centers_r = np.array([rows // 2])
-        if len(tile_centers_c) < 1:
-            tile_centers_c = np.array([cols // 2])
-
-        # Clip limit: max_slope * (block_pixels / n_bins)
-        block_pixels = bs * bs
-        clip_limit = max(1, int(self.max_slope * block_pixels / n_bins))
-
-        # Compute CDF lookup for each tile
-        cdfs = np.zeros((len(tile_centers_r), len(tile_centers_c), n_bins),
-                        dtype=np.float64)
-
-        for ti, cr in enumerate(tile_centers_r):
-            for tj, cc in enumerate(tile_centers_c):
-                r0 = max(0, cr - bs // 2)
-                r1 = min(rows, cr + bs // 2 + 1)
-                c0 = max(0, cc - bs // 2)
-                c1 = min(cols, cc + bs // 2 + 1)
-
-                tile = image[r0:r1, c0:c1]
-
-                # Quantize to bins
-                bin_idx = np.clip(
-                    (tile * (n_bins - 1)).astype(int), 0, n_bins - 1
-                )
-                hist = np.bincount(bin_idx.ravel(), minlength=n_bins).astype(
-                    np.float64
-                )
-
-                # Clip and compute CDF
-                hist = _clip_histogram(hist, clip_limit)
-                cdfs[ti, tj] = _compute_cdf(hist)
-
-        # Map each pixel using bilinear interpolation of surrounding tile CDFs
-        output = np.zeros_like(image)
-
-        for r in range(rows):
-            for c in range(cols):
-                # Find surrounding tile indices
-                ti = np.searchsorted(tile_centers_r, r, side='right') - 1
-                tj = np.searchsorted(tile_centers_c, c, side='right') - 1
-                ti = max(0, min(ti, len(tile_centers_r) - 2))
-                tj = max(0, min(tj, len(tile_centers_c) - 2))
-
-                ti1 = ti + 1
-                tj1 = tj + 1
-
-                # Clamp
-                ti1 = min(ti1, len(tile_centers_r) - 1)
-                tj1 = min(tj1, len(tile_centers_c) - 1)
-
-                # Interpolation weights
-                cr0 = tile_centers_r[ti]
-                cr1 = tile_centers_r[ti1]
-                cc0 = tile_centers_c[tj]
-                cc1 = tile_centers_c[tj1]
-
-                if cr1 > cr0:
-                    wr = (r - cr0) / (cr1 - cr0)
-                else:
-                    wr = 0.0
-                if cc1 > cc0:
-                    wc = (c - cc0) / (cc1 - cc0)
-                else:
-                    wc = 0.0
-
-                wr = max(0.0, min(1.0, wr))
-                wc = max(0.0, min(1.0, wc))
-
-                # Quantize pixel to bin
-                bin_val = min(int(image[r, c] * (n_bins - 1)), n_bins - 1)
-
-                # Bilinear interpolation of CDF values
-                v00 = cdfs[ti, tj, bin_val]
-                v01 = cdfs[ti, tj1, bin_val]
-                v10 = cdfs[ti1, tj, bin_val]
-                v11 = cdfs[ti1, tj1, bin_val]
-
-                output[r, c] = (
-                    v00 * (1 - wr) * (1 - wc) +
-                    v01 * (1 - wr) * wc +
-                    v10 * wr * (1 - wc) +
-                    v11 * wr * wc
-                )
-
-        return output
-
-    def apply_fast(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
-        """Vectorized CLAHE using grid-based interpolation.
-
-        Same algorithm as ``apply()`` but uses vectorized NumPy operations
-        for significantly better performance on large images. Recommended
-        for images larger than 512x512.
-
-        Parameters
-        ----------
-        source : np.ndarray
-            2D image array. Shape ``(rows, cols)``.
-
-        Returns
-        -------
-        np.ndarray
-            Enhanced image, dtype float64, values in [0, 1].
         """
         if source.ndim != 2:
             raise ValueError(
@@ -384,7 +253,6 @@ class CLAHE(ImageTransform):
         row_coords = np.arange(rows, dtype=np.float64)
         col_coords = np.arange(cols, dtype=np.float64)
 
-        # Map rows to tile indices
         ti_float = np.interp(row_coords, tile_centers_r,
                              np.arange(n_tiles_r, dtype=np.float64))
         tj_float = np.interp(col_coords, tile_centers_c,
@@ -398,32 +266,142 @@ class CLAHE(ImageTransform):
         wr = (ti_float - ti0).astype(np.float64)
         wc = (tj_float - tj0).astype(np.float64)
 
-        # Quantize all pixels
+        # Quantize all pixels to bin indices
         bin_image = np.clip(
             (image * (n_bins - 1)).astype(int), 0, n_bins - 1
         )
 
-        # Look up CDF values for each corner tile
-        output = np.zeros_like(image)
-        for r in range(rows):
-            ti_a = ti0[r]
-            ti_b = ti1[r]
-            w_r = wr[r]
+        # Fully vectorized CDF lookup via advanced indexing
+        # Build 2D index grids for tile corners
+        ti0_2d = ti0[:, np.newaxis] * np.ones(cols, dtype=int)[np.newaxis, :]
+        ti1_2d = ti1[:, np.newaxis] * np.ones(cols, dtype=int)[np.newaxis, :]
+        tj0_2d = np.ones(rows, dtype=int)[:, np.newaxis] * tj0[np.newaxis, :]
+        tj1_2d = np.ones(rows, dtype=int)[:, np.newaxis] * tj1[np.newaxis, :]
 
-            bins_row = bin_image[r, :]
+        v00 = cdfs[ti0_2d, tj0_2d, bin_image]
+        v01 = cdfs[ti0_2d, tj1_2d, bin_image]
+        v10 = cdfs[ti1_2d, tj0_2d, bin_image]
+        v11 = cdfs[ti1_2d, tj1_2d, bin_image]
 
-            for c_idx in range(cols):
-                tj_a = tj0[c_idx]
-                tj_b = tj1[c_idx]
-                w_c = wc[c_idx]
-                b = bins_row[c_idx]
+        # Bilinear interpolation weights (broadcast to 2D)
+        wr_2d = wr[:, np.newaxis]
+        wc_2d = wc[np.newaxis, :]
 
-                v = (
-                    cdfs[ti_a, tj_a, b] * (1 - w_r) * (1 - w_c) +
-                    cdfs[ti_a, tj_b, b] * (1 - w_r) * w_c +
-                    cdfs[ti_b, tj_a, b] * w_r * (1 - w_c) +
-                    cdfs[ti_b, tj_b, b] * w_r * w_c
+        output = (
+            v00 * (1 - wr_2d) * (1 - wc_2d) +
+            v01 * (1 - wr_2d) * wc_2d +
+            v10 * wr_2d * (1 - wc_2d) +
+            v11 * wr_2d * wc_2d
+        )
+
+        return output
+
+    def apply_reference(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
+        """Pixel-by-pixel CLAHE for validation and testing.
+
+        Produces identical results to ``apply()`` but uses explicit
+        Python loops. Retained for correctness verification against
+        the vectorized implementation.
+
+        Parameters
+        ----------
+        source : np.ndarray
+            2D image array. Shape ``(rows, cols)``.
+
+        Returns
+        -------
+        np.ndarray
+            Enhanced image, dtype float64, values in [0, 1].
+        """
+        if source.ndim != 2:
+            raise ValueError(
+                f"Expected 2D image, got shape {source.shape}"
+            )
+
+        image = source.astype(np.float64)
+
+        vmin = image.min()
+        vmax = image.max()
+        if vmax - vmin < 1e-15:
+            return np.zeros_like(image, dtype=np.float64)
+        image = (image - vmin) / (vmax - vmin)
+
+        rows, cols = image.shape
+        bs = self.block_size
+        n_bins = self.n_bins
+
+        n_tiles_r = max(1, (rows + bs - 1) // bs)
+        n_tiles_c = max(1, (cols + bs - 1) // bs)
+
+        tile_centers_r = np.linspace(
+            bs // 2, rows - 1 - bs // 2, n_tiles_r
+        ).astype(int)
+        tile_centers_c = np.linspace(
+            bs // 2, cols - 1 - bs // 2, n_tiles_c
+        ).astype(int)
+
+        if len(tile_centers_r) < 1:
+            tile_centers_r = np.array([rows // 2])
+        if len(tile_centers_c) < 1:
+            tile_centers_c = np.array([cols // 2])
+
+        block_pixels = bs * bs
+        clip_limit = max(1, int(self.max_slope * block_pixels / n_bins))
+
+        cdfs = np.zeros((len(tile_centers_r), len(tile_centers_c), n_bins),
+                        dtype=np.float64)
+
+        for ti, cr in enumerate(tile_centers_r):
+            for tj, cc in enumerate(tile_centers_c):
+                r0 = max(0, cr - bs // 2)
+                r1 = min(rows, cr + bs // 2 + 1)
+                c0 = max(0, cc - bs // 2)
+                c1 = min(cols, cc + bs // 2 + 1)
+
+                tile = image[r0:r1, c0:c1]
+                bin_idx = np.clip(
+                    (tile * (n_bins - 1)).astype(int), 0, n_bins - 1
                 )
-                output[r, c_idx] = v
+                hist = np.bincount(bin_idx.ravel(), minlength=n_bins).astype(
+                    np.float64
+                )
+                hist = _clip_histogram(hist, clip_limit)
+                cdfs[ti, tj] = _compute_cdf(hist)
+
+        output = np.zeros_like(image)
+
+        for r in range(rows):
+            for c in range(cols):
+                ti = np.searchsorted(tile_centers_r, r, side='right') - 1
+                tj = np.searchsorted(tile_centers_c, c, side='right') - 1
+                ti = max(0, min(ti, len(tile_centers_r) - 2))
+                tj = max(0, min(tj, len(tile_centers_c) - 2))
+
+                ti1 = min(ti + 1, len(tile_centers_r) - 1)
+                tj1 = min(tj + 1, len(tile_centers_c) - 1)
+
+                cr0 = tile_centers_r[ti]
+                cr1 = tile_centers_r[ti1]
+                cc0 = tile_centers_c[tj]
+                cc1 = tile_centers_c[tj1]
+
+                wr = (r - cr0) / (cr1 - cr0) if cr1 > cr0 else 0.0
+                wc = (c - cc0) / (cc1 - cc0) if cc1 > cc0 else 0.0
+                wr = max(0.0, min(1.0, wr))
+                wc = max(0.0, min(1.0, wc))
+
+                bin_val = min(int(image[r, c] * (n_bins - 1)), n_bins - 1)
+
+                v00 = cdfs[ti, tj, bin_val]
+                v01 = cdfs[ti, tj1, bin_val]
+                v10 = cdfs[ti1, tj, bin_val]
+                v11 = cdfs[ti1, tj1, bin_val]
+
+                output[r, c] = (
+                    v00 * (1 - wr) * (1 - wc) +
+                    v01 * (1 - wr) * wc +
+                    v10 * wr * (1 - wc) +
+                    v11 * wr * wc
+                )
 
         return output

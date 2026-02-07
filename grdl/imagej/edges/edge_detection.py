@@ -30,8 +30,7 @@ scipy
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -57,7 +56,7 @@ from scipy.ndimage import convolve, gaussian_filter, laplace
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
 
 
 EDGE_METHODS = ('sobel', 'prewitt', 'roberts', 'log', 'scharr')
@@ -95,6 +94,7 @@ _SCHARR_Y = np.array([[ -3, -10, -3],
                        [  3,  10,  3]], dtype=np.float64)
 
 
+@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='edges')
 @processor_version('1.54j')
 class EdgeDetector(ImageTransform):
     """Gradient-based edge detection, ported from ImageJ 1.54j.
@@ -153,6 +153,7 @@ class EdgeDetector(ImageTransform):
 
     __imagej_source__ = 'ij/process/FloatProcessor.java'
     __imagej_version__ = '1.54j'
+    __gpu_compatible__ = False
 
     def __init__(
         self,
