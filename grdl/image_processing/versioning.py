@@ -29,18 +29,30 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import Any, Optional, Sequence, Tuple, Type, TypeVar, Union, overload
+import importlib.metadata
 
 T = TypeVar('T')
 
 
+@overload
 def processor_version(version: str):
+    ...
+
+@overload
+def processor_version():
+    ...
+
+def processor_version(version: Optional[str] = None):
     """Class decorator that stamps a processor version on an image processor.
 
     Applies to any image processor class (ImageTransform, ImageDetector,
     PolarimetricDecomposition, etc.). Sets ``__processor_version__`` as a
     class attribute. This version serves as the single source of truth for
     both the algorithm version and the output format version.
+
+    If a version is not provided, it will be inferred from the package
+    metadata. This is useful for "rapid" development processors where
 
     Parameters
     ----------
@@ -66,7 +78,13 @@ def processor_version(version: str):
     '1.0.0'
     """
     def decorator(cls: Type[T]) -> Type[T]:
-        cls.__processor_version__ = version
+        if version:
+            cls.__processor_version__ = version
+        else:
+            try:
+                cls.__processor_version__ = importlib.metadata.version('grdl')
+            except importlib.metadata.PackageNotFoundError:
+                cls.__processor_version__ = "unknown"
         return cls
     return decorator
 

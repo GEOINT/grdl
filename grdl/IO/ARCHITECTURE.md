@@ -657,6 +657,29 @@ OAuth2 download, and SQLite tracking. Future catalog work:
 - New readers/features increment minor version
 - Bug fixes increment patch version
 
+**Processor Versioning:**
+To support both formal, long-term development and rapid prototyping, processor versioning is designed to be flexible. All image processors can be decorated with `@processor_version` to explicitly set their version.
+
+If the `@processor_version` decorator is used without an argument, or not at all, the processor automatically inherits the project-wide version from the package metadata (defined in `pyproject.toml`). This provides a graceful fallback, ensuring that every processor has a version string. This is critical for downstream tools like GRDK, which rely on this metadata for display and caching.
+
+- **Explicit Versioning**: For stable, production-ready processors, explicitly define the version to decouple it from the main project's release cycle. This is crucial for scientific users who need:
+    - **Reproducibility**: To ensure that scientific results obtained with a specific processor version can be replicated consistently over time, independent of subsequent library updates.
+    - **Stability for Research**: To provide control over when changes to the processor are adopted, preventing unexpected alterations to research workflows that rely on a specific algorithm's behavior.
+    - **Independence from Library Release Cycles**: To guarantee a processor's behavior remains fixed even if the main GRDL library undergoes minor or major updates, which might introduce changes to other components.
+  ```python
+  @processor_version('1.2.0')
+  class MyStableProcessor(ImageTransform):
+      ...
+  ```
+
+- **Implicit Versioning**: For rapid development or processors that version in lock-step with the library, omit the version argument.
+  ```python
+  @processor_version
+  class MyRapidProcessor(ImageTransform):
+      ...
+  ```
+This dual approach allows developers to move fast while maintaining a consistent and reliable versioning scheme across the entire system.
+
 **Deprecation Policy:**
 - 2 minor version warning period
 - Use Python warnings module
