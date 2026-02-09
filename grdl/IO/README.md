@@ -8,29 +8,23 @@ The IO module provides a unified interface for reading and writing various geosp
 
 ## Supported Formats
 
-### SAR (Synthetic Aperture Radar)
+### Base Data Formats (IO level)
 
-| Format | Type | Reader Class | Status |
-|--------|------|-------------|--------|
-| SICD | NGA Standard Complex | `SICDReader` | ✅ Implemented |
-| CPHD | NGA Phase History | `CPHDReader` | ✅ Implemented |
-| CRSD | NGA Received Signal | - | 🔄 Planned |
-| GRD | Ground Range Detected | `GRDReader` | ✅ Implemented |
-| SLC | Single Look Complex | - | 🔄 Planned |
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| GeoTIFF/COG | `GeoTIFFReader` | rasterio | ✅ Implemented |
+| NITF | `NITFReader` | rasterio/GDAL | ✅ Implemented |
 
-### Mission-Specific Readers
+### SAR (Synthetic Aperture Radar) — `sar/` submodule
 
-| Mission | Type | Reader Class | Status |
-|---------|------|-------------|--------|
-| BIOMASS L1 SCS | ESA P-band SAR | `BIOMASSL1Reader` | ✅ Implemented |
-
-### EO (Electro-Optical)
-
-| Format | Type | Reader Class | Status |
-|--------|------|-------------|--------|
-| GeoTIFF | Raster | - | 🔄 Planned |
-| NITF | Container | - | 🔄 Planned |
-| COG | Cloud-Optimized GeoTIFF | - | 🔄 Planned |
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| SICD | `SICDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
+| CPHD | `CPHDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
+| CRSD | `CRSDReader` | sarkit | ✅ Implemented |
+| SIDD | `SIDDReader` | sarkit | ✅ Implemented |
+| BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
+| SLC | - | - | 🔄 Planned |
 
 ### Geospatial Vector
 
@@ -130,12 +124,18 @@ with CPHDReader('cphd_data.cphd') as reader:
     ph_data = reader.read_full(bands=[0])  # First channel
 ```
 
-#### GRD - Geocoded SAR Products
+#### GeoTIFF - Any Raster Imagery (SAR GRD, EO, MSI)
 
 ```python
-from grdl.IO import GRDReader
+from grdl.IO import GeoTIFFReader, open_image
 
-with GRDReader('sentinel1_grd.tif') as reader:
+# Auto-detect any supported raster format
+with open_image('scene.tif') as reader:
+    print(f"Format: {reader.metadata['format']}")
+    chip = reader.read_chip(0, 1024, 0, 1024)
+
+# Or use the GeoTIFFReader directly
+with GeoTIFFReader('sentinel1_grd.tif') as reader:
     # Access geolocation
     geo = reader.get_geolocation()
     print(f"CRS: {geo['crs']}")
@@ -149,6 +149,27 @@ with GRDReader('sentinel1_grd.tif') as reader:
     if reader.metadata['bands'] > 1:
         # Read specific bands (0-based indexing)
         vv_vh = reader.read_chip(0, 1000, 0, 1000, bands=[0, 1])
+```
+
+#### CRSD - Compensated Radar Signal Data
+
+```python
+from grdl.IO import CRSDReader
+
+with CRSDReader('data.crsd') as reader:
+    print(f"Channels: {reader.metadata['num_channels']}")
+    shape = reader.get_shape()
+    signal = reader.read_chip(0, 100, 0, 200)
+```
+
+#### SIDD - Sensor Independent Derived Data
+
+```python
+from grdl.IO import SIDDReader
+
+with SIDDReader('derived.nitf', image_index=0) as reader:
+    print(f"Num images: {reader.metadata['num_images']}")
+    chip = reader.read_chip(0, 512, 0, 512)
 ```
 
 ### BIOMASS ESA Satellite Data

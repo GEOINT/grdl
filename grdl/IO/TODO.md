@@ -10,18 +10,24 @@ Roadmap and planned features for the IO module.
   - [x] `ImageReader` ABC with lazy loading
   - [x] `ImageWriter` ABC with incremental writes
   - [x] `CatalogInterface` ABC for discovery
-- [x] SAR readers (`sar.py`)
-  - [x] `SICDReader` - SICD format via SARPY
-  - [x] `CPHDReader` - CPHD format via SARPY
-  - [x] `GRDReader` - GRD GeoTIFF via rasterio
+- [x] SAR readers (`sar/` submodule)
+  - [x] `SICDReader` - SICD format (sarkit primary, sarpy fallback)
+  - [x] `CPHDReader` - CPHD format (sarkit primary, sarpy fallback)
+  - [x] `CRSDReader` - CRSD format (sarkit-only)
+  - [x] `SIDDReader` - SIDD format (sarkit-only)
+  - [x] `_backend.py` - sarkit/sarpy availability detection
   - [x] `open_sar()` - Auto-detection utility
-- [x] BIOMASS readers (`biomass.py`)
+- [x] Base format readers (IO level)
+  - [x] `GeoTIFFReader` - GeoTIFF/COG via rasterio
+  - [x] `NITFReader` - Generic NITF via rasterio/GDAL
+  - [x] `open_image()` - Auto-detection for base formats
+- [x] BIOMASS readers (`sar/biomass.py`)
   - [x] `BIOMASSL1Reader` - BIOMASS L1 SCS format (magnitude/phase GeoTIFFs)
   - [x] `open_biomass()` - Auto-detection utility
   - [x] Full quad-pol support (HH, HV, VH, VV)
   - [x] XML annotation metadata parsing
   - [x] Complex data reconstruction from magnitude/phase
-- [x] Catalog system (`catalog.py`)
+- [x] Catalog system (`sar/biomass_catalog.py`)
   - [x] `BIOMASSCatalog` - BIOMASS-specific catalog and download manager
   - [x] Local file system discovery
   - [x] ESA MAAP STAC API search (`query_esa()`)
@@ -101,34 +107,22 @@ Roadmap and planned features for the IO module.
 
 ## High Priority
 
-### SAR Readers (sar.py)
+### SAR Readers (sar/)
 
-- [ ] **CRSDReader** - CRSD format support
-  - Use SARPY's CRSD reader
-  - Similar structure to CPHDReader
-  - Test with CRSD 1.0 sample files
+- [x] **CRSDReader** - CRSD format support (sarkit-only)
+- [x] **SIDDReader** - SIDD format support (sarkit-only)
+- [x] **sarkit/sarpy dual backend** - sarkit primary, sarpy fallback for SICD/CPHD
 
 - [ ] **SLCReader** - Single Look Complex
   - Distinguish from GRD (also GeoTIFF)
   - Parse SAR-specific metadata tags
   - Handle complex data in GeoTIFF
 
-- [ ] **SIDD Support** - Sensor Independent Derived Data
-  - Detected/processed SAR imagery
-  - Use SARPY's SIDD reader
-  - Coordinate with SICDReader (similar structure)
+### Base Format Readers (IO level)
 
-### EO Readers (eo.py) - NEW MODULE
-
-- [ ] **GeoTIFFReader** - General raster imagery
-  - Reuse GRDReader implementation (also rasterio)
-  - Handle RGB, multispectral, hyperspectral
-  - Support for COG (Cloud-Optimized GeoTIFF)
-
-- [ ] **NITFReader** - NITF 2.1 imagery
-  - Use SARPY or rasterio for NITF parsing
-  - Handle TREs (Tagged Record Extensions)
-  - Support multi-image NITF files
+- [x] **GeoTIFFReader** - General raster imagery via rasterio
+- [x] **NITFReader** - Generic NITF via rasterio/GDAL
+- [x] **open_image()** - Auto-detect GeoTIFF or NITF
 
 - [ ] **JP2Reader** - JPEG2000 imagery
   - Via rasterio or glymur
@@ -305,8 +299,8 @@ Roadmap and planned features for the IO module.
   - [ ] SICDReader edge cases (multi-segment NITF)
   - [x] CPHDReader basic functionality
   - [ ] CPHDReader multi-channel handling
-  - [x] GRDReader basic functionality
-  - [ ] GRDReader multi-band imagery
+  - [x] GeoTIFFReader basic functionality
+  - [ ] GeoTIFFReader multi-band imagery
   - [ ] open_sar() format detection logic
 
 - [ ] EO readers (once implemented)
@@ -487,8 +481,11 @@ Track user-requested features here:
 - [x] Documentation framework
 
 ### v0.2.0 (Next)
-- [ ] Additional SAR readers (CRSD, SLC, SIDD)
-- [ ] Basic EO readers (GeoTIFF, NITF)
+- [x] Additional SAR readers (CRSD, SIDD) with sarkit backend
+- [x] Base format readers (GeoTIFF, NITF) at IO level
+- [x] IO restructure into modality-based submodules (sar/)
+- [x] sarkit/sarpy dual backend for SICD and CPHD
+- [ ] SLCReader for Single Look Complex GeoTIFFs
 - [ ] Concrete ImageDetector implementations
 - [ ] Test coverage >80%
 

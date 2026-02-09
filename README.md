@@ -20,7 +20,7 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 
 | Domain | Description | Status |
 |--------|-------------|--------|
-| **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, GRD, BIOMASS) | Implemented |
+| **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, CRSD, SIDD, GeoTIFF, NITF, BIOMASS) | Implemented |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
 | **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
 | **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
@@ -38,9 +38,16 @@ GRDL/
 │   ├── py.typed                     # PEP 561 type stub marker
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
-│   │   ├── sar.py                   #   SICDReader, CPHDReader, GRDReader, open_sar()
-│   │   ├── biomass.py               #   BIOMASSL1Reader, open_biomass()
-│   │   └── catalog.py               #   BIOMASSCatalog, load_credentials()
+│   │   ├── geotiff.py               #   GeoTIFFReader (rasterio), open_image()
+│   │   ├── nitf.py                  #   NITFReader (rasterio/GDAL)
+│   │   └── sar/                     #   SAR-specific formats
+│   │       ├── _backend.py          #     sarkit/sarpy availability detection
+│   │       ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
+│   │       ├── cphd.py              #     CPHDReader (sarkit primary, sarpy fallback)
+│   │       ├── crsd.py              #     CRSDReader (sarkit only)
+│   │       ├── sidd.py              #     SIDDReader (sarkit only)
+│   │       ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
+│   │       └── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
@@ -412,7 +419,8 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 
 - `numpy` -- Used across all modules (core)
 - `scipy` -- Geolocation interpolation, ImageJ port filters (core)
-- `sarpy` -- SICD / CPHD format support (`[sar]` extra)
+- `sarkit` -- SICD / CPHD / CRSD / SIDD format support (primary SAR backend, `[sar]` extra)
+- `sarpy` -- SICD / CPHD fallback backend (`[sar]` extra)
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
 - `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
