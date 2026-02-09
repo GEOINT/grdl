@@ -10,6 +10,7 @@ for the ImageJ component categorization.
 Author
 ------
 Steven Siebert
+Jason Fritz
 
 License
 -------
@@ -23,7 +24,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-09
 """
 
 # Category constants — each matches its subdirectory name under grdl/imagej/
@@ -37,6 +38,9 @@ FIND_MAXIMA = 'find_maxima'
 THRESHOLD = 'threshold'
 SEGMENTATION = 'segmentation'
 STACKS = 'stacks'
+MATH = 'math'
+ANALYZE = 'analyze'
+NOISE = 'noise'
 
 # Ordered tuple for iteration and UI display
 ALL_CATEGORIES = (
@@ -50,6 +54,9 @@ ALL_CATEGORIES = (
     THRESHOLD,
     SEGMENTATION,
     STACKS,
+    MATH,
+    ANALYZE,
+    NOISE,
 )
 
 # Human-readable labels mirroring ImageJ menu paths
@@ -64,4 +71,7 @@ CATEGORY_LABELS = {
     THRESHOLD: 'Image > Adjust > Threshold',
     SEGMENTATION: 'Plugins > Segmentation',
     STACKS: 'Image > Stacks',
+    MATH: 'Process > Image Calculator',
+    ANALYZE: 'Analyze > Analyze Particles',
+    NOISE: 'Plugins > Anisotropic Diffusion',
 }
