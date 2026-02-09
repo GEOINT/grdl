@@ -380,19 +380,22 @@ Each ported component carries `__imagej_source__`, `__imagej_version__`, `__gpu_
 
 ## Data Preparation
 
-The `grdl.data_prep` module provides utilities for formatting imagery into ML/AI pipeline-ready formats:
+The `grdl.data_prep` module provides chip/tile index computation and normalization utilities:
 
 ```python
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Split image into overlapping tiles
-tiler = Tiler(tile_size=256, stride=128)
-tiles = tiler.tile(image)
-reconstructed = tiler.untile(tiles, image.shape)
+# Compute chip region centered at a point (snaps to stay inside image)
+extractor = ChipExtractor(nrows=rows, ncols=cols)
+region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
+chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
 
-# Extract chips at point locations
-extractor = ChipExtractor(chip_size=64)
-chips = extractor.extract_at_points(image, points)
+# Partition image into uniform chip regions
+regions = extractor.chip_positions(row_width=256, col_width=256)
+
+# Compute overlapping tile positions with stride
+tiler = Tiler(nrows=rows, ncols=cols, tile_size=256, stride=128)
+tile_regions = tiler.tile_positions()
 
 # Normalize intensity values
 norm = Normalizer(method='minmax')

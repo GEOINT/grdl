@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Chip Extractor - Extract image chips at specified locations.
+Chip Extractor - Compute chip regions within a bounded image.
 
-Provides chip extraction centered at point coordinates or from bounding
-boxes of polygon regions. Handles edge cases where chips extend beyond
-image bounds by padding. Supports both 2D and 3D imagery arrays.
+Provides point-centered chip computation and whole-image chunking. Returns
+``ChipRegion`` named tuples containing clipped index bounds, decoupling
+chip planning from pixel data access.
 
 Author
 ------
-Steven Siebert
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
 
 License
 -------
@@ -22,398 +23,241 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-09
 """
 
 # Standard library
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Union
 
 # Third-party
 import numpy as np
 
 # GRDL internal
-from grdl.data_prep.base import _normalize_pair, _validate_image
+from grdl.data_prep.base import ChipBase, ChipRegion
 
 
-class ChipExtractor:
-    """Extract image chips at specified locations.
+def _is_scalar(val: object) -> bool:
+    """Check if a value is scalar (not array-like)."""
+    if isinstance(val, np.ndarray):
+        return val.ndim == 0
+    return isinstance(val, (int, float, np.integer, np.floating))
 
-    Chips are rectangular sub-images extracted from a larger image. Point
-    extraction centers chips at given coordinates. Polygon extraction uses
-    the bounding box of each polygon and also produces a binary mask
-    indicating which pixels fall inside the polygon.
+
+def _validate_positive_int(value: int, name: str) -> None:
+    """Validate that a value is a positive integer.
 
     Parameters
     ----------
-    chip_size : int or Tuple[int, int]
-        (chip_rows, chip_cols). If int, square chips.
-    pad_mode : str
-        numpy pad mode for edge chips. Default ``'constant'``.
-    pad_value : float
-        Value for constant padding. Default ``0.0``.
+    value : int
+        Value to validate.
+    name : str
+        Parameter name for error messages.
 
     Raises
     ------
     TypeError
-        If chip_size is not int or Tuple[int, int].
+        If ``value`` is not ``int``.
     ValueError
-        If chip_size has non-positive elements.
+        If ``value`` is not positive.
+    """
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be int, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
+class ChipExtractor(ChipBase):
+    """Compute chip regions for point-centered extraction and whole-image chunking.
+
+    A planning utility that computes where chips fall within an image,
+    returning clipped index bounds as ``ChipRegion`` instances. Does not
+    handle pixel data.
+
+    Parameters
+    ----------
+    nrows : int
+        Number of rows in the image.
+    ncols : int
+        Number of columns in the image.
+
+    Raises
+    ------
+    TypeError
+        If ``nrows`` or ``ncols`` is not ``int``.
+    ValueError
+        If ``nrows`` or ``ncols`` is not positive.
 
     Examples
     --------
-    >>> import numpy as np
     >>> from grdl.data_prep import ChipExtractor
-    >>> image = np.random.rand(100, 100)
-    >>> extractor = ChipExtractor(chip_size=32)
-    >>> points = np.array([[50, 50], [10, 10]])
-    >>> chips = extractor.extract_at_points(image, points)
-    >>> chips.shape
-    (2, 32, 32)
+    >>> ext = ChipExtractor(nrows=100, ncols=200)
+    >>> region = ext.chip_at_point(50, 100, row_width=32, col_width=32)
+    >>> region
+    ChipRegion(row_start=34, col_start=84, row_end=66, col_end=116)
+    >>> image[region.row_start:region.row_end, region.col_start:region.col_end]
     """
 
-    def __init__(
+    def __init__(self, nrows: int, ncols: int) -> None:
+        super().__init__(nrows, ncols)
+
+    def chip_at_point(
         self,
-        chip_size: Union[int, Tuple[int, int]],
-        pad_mode: str = 'constant',
-        pad_value: float = 0.0,
-    ) -> None:
-        self._chip_size = _normalize_pair(chip_size, 'chip_size')
-        self._pad_mode = pad_mode
-        self._pad_value = pad_value
+        row: Union[int, float, list, np.ndarray],
+        col: Union[int, float, list, np.ndarray],
+        row_width: int,
+        col_width: int,
+    ) -> Union[ChipRegion, List[ChipRegion]]:
+        """Compute chip region(s) centered at the given point(s).
 
-    @property
-    def chip_size(self) -> Tuple[int, int]:
-        """The (chip_rows, chip_cols) dimensions.
+        The chip is centered at the given point. When centering would
+        place the chip partially outside the image, the window snaps
+        inward to maintain the full requested dimensions. The chip is
+        only smaller than requested when the image itself is smaller
+        than the chip dimensions.
 
-        Returns
-        -------
-        Tuple[int, int]
-            Chip dimensions.
-        """
-        return self._chip_size
-
-    def _extract_chip(
-        self, image: np.ndarray, row_start: int, col_start: int,
-        chip_rows: int, chip_cols: int
-    ) -> np.ndarray:
-        """Extract a single chip with padding for out-of-bounds regions.
+        Accepts scalar or array inputs. Returns a single ``ChipRegion``
+        for scalar inputs, or a list for array/list inputs.
 
         Parameters
         ----------
-        image : np.ndarray
-            2D or 3D source image.
-        row_start : int
-            Top-left row of the chip (may be negative).
-        col_start : int
-            Top-left col of the chip (may be negative).
-        chip_rows : int
-            Height of the chip.
-        chip_cols : int
-            Width of the chip.
+        row : int, float, list, or np.ndarray
+            Row coordinate(s) of chip center(s). Rounded to nearest int.
+        col : int, float, list, or np.ndarray
+            Column coordinate(s) of chip center(s). Rounded to nearest int.
+        row_width : int
+            Number of rows in the chip (before clipping).
+        col_width : int
+            Number of columns in the chip (before clipping).
 
         Returns
         -------
-        np.ndarray
-            Extracted chip of shape ``(chip_rows, chip_cols)`` for 2D or
-            ``(bands, chip_rows, chip_cols)`` for 3D.
-        """
-        is_3d = image.ndim == 3
-        if is_3d:
-            bands, img_rows, img_cols = image.shape
-        else:
-            img_rows, img_cols = image.shape
-
-        # Compute the overlap between the chip window and the image
-        src_row_start = max(0, row_start)
-        src_col_start = max(0, col_start)
-        src_row_end = min(img_rows, row_start + chip_rows)
-        src_col_end = min(img_cols, col_start + chip_cols)
-
-        # Offsets into the chip array
-        dst_row_start = src_row_start - row_start
-        dst_col_start = src_col_start - col_start
-        dst_row_end = dst_row_start + (src_row_end - src_row_start)
-        dst_col_end = dst_col_start + (src_col_end - src_col_start)
-
-        # Handle fully out-of-bounds chips
-        if src_row_start >= src_row_end or src_col_start >= src_col_end:
-            if is_3d:
-                chip = np.full(
-                    (bands, chip_rows, chip_cols),
-                    self._pad_value, dtype=image.dtype
-                )
-            else:
-                chip = np.full(
-                    (chip_rows, chip_cols),
-                    self._pad_value, dtype=image.dtype
-                )
-            return chip
-
-        # Allocate chip and fill with pad value
-        if is_3d:
-            chip = np.full(
-                (bands, chip_rows, chip_cols),
-                self._pad_value, dtype=image.dtype
-            )
-            chip[:, dst_row_start:dst_row_end,
-                 dst_col_start:dst_col_end] = (
-                image[:, src_row_start:src_row_end,
-                      src_col_start:src_col_end]
-            )
-        else:
-            chip = np.full(
-                (chip_rows, chip_cols),
-                self._pad_value, dtype=image.dtype
-            )
-            chip[dst_row_start:dst_row_end,
-                 dst_col_start:dst_col_end] = (
-                image[src_row_start:src_row_end,
-                      src_col_start:src_col_end]
-            )
-
-        return chip
-
-    def extract_at_points(
-        self, image: np.ndarray, points: np.ndarray
-    ) -> np.ndarray:
-        """Extract chips centered at given (row, col) points.
-
-        Each chip is centered at the specified point. If a chip extends
-        beyond image boundaries, it is padded.
-
-        Parameters
-        ----------
-        image : np.ndarray
-            2D ``(rows, cols)`` or 3D ``(bands, rows, cols)`` source image.
-        points : np.ndarray
-            ``(N, 2)`` array of ``(row, col)`` center coordinates. Values
-            are rounded to the nearest integer.
-
-        Returns
-        -------
-        np.ndarray
-            For 2D input: ``(N, chip_rows, chip_cols)`` array.
-            For 3D input: ``(N, bands, chip_rows, chip_cols)`` array.
+        ChipRegion or List[ChipRegion]
+            Clipped chip region(s). Single ``ChipRegion`` when inputs are
+            scalar; list when inputs are array-like.
 
         Raises
         ------
         TypeError
-            If image is not a numpy ndarray or points is not a numpy
-            ndarray.
+            If ``row_width`` or ``col_width`` is not ``int``.
         ValueError
-            If image is not 2D or 3D, or points is not shape ``(N, 2)``.
+            If ``row_width`` or ``col_width`` is not positive, or if any
+            center point is outside image bounds
+            ``[0, nrows)`` x ``[0, ncols)``.
+
+        Examples
+        --------
+        Single point:
+
+        >>> ext = ChipExtractor(nrows=100, ncols=100)
+        >>> ext.chip_at_point(50, 50, row_width=20, col_width=20)
+        ChipRegion(row_start=40, col_start=40, row_end=60, col_end=60)
+
+        Near edge (snapped to maintain full size):
+
+        >>> ext.chip_at_point(5, 5, row_width=20, col_width=20)
+        ChipRegion(row_start=0, col_start=0, row_end=20, col_end=20)
+
+        Multiple points:
+
+        >>> ext.chip_at_point([50, 5], [50, 5], row_width=20, col_width=20)
+        [ChipRegion(row_start=40, ...), ChipRegion(row_start=0, ...)]
         """
-        _validate_image(image)
-        if not isinstance(points, np.ndarray):
-            raise TypeError(
-                f"points must be np.ndarray, got {type(points).__name__}"
-            )
-        if points.ndim != 2 or points.shape[1] != 2:
+        _validate_positive_int(row_width, 'row_width')
+        _validate_positive_int(col_width, 'col_width')
+
+        scalar = _is_scalar(row) and _is_scalar(col)
+
+        rows_arr = np.round(np.asarray(row, dtype=np.float64)).astype(np.int64)
+        cols_arr = np.round(np.asarray(col, dtype=np.float64)).astype(np.int64)
+
+        # Ensure 1D arrays for uniform processing
+        rows_arr = np.atleast_1d(rows_arr)
+        cols_arr = np.atleast_1d(cols_arr)
+
+        # Validate all points are within image bounds
+        if np.any(rows_arr < 0) or np.any(rows_arr >= self._nrows):
             raise ValueError(
-                f"points must have shape (N, 2), got {points.shape}"
+                f"row values must be in [0, {self._nrows}), "
+                f"got range [{rows_arr.min()}, {rows_arr.max()}]"
+            )
+        if np.any(cols_arr < 0) or np.any(cols_arr >= self._ncols):
+            raise ValueError(
+                f"col values must be in [0, {self._ncols}), "
+                f"got range [{cols_arr.min()}, {cols_arr.max()}]"
             )
 
-        n_points = points.shape[0]
-        cr, cc = self._chip_size
-        is_3d = image.ndim == 3
+        # Compute initial top-left corners from center points
+        half_r = row_width // 2
+        half_c = col_width // 2
+        r_starts = rows_arr - half_r
+        c_starts = cols_arr - half_c
 
-        # Compute top-left corners from center points
-        half_r = cr // 2
-        half_c = cc // 2
-        centers = np.round(points).astype(np.int64)
-        row_starts = centers[:, 0] - half_r
-        col_starts = centers[:, 1] - half_c
-
-        if is_3d:
-            bands = image.shape[0]
-            chips = np.empty(
-                (n_points, bands, cr, cc), dtype=image.dtype
+        # Snap each region to fit inside image bounds
+        regions = [
+            self._snap_region(
+                int(r_starts[i]), int(c_starts[i]), row_width, col_width
             )
-        else:
-            chips = np.empty((n_points, cr, cc), dtype=image.dtype)
+            for i in range(len(rows_arr))
+        ]
 
-        for i in range(n_points):
-            chips[i] = self._extract_chip(
-                image, int(row_starts[i]), int(col_starts[i]), cr, cc
-            )
+        if scalar:
+            return regions[0]
+        return regions
 
-        return chips
-
-    def extract_at_polygons(
+    def chip_positions(
         self,
-        image: np.ndarray,
-        polygons: List[np.ndarray],
-        labels: Optional[np.ndarray] = None,
-    ) -> List[Dict[str, Any]]:
-        """Extract chips from bounding boxes of polygon regions.
+        row_width: int,
+        col_width: int,
+    ) -> List[ChipRegion]:
+        """Partition the image into chip regions of uniform size.
 
-        For each polygon, computes the bounding box, extracts a chip of
-        that size (padded if needed), and creates a binary mask indicating
-        which pixels fall inside the polygon.
+        Chips are laid out row-major from top-left to bottom-right. Edge
+        chips snap inward to maintain the full requested dimensions,
+        which may cause overlap with adjacent chips at the boundary.
+        When the image is smaller than the requested chip size, a single
+        chip covering the full image is returned.
 
         Parameters
         ----------
-        image : np.ndarray
-            2D ``(rows, cols)`` or 3D ``(bands, rows, cols)`` source image.
-        polygons : List[np.ndarray]
-            List of ``(M, 2)`` arrays of ``(row, col)`` polygon vertices.
-            Each polygon must have at least 3 vertices.
-        labels : np.ndarray, optional
-            ``(N,)`` array of labels for each polygon. If provided, must
-            have the same length as ``polygons``.
+        row_width : int
+            Number of rows per chip.
+        col_width : int
+            Number of columns per chip.
 
         Returns
         -------
-        List[Dict[str, Any]]
-            Each dict contains:
-
-            - ``'chip'``: np.ndarray -- extracted chip image.
-            - ``'mask'``: np.ndarray -- binary mask (bool), same spatial
-              shape as chip. True where pixels are inside the polygon.
-            - ``'bbox'``: Tuple[int, int, int, int] -- bounding box as
-              ``(row_min, col_min, row_max, col_max)``.
-            - ``'label'``: value from labels array (only if labels
-              provided).
+        List[ChipRegion]
+            All chip regions in row-major order.
 
         Raises
         ------
         TypeError
-            If image is not a numpy ndarray.
+            If ``row_width`` or ``col_width`` is not ``int``.
         ValueError
-            If image is not 2D or 3D, polygons is empty, any polygon
-            has fewer than 3 vertices, or labels length does not match
-            polygons length.
+            If ``row_width`` or ``col_width`` is not positive.
+
+        Examples
+        --------
+        >>> ext = ChipExtractor(nrows=100, ncols=100)
+        >>> regions = ext.chip_positions(row_width=50, col_width=50)
+        >>> len(regions)
+        4
+        >>> regions[0]
+        ChipRegion(row_start=0, col_start=0, row_end=50, col_end=50)
         """
-        _validate_image(image)
-        if not polygons:
-            raise ValueError("polygons list must not be empty")
-        if labels is not None and len(labels) != len(polygons):
-            raise ValueError(
-                f"labels length ({len(labels)}) must match polygons "
-                f"length ({len(polygons)})"
+        _validate_positive_int(row_width, 'row_width')
+        _validate_positive_int(col_width, 'col_width')
+
+        row_starts = np.arange(0, self._nrows, row_width)
+        col_starts = np.arange(0, self._ncols, col_width)
+
+        rr, cc = np.meshgrid(row_starts, col_starts, indexing='ij')
+        r_origins = rr.ravel()
+        c_origins = cc.ravel()
+
+        return [
+            self._snap_region(
+                int(r_origins[i]), int(c_origins[i]), row_width, col_width
             )
-
-        results: List[Dict[str, Any]] = []
-
-        for idx, polygon in enumerate(polygons):
-            if not isinstance(polygon, np.ndarray):
-                raise TypeError(
-                    f"polygon at index {idx} must be np.ndarray, "
-                    f"got {type(polygon).__name__}"
-                )
-            if polygon.ndim != 2 or polygon.shape[1] != 2:
-                raise ValueError(
-                    f"polygon at index {idx} must have shape (M, 2), "
-                    f"got {polygon.shape}"
-                )
-            if polygon.shape[0] < 3:
-                raise ValueError(
-                    f"polygon at index {idx} must have at least 3 vertices, "
-                    f"got {polygon.shape[0]}"
-                )
-
-            # Compute bounding box
-            row_min = int(np.floor(polygon[:, 0].min()))
-            col_min = int(np.floor(polygon[:, 1].min()))
-            row_max = int(np.ceil(polygon[:, 0].max()))
-            col_max = int(np.ceil(polygon[:, 1].max()))
-
-            chip_rows = row_max - row_min
-            chip_cols = col_max - col_min
-
-            # Ensure minimum chip size of 1x1
-            chip_rows = max(1, chip_rows)
-            chip_cols = max(1, chip_cols)
-
-            # Extract chip at bounding box location
-            chip = self._extract_chip(
-                image, row_min, col_min, chip_rows, chip_cols
-            )
-
-            # Create polygon mask using ray-casting algorithm (vectorized)
-            mask = self._polygon_mask(
-                polygon, row_min, col_min, chip_rows, chip_cols
-            )
-
-            entry: Dict[str, Any] = {
-                'chip': chip,
-                'mask': mask,
-                'bbox': (row_min, col_min, row_max, col_max),
-            }
-            if labels is not None:
-                entry['label'] = labels[idx]
-
-            results.append(entry)
-
-        return results
-
-    @staticmethod
-    def _polygon_mask(
-        polygon: np.ndarray,
-        row_offset: int,
-        col_offset: int,
-        mask_rows: int,
-        mask_cols: int,
-    ) -> np.ndarray:
-        """Create a binary mask for a polygon using vectorized ray casting.
-
-        Uses the even-odd rule: a point is inside the polygon if a ray
-        cast from the point crosses an odd number of polygon edges.
-
-        Parameters
-        ----------
-        polygon : np.ndarray
-            ``(M, 2)`` array of ``(row, col)`` polygon vertices.
-        row_offset : int
-            Row offset of the mask origin in image coordinates.
-        col_offset : int
-            Column offset of the mask origin in image coordinates.
-        mask_rows : int
-            Number of rows in the mask.
-        mask_cols : int
-            Number of columns in the mask.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean mask of shape ``(mask_rows, mask_cols)``.
-        """
-        # Translate polygon to mask-local coordinates (pixel centers at +0.5)
-        verts = polygon.astype(np.float64)
-        local_rows = verts[:, 0] - row_offset
-        local_cols = verts[:, 1] - col_offset
-
-        n_verts = len(local_rows)
-
-        # Create grid of pixel center coordinates
-        grid_r, grid_c = np.mgrid[0:mask_rows, 0:mask_cols]
-        grid_r = grid_r.astype(np.float64) + 0.5
-        grid_c = grid_c.astype(np.float64) + 0.5
-        # Flatten for vectorized processing
-        pr = grid_r.ravel()  # (mask_rows * mask_cols,)
-        pc = grid_c.ravel()
-
-        inside = np.zeros(pr.shape[0], dtype=bool)
-
-        # Ray casting: for each edge, determine which points are crossed
-        for i in range(n_verts):
-            j = (i + 1) % n_verts
-            ri, ci = local_rows[i], local_cols[i]
-            rj, cj = local_rows[j], local_cols[j]
-
-            # Check if the test point's row is between the edge endpoints
-            cond = ((ri <= pr) & (pr < rj)) | ((rj <= pr) & (pr < ri))
-
-            # Compute the column of the edge at the test row
-            if abs(rj - ri) > 1e-12:
-                col_intersect = ci + (pr - ri) * (cj - ci) / (rj - ri)
-                crossing = cond & (pc < col_intersect)
-                inside ^= crossing
-
-        return inside.reshape(mask_rows, mask_cols)
-
-    def __repr__(self) -> str:
-        return (
-            f"ChipExtractor(chip_size={self._chip_size}, "
-            f"pad_mode='{self._pad_mode}', pad_value={self._pad_value})"
-        )
+            for i in range(len(r_origins))
+        ]

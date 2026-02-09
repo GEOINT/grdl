@@ -33,7 +33,7 @@ grdl/
 │   ├── pipeline.py          # Pipeline (sequential transform composition)
 │   └── ...                  # ortho/, decomposition/, detection/ subdomains
 ├── imagej/                  # 12 ImageJ/Fiji ports (10 subdirs matching ImageJ menu hierarchy)
-├── data_prep/               # Tiler, ChipExtractor, Normalizer
+├── data_prep/               # ChipBase ABC, ChipExtractor, Tiler, Normalizer
 └── coregistration/          # Affine, projective, feature-matching alignment
 ```
 
@@ -131,8 +131,8 @@ IO readers integrate with the image processing module through composable pattern
   enabling all single-band processors to work on multi-band imagery without manual band looping.
 - **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
   `progress_callback` keyword argument for real-time progress reporting.
-- **Data Preparation**: `Tiler`, `ChipExtractor`, and `Normalizer` in `grdl.data_prep` prepare imagery
-  for ML/AI pipelines with configurable tiling, chip extraction, and normalization.
+- **Data Preparation**: `ChipExtractor` and `Tiler` (both inheriting `ChipBase`) in `grdl.data_prep` compute
+  chip and tile index bounds within bounded images. `Normalizer` handles intensity normalization.
 - **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
   direct use in processing pipelines alongside orthorectification and decomposition. Includes spatial filters
   (RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter), contrast enhancement (CLAHE,

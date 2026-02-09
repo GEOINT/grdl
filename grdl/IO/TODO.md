@@ -61,8 +61,9 @@ Roadmap and planned features for the IO module.
   - [x] `__gpu_compatible__` flag on all 12 components
   - [x] Tests covering all 12 components
 - [x] Data preparation module (`data_prep/`)
-  - [x] Tiler -- overlapping tile extraction and reconstruction
-  - [x] ChipExtractor -- point/polygon chip extraction
+  - [x] ChipBase ABC -- image dimension management and coordinate snapping
+  - [x] ChipExtractor -- point-centered and whole-image chip region computation
+  - [x] Tiler -- stride-based tile region computation
   - [x] Normalizer -- minmax, zscore, percentile, unit_norm with fit/transform
 - [x] Coregistration module (`coregistration/`)
   - [x] Affine transform alignment
@@ -474,7 +475,7 @@ Track user-requested features here:
   - [x] Spatial filters, contrast enhancement, thresholding, segmentation
   - [x] Edge detection, peak detection, frequency-domain filtering, stack projection
   - [x] Vectorized CLAHE and SRM edge construction
-- [x] Data preparation module (Tiler, ChipExtractor, Normalizer)
+- [x] Data preparation module (ChipBase, ChipExtractor, Tiler, Normalizer)
 - [x] Coregistration module (affine, projective, feature-matching)
 - [x] Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.)
 - [x] PEP 561 type marker (py.typed)

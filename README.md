@@ -85,10 +85,10 @@ GRDL/
 │   │   └── stacks/                  #   Image > Stacks
 │   │       └── z_projection.py      #     ZProjection (stack projection: max, mean, median, etc.)
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
-│   │   ├── __init__.py              #   Module exports (Tiler, ChipExtractor, Normalizer)
-│   │   ├── base.py                  #   Base utilities
-│   │   ├── tiler.py                 #   Tiler (overlapping tile extraction and reconstruction)
-│   │   ├── chip_extractor.py        #   ChipExtractor (point/polygon chip extraction)
+│   │   ├── __init__.py              #   Module exports (ChipBase, ChipRegion, ChipExtractor, Tiler, Normalizer)
+│   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
+│   │   ├── tiler.py                 #   Tiler (stride-based tile region computation)
+│   │   ├── chip_extractor.py        #   ChipExtractor (point-centered and whole-image chip regions)
 │   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
 │   └── coregistration/              # Image alignment and registration
 │       ├── __init__.py              #   Module exports
@@ -336,19 +336,22 @@ result = pipe.apply(image, progress_callback=lambda f: print(f"{f:.0%}"))
 
 ### Data Preparation
 
-Tiling, chip extraction, and normalization for ML/AI pipelines:
+Chip/tile index computation and normalization for ML/AI pipelines:
 
 ```python
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Split a large image into overlapping tiles
-tiler = Tiler(tile_size=256, stride=128)
-tiles = tiler.tile(image)
-reconstructed = tiler.untile(tiles, image.shape)
+# Compute chip region centered at a point
+extractor = ChipExtractor(nrows=1000, ncols=2000)
+region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
+chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
 
-# Extract chips at point locations
-extractor = ChipExtractor(chip_size=64)
-chips = extractor.extract_at_points(image, points)
+# Partition an image into non-overlapping chip regions
+regions = extractor.chip_positions(row_width=256, col_width=256)
+
+# Compute overlapping tile positions with stride
+tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
+tile_regions = tiler.tile_positions()
 
 # Normalize to [0, 1] range
 norm = Normalizer(method='minmax')
