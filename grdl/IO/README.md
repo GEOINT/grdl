@@ -358,10 +358,11 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
 
-See `example/` for working BIOMASS workflows:
+See `grdl/example/` for working workflows:
 - `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
+- `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 
 ## ImageJ/Fiji Algorithm Ports
 

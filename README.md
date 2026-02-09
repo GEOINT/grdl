@@ -104,12 +104,14 @@ GRDL/
 │       ├── projective.py            #   Projective transform alignment
 │       ├── feature_match.py         #   Feature-based matching (OpenCV)
 │       └── utils.py                 #   Coregistration utilities
-├── example/                         # Example scripts
-│   ├── catalog/
-│   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
-│   │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
-│   └── ortho/
-│       └── ortho_biomass.py         #   Orthorectification with Pauli RGB
+│   └── example/                     # Example scripts
+│       ├── catalog/
+│       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
+│       │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
+│       ├── ortho/
+│       │   └── ortho_biomass.py         #   Orthorectification with Pauli RGB
+│       └── sar/
+│           └── view_sicd.py             #   SICD magnitude viewer (linear)
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
