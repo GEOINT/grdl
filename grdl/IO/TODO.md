@@ -92,6 +92,7 @@ Roadmap and planned features for the IO module.
   - [x] `catalog/discover_and_download.py` - MAAP catalog search and download
   - [x] `catalog/view_product.py` - Pauli RGB and HH dB viewer with interactive markers
   - [x] `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB
+  - [x] `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - [x] Ground truth data (`ground_truth/`)
   - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
 - [x] Testing
@@ -104,6 +105,11 @@ Roadmap and planned features for the IO module.
   - [x] Processor versioning tests
   - [x] Tunable parameter tests
   - [x] ImageJ/Fiji ports tests (124 tests across 12 components)
+  - [x] IO import path tests (`test_io_imports.py`)
+  - [x] GeoTIFF reader tests (`test_io_geotiff.py`)
+  - [x] NITF reader tests (`test_io_nitf.py`)
+  - [x] SAR backend detection tests (`test_io_sar_backend.py`)
+  - [x] SAR reader API contract tests (`test_io_sar_readers.py`)
 
 ## High Priority
 
@@ -476,7 +482,7 @@ Track user-requested features here:
 - [x] pyproject.toml with optional dependency extras
 - [x] Shared test fixtures (conftest.py)
 - [x] Performance benchmarks (pytest-benchmark)
-- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow)
+- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow, SICD viewer)
 - [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework
 
@@ -485,6 +491,7 @@ Track user-requested features here:
 - [x] Base format readers (GeoTIFF, NITF) at IO level
 - [x] IO restructure into modality-based submodules (sar/)
 - [x] sarkit/sarpy dual backend for SICD and CPHD
+- [x] IO import, GeoTIFF, NITF, SAR backend, and SAR reader tests
 - [ ] SLCReader for Single Look Complex GeoTIFFs
 - [ ] Concrete ImageDetector implementations
 - [ ] Test coverage >80%
