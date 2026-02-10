@@ -22,7 +22,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 import pytest
@@ -39,10 +39,11 @@ def test_import_base_classes():
 
 
 def test_import_base_format_readers():
-    """GeoTIFF and NITF readers importable from grdl.IO."""
-    from grdl.IO import GeoTIFFReader, NITFReader
+    """GeoTIFF, NITF, and HDF5 readers importable from grdl.IO."""
+    from grdl.IO import GeoTIFFReader, NITFReader, HDF5Reader
     assert GeoTIFFReader is not None
     assert NITFReader is not None
+    assert HDF5Reader is not None
 
 
 def test_import_sar_readers():
@@ -82,6 +83,12 @@ def test_import_nitf_direct():
     """NITFReader importable from grdl.IO.nitf."""
     from grdl.IO.nitf import NITFReader
     assert NITFReader is not None
+
+
+def test_import_hdf5_direct():
+    """HDF5Reader importable from grdl.IO.hdf5."""
+    from grdl.IO.hdf5 import HDF5Reader
+    assert HDF5Reader is not None
 
 
 def test_import_sar_submodule():
@@ -140,6 +147,13 @@ def test_nitf_is_image_reader():
     assert issubclass(NITFReader, ImageReader)
 
 
+def test_hdf5_is_image_reader():
+    """HDF5Reader inherits from ImageReader."""
+    from grdl.IO.base import ImageReader
+    from grdl.IO.hdf5 import HDF5Reader
+    assert issubclass(HDF5Reader, ImageReader)
+
+
 def test_sicd_is_image_reader():
     """SICDReader inherits from ImageReader."""
     from grdl.IO.base import ImageReader
@@ -189,7 +203,7 @@ def test_io_all_exports():
     import grdl.IO as io_mod
     expected = [
         'ImageReader', 'ImageWriter', 'CatalogInterface',
-        'GeoTIFFReader', 'NITFReader',
+        'GeoTIFFReader', 'HDF5Reader', 'NITFReader',
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
         'BIOMASSL1Reader', 'BIOMASSCatalog',
         'open_image', 'open_sar', 'open_biomass', 'load_credentials',

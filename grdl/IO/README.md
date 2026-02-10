@@ -13,6 +13,7 @@ The IO module provides a unified interface for reading and writing various geosp
 | Format | Reader Class | Backend | Status |
 |--------|-------------|---------|--------|
 | GeoTIFF/COG | `GeoTIFFReader` | rasterio | ✅ Implemented |
+| HDF5/HDF-EOS5 | `HDF5Reader` | h5py | ✅ Implemented |
 | NITF | `NITFReader` | rasterio/GDAL | ✅ Implemented |
 
 ### SAR (Synthetic Aperture Radar) — `sar/` submodule
@@ -122,6 +123,27 @@ with CPHDReader('cphd_data.cphd') as reader:
 
     # Read phase history data
     ph_data = reader.read_full(bands=[0])  # First channel
+```
+
+#### HDF5 - NASA, JAXA, Hyperspectral Products
+
+```python
+from grdl.IO import HDF5Reader
+
+# Browse datasets in an HDF5 file
+datasets = HDF5Reader.list_datasets('MOD09GA.h5')
+for path, shape, dtype in datasets:
+    print(f"{path}: {shape} ({dtype})")
+
+# Open with explicit dataset path
+with HDF5Reader('MOD09GA.h5', dataset_path='/MODIS_Grid/sur_refl_b01') as reader:
+    print(f"Shape: {reader.get_shape()}")
+    chip = reader.read_chip(0, 512, 0, 512)
+
+# Auto-detect first suitable dataset
+with HDF5Reader('product.h5') as reader:
+    print(f"Selected: {reader.dataset_path}")
+    full = reader.read_full()
 ```
 
 #### GeoTIFF - Any Raster Imagery (SAR GRD, EO, MSI)

@@ -19,8 +19,9 @@ Roadmap and planned features for the IO module.
   - [x] `open_sar()` - Auto-detection utility
 - [x] Base format readers (IO level)
   - [x] `GeoTIFFReader` - GeoTIFF/COG via rasterio
+  - [x] `HDF5Reader` - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
   - [x] `NITFReader` - Generic NITF via rasterio/GDAL
-  - [x] `open_image()` - Auto-detection for base formats
+  - [x] `open_image()` - Auto-detection for base formats (GeoTIFF, HDF5, NITF)
 - [x] BIOMASS readers (`sar/biomass.py`)
   - [x] `BIOMASSL1Reader` - BIOMASS L1 SCS format (magnitude/phase GeoTIFFs)
   - [x] `open_biomass()` - Auto-detection utility
@@ -107,6 +108,7 @@ Roadmap and planned features for the IO module.
   - [x] ImageJ/Fiji ports tests (124 tests across 12 components)
   - [x] IO import path tests (`test_io_imports.py`)
   - [x] GeoTIFF reader tests (`test_io_geotiff.py`)
+  - [x] HDF5 reader tests (`test_io_hdf5.py`)
   - [x] NITF reader tests (`test_io_nitf.py`)
   - [x] SAR backend detection tests (`test_io_sar_backend.py`)
   - [x] SAR reader API contract tests (`test_io_sar_readers.py`)
@@ -127,18 +129,14 @@ Roadmap and planned features for the IO module.
 ### Base Format Readers (IO level)
 
 - [x] **GeoTIFFReader** - General raster imagery via rasterio
+- [x] **HDF5Reader** - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
 - [x] **NITFReader** - Generic NITF via rasterio/GDAL
-- [x] **open_image()** - Auto-detect GeoTIFF or NITF
+- [x] **open_image()** - Auto-detect GeoTIFF, HDF5, or NITF
 
 - [ ] **JP2Reader** - JPEG2000 imagery
   - Via rasterio or glymur
   - Common in satellite imagery (Sentinel-2)
   - Handle tiled/pyramidal structure
-
-- [ ] **HDF5Reader** - HDF5/NetCDF formats
-  - Use h5py or xarray
-  - Common in climate/weather data
-  - Handle multi-dimensional arrays
 
 ### Geospatial Readers (geospatial.py) - NEW MODULE
 
