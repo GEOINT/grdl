@@ -68,6 +68,7 @@ from scipy.ndimage import uniform_filter, median_filter
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _local_stats(image: np.ndarray, radius: int):
@@ -128,7 +129,7 @@ METHODS = (
 )
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='threshold')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.THRESHOLD)
 @processor_version('1.10.1')
 class AutoLocalThreshold(ImageTransform):
     """Auto Local Threshold, ported from Fiji's Auto_Local_Threshold v1.10.1.

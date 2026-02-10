@@ -57,9 +57,10 @@ from scipy.ndimage import maximum_filter, label
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'thermal'], category='find_maxima')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.FIND_MAXIMA)
 @processor_version('1.54j')
 class FindMaxima(ImageTransform):
     """Prominence-based local maximum detection, ported from ImageJ 1.54j.

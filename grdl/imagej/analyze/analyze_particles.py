@@ -55,6 +55,7 @@ from scipy.ndimage import label, find_objects
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _measure_particle(region_mask: np.ndarray,
@@ -131,8 +132,8 @@ def _measure_particle(region_mask: np.ndarray,
     }
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
-                category='analyze')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR],
+                category=PC.ANALYZE)
 @processor_version('1.54j')
 class AnalyzeParticles(ImageTransform):
     """Connected component analysis with measurements, ported from ImageJ 1.54j.

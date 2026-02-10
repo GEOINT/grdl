@@ -63,6 +63,7 @@ from scipy.ndimage import (
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 MORPHOLOGY_OPERATIONS = (
@@ -106,7 +107,7 @@ def _make_structuring_element(shape: str, radius: int) -> np.ndarray:
     raise ValueError(f"Unknown shape: {shape}")
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='binary')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.BINARY)
 @processor_version('1.54j')
 class MorphologicalFilter(ImageTransform):
     """Binary and grayscale morphological operations, ported from ImageJ 1.54j.

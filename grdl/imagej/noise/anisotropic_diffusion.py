@@ -55,6 +55,7 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _conductance_exp(gradient_sq: np.ndarray, kappa_sq: float) -> np.ndarray:
@@ -79,8 +80,8 @@ def _conductance_inv(gradient_sq: np.ndarray, kappa_sq: float) -> np.ndarray:
     return 1.0 / (1.0 + gradient_sq / kappa_sq)
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
-                category='noise')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR],
+                category=PC.NOISE)
 @processor_version('2.0.0')
 class AnisotropicDiffusion(ImageTransform):
     """Perona-Malik anisotropic diffusion, ported from Fiji.

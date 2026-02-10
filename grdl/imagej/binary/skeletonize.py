@@ -53,6 +53,7 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _neighbors_count(img: np.ndarray, r: int, c: int) -> int:
@@ -154,8 +155,8 @@ def _zhang_suen(binary: np.ndarray) -> np.ndarray:
     return img
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
-                category='binary')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR],
+                category=PC.BINARY)
 @processor_version('1.54j')
 class Skeletonize(ImageTransform):
     """Binary skeletonization (thinning), ported from ImageJ 1.54j.

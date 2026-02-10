@@ -62,6 +62,7 @@ from scipy.ndimage import uniform_filter
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _build_ball_profile(radius: int) -> np.ndarray:
@@ -305,7 +306,7 @@ def _roll_paraboloid_vectorized(image: np.ndarray, radius: int) -> np.ndarray:
     return bg2
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'thermal'], category='background')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.BACKGROUND)
 @processor_version('1.54j')
 class RollingBallBackground(ImageTransform):
     """Rolling-ball background subtraction, ported from ImageJ 1.54j.

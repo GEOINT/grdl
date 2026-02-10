@@ -50,6 +50,7 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 CALC_OPERATIONS = (
@@ -59,8 +60,8 @@ CALC_OPERATIONS = (
 )
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
-                category='math')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR],
+                category=PC.MATH)
 @processor_version('1.54j')
 class ImageCalculator(ImageTransform):
     """Pixel-wise image arithmetic and logic, ported from ImageJ 1.54j.

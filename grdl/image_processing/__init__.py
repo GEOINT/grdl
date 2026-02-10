@@ -90,6 +90,12 @@ from grdl.image_processing.versioning import (
     DetectionInputSpec,
     TunableParameterSpec,
 )
+from grdl.vocabulary import (
+    ImageModality,
+    ProcessorCategory,
+    DetectionType,
+    SegmentationType,
+)
 
 __all__ = [
     'ImageProcessor',
@@ -110,4 +116,8 @@ __all__ = [
     'processor_tags',
     'DetectionInputSpec',
     'TunableParameterSpec',
+    'ImageModality',
+    'ProcessorCategory',
+    'DetectionType',
+    'SegmentationType',
 ]

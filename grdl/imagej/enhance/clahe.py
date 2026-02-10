@@ -56,6 +56,7 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _clip_histogram(hist: np.ndarray, clip_limit: int) -> np.ndarray:
@@ -120,7 +121,7 @@ def _compute_cdf(hist: np.ndarray) -> np.ndarray:
     return cdf
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='enhance')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.ENHANCE)
 @processor_version('0.5.0')
 class CLAHE(ImageTransform):
     """Contrast Limited Adaptive Histogram Equalization, ported from Fiji.

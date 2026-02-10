@@ -32,6 +32,14 @@ Modified
 from typing import Any, Optional, Sequence, Tuple, Type, TypeVar, Union, overload
 import importlib.metadata
 
+# GRDL vocabulary
+from grdl.vocabulary import (
+    DetectionType,
+    ImageModality,
+    ProcessorCategory,
+    SegmentationType,
+)
+
 T = TypeVar('T')
 
 
@@ -90,9 +98,11 @@ def processor_version(version: Optional[str] = None):
 
 
 def processor_tags(
-    modalities: Optional[Sequence[str]] = None,
-    category: Optional[str] = None,
+    modalities: Optional[Sequence[ImageModality]] = None,
+    category: Optional[ProcessorCategory] = None,
     description: Optional[str] = None,
+    detection_types: Optional[Sequence[DetectionType]] = None,
+    segmentation_types: Optional[Sequence[SegmentationType]] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -102,33 +112,75 @@ def processor_tags(
 
     Parameters
     ----------
-    modalities : Sequence[str], optional
+    modalities : Sequence[ImageModality], optional
         Imagery modalities this processor is designed for.
-        Common values: ``'SAR'``, ``'PAN'``, ``'MSI'``, ``'HSI'``,
-        ``'thermal'``, ``'EO'``.
-    category : str, optional
-        Processing category. Common values: ``'spatial_filter'``,
-        ``'contrast_enhancement'``, ``'thresholding'``, ``'segmentation'``,
-        ``'edge_detection'``, ``'feature_detection'``, ``'frequency_domain'``,
-        ``'stack_operation'``, ``'decomposition'``, ``'orthorectification'``.
+        Use members of :class:`~grdl.vocabulary.ImageModality`.
+    category : ProcessorCategory, optional
+        Processing category.
+        Use a member of :class:`~grdl.vocabulary.ProcessorCategory`.
     description : str, optional
         Short human-readable description of the processor's purpose.
+    detection_types : Sequence[DetectionType], optional
+        Types of detection this processor performs. Applicable to
+        ``ImageDetector`` subclasses.
+    segmentation_types : Sequence[SegmentationType], optional
+        Types of segmentation this processor produces. Applicable to
+        segmentation processors.
+
+    Raises
+    ------
+    TypeError
+        If any element of *modalities* is not an ``ImageModality``, or
+        *category* is not a ``ProcessorCategory``, or any element of
+        *detection_types*/*segmentation_types* is not the correct enum.
 
     Examples
     --------
+    >>> from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
     >>> @processor_version('1.0.0')
-    ... @processor_tags(modalities=['SAR', 'PAN'], category='spatial_filter')
+    ... @processor_tags(modalities=[IM.SAR, IM.PAN], category=PC.FILTERS)
     ... class MyFilter(ImageTransform):
     ...     def apply(self, source, **kwargs):
     ...         return source
-    >>> MyFilter.__processor_tags__
-    {'modalities': ('SAR', 'PAN'), 'category': 'spatial_filter', 'description': None}
+    >>> MyFilter.__processor_tags__['category']
+    <ProcessorCategory.FILTERS: 'filters'>
     """
+    # -- Validate enum types eagerly so typos fail at import time ----------
+    if modalities is not None:
+        for m in modalities:
+            if not isinstance(m, ImageModality):
+                raise TypeError(
+                    f"modalities must be ImageModality members, got {m!r}"
+                )
+    if category is not None and not isinstance(category, ProcessorCategory):
+        raise TypeError(
+            f"category must be a ProcessorCategory member, got {category!r}"
+        )
+    if detection_types is not None:
+        for d in detection_types:
+            if not isinstance(d, DetectionType):
+                raise TypeError(
+                    f"detection_types must be DetectionType members, got {d!r}"
+                )
+    if segmentation_types is not None:
+        for s in segmentation_types:
+            if not isinstance(s, SegmentationType):
+                raise TypeError(
+                    f"segmentation_types must be SegmentationType members, "
+                    f"got {s!r}"
+                )
+
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
             'modalities': tuple(modalities) if modalities else (),
             'category': category,
             'description': description,
+            'detection_types': (
+                tuple(detection_types) if detection_types else ()
+            ),
+            'segmentation_types': (
+                tuple(segmentation_types) if segmentation_types else ()
+            ),
         }
         return cls
     return decorator

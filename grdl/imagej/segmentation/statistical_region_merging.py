@@ -57,6 +57,7 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 class _UnionFind:
@@ -135,7 +136,7 @@ def _srm_predicate(
     return abs(mean_a - mean_b) <= (threshold_a + threshold_b)
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI'], category='segmentation')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI], category=PC.SEGMENTATION)
 @processor_version('1.0')
 class StatisticalRegionMerging(ImageTransform):
     """Statistical Region Merging segmentation, ported from Fiji.

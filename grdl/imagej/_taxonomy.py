@@ -2,10 +2,10 @@
 """
 ImageJ Component Taxonomy - Canonical category identifiers.
 
-Maps ImageJ's menu structure to snake_case category strings used in
-``@processor_tags(category=...)`` decorators and GRDK discovery filtering.
-Both GRDL and GRDK reference this module as the single source of truth
-for the ImageJ component categorization.
+Maps ImageJ's menu structure to ``ProcessorCategory`` enum members used
+in ``@processor_tags(category=...)`` decorators and GRDK discovery
+filtering. Both GRDL and GRDK reference this module as the single source
+of truth for the ImageJ component categorization.
 
 Author
 ------
@@ -24,54 +24,42 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
-# Category constants — each matches its subdirectory name under grdl/imagej/
-FILTERS = 'filters'
-BACKGROUND = 'background'
-BINARY = 'binary'
-ENHANCE = 'enhance'
-EDGES = 'edges'
-FFT = 'fft'
-FIND_MAXIMA = 'find_maxima'
-THRESHOLD = 'threshold'
-SEGMENTATION = 'segmentation'
-STACKS = 'stacks'
-MATH = 'math'
-ANALYZE = 'analyze'
-NOISE = 'noise'
+from grdl.vocabulary import ProcessorCategory
+
+# Convenience aliases matching subdirectory names under grdl/imagej/
+FILTERS = ProcessorCategory.FILTERS
+BACKGROUND = ProcessorCategory.BACKGROUND
+BINARY = ProcessorCategory.BINARY
+ENHANCE = ProcessorCategory.ENHANCE
+EDGES = ProcessorCategory.EDGES
+FFT = ProcessorCategory.FFT
+FIND_MAXIMA = ProcessorCategory.FIND_MAXIMA
+THRESHOLD = ProcessorCategory.THRESHOLD
+SEGMENTATION = ProcessorCategory.SEGMENTATION
+STACKS = ProcessorCategory.STACKS
+MATH = ProcessorCategory.MATH
+ANALYZE = ProcessorCategory.ANALYZE
+NOISE = ProcessorCategory.NOISE
 
 # Ordered tuple for iteration and UI display
-ALL_CATEGORIES = (
-    FILTERS,
-    BACKGROUND,
-    BINARY,
-    ENHANCE,
-    EDGES,
-    FFT,
-    FIND_MAXIMA,
-    THRESHOLD,
-    SEGMENTATION,
-    STACKS,
-    MATH,
-    ANALYZE,
-    NOISE,
-)
+ALL_CATEGORIES = tuple(ProcessorCategory)
 
 # Human-readable labels mirroring ImageJ menu paths
 CATEGORY_LABELS = {
-    FILTERS: 'Process > Filters',
-    BACKGROUND: 'Process > Subtract Background',
-    BINARY: 'Process > Binary',
-    ENHANCE: 'Process > Enhance Contrast',
-    EDGES: 'Process > Find Edges',
-    FFT: 'Process > FFT',
-    FIND_MAXIMA: 'Process > Find Maxima',
-    THRESHOLD: 'Image > Adjust > Threshold',
-    SEGMENTATION: 'Plugins > Segmentation',
-    STACKS: 'Image > Stacks',
-    MATH: 'Process > Image Calculator',
-    ANALYZE: 'Analyze > Analyze Particles',
-    NOISE: 'Plugins > Anisotropic Diffusion',
+    ProcessorCategory.FILTERS: 'Process > Filters',
+    ProcessorCategory.BACKGROUND: 'Process > Subtract Background',
+    ProcessorCategory.BINARY: 'Process > Binary',
+    ProcessorCategory.ENHANCE: 'Process > Enhance Contrast',
+    ProcessorCategory.EDGES: 'Process > Find Edges',
+    ProcessorCategory.FFT: 'Process > FFT',
+    ProcessorCategory.FIND_MAXIMA: 'Process > Find Maxima',
+    ProcessorCategory.THRESHOLD: 'Image > Adjust > Threshold',
+    ProcessorCategory.SEGMENTATION: 'Plugins > Segmentation',
+    ProcessorCategory.STACKS: 'Image > Stacks',
+    ProcessorCategory.MATH: 'Process > Image Calculator',
+    ProcessorCategory.ANALYZE: 'Analyze > Analyze Particles',
+    ProcessorCategory.NOISE: 'Plugins > Anisotropic Diffusion',
 }

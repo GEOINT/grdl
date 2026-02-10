@@ -65,6 +65,7 @@ from scipy.ndimage import (
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 def _find_seeds(edt: np.ndarray, min_distance: int = 2) -> np.ndarray:
@@ -156,8 +157,8 @@ def _watershed_from_markers(edt: np.ndarray, markers: np.ndarray,
     return result
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'],
-                category='segmentation')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR],
+                category=PC.SEGMENTATION)
 @processor_version('1.54j')
 class Watershed(ImageTransform):
     """Binary watershed segmentation, ported from ImageJ 1.54j.

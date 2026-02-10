@@ -53,9 +53,10 @@ from scipy.ndimage import gaussian_filter
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'thermal'], category='filters')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.FILTERS)
 @processor_version('1.54j')
 class UnsharpMask(ImageTransform):
     """Unsharp mask sharpening filter, ported from ImageJ 1.54j.

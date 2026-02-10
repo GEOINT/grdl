@@ -60,12 +60,13 @@ from scipy.ndimage import (
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 RANK_METHODS = ('median', 'min', 'max', 'mean', 'variance', 'despeckle')
 
 
-@processor_tags(modalities=['SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'], category='filters')
+@processor_tags(modalities=[IM.SAR, IM.PAN, IM.EO, IM.MSI, IM.HSI, IM.SWIR, IM.MWIR, IM.LWIR], category=PC.FILTERS)
 @processor_version('1.54j')
 class RankFilters(ImageTransform):
     """Rank-order spatial filters, ported from ImageJ 1.54j.
