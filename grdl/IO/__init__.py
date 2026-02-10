@@ -3,12 +3,13 @@
 IO Module - Input/Output Operations for Geospatial Imagery.
 
 Handles reading and writing various geospatial data formats. Base data
-format readers (GeoTIFF, NITF) live at this level.  Modality-specific
+format readers (GeoTIFF, NITF, HDF5) live at this level.  Modality-specific
 readers are organized into submodules (``sar/``).
 
 Dependencies
 ------------
 rasterio
+h5py
 sarkit (primary) or sarpy (fallback)
 requests
 
@@ -29,7 +30,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -41,6 +42,7 @@ from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
+from grdl.IO.hdf5 import HDF5Reader
 from grdl.IO.nitf import NITFReader
 
 # SAR submodule
@@ -101,6 +103,13 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError):
             pass
 
+    # Try HDF5
+    if filepath.suffix.lower() in ('.h5', '.he5', '.hdf5', '.hdf'):
+        try:
+            return HDF5Reader(filepath)
+        except (ValueError, ImportError):
+            pass
+
     # Try GeoTIFF as fallback for unknown extensions
     try:
         return GeoTIFFReader(filepath)
@@ -109,7 +118,8 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
 
     raise ValueError(
         f"Could not open {filepath}. "
-        "Ensure file is a valid GeoTIFF or NITF and rasterio is installed. "
+        "Ensure file is a valid GeoTIFF, NITF, or HDF5 and the required "
+        "library (rasterio, h5py) is installed. "
         "For SAR-specific formats (SICD, CPHD, CRSD), use open_sar()."
     )
 
@@ -121,6 +131,7 @@ __all__ = [
     'CatalogInterface',
     # Base format readers
     'GeoTIFFReader',
+    'HDF5Reader',
     'NITFReader',
     # SAR readers
     'SICDReader',
