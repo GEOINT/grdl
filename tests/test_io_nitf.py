@@ -46,13 +46,20 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def nitf_file(tmp_path):
     """Create a minimal NITF file for testing."""
+    from rasterio.transform import from_bounds
+
     filepath = tmp_path / "test.ntf"
     data = np.random.randint(0, 255, (64, 128), dtype=np.uint8)
+
+    transform = from_bounds(-180, -90, 180, 90, 128, 64)
 
     with rasterio.open(
         str(filepath), 'w', driver='NITF',
         height=64, width=128, count=1,
         dtype='uint8',
+        transform=transform,
+        crs='EPSG:4326',
+        ICORDS='G',
     ) as ds:
         ds.write(data, 1)
 
@@ -62,13 +69,20 @@ def nitf_file(tmp_path):
 @pytest.fixture
 def nitf_multi(tmp_path):
     """Create a multi-band NITF file for testing."""
+    from rasterio.transform import from_bounds
+
     filepath = tmp_path / "test_multi.ntf"
     data = np.random.randint(0, 255, (3, 50, 100), dtype=np.uint8)
+
+    transform = from_bounds(-180, -90, 180, 90, 100, 50)
 
     with rasterio.open(
         str(filepath), 'w', driver='NITF',
         height=50, width=100, count=3,
         dtype='uint8',
+        transform=transform,
+        crs='EPSG:4326',
+        ICORDS='G',
     ) as ds:
         ds.write(data)
 

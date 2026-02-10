@@ -243,14 +243,20 @@ class TestOpenSar:
         """open_sar falls back to GeoTIFF for .tif files."""
         try:
             import rasterio
+            from rasterio.transform import from_bounds
         except ImportError:
             pytest.skip("rasterio not installed")
 
         filepath = tmp_path / "test.tif"
         data = np.ones((10, 20), dtype=np.float32)
+
+        transform = from_bounds(-180, -90, 180, 90, 20, 10)
+
         with rasterio.open(
             str(filepath), 'w', driver='GTiff',
             height=10, width=20, count=1, dtype='float32',
+            transform=transform,
+            crs='EPSG:4326',
         ) as ds:
             ds.write(data, 1)
 

@@ -115,7 +115,7 @@ class TestSpatialFilterBenchmarks:
 
     def test_rank_filter_median(self, benchmark, small_image):
         from grdl.imagej import RankFilters
-        rf = RankFilters(filter_type='median', radius=2)
+        rf = RankFilters(method='median', radius=2)
         benchmark(rf.apply, small_image)
 
     def test_gamma_correction(self, benchmark, medium_image):
@@ -152,8 +152,8 @@ class TestDataPrepBenchmarks:
 
     def test_tiler_tile(self, benchmark, medium_image):
         from grdl.data_prep import Tiler
-        tiler = Tiler(tile_size=64, stride=32)
-        benchmark(tiler.tile, medium_image)
+        tiler = Tiler(nrows=256, ncols=256, tile_size=64, stride=32)
+        benchmark(tiler.tile_positions)
 
     def test_normalizer_minmax(self, benchmark, medium_image):
         from grdl.data_prep import Normalizer
