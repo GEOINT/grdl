@@ -10,6 +10,10 @@ sarpy>=1.3.0
 # GeoTIFF/Raster format support (BIOMASS, GRD, geocoded imagery)
 rasterio>=1.2.0
 
+# JPEG2000 format support (Sentinel-2, Pleiades, SPOT)
+# rasterio with GDAL JP2 driver OR glymur (fallback for better 15-bit support)
+glymur>=0.9.0
+
 # Co-Registration
 # ----------------
 

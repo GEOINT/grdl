@@ -43,6 +43,7 @@ from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
 from grdl.IO.hdf5 import HDF5Reader
+from grdl.IO.jpeg2000 import JP2Reader
 from grdl.IO.nitf import NITFReader
 
 # SAR submodule
@@ -110,6 +111,13 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError):
             pass
 
+    # Try JPEG2000
+    if filepath.suffix.lower() in ('.jp2', '.j2k', '.j2c', '.jpx'):
+        try:
+            return JP2Reader(filepath)
+        except (ValueError, ImportError):
+            pass
+
     # Try GeoTIFF as fallback for unknown extensions
     try:
         return GeoTIFFReader(filepath)
@@ -118,8 +126,8 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
 
     raise ValueError(
         f"Could not open {filepath}. "
-        "Ensure file is a valid GeoTIFF, NITF, or HDF5 and the required "
-        "library (rasterio, h5py) is installed. "
+        "Ensure file is a valid GeoTIFF, NITF, HDF5, or JPEG2000 and the required "
+        "library (rasterio, h5py, glymur) is installed. "
         "For SAR-specific formats (SICD, CPHD, CRSD), use open_sar()."
     )
 
@@ -132,6 +140,7 @@ __all__ = [
     # Base format readers
     'GeoTIFFReader',
     'HDF5Reader',
+    'JP2Reader',
     'NITFReader',
     # SAR readers
     'SICDReader',
