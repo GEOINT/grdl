@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-IO Models - Typed metadata containers for imagery readers.
+IO Models Base - Typed metadata container for imagery readers.
 
 Provides ``ImageMetadata``, a dataclass that stores universal image
 metadata (format, rows, cols, dtype) as typed attributes while
 supporting dict-like access for backward compatibility. Designed for
 subclassing by sensor-specific metadata classes (e.g., ``SICDMetadata``,
-``CPHDMetadata``) that add typed fields for their full native metadata.
+``SIDDMetadata``) that add typed fields for their full native metadata.
 
 Author
 ------

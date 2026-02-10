@@ -34,7 +34,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -111,24 +111,40 @@ def view_sicd(filepath: Path, cmap: str = "gray",
     print(f"Opening: {filepath}")
 
     with SICDReader(filepath) as reader:
+        meta = reader.metadata
         rows, cols = reader.get_shape()
 
         # Print metadata
-        print(f"  Backend:        {reader.metadata.get('backend', '?')}")
+        print(f"  Backend:        {meta.backend or '?'}")
         print(f"  Size:           {rows} x {cols}")
-        print(f"  Pixel type:     {reader.metadata.get('pixel_type', '?')}")
-        print(f"  Collector:      {reader.metadata.get('collector_name', '?')}")
-        print(f"  Core name:      {reader.metadata.get('core_name', '?')}")
-        print(f"  Classification: {reader.metadata.get('classification', '?')}")
-        print(f"  Collect start:  {reader.metadata.get('collect_start', '?')}")
-        duration = reader.metadata.get('collect_duration')
-        if duration is not None:
-            print(f"  Duration:       {duration:.3f} s")
+
+        if meta.image_data is not None:
+            print(f"  Pixel type:     {meta.image_data.pixel_type or '?'}")
+
+        ci = meta.collection_info
+        if ci is not None:
+            print(f"  Collector:      {ci.collector_name or '?'}")
+            print(f"  Core name:      {ci.core_name or '?'}")
+            print(f"  Classification: {ci.classification or '?'}")
+
+        tl = meta.timeline
+        if tl is not None:
+            print(f"  Collect start:  {tl.collect_start or '?'}")
+            if tl.collect_duration is not None:
+                print(f"  Duration:       {tl.collect_duration:.3f} s")
 
         # Print geolocation from metadata
-        scp = reader.metadata.get('scp_llh')
-        if scp is not None:
-            print(f"  SCP:            ({scp[0]:.6f}, {scp[1]:.6f}, {scp[2]:.1f} m)")
+        scp_llh = None
+        if meta.geo_data is not None and meta.geo_data.scp is not None:
+            scp_llh = meta.geo_data.scp.llh
+        if scp_llh is not None:
+            print(f"  SCP:            ({scp_llh.lat:.6f}, {scp_llh.lon:.6f}, "
+                  f"{scp_llh.hae:.1f} m)")
+
+        # Get SCP pixel location for annotation
+        scp_pixel = None
+        if meta.image_data is not None:
+            scp_pixel = meta.image_data.scp_pixel
         print()
 
         # Read full complex image
@@ -149,9 +165,8 @@ def view_sicd(filepath: Path, cmap: str = "gray",
 
     # Build title
     title_parts = [filepath.name]
-    collector = reader.metadata.get('collector_name')
-    if collector:
-        title_parts.append(collector)
+    if ci is not None and ci.collector_name:
+        title_parts.append(ci.collector_name)
     title = "  |  ".join(title_parts)
 
     # Display
@@ -166,12 +181,13 @@ def view_sicd(filepath: Path, cmap: str = "gray",
     fig.colorbar(im, ax=ax, label="Magnitude", shrink=0.8)
 
     # Annotate SCP if available
-    if scp is not None:
-        scp_row, scp_col = rows // 2, cols // 2
+    if scp_llh is not None:
+        scp_row = int(scp_pixel.row) if scp_pixel is not None else rows // 2
+        scp_col = int(scp_pixel.col) if scp_pixel is not None else cols // 2
         ax.plot(scp_col, scp_row, 'r*', markersize=12, markeredgecolor='black',
                 markeredgewidth=0.5, zorder=5)
         ax.annotate(
-            f"SCP\n({scp[0]:.4f}, {scp[1]:.4f})",
+            f"SCP\n({scp_llh.lat:.4f}, {scp_llh.lon:.4f})",
             xy=(scp_col, scp_row), xytext=(12, 0),
             textcoords="offset points", fontsize=8,
             color="red", fontweight="bold",

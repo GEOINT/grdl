@@ -46,6 +46,9 @@ from grdl.IO.sar.sidd import SIDDReader
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 
+# Metadata models
+from grdl.IO.models import SICDMetadata, SIDDMetadata, BIOMASSMetadata
+
 # Base class (for return type)
 from grdl.IO.base import ImageReader
 
@@ -134,6 +137,10 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # Metadata models
+    'SICDMetadata',
+    'SIDDMetadata',
+    'BIOMASSMetadata',
     # Convenience functions
     'open_sar',
     'open_biomass',

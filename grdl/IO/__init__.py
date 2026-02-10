@@ -39,7 +39,7 @@ from typing import Union
 
 # Base classes and models
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
-from grdl.IO.models import ImageMetadata
+from grdl.IO.models import ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
@@ -139,6 +139,9 @@ __all__ = [
     'ImageWriter',
     'CatalogInterface',
     'ImageMetadata',
+    'SICDMetadata',
+    'SIDDMetadata',
+    'BIOMASSMetadata',
     # Base format readers
     'GeoTIFFReader',
     'HDF5Reader',

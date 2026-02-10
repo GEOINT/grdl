@@ -31,7 +31,7 @@ Modified
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -44,7 +44,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 from grdl.IO.base import ImageReader
-from grdl.IO.models import ImageMetadata
+from grdl.IO.models import BIOMASSMetadata
 
 
 class BIOMASSL1Reader(ImageReader):
@@ -63,8 +63,8 @@ class BIOMASSL1Reader(ImageReader):
     ----------
     filepath : Path
         Path to the product directory.
-    metadata : Dict[str, Any]
-        BIOMASS-specific metadata.
+    metadata : BIOMASSMetadata
+        Typed BIOMASS metadata with all annotation fields.
     polarizations : List[str]
         Available polarizations (HH, HV, VH, VV).
     magnitude_dataset : rasterio.DatasetReader
@@ -143,44 +143,45 @@ class BIOMASSL1Reader(ImageReader):
             rows = int(sar_image.findtext('numberOfLines', '0'))
             cols = int(sar_image.findtext('numberOfSamples', '0'))
 
-            extras: Dict[str, Any] = {
-                'mission': acq_info.findtext('mission', 'BIOMASS'),
-                'swath': acq_info.findtext('swath', ''),
-                'product_type': acq_info.findtext('productType', 'SCS'),
-                'start_time': acq_info.findtext('startTime', ''),
-                'stop_time': acq_info.findtext('stopTime', ''),
-                'orbit_number': int(
-                    acq_info.findtext('absoluteOrbitNumber', '0')
-                ),
-                'orbit_pass': acq_info.findtext('orbitPass', ''),
-                'range_pixel_spacing': float(
-                    sar_image.findtext('rangePixelSpacing', '0')
-                ),
-                'azimuth_pixel_spacing': float(
-                    sar_image.findtext('azimuthPixelSpacing', '0')
-                ),
-                'pixel_type': sar_image.findtext(
-                    'pixelType', '32 bit Float'
-                ),
-                'pixel_representation': sar_image.findtext(
-                    'pixelRepresentation', 'Abs Phase'
-                ),
-                'projection': sar_image.findtext(
-                    'projection', 'Slant Range'
-                ),
-                'nodata_value': float(
-                    sar_image.findtext('noDataValue', '-9999.0')
-                ),
-            }
+            mission = acq_info.findtext('mission', 'BIOMASS')
+            swath = acq_info.findtext('swath', '')
+            product_type = acq_info.findtext('productType', 'SCS')
+            start_time = acq_info.findtext('startTime', '')
+            stop_time = acq_info.findtext('stopTime', '')
+            orbit_number = int(
+                acq_info.findtext('absoluteOrbitNumber', '0')
+            )
+            orbit_pass = acq_info.findtext('orbitPass', '')
+            range_pixel_spacing = float(
+                sar_image.findtext('rangePixelSpacing', '0')
+            )
+            azimuth_pixel_spacing = float(
+                sar_image.findtext('azimuthPixelSpacing', '0')
+            )
+            pixel_type = sar_image.findtext(
+                'pixelType', '32 bit Float'
+            )
+            pixel_representation = sar_image.findtext(
+                'pixelRepresentation', 'Abs Phase'
+            )
+            projection = sar_image.findtext(
+                'projection', 'Slant Range'
+            )
+            nodata_value = float(
+                sar_image.findtext('noDataValue', '-9999.0')
+            )
 
+            polarizations: Optional[List[str]] = None
+            num_polarizations: Optional[int] = None
             pol_list = acq_info.find('polarisationList')
             if pol_list is not None:
                 self.polarizations = [
                     pol.text for pol in pol_list.findall('polarisation')
                 ]
-                extras['polarizations'] = self.polarizations
-                extras['num_polarizations'] = len(self.polarizations)
+                polarizations = self.polarizations
+                num_polarizations = len(self.polarizations)
 
+            prf: Optional[float] = None
             prf_list = (
                 inst_params.find('prfList')
                 if inst_params is not None
@@ -189,12 +190,15 @@ class BIOMASSL1Reader(ImageReader):
             if prf_list is not None and len(prf_list) > 0:
                 prf_elem = prf_list.find('prf/value')
                 if prf_elem is not None:
-                    extras['prf'] = float(prf_elem.text)
+                    prf = float(prf_elem.text)
 
+            corner_coords: Optional[
+                Dict[str, Tuple[float, float]]
+            ] = None
             footprint = sar_image.findtext('footprint', '')
             if footprint:
                 coords = [float(x) for x in footprint.split()]
-                extras['corner_coords'] = {
+                corner_coords = {
                     'corner1': (coords[0], coords[1]),
                     'corner2': (coords[2], coords[3]),
                     'corner3': (coords[4], coords[5]),
@@ -234,24 +238,43 @@ class BIOMASSL1Reader(ImageReader):
 
             bands = self.magnitude_dataset.count
 
+            gcps: Optional[
+                List[Tuple[float, float, float, float, float]]
+            ] = None
+            crs_str: Optional[str] = None
             if self.magnitude_dataset.gcps[0]:
-                gcps, crs_val = self.magnitude_dataset.gcps
-                extras['gcps'] = [
+                gcps_raw, crs_val = self.magnitude_dataset.gcps
+                gcps = [
                     (gcp.x, gcp.y, gcp.z, gcp.row, gcp.col)
-                    for gcp in gcps
+                    for gcp in gcps_raw
                 ]
                 crs_str = str(crs_val)
-            else:
-                crs_str = None
 
-            self.metadata = ImageMetadata(
+            self.metadata = BIOMASSMetadata(
                 format='BIOMASS_L1_SCS',
                 rows=rows,
                 cols=cols,
                 dtype='complex64',
                 bands=bands,
                 crs=crs_str,
-                extras=extras,
+                mission=mission,
+                swath=swath,
+                product_type=product_type,
+                start_time=start_time,
+                stop_time=stop_time,
+                orbit_number=orbit_number,
+                orbit_pass=orbit_pass,
+                polarizations=polarizations,
+                num_polarizations=num_polarizations,
+                range_pixel_spacing=range_pixel_spacing,
+                azimuth_pixel_spacing=azimuth_pixel_spacing,
+                pixel_type=pixel_type,
+                pixel_representation=pixel_representation,
+                projection=projection,
+                nodata_value=nodata_value,
+                corner_coords=corner_coords,
+                prf=prf,
+                gcps=gcps,
             )
 
         except Exception as e:
@@ -278,7 +301,11 @@ class BIOMASSL1Reader(ImageReader):
         np.ndarray
             Complex-valued array (complex64).
         """
-        nodata = self.metadata.get('nodata_value', -9999.0)
+        nodata = (
+            self.metadata.nodata_value
+            if self.metadata.nodata_value is not None
+            else -9999.0
+        )
         valid_mask = (magnitude != nodata) & (phase != nodata)
 
         complex_data = np.zeros(magnitude.shape, dtype=np.complex64)

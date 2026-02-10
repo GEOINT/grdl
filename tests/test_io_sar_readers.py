@@ -33,6 +33,8 @@ import pytest
 import numpy as np
 from unittest import mock
 
+from grdl.IO.models import ImageMetadata, SICDMetadata, SIDDMetadata
+
 
 # -- SICDReader tests -------------------------------------------------------
 
@@ -66,7 +68,9 @@ class TestSICDReader:
             SICDReader, '__init__', lambda self, fp: None
         ):
             reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {'dtype': 'complex64'}
+            reader.metadata = SICDMetadata(
+                format='SICD', rows=100, cols=200, dtype='complex64',
+            )
             assert reader.get_dtype() == np.dtype('complex64')
 
     def test_get_shape_returns_tuple(self):
@@ -76,7 +80,9 @@ class TestSICDReader:
             SICDReader, '__init__', lambda self, fp: None
         ):
             reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {'rows': 1000, 'cols': 2000}
+            reader.metadata = SICDMetadata(
+                format='SICD', rows=1000, cols=2000, dtype='complex64',
+            )
             assert reader.get_shape() == (1000, 2000)
 
     def test_file_not_found(self):
@@ -212,7 +218,9 @@ class TestSIDDReader:
             SIDDReader, '__init__', lambda self, fp, **kw: None
         ):
             reader = SIDDReader.__new__(SIDDReader)
-            reader.metadata = {'rows': 512, 'cols': 768}
+            reader.metadata = SIDDMetadata(
+                format='SIDD', rows=512, cols=768, dtype='uint8',
+            )
             assert reader.get_shape() == (512, 768)
 
     def test_image_index_parameter(self):

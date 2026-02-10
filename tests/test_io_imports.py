@@ -203,6 +203,7 @@ def test_io_all_exports():
     import grdl.IO as io_mod
     expected = [
         'ImageReader', 'ImageWriter', 'CatalogInterface', 'ImageMetadata',
+        'SICDMetadata', 'SIDDMetadata', 'BIOMASSMetadata',
         'GeoTIFFReader', 'HDF5Reader', 'JP2Reader', 'NITFReader',
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
         'BIOMASSL1Reader', 'BIOMASSCatalog',
@@ -218,7 +219,45 @@ def test_sar_all_exports():
     expected = [
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
         'BIOMASSL1Reader', 'BIOMASSCatalog',
+        'SICDMetadata', 'SIDDMetadata', 'BIOMASSMetadata',
         'open_sar', 'open_biomass', 'load_credentials',
     ]
     for name in expected:
         assert name in sar_mod.__all__, f"'{name}' missing from sar.__all__"
+
+
+# -- Metadata model imports ------------------------------------------------
+
+def test_import_metadata_models_from_io():
+    """Metadata subclasses importable from grdl.IO."""
+    from grdl.IO import SICDMetadata, SIDDMetadata, BIOMASSMetadata
+    assert SICDMetadata is not None
+    assert SIDDMetadata is not None
+    assert BIOMASSMetadata is not None
+
+
+def test_import_metadata_models_from_models():
+    """Metadata subclasses importable from grdl.IO.models."""
+    from grdl.IO.models import (
+        ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata,
+        XYZ, LatLon, LatLonHAE, RowCol, Poly1D, Poly2D, XYZPoly,
+    )
+    assert ImageMetadata is not None
+    assert SICDMetadata is not None
+    assert SIDDMetadata is not None
+    assert BIOMASSMetadata is not None
+    assert XYZ is not None
+    assert LatLon is not None
+    assert LatLonHAE is not None
+    assert RowCol is not None
+    assert Poly1D is not None
+    assert Poly2D is not None
+    assert XYZPoly is not None
+
+
+def test_import_metadata_models_from_sar():
+    """Metadata subclasses importable from grdl.IO.sar."""
+    from grdl.IO.sar import SICDMetadata, SIDDMetadata, BIOMASSMetadata
+    assert SICDMetadata is not None
+    assert SIDDMetadata is not None
+    assert BIOMASSMetadata is not None
