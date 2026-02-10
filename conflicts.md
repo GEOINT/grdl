@@ -56,8 +56,8 @@ The `.md` files present these as part of the architecture/design, but they're **
 ## 5. What Actually Matches (No Conflicts)
 
 These all match between docs and implementation:
-- `Tiler.tile()` / `untile()`
-- `ChipExtractor.extract_at_points()`
+- `Tiler.tile_positions()` (index-only, returns `List[ChipRegion]`)
+- `ChipExtractor.chip_at_point()` / `chip_positions()` (index-only, returns `ChipRegion`)
 - `Normalizer.normalize()` / `fit()` / `transform()`
 - `Pipeline` constructor and `apply()`
 - `OutputGrid.from_geolocation()` with `pixel_size_lat`/`pixel_size_lon`

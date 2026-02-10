@@ -20,7 +20,7 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 
 | Domain | Description | Status |
 |--------|-------------|--------|
-| **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, GRD, BIOMASS) | Implemented |
+| **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, CRSD, SIDD, GeoTIFF, NITF, BIOMASS) | Implemented |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
 | **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
 | **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
@@ -38,9 +38,16 @@ GRDL/
 │   ├── py.typed                     # PEP 561 type stub marker
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
-│   │   ├── sar.py                   #   SICDReader, CPHDReader, GRDReader, open_sar()
-│   │   ├── biomass.py               #   BIOMASSL1Reader, open_biomass()
-│   │   └── catalog.py               #   BIOMASSCatalog, load_credentials()
+│   │   ├── geotiff.py               #   GeoTIFFReader (rasterio), open_image()
+│   │   ├── nitf.py                  #   NITFReader (rasterio/GDAL)
+│   │   └── sar/                     #   SAR-specific formats
+│   │       ├── _backend.py          #     sarkit/sarpy availability detection
+│   │       ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
+│   │       ├── cphd.py              #     CPHDReader (sarkit primary, sarpy fallback)
+│   │       ├── crsd.py              #     CRSDReader (sarkit only)
+│   │       ├── sidd.py              #     SIDDReader (sarkit only)
+│   │       ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
+│   │       └── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
@@ -85,10 +92,10 @@ GRDL/
 │   │   └── stacks/                  #   Image > Stacks
 │   │       └── z_projection.py      #     ZProjection (stack projection: max, mean, median, etc.)
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
-│   │   ├── __init__.py              #   Module exports (Tiler, ChipExtractor, Normalizer)
-│   │   ├── base.py                  #   Base utilities
-│   │   ├── tiler.py                 #   Tiler (overlapping tile extraction and reconstruction)
-│   │   ├── chip_extractor.py        #   ChipExtractor (point/polygon chip extraction)
+│   │   ├── __init__.py              #   Module exports (ChipBase, ChipRegion, ChipExtractor, Tiler, Normalizer)
+│   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
+│   │   ├── tiler.py                 #   Tiler (stride-based tile region computation)
+│   │   ├── chip_extractor.py        #   ChipExtractor (point-centered and whole-image chip regions)
 │   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
 │   └── coregistration/              # Image alignment and registration
 │       ├── __init__.py              #   Module exports
@@ -97,12 +104,14 @@ GRDL/
 │       ├── projective.py            #   Projective transform alignment
 │       ├── feature_match.py         #   Feature-based matching (OpenCV)
 │       └── utils.py                 #   Coregistration utilities
-├── example/                         # Example scripts
-│   ├── catalog/
-│   │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
-│   │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
-│   └── ortho/
-│       └── ortho_biomass.py         #   Orthorectification with Pauli RGB
+│   └── example/                     # Example scripts
+│       ├── catalog/
+│       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
+│       │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
+│       ├── ortho/
+│       │   └── ortho_biomass.py         #   Orthorectification with Pauli RGB
+│       └── sar/
+│           └── view_sicd.py             #   SICD magnitude viewer (linear)
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
@@ -336,19 +345,22 @@ result = pipe.apply(image, progress_callback=lambda f: print(f"{f:.0%}"))
 
 ### Data Preparation
 
-Tiling, chip extraction, and normalization for ML/AI pipelines:
+Chip/tile index computation and normalization for ML/AI pipelines:
 
 ```python
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Split a large image into overlapping tiles
-tiler = Tiler(tile_size=256, stride=128)
-tiles = tiler.tile(image)
-reconstructed = tiler.untile(tiles, image.shape)
+# Compute chip region centered at a point
+extractor = ChipExtractor(nrows=1000, ncols=2000)
+region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
+chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
 
-# Extract chips at point locations
-extractor = ChipExtractor(chip_size=64)
-chips = extractor.extract_at_points(image, points)
+# Partition an image into non-overlapping chip regions
+regions = extractor.chip_positions(row_width=256, col_width=256)
+
+# Compute overlapping tile positions with stride
+tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
+tile_regions = tiler.tile_positions()
 
 # Normalize to [0, 1] range
 norm = Normalizer(method='minmax')
@@ -409,7 +421,8 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 
 - `numpy` -- Used across all modules (core)
 - `scipy` -- Geolocation interpolation, ImageJ port filters (core)
-- `sarpy` -- SICD / CPHD format support (`[sar]` extra)
+- `sarkit` -- SICD / CPHD / CRSD / SIDD format support (primary SAR backend, `[sar]` extra)
+- `sarpy` -- SICD / CPHD fallback backend (`[sar]` extra)
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
 - `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)

@@ -10,18 +10,25 @@ Roadmap and planned features for the IO module.
   - [x] `ImageReader` ABC with lazy loading
   - [x] `ImageWriter` ABC with incremental writes
   - [x] `CatalogInterface` ABC for discovery
-- [x] SAR readers (`sar.py`)
-  - [x] `SICDReader` - SICD format via SARPY
-  - [x] `CPHDReader` - CPHD format via SARPY
-  - [x] `GRDReader` - GRD GeoTIFF via rasterio
+- [x] SAR readers (`sar/` submodule)
+  - [x] `SICDReader` - SICD format (sarkit primary, sarpy fallback)
+  - [x] `CPHDReader` - CPHD format (sarkit primary, sarpy fallback)
+  - [x] `CRSDReader` - CRSD format (sarkit-only)
+  - [x] `SIDDReader` - SIDD format (sarkit-only)
+  - [x] `_backend.py` - sarkit/sarpy availability detection
   - [x] `open_sar()` - Auto-detection utility
-- [x] BIOMASS readers (`biomass.py`)
+- [x] Base format readers (IO level)
+  - [x] `GeoTIFFReader` - GeoTIFF/COG via rasterio
+  - [x] `HDF5Reader` - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
+  - [x] `NITFReader` - Generic NITF via rasterio/GDAL
+  - [x] `open_image()` - Auto-detection for base formats (GeoTIFF, HDF5, NITF)
+- [x] BIOMASS readers (`sar/biomass.py`)
   - [x] `BIOMASSL1Reader` - BIOMASS L1 SCS format (magnitude/phase GeoTIFFs)
   - [x] `open_biomass()` - Auto-detection utility
   - [x] Full quad-pol support (HH, HV, VH, VV)
   - [x] XML annotation metadata parsing
   - [x] Complex data reconstruction from magnitude/phase
-- [x] Catalog system (`catalog.py`)
+- [x] Catalog system (`sar/biomass_catalog.py`)
   - [x] `BIOMASSCatalog` - BIOMASS-specific catalog and download manager
   - [x] Local file system discovery
   - [x] ESA MAAP STAC API search (`query_esa()`)
@@ -61,8 +68,9 @@ Roadmap and planned features for the IO module.
   - [x] `__gpu_compatible__` flag on all 12 components
   - [x] Tests covering all 12 components
 - [x] Data preparation module (`data_prep/`)
-  - [x] Tiler -- overlapping tile extraction and reconstruction
-  - [x] ChipExtractor -- point/polygon chip extraction
+  - [x] ChipBase ABC -- image dimension management and coordinate snapping
+  - [x] ChipExtractor -- point-centered and whole-image chip region computation
+  - [x] Tiler -- stride-based tile region computation
   - [x] Normalizer -- minmax, zscore, percentile, unit_norm with fit/transform
 - [x] Coregistration module (`coregistration/`)
   - [x] Affine transform alignment
@@ -85,6 +93,7 @@ Roadmap and planned features for the IO module.
   - [x] `catalog/discover_and_download.py` - MAAP catalog search and download
   - [x] `catalog/view_product.py` - Pauli RGB and HH dB viewer with interactive markers
   - [x] `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB
+  - [x] `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - [x] Ground truth data (`ground_truth/`)
   - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
 - [x] Testing
@@ -97,47 +106,37 @@ Roadmap and planned features for the IO module.
   - [x] Processor versioning tests
   - [x] Tunable parameter tests
   - [x] ImageJ/Fiji ports tests (124 tests across 12 components)
+  - [x] IO import path tests (`test_io_imports.py`)
+  - [x] GeoTIFF reader tests (`test_io_geotiff.py`)
+  - [x] HDF5 reader tests (`test_io_hdf5.py`)
+  - [x] NITF reader tests (`test_io_nitf.py`)
+  - [x] SAR backend detection tests (`test_io_sar_backend.py`)
+  - [x] SAR reader API contract tests (`test_io_sar_readers.py`)
 
 ## High Priority
 
-### SAR Readers (sar.py)
+### SAR Readers (sar/)
 
-- [ ] **CRSDReader** - CRSD format support
-  - Use SARPY's CRSD reader
-  - Similar structure to CPHDReader
-  - Test with CRSD 1.0 sample files
+- [x] **CRSDReader** - CRSD format support (sarkit-only)
+- [x] **SIDDReader** - SIDD format support (sarkit-only)
+- [x] **sarkit/sarpy dual backend** - sarkit primary, sarpy fallback for SICD/CPHD
 
 - [ ] **SLCReader** - Single Look Complex
   - Distinguish from GRD (also GeoTIFF)
   - Parse SAR-specific metadata tags
   - Handle complex data in GeoTIFF
 
-- [ ] **SIDD Support** - Sensor Independent Derived Data
-  - Detected/processed SAR imagery
-  - Use SARPY's SIDD reader
-  - Coordinate with SICDReader (similar structure)
+### Base Format Readers (IO level)
 
-### EO Readers (eo.py) - NEW MODULE
-
-- [ ] **GeoTIFFReader** - General raster imagery
-  - Reuse GRDReader implementation (also rasterio)
-  - Handle RGB, multispectral, hyperspectral
-  - Support for COG (Cloud-Optimized GeoTIFF)
-
-- [ ] **NITFReader** - NITF 2.1 imagery
-  - Use SARPY or rasterio for NITF parsing
-  - Handle TREs (Tagged Record Extensions)
-  - Support multi-image NITF files
+- [x] **GeoTIFFReader** - General raster imagery via rasterio
+- [x] **HDF5Reader** - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
+- [x] **NITFReader** - Generic NITF via rasterio/GDAL
+- [x] **open_image()** - Auto-detect GeoTIFF, HDF5, or NITF
 
 - [ ] **JP2Reader** - JPEG2000 imagery
   - Via rasterio or glymur
   - Common in satellite imagery (Sentinel-2)
   - Handle tiled/pyramidal structure
-
-- [ ] **HDF5Reader** - HDF5/NetCDF formats
-  - Use h5py or xarray
-  - Common in climate/weather data
-  - Handle multi-dimensional arrays
 
 ### Geospatial Readers (geospatial.py) - NEW MODULE
 
@@ -304,8 +303,8 @@ Roadmap and planned features for the IO module.
   - [ ] SICDReader edge cases (multi-segment NITF)
   - [x] CPHDReader basic functionality
   - [ ] CPHDReader multi-channel handling
-  - [x] GRDReader basic functionality
-  - [ ] GRDReader multi-band imagery
+  - [x] GeoTIFFReader basic functionality
+  - [ ] GeoTIFFReader multi-band imagery
   - [ ] open_sar() format detection logic
 
 - [ ] EO readers (once implemented)
@@ -474,20 +473,24 @@ Track user-requested features here:
   - [x] Spatial filters, contrast enhancement, thresholding, segmentation
   - [x] Edge detection, peak detection, frequency-domain filtering, stack projection
   - [x] Vectorized CLAHE and SRM edge construction
-- [x] Data preparation module (Tiler, ChipExtractor, Normalizer)
+- [x] Data preparation module (ChipBase, ChipExtractor, Tiler, Normalizer)
 - [x] Coregistration module (affine, projective, feature-matching)
 - [x] Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.)
 - [x] PEP 561 type marker (py.typed)
 - [x] pyproject.toml with optional dependency extras
 - [x] Shared test fixtures (conftest.py)
 - [x] Performance benchmarks (pytest-benchmark)
-- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow)
+- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow, SICD viewer)
 - [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
 - [x] Documentation framework
 
 ### v0.2.0 (Next)
-- [ ] Additional SAR readers (CRSD, SLC, SIDD)
-- [ ] Basic EO readers (GeoTIFF, NITF)
+- [x] Additional SAR readers (CRSD, SIDD) with sarkit backend
+- [x] Base format readers (GeoTIFF, NITF) at IO level
+- [x] IO restructure into modality-based submodules (sar/)
+- [x] sarkit/sarpy dual backend for SICD and CPHD
+- [x] IO import, GeoTIFF, NITF, SAR backend, and SAR reader tests
+- [ ] SLCReader for Single Look Complex GeoTIFFs
 - [ ] Concrete ImageDetector implementations
 - [ ] Test coverage >80%
 

@@ -103,8 +103,9 @@ GRDL/
       segmentation/          # Plugins > Segmentation (StatisticalRegionMerging)
       stacks/                # Image > Stacks (ZProjection)
     data_prep/               # ML/AI data preparation
-      tiler.py               # Tiler (overlapping tile extraction and reconstruction)
-      chip_extractor.py      # ChipExtractor (point/polygon chip extraction)
+      base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
+      tiler.py               # Tiler (stride-based tile region computation)
+      chip_extractor.py      # ChipExtractor (point-centered and whole-image chip regions)
       normalizer.py          # Normalizer (minmax, zscore, percentile, unit_norm)
     coregistration/          # Image alignment and registration
       affine.py              # Affine transform alignment
@@ -126,7 +127,7 @@ Domain directories map to the module areas defined in the README:
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
 | `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, pipeline, transforms |
 | `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms in 10 subdirectories matching ImageJ menu hierarchy |
-| `data_prep/` | Tiling, chip extraction, normalization for ML/AI pipelines |
+| `data_prep/` | Chip/tile index computation and normalization for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |

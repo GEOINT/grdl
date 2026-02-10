@@ -8,29 +8,24 @@ The IO module provides a unified interface for reading and writing various geosp
 
 ## Supported Formats
 
-### SAR (Synthetic Aperture Radar)
+### Base Data Formats (IO level)
 
-| Format | Type | Reader Class | Status |
-|--------|------|-------------|--------|
-| SICD | NGA Standard Complex | `SICDReader` | ✅ Implemented |
-| CPHD | NGA Phase History | `CPHDReader` | ✅ Implemented |
-| CRSD | NGA Received Signal | - | 🔄 Planned |
-| GRD | Ground Range Detected | `GRDReader` | ✅ Implemented |
-| SLC | Single Look Complex | - | 🔄 Planned |
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| GeoTIFF/COG | `GeoTIFFReader` | rasterio | ✅ Implemented |
+| HDF5/HDF-EOS5 | `HDF5Reader` | h5py | ✅ Implemented |
+| NITF | `NITFReader` | rasterio/GDAL | ✅ Implemented |
 
-### Mission-Specific Readers
+### SAR (Synthetic Aperture Radar) — `sar/` submodule
 
-| Mission | Type | Reader Class | Status |
-|---------|------|-------------|--------|
-| BIOMASS L1 SCS | ESA P-band SAR | `BIOMASSL1Reader` | ✅ Implemented |
-
-### EO (Electro-Optical)
-
-| Format | Type | Reader Class | Status |
-|--------|------|-------------|--------|
-| GeoTIFF | Raster | - | 🔄 Planned |
-| NITF | Container | - | 🔄 Planned |
-| COG | Cloud-Optimized GeoTIFF | - | 🔄 Planned |
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| SICD | `SICDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
+| CPHD | `CPHDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
+| CRSD | `CRSDReader` | sarkit | ✅ Implemented |
+| SIDD | `SIDDReader` | sarkit | ✅ Implemented |
+| BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
+| SLC | - | - | 🔄 Planned |
 
 ### Geospatial Vector
 
@@ -130,12 +125,39 @@ with CPHDReader('cphd_data.cphd') as reader:
     ph_data = reader.read_full(bands=[0])  # First channel
 ```
 
-#### GRD - Geocoded SAR Products
+#### HDF5 - NASA, JAXA, Hyperspectral Products
 
 ```python
-from grdl.IO import GRDReader
+from grdl.IO import HDF5Reader
 
-with GRDReader('sentinel1_grd.tif') as reader:
+# Browse datasets in an HDF5 file
+datasets = HDF5Reader.list_datasets('MOD09GA.h5')
+for path, shape, dtype in datasets:
+    print(f"{path}: {shape} ({dtype})")
+
+# Open with explicit dataset path
+with HDF5Reader('MOD09GA.h5', dataset_path='/MODIS_Grid/sur_refl_b01') as reader:
+    print(f"Shape: {reader.get_shape()}")
+    chip = reader.read_chip(0, 512, 0, 512)
+
+# Auto-detect first suitable dataset
+with HDF5Reader('product.h5') as reader:
+    print(f"Selected: {reader.dataset_path}")
+    full = reader.read_full()
+```
+
+#### GeoTIFF - Any Raster Imagery (SAR GRD, EO, MSI)
+
+```python
+from grdl.IO import GeoTIFFReader, open_image
+
+# Auto-detect any supported raster format
+with open_image('scene.tif') as reader:
+    print(f"Format: {reader.metadata['format']}")
+    chip = reader.read_chip(0, 1024, 0, 1024)
+
+# Or use the GeoTIFFReader directly
+with GeoTIFFReader('sentinel1_grd.tif') as reader:
     # Access geolocation
     geo = reader.get_geolocation()
     print(f"CRS: {geo['crs']}")
@@ -149,6 +171,27 @@ with GRDReader('sentinel1_grd.tif') as reader:
     if reader.metadata['bands'] > 1:
         # Read specific bands (0-based indexing)
         vv_vh = reader.read_chip(0, 1000, 0, 1000, bands=[0, 1])
+```
+
+#### CRSD - Compensated Radar Signal Data
+
+```python
+from grdl.IO import CRSDReader
+
+with CRSDReader('data.crsd') as reader:
+    print(f"Channels: {reader.metadata['num_channels']}")
+    shape = reader.get_shape()
+    signal = reader.read_chip(0, 100, 0, 200)
+```
+
+#### SIDD - Sensor Independent Derived Data
+
+```python
+from grdl.IO import SIDDReader
+
+with SIDDReader('derived.nitf', image_index=0) as reader:
+    print(f"Num images: {reader.metadata['num_images']}")
+    chip = reader.read_chip(0, 512, 0, 512)
 ```
 
 ### BIOMASS ESA Satellite Data
@@ -337,10 +380,11 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
 
-See `example/` for working BIOMASS workflows:
+See `grdl/example/` for working workflows:
 - `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
+- `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 
 ## ImageJ/Fiji Algorithm Ports
 
@@ -380,19 +424,22 @@ Each ported component carries `__imagej_source__`, `__imagej_version__`, `__gpu_
 
 ## Data Preparation
 
-The `grdl.data_prep` module provides utilities for formatting imagery into ML/AI pipeline-ready formats:
+The `grdl.data_prep` module provides chip/tile index computation and normalization utilities:
 
 ```python
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Split image into overlapping tiles
-tiler = Tiler(tile_size=256, stride=128)
-tiles = tiler.tile(image)
-reconstructed = tiler.untile(tiles, image.shape)
+# Compute chip region centered at a point (snaps to stay inside image)
+extractor = ChipExtractor(nrows=rows, ncols=cols)
+region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
+chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
 
-# Extract chips at point locations
-extractor = ChipExtractor(chip_size=64)
-chips = extractor.extract_at_points(image, points)
+# Partition image into uniform chip regions
+regions = extractor.chip_positions(row_width=256, col_width=256)
+
+# Compute overlapping tile positions with stride
+tiler = Tiler(nrows=rows, ncols=cols, tile_size=256, stride=128)
+tile_regions = tiler.tile_positions()
 
 # Normalize intensity values
 norm = Normalizer(method='minmax')

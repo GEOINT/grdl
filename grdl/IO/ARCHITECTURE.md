@@ -17,13 +17,19 @@ grdl/
 ├── exceptions.py            # Custom exception hierarchy (GrdlError, ValidationError, etc.)
 ├── py.typed                 # PEP 561 type stub marker
 ├── IO/
-│   ├── __init__.py          # Public API exports
+│   ├── __init__.py          # Public API exports + open_image()
 │   ├── base.py              # Abstract base classes (ABCs)
-│   ├── sar.py               # SAR format readers (SICD, CPHD, GRD)
-│   ├── biomass.py           # BIOMASS mission readers (L1 SCS)
-│   ├── catalog.py           # BIOMASS catalog and download manager
-│   ├── eo.py                # EO imagery readers (planned)
-│   ├── geospatial.py        # Vector data readers/writers (planned)
+│   ├── geotiff.py           # GeoTIFFReader (base data format, rasterio)
+│   ├── nitf.py              # NITFReader (base data format, rasterio/GDAL)
+│   ├── sar/                 # SAR-specific format readers
+│   │   ├── __init__.py      # SAR exports + open_sar()
+│   │   ├── _backend.py      # sarkit/sarpy availability detection
+│   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback)
+│   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback)
+│   │   ├── crsd.py          # CRSDReader (sarkit-only)
+│   │   ├── sidd.py          # SIDDReader (sarkit-only)
+│   │   ├── biomass.py       # BIOMASSL1Reader (rasterio)
+│   │   └── biomass_catalog.py  # BIOMASSCatalog + load_credentials
 │   ├── README.md            # User documentation
 │   ├── ARCHITECTURE.md      # This file
 │   └── TODO.md              # Roadmap and planned features
@@ -33,7 +39,7 @@ grdl/
 │   ├── pipeline.py          # Pipeline (sequential transform composition)
 │   └── ...                  # ortho/, decomposition/, detection/ subdomains
 ├── imagej/                  # 12 ImageJ/Fiji ports (10 subdirs matching ImageJ menu hierarchy)
-├── data_prep/               # Tiler, ChipExtractor, Normalizer
+├── data_prep/               # ChipBase ABC, ChipExtractor, Tiler, Normalizer
 └── coregistration/          # Affine, projective, feature-matching alignment
 ```
 
@@ -114,8 +120,8 @@ Abstract class for image discovery and spatial queries.
   - Enables multi-sensor workflows
   - Simplifies collection management
 
-**Implemented**: `BIOMASSCatalog` in `catalog.py` provides local discovery,
-ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
+**Implemented**: `BIOMASSCatalog` in `sar/biomass_catalog.py` provides local
+discovery, ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
 
 ### Integration with Image Processing
 
@@ -131,8 +137,8 @@ IO readers integrate with the image processing module through composable pattern
   enabling all single-band processors to work on multi-band imagery without manual band looping.
 - **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
   `progress_callback` keyword argument for real-time progress reporting.
-- **Data Preparation**: `Tiler`, `ChipExtractor`, and `Normalizer` in `grdl.data_prep` prepare imagery
-  for ML/AI pipelines with configurable tiling, chip extraction, and normalization.
+- **Data Preparation**: `ChipExtractor` and `Tiler` (both inheriting `ChipBase`) in `grdl.data_prep` compute
+  chip and tile index bounds within bounded images. `Normalizer` handles intensity normalization.
 - **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
   direct use in processing pipelines alongside orthorectification and decomposition. Includes spatial filters
   (RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter), contrast enhancement (CLAHE,
@@ -147,10 +153,21 @@ IO readers integrate with the image processing module through composable pattern
 
 | Format | Backend Library | Rationale |
 |--------|----------------|-----------|
-| SICD/CPHD | SARPY | NGA official implementation, handles NITF complexity |
-| GRD | Rasterio | Industry standard for GeoTIFF, handles COGs |
-| CRSD | SARPY (planned) | Consistent with SICD/CPHD |
-| SLC | Rasterio (planned) | Often stored as GeoTIFF |
+| SICD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
+| CPHD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
+| CRSD | sarkit (only) | sarpy does not fully support CRSD |
+| SIDD | sarkit (only) | sarpy does not fully support SIDD |
+| GeoTIFF | rasterio | Industry standard for GeoTIFF, handles COGs |
+| NITF | rasterio (GDAL) | Generic NITF via GDAL driver; SAR NITF uses sarkit/sarpy |
+| BIOMASS | rasterio | Magnitude/phase GeoTIFFs + XML annotation |
+
+### Backend Fallback Pattern (`_backend.py`)
+
+SAR readers use a shared backend detection module:
+- `_HAS_SARKIT` / `_HAS_SARPY` flags set at import time
+- `require_sar_backend()` returns `'sarkit'` or `'sarpy'` (prefers sarkit)
+- `require_sarkit()` raises `ImportError` when sarkit is required (CRSD, SIDD)
+- Key API difference: sarkit takes `BinaryIO`, sarpy takes filepath strings
 
 ### SICDReader
 
@@ -165,20 +182,19 @@ IO readers integrate with the image processing module through composable pattern
 ```python
 class SICDReader(ImageReader):
     def __init__(self, filepath):
-        # SARPY's open_complex() handles:
-        # - NITF parsing
-        # - SICD metadata extraction
-        # - Lazy dataset setup
-        self.reader = open_complex(filepath)
-        self.sicd_meta = self.reader.sicd_meta
+        self.backend = require_sar_backend('SICD')  # 'sarkit' or 'sarpy'
+        super().__init__(filepath)
+
+    # sarkit path: file opened as binary, sarkit.sicd.NitfReader(file)
+    # sarpy path: sarpy.io.complex.converter.open_complex(str(filepath))
 ```
 
 **Key Decisions:**
 
-1. **Expose SARPY metadata object**: `self.sicd_meta` available for advanced users
-   - SICD metadata is extremely rich (100+ fields)
-   - Extracting all to dict would be overwhelming
-   - Direct access for power users, simplified dict for common fields
+1. **Dual backend with sarkit preferred**: sarkit is the modern NGA library
+   - sarkit: `NitfReader(BinaryIO)` with `read_sub_image()` for windowed reads
+   - sarpy: `open_complex(filepath)` with slice indexing `reader[r1:r2, c1:c2]`
+   - Raw XML tree (`_xmltree`) available for advanced users
 
 2. **Complex data type**: Always returns `complex64`
    - SICD spec defines complex data
@@ -217,13 +233,13 @@ Unlike SICD (formed imagery), CPHD doesn't have fixed rows/cols. Instead:
    - Belongs in processing module, not I/O
    - Users apply SARPY's focusing or custom algorithms
 
-### GRDReader
+### GeoTIFFReader
 
 **Format Background:**
-- GRD = Ground Range Detected (industry term, not a standard)
-- Geocoded, magnitude-detected SAR products
-- Common format for Sentinel-1, RADARSAT-2, etc.
-- Usually GeoTIFF with embedded GCP/geotransform
+- GeoTIFF is the foundational raster format for geospatial imagery
+- Covers SAR GRD products, EO imagery, MSI, Cloud-Optimized GeoTIFFs (COG)
+- Lives at IO base level (`IO/geotiff.py`) — not in a modality submodule
+- Previously named `GRDReader`; renamed to reflect general-purpose nature
 
 **Implementation Details:**
 
@@ -236,11 +252,11 @@ Uses Rasterio for GeoTIFF reading:
 
 1. **Real-valued data**: Returns magnitude, not complex
    - GRD products are already detected (|I+jQ|²)
-   - No phase information available
+   - Standard EO/MSI imagery is real-valued
    - Simpler data type (float32 instead of complex64)
 
 2. **Geolocation includes CRS**: Unlike SICD
-   - GRD is geocoded, SICD is in native geometry
+   - GeoTIFF is geocoded with embedded CRS and affine transform
    - Users can directly map pixels to lat/lon
    - Supports any projection (UTM, Geographic, etc.)
 
@@ -254,7 +270,9 @@ Uses Rasterio for GeoTIFF reading:
 Convenience function that tries readers in order:
 1. SICDReader (NITF containers often SICD)
 2. CPHDReader
-3. GRDReader (GeoTIFF)
+3. CRSDReader
+4. SIDDReader
+5. GeoTIFFReader (fallback for GRD products)
 
 **Trade-offs:**
 - **Pro**: User-friendly for unknown files
@@ -580,7 +598,7 @@ def test_sicd_import_error():
 
 3. **EO GeoTIFF**
    - Standard optical imagery
-   - Reuse GRDReader structure (also rasterio)
+   - Already supported by GeoTIFFReader at IO base level
    - Handle multi-band (RGB, multispectral)
 
 ### Planned Writers

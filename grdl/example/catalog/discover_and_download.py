@@ -57,7 +57,7 @@ from pathlib import Path
 # GRDL
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from grdl.IO.catalog import BIOMASSCatalog
+from grdl.IO import BIOMASSCatalog
 
 
 # ---------------------------------------------------------------------------
