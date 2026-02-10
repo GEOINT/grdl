@@ -3,7 +3,7 @@
 Tests for ImageJ/Fiji ported components.
 
 Verifies algorithmic correctness, edge cases, and parameter validation
-for all six ported ImageJ/Fiji image processing components.
+for all 22 ported ImageJ/Fiji image processing components.
 
 Author
 ------
@@ -22,7 +22,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-10
 """
 
 import numpy as np
@@ -1115,6 +1115,1077 @@ class TestStatisticalRegionMerging:
 
 
 # ============================================================================
+# GaussianBlur Tests
+# ============================================================================
+
+class TestGaussianBlur:
+    """Tests for Gaussian smoothing filter."""
+
+    def test_import(self):
+        from grdl.imagej import GaussianBlur
+        assert GaussianBlur is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import GaussianBlur
+        assert GaussianBlur.__imagej_version__ == '1.54j'
+        assert GaussianBlur.__imagej_source__ == (
+            'ij/plugin/filter/GaussianBlur.java'
+        )
+        assert GaussianBlur.__processor_version__ == '1.54j'
+
+    def test_sigma_zero_is_identity(self):
+        """sigma=0 should return the original image unchanged."""
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=0.0)
+        image = np.random.RandomState(42).rand(30, 30) * 200
+        result = gb.apply(image)
+        np.testing.assert_allclose(result, image, atol=1e-10)
+
+    def test_sigma_zero_tuple_is_identity(self):
+        """sigma=(0, 0) should return the original image unchanged."""
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=(0.0, 0.0))
+        image = np.random.RandomState(42).rand(30, 30) * 200
+        result = gb.apply(image)
+        np.testing.assert_allclose(result, image, atol=1e-10)
+
+    def test_reduces_noise(self):
+        """Gaussian blur should reduce noise standard deviation."""
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=3.0)
+        rng = np.random.RandomState(42)
+        clean = np.full((50, 50), 100.0)
+        noisy = clean + rng.randn(50, 50) * 20
+        result = gb.apply(noisy)
+        assert np.std(result - clean) < np.std(noisy - clean)
+
+    def test_flat_image_unchanged(self):
+        """A flat image should remain unchanged after blurring."""
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=3.0)
+        flat = np.full((40, 40), 128.0)
+        result = gb.apply(flat)
+        np.testing.assert_allclose(result, flat, atol=1e-10)
+
+    def test_anisotropic_sigma(self):
+        """Anisotropic sigma should blur differently in each direction."""
+        from grdl.imagej import GaussianBlur
+        image = np.zeros((50, 50))
+        image[:, 25:] = 200.0
+        gb_row = GaussianBlur(sigma=(5.0, 0.5))
+        gb_col = GaussianBlur(sigma=(0.5, 5.0))
+        r_row = gb_row.apply(image)
+        r_col = gb_col.apply(image)
+        # Column-heavy sigma should blur the vertical edge more,
+        # producing a wider transition zone and lower column-mean variation
+        col_var_row = np.var(r_row[25, :])
+        col_var_col = np.var(r_col[25, :])
+        assert col_var_col < col_var_row
+
+    def test_output_shape_and_dtype(self):
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=2.0)
+        result = gb.apply(np.ones((30, 40), dtype=np.uint8) * 100)
+        assert result.shape == (30, 40)
+        assert result.dtype == np.float64
+
+    def test_complex_input(self):
+        """Complex-valued input should preserve complex dtype."""
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur(sigma=1.0)
+        rng = np.random.RandomState(42)
+        cplx = rng.rand(20, 20) + 1j * rng.rand(20, 20)
+        result = gb.apply(cplx)
+        assert np.iscomplexobj(result)
+        assert result.shape == (20, 20)
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import GaussianBlur
+        gb = GaussianBlur()
+        with pytest.raises(ValueError, match="2D"):
+            gb.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_sigma_negative(self):
+        from grdl.imagej import GaussianBlur
+        with pytest.raises(ValueError, match="sigma"):
+            GaussianBlur(sigma=-1.0)
+
+    def test_invalid_sigma_tuple_negative(self):
+        from grdl.imagej import GaussianBlur
+        with pytest.raises(ValueError, match="sigma"):
+            GaussianBlur(sigma=(-1.0, 2.0))
+
+    def test_invalid_sigma_tuple_length(self):
+        from grdl.imagej import GaussianBlur
+        with pytest.raises(ValueError, match="2 elements"):
+            GaussianBlur(sigma=(1.0, 2.0, 3.0))
+
+    def test_invalid_accuracy(self):
+        from grdl.imagej import GaussianBlur
+        with pytest.raises(ValueError, match="accuracy"):
+            GaussianBlur(accuracy=0)
+
+
+# ============================================================================
+# Convolver Tests
+# ============================================================================
+
+class TestConvolver:
+    """Tests for arbitrary 2D kernel convolution."""
+
+    def test_import(self):
+        from grdl.imagej import Convolver
+        assert Convolver is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import Convolver
+        assert Convolver.__imagej_version__ == '1.54j'
+        assert Convolver.__imagej_source__ == (
+            'ij/plugin/filter/Convolver.java'
+        )
+        assert Convolver.__processor_version__ == '1.54j'
+
+    def test_identity_kernel(self):
+        """A delta kernel should return the original image."""
+        from grdl.imagej import Convolver
+        kernel = np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]], dtype=np.float64)
+        conv = Convolver(kernel=kernel, normalize=False)
+        image = np.random.RandomState(42).rand(30, 30) * 200
+        result = conv.apply(image)
+        np.testing.assert_allclose(result, image, atol=1e-10)
+
+    def test_averaging_kernel(self):
+        """A 3x3 averaging kernel should smooth the image."""
+        from grdl.imagej import Convolver
+        kernel = np.ones((3, 3))
+        conv = Convolver(kernel=kernel, normalize=True)
+        image = np.zeros((20, 20))
+        image[10, 10] = 100.0
+        result = conv.apply(image)
+        assert result[10, 10] < 100.0
+        assert result[9, 10] > 0.0
+
+    def test_normalize_preserves_brightness(self):
+        """Normalized kernel should approximately preserve mean brightness."""
+        from grdl.imagej import Convolver
+        kernel = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
+        conv = Convolver(kernel=kernel, normalize=True)
+        image = np.random.RandomState(7).rand(40, 40) * 200
+        result = conv.apply(image)
+        assert abs(result[5:-5, 5:-5].mean() - image[5:-5, 5:-5].mean()) < 5.0
+
+    def test_derivative_kernel_no_normalize(self):
+        """Derivative kernels (sum to 0) should not be normalized."""
+        from grdl.imagej import Convolver
+        kernel = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        conv = Convolver(kernel=kernel, normalize=False)
+        image = np.zeros((30, 30))
+        image[:, 15:] = 200.0
+        result = conv.apply(image)
+        assert abs(result[:, 14:16]).max() > 0
+
+    def test_output_shape(self):
+        from grdl.imagej import Convolver
+        kernel = np.ones((3, 3))
+        conv = Convolver(kernel=kernel)
+        image = np.random.RandomState(0).rand(25, 35)
+        result = conv.apply(image)
+        assert result.shape == (25, 35)
+
+    def test_complex_input(self):
+        """Complex-valued input should preserve complex dtype."""
+        from grdl.imagej import Convolver
+        kernel = np.ones((3, 3))
+        conv = Convolver(kernel=kernel)
+        rng = np.random.RandomState(42)
+        cplx = rng.rand(20, 20) + 1j * rng.rand(20, 20)
+        result = conv.apply(cplx)
+        assert np.iscomplexobj(result)
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import Convolver
+        conv = Convolver(kernel=np.ones((3, 3)))
+        with pytest.raises(ValueError, match="2D"):
+            conv.apply(np.zeros((3, 10, 10)))
+
+    def test_rejects_1d_kernel(self):
+        from grdl.imagej import Convolver
+        with pytest.raises(ValueError, match="2D"):
+            Convolver(kernel=np.ones(5))
+
+    def test_rejects_even_kernel(self):
+        from grdl.imagej import Convolver
+        with pytest.raises(ValueError, match="odd"):
+            Convolver(kernel=np.ones((4, 4)))
+
+    def test_rejects_empty_kernel(self):
+        from grdl.imagej import Convolver
+        with pytest.raises(ValueError):
+            Convolver(kernel=np.empty((0, 0)))
+
+
+# ============================================================================
+# AutoThreshold Tests
+# ============================================================================
+
+class TestAutoThreshold:
+    """Tests for global automatic thresholding (16 methods)."""
+
+    def test_import(self):
+        from grdl.imagej import AutoThreshold
+        assert AutoThreshold is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import AutoThreshold
+        assert AutoThreshold.__imagej_version__ == '1.54j'
+        assert AutoThreshold.__imagej_source__ == (
+            'fiji/threshold/Auto_Threshold.java'
+        )
+        assert AutoThreshold.__processor_version__ == '1.54j'
+
+    def test_all_methods_run(self):
+        """Every method should execute without error and produce binary output."""
+        from grdl.imagej import AutoThreshold
+        rng = np.random.RandomState(42)
+        image = rng.rand(50, 50) * 255
+
+        methods = [
+            'default', 'huang', 'intermodes', 'isodata', 'li',
+            'maxentropy', 'mean', 'minerror', 'minimum', 'moments',
+            'otsu', 'percentile', 'renyientropy', 'shanbhag',
+            'triangle', 'yen',
+        ]
+        for method in methods:
+            at = AutoThreshold(method=method)
+            result = at.apply(image)
+            assert result.shape == (50, 50), f"Shape failed for {method}"
+            unique = np.unique(result)
+            assert all(v in [0.0, 1.0] for v in unique), (
+                f"Non-binary output for {method}: {unique}"
+            )
+
+    def test_otsu_bimodal(self):
+        """Otsu should separate a clearly bimodal image."""
+        from grdl.imagej import AutoThreshold
+        at = AutoThreshold(method='otsu')
+        image = np.zeros((40, 40))
+        image[:, 20:] = 200.0
+        result = at.apply(image)
+        assert result[:, :20].sum() == 0.0
+        assert result[:, 20:].sum() == result[:, 20:].size
+
+    def test_threshold_attribute(self):
+        """threshold_ should be set after apply()."""
+        from grdl.imagej import AutoThreshold
+        at = AutoThreshold(method='otsu')
+        image = np.random.RandomState(42).rand(30, 30) * 200
+        at.apply(image)
+        assert at.threshold_ is not None
+        assert at.threshold_bin_ is not None
+        assert 0 <= at.threshold_ <= 200
+
+    def test_dark_background_false(self):
+        """dark_background=False should invert the mask."""
+        from grdl.imagej import AutoThreshold
+        rng = np.random.RandomState(42)
+        image = rng.rand(40, 40) * 200
+        at_dark = AutoThreshold(method='otsu', dark_background=True)
+        at_light = AutoThreshold(method='otsu', dark_background=False)
+        r_dark = at_dark.apply(image)
+        r_light = at_light.apply(image)
+        np.testing.assert_array_equal(r_dark + r_light, np.ones_like(r_dark))
+
+    def test_uniform_image_zero_output(self):
+        """A uniform image should return all zeros."""
+        from grdl.imagej import AutoThreshold
+        at = AutoThreshold(method='otsu')
+        flat = np.full((30, 30), 100.0)
+        result = at.apply(flat)
+        assert result.sum() == 0.0
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import AutoThreshold
+        at = AutoThreshold()
+        with pytest.raises(ValueError, match="2D"):
+            at.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_method(self):
+        from grdl.imagej import AutoThreshold
+        with pytest.raises(ValueError, match="Unknown method"):
+            AutoThreshold(method='nonexistent')
+
+    def test_invalid_nbins(self):
+        from grdl.imagej import AutoThreshold
+        with pytest.raises(ValueError, match="n_bins"):
+            AutoThreshold(n_bins=1)
+
+
+# ============================================================================
+# Watershed Tests
+# ============================================================================
+
+class TestWatershed:
+    """Tests for binary watershed segmentation."""
+
+    def test_import(self):
+        from grdl.imagej import Watershed
+        assert Watershed is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import Watershed
+        assert Watershed.__imagej_version__ == '1.54j'
+        assert Watershed.__imagej_source__ == 'ij/plugin/filter/EDM.java'
+        assert Watershed.__processor_version__ == '1.54j'
+
+    def test_separates_touching_circles(self):
+        """Two overlapping circles should be split by watershed."""
+        from grdl.imagej import Watershed
+        ws = Watershed(output_mode='labels')
+        image = np.zeros((50, 80))
+        yy, xx = np.ogrid[:50, :80]
+        circle1 = ((yy - 25) ** 2 + (xx - 25) ** 2) < 15 ** 2
+        circle2 = ((yy - 25) ** 2 + (xx - 55) ** 2) < 15 ** 2
+        image[circle1 | circle2] = 1.0
+        result = ws.apply(image)
+        assert result.max() >= 2.0
+
+    def test_single_object_no_split(self):
+        """A single object should not be split."""
+        from grdl.imagej import Watershed
+        ws = Watershed(output_mode='labels')
+        image = np.zeros((30, 30))
+        image[10:20, 10:20] = 1.0
+        result = ws.apply(image)
+        assert result.max() >= 1.0
+        assert (result > 0).sum() > 0
+
+    def test_empty_image(self):
+        """An empty image should return all zeros."""
+        from grdl.imagej import Watershed
+        ws = Watershed()
+        result = ws.apply(np.zeros((20, 20)))
+        assert result.sum() == 0.0
+
+    def test_lines_output_mode(self):
+        """lines output should produce binary watershed lines."""
+        from grdl.imagej import Watershed
+        ws = Watershed(output_mode='lines')
+        image = np.zeros((50, 80))
+        yy, xx = np.ogrid[:50, :80]
+        circle1 = ((yy - 25) ** 2 + (xx - 25) ** 2) < 15 ** 2
+        circle2 = ((yy - 25) ** 2 + (xx - 55) ** 2) < 15 ** 2
+        image[circle1 | circle2] = 1.0
+        result = ws.apply(image)
+        unique = set(np.unique(result))
+        assert unique.issubset({0.0, 1.0})
+
+    def test_binary_output_mode(self):
+        """binary output should produce separated binary objects."""
+        from grdl.imagej import Watershed
+        ws = Watershed(output_mode='binary')
+        image = np.zeros((50, 80))
+        yy, xx = np.ogrid[:50, :80]
+        circle1 = ((yy - 25) ** 2 + (xx - 25) ** 2) < 15 ** 2
+        circle2 = ((yy - 25) ** 2 + (xx - 55) ** 2) < 15 ** 2
+        image[circle1 | circle2] = 1.0
+        result = ws.apply(image)
+        unique = set(np.unique(result))
+        assert unique.issubset({0.0, 1.0})
+
+    def test_output_shape(self):
+        from grdl.imagej import Watershed
+        ws = Watershed()
+        image = np.zeros((25, 35))
+        image[5:20, 5:30] = 1.0
+        result = ws.apply(image)
+        assert result.shape == (25, 35)
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import Watershed
+        ws = Watershed()
+        with pytest.raises(ValueError, match="2D"):
+            ws.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_min_seed_distance(self):
+        from grdl.imagej import Watershed
+        with pytest.raises(ValueError, match="min_seed_distance"):
+            Watershed(min_seed_distance=0)
+
+    def test_invalid_output_mode(self):
+        from grdl.imagej import Watershed
+        with pytest.raises(ValueError, match="Unknown output_mode"):
+            Watershed(output_mode='invalid')
+
+
+# ============================================================================
+# AnalyzeParticles Tests
+# ============================================================================
+
+class TestAnalyzeParticles:
+    """Tests for connected component analysis with measurements."""
+
+    def test_import(self):
+        from grdl.imagej import AnalyzeParticles
+        assert AnalyzeParticles is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import AnalyzeParticles
+        assert AnalyzeParticles.__imagej_version__ == '1.54j'
+        assert AnalyzeParticles.__imagej_source__ == (
+            'ij/plugin/filter/ParticleAnalyzer.java'
+        )
+        assert AnalyzeParticles.__processor_version__ == '1.54j'
+
+    def test_counts_distinct_particles(self):
+        """Should detect the correct number of separated particles."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles()
+        image = np.zeros((50, 50))
+        image[5:10, 5:10] = 1.0
+        image[20:25, 20:25] = 1.0
+        image[35:40, 35:40] = 1.0
+        ap.apply(image)
+        assert ap.n_particles_ == 3
+
+    def test_measurements_keys(self):
+        """Results should include standard measurement keys."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles()
+        image = np.zeros((30, 30))
+        image[10:20, 10:20] = 1.0
+        ap.apply(image)
+        assert len(ap.results_) == 1
+        expected_keys = {
+            'area', 'centroid_row', 'centroid_col',
+            'bbox_row', 'bbox_col', 'bbox_height', 'bbox_width',
+            'perimeter', 'circularity', 'aspect_ratio', 'solidity',
+        }
+        assert expected_keys.issubset(set(ap.results_[0].keys()))
+
+    def test_area_measurement(self):
+        """Area should equal the number of foreground pixels."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles()
+        image = np.zeros((30, 30))
+        image[10:20, 10:20] = 1.0
+        ap.apply(image)
+        assert ap.results_[0]['area'] == 100.0
+
+    def test_min_area_filter(self):
+        """Particles smaller than min_area should be excluded."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles(min_area=50)
+        image = np.zeros((50, 50))
+        image[5:8, 5:8] = 1.0
+        image[20:30, 20:30] = 1.0
+        ap.apply(image)
+        assert ap.n_particles_ == 1
+        assert ap.results_[0]['area'] == 100.0
+
+    def test_max_area_filter(self):
+        """Particles larger than max_area should be excluded."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles(max_area=50)
+        image = np.zeros((50, 50))
+        image[5:8, 5:8] = 1.0
+        image[20:30, 20:30] = 1.0
+        ap.apply(image)
+        assert ap.n_particles_ == 1
+        assert ap.results_[0]['area'] == 9.0
+
+    def test_mask_output_mode(self):
+        """mask output should produce binary mask of accepted particles."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles(min_area=50, output_mode='mask')
+        image = np.zeros((50, 50))
+        image[5:8, 5:8] = 1.0
+        image[20:30, 20:30] = 1.0
+        result = ap.apply(image)
+        unique = set(np.unique(result))
+        assert unique.issubset({0.0, 1.0})
+        assert result[25, 25] == 1.0
+        assert result[6, 6] == 0.0
+
+    def test_outlines_output_mode(self):
+        """outlines output should produce boundary pixels only."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles(output_mode='outlines')
+        image = np.zeros((30, 30))
+        image[10:20, 10:20] = 1.0
+        result = ap.apply(image)
+        assert result[15, 15] == 0.0
+        assert result[10, 10] == 1.0
+
+    def test_empty_image(self):
+        """An empty image should return no particles."""
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles()
+        result = ap.apply(np.zeros((20, 20)))
+        assert ap.n_particles_ == 0
+        assert len(ap.results_) == 0
+        assert result.sum() == 0.0
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import AnalyzeParticles
+        ap = AnalyzeParticles()
+        with pytest.raises(ValueError, match="2D"):
+            ap.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_min_area(self):
+        from grdl.imagej import AnalyzeParticles
+        with pytest.raises(ValueError, match="min_area"):
+            AnalyzeParticles(min_area=-1)
+
+    def test_invalid_connectivity(self):
+        from grdl.imagej import AnalyzeParticles
+        with pytest.raises(ValueError, match="connectivity"):
+            AnalyzeParticles(connectivity=6)
+
+    def test_invalid_output_mode(self):
+        from grdl.imagej import AnalyzeParticles
+        with pytest.raises(ValueError, match="Unknown output_mode"):
+            AnalyzeParticles(output_mode='invalid')
+
+
+# ============================================================================
+# ImageCalculator Tests
+# ============================================================================
+
+class TestImageCalculator:
+    """Tests for pixel-wise image arithmetic and logic."""
+
+    def test_import(self):
+        from grdl.imagej import ImageCalculator
+        assert ImageCalculator is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import ImageCalculator
+        assert ImageCalculator.__imagej_version__ == '1.54j'
+        assert ImageCalculator.__imagej_source__ == (
+            'ij/plugin/ImageCalculator.java'
+        )
+        assert ImageCalculator.__processor_version__ == '1.54j'
+
+    def test_add(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='add')
+        a = np.full((10, 10), 100.0)
+        b = np.full((10, 10), 50.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 150.0)
+
+    def test_subtract(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='subtract')
+        a = np.full((10, 10), 100.0)
+        b = np.full((10, 10), 30.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 70.0)
+
+    def test_multiply(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='multiply')
+        a = np.full((10, 10), 5.0)
+        b = np.full((10, 10), 3.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 15.0)
+
+    def test_divide(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='divide')
+        a = np.full((10, 10), 100.0)
+        b = np.full((10, 10), 4.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 25.0)
+
+    def test_divide_by_zero(self):
+        """Division by zero should produce 0."""
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='divide')
+        a = np.full((10, 10), 100.0)
+        b = np.zeros((10, 10))
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 0.0)
+
+    def test_min_max(self):
+        from grdl.imagej import ImageCalculator
+        a = np.array([[1, 5], [3, 7]], dtype=np.float64)
+        b = np.array([[4, 2], [6, 1]], dtype=np.float64)
+        ic_min = ImageCalculator(operation='min')
+        ic_max = ImageCalculator(operation='max')
+        np.testing.assert_array_equal(
+            ic_min.apply(a, image2=b), [[1, 2], [3, 1]]
+        )
+        np.testing.assert_array_equal(
+            ic_max.apply(a, image2=b), [[4, 5], [6, 7]]
+        )
+
+    def test_average(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='average')
+        a = np.full((10, 10), 100.0)
+        b = np.full((10, 10), 200.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 150.0)
+
+    def test_difference(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator(operation='difference')
+        a = np.full((10, 10), 100.0)
+        b = np.full((10, 10), 150.0)
+        result = ic.apply(a, image2=b)
+        np.testing.assert_allclose(result, 50.0)
+
+    def test_and_or_xor(self):
+        from grdl.imagej import ImageCalculator
+        a = np.array([[255, 0]], dtype=np.float64)
+        b = np.array([[255, 255]], dtype=np.float64)
+        assert ImageCalculator('and').apply(a, image2=b)[0, 0] == 255.0
+        assert ImageCalculator('or').apply(a, image2=b)[0, 1] == 255.0
+        assert ImageCalculator('xor').apply(a, image2=b)[0, 0] == 0.0
+
+    def test_all_operations_run(self):
+        """All operations should execute without error."""
+        from grdl.imagej import ImageCalculator
+        ops = [
+            'add', 'subtract', 'multiply', 'divide',
+            'and', 'or', 'xor', 'min', 'max',
+            'average', 'difference', 'ratio',
+        ]
+        a = np.random.RandomState(0).rand(10, 10) * 200 + 1
+        b = np.random.RandomState(1).rand(10, 10) * 200 + 1
+        for op in ops:
+            ic = ImageCalculator(operation=op)
+            result = ic.apply(a, image2=b)
+            assert result.shape == (10, 10), f"Failed for {op}"
+
+    def test_complex_arithmetic(self):
+        """Complex-valued inputs should work for arithmetic ops."""
+        from grdl.imagej import ImageCalculator
+        rng = np.random.RandomState(42)
+        a = rng.rand(10, 10) + 1j * rng.rand(10, 10)
+        b = rng.rand(10, 10) + 1j * rng.rand(10, 10)
+        ic = ImageCalculator(operation='add')
+        result = ic.apply(a, image2=b)
+        assert np.iscomplexobj(result)
+
+    def test_complex_real_only_ops_rejected(self):
+        """Real-only operations should reject complex input."""
+        from grdl.imagej import ImageCalculator
+        a = np.ones((5, 5)) + 1j * np.ones((5, 5))
+        b = np.ones((5, 5)) + 1j * np.ones((5, 5))
+        for op in ('and', 'or', 'xor', 'min', 'max'):
+            ic = ImageCalculator(operation=op)
+            with pytest.raises(ValueError, match="not defined for complex"):
+                ic.apply(a, image2=b)
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator()
+        with pytest.raises(ValueError, match="2D"):
+            ic.apply(np.zeros((3, 10, 10)), image2=np.zeros((3, 10, 10)))
+
+    def test_rejects_missing_image2(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator()
+        with pytest.raises(ValueError, match="image2"):
+            ic.apply(np.zeros((10, 10)))
+
+    def test_rejects_shape_mismatch(self):
+        from grdl.imagej import ImageCalculator
+        ic = ImageCalculator()
+        with pytest.raises(ValueError, match="Shape mismatch"):
+            ic.apply(np.zeros((10, 10)), image2=np.zeros((10, 20)))
+
+    def test_invalid_operation(self):
+        from grdl.imagej import ImageCalculator
+        with pytest.raises(ValueError, match="Unknown operation"):
+            ImageCalculator(operation='modulo')
+
+
+# ============================================================================
+# ContrastEnhancer Tests
+# ============================================================================
+
+class TestContrastEnhancer:
+    """Tests for linear histogram stretching."""
+
+    def test_import(self):
+        from grdl.imagej import ContrastEnhancer
+        assert ContrastEnhancer is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import ContrastEnhancer
+        assert ContrastEnhancer.__imagej_version__ == '1.54j'
+        assert ContrastEnhancer.__imagej_source__ == (
+            'ij/plugin/ContrastEnhancer.java'
+        )
+        assert ContrastEnhancer.__processor_version__ == '1.54j'
+
+    def test_stretches_narrow_range(self):
+        """A narrow-range image should be stretched wider."""
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer(saturated=0.0, normalize=True)
+        image = np.random.RandomState(42).rand(50, 50) * 10 + 100
+        result = ce.apply(image)
+        # Normalized output with 0% saturation should span full [0, 1]
+        assert result.max() > 0.99
+        assert result.min() < 0.01
+
+    def test_normalize_output_01(self):
+        """normalize=True should produce output in [0, 1]."""
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer(saturated=1.0, normalize=True)
+        image = np.random.RandomState(42).rand(40, 40) * 200 + 50
+        result = ce.apply(image)
+        assert result.min() >= -0.01
+        assert result.max() <= 1.01
+
+    def test_flat_image_unchanged(self):
+        """A flat image should be returned unchanged."""
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer()
+        flat = np.full((30, 30), 100.0)
+        result = ce.apply(flat)
+        np.testing.assert_allclose(result, flat, atol=1e-10)
+
+    def test_equalize_mode(self):
+        """Equalize should produce a more uniform histogram."""
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer(equalize=True)
+        rng = np.random.RandomState(42)
+        image = rng.exponential(20, (50, 50))
+        result = ce.apply(image)
+        assert result.shape == (50, 50)
+
+    def test_min_max_val_attributes(self):
+        """min_val_ and max_val_ should be set after apply()."""
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer(saturated=2.0)
+        image = np.random.RandomState(42).rand(30, 30) * 200
+        ce.apply(image)
+        assert ce.min_val_ < ce.max_val_
+
+    def test_output_shape_and_dtype(self):
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer()
+        result = ce.apply(np.ones((20, 30), dtype=np.uint8) * 100)
+        assert result.shape == (20, 30)
+        assert result.dtype == np.float64
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import ContrastEnhancer
+        ce = ContrastEnhancer()
+        with pytest.raises(ValueError, match="2D"):
+            ce.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_saturated(self):
+        from grdl.imagej import ContrastEnhancer
+        with pytest.raises(ValueError, match="saturated"):
+            ContrastEnhancer(saturated=100.0)
+        with pytest.raises(ValueError, match="saturated"):
+            ContrastEnhancer(saturated=-1.0)
+
+
+# ============================================================================
+# DistanceTransform Tests
+# ============================================================================
+
+class TestDistanceTransform:
+    """Tests for Euclidean Distance Map."""
+
+    def test_import(self):
+        from grdl.imagej import DistanceTransform
+        assert DistanceTransform is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import DistanceTransform
+        assert DistanceTransform.__imagej_version__ == '1.54j'
+        assert DistanceTransform.__imagej_source__ == (
+            'ij/plugin/filter/EDM.java'
+        )
+        assert DistanceTransform.__processor_version__ == '1.54j'
+
+    def test_background_is_zero(self):
+        """Background pixels should have distance 0."""
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        image = np.zeros((30, 30))
+        image[10:20, 10:20] = 1.0
+        result = dt.apply(image)
+        assert result[0, 0] == 0.0
+        assert result[5, 5] == 0.0
+
+    def test_center_has_max_distance(self):
+        """Center of a square object should have the maximum distance."""
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        image = np.zeros((50, 50))
+        image[10:40, 10:40] = 1.0
+        result = dt.apply(image)
+        center_val = result[25, 25]
+        assert center_val > result[11, 11]
+        assert center_val == result.max()
+
+    def test_single_pixel(self):
+        """A single foreground pixel should have distance 1.0."""
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        image = np.zeros((20, 20))
+        image[10, 10] = 1.0
+        result = dt.apply(image)
+        assert result[10, 10] == 1.0
+
+    def test_normalize(self):
+        """normalize=True should scale output to [0, 1]."""
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform(normalize=True)
+        image = np.zeros((30, 30))
+        image[5:25, 5:25] = 1.0
+        result = dt.apply(image)
+        assert result.max() <= 1.0 + 1e-10
+        assert result.max() >= 0.99
+
+    def test_anisotropic_pixel_size(self):
+        """Different pixel_size should scale distances appropriately."""
+        from grdl.imagej import DistanceTransform
+        dt_iso = DistanceTransform(pixel_size=(1.0, 1.0))
+        dt_aniso = DistanceTransform(pixel_size=(2.0, 1.0))
+        # Wide rectangle: 6 rows x 20 cols so nearest boundary for
+        # center pixel is row-direction (3px). With row_spacing=2,
+        # anisotropic distance = 6 > isotropic distance = 3.
+        image = np.zeros((30, 40))
+        image[12:18, 10:30] = 1.0
+        r_iso = dt_iso.apply(image)
+        r_aniso = dt_aniso.apply(image)
+        assert r_aniso[15, 20] > r_iso[15, 20]
+
+    def test_empty_image(self):
+        """An empty image should return all zeros."""
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        result = dt.apply(np.zeros((20, 20)))
+        assert result.sum() == 0.0
+
+    def test_output_shape(self):
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        image = np.zeros((25, 35))
+        image[5:20, 5:30] = 1.0
+        result = dt.apply(image)
+        assert result.shape == (25, 35)
+        assert result.dtype == np.float64
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import DistanceTransform
+        dt = DistanceTransform()
+        with pytest.raises(ValueError, match="2D"):
+            dt.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_pixel_size(self):
+        from grdl.imagej import DistanceTransform
+        with pytest.raises(ValueError, match="pixel_size"):
+            DistanceTransform(pixel_size=(0, 1.0))
+        with pytest.raises(ValueError, match="2 elements"):
+            DistanceTransform(pixel_size=(1.0,))
+
+
+# ============================================================================
+# Skeletonize Tests
+# ============================================================================
+
+class TestSkeletonize:
+    """Tests for Zhang-Suen binary thinning."""
+
+    def test_import(self):
+        from grdl.imagej import Skeletonize
+        assert Skeletonize is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import Skeletonize
+        assert Skeletonize.__imagej_version__ == '1.54j'
+        assert Skeletonize.__imagej_source__ == (
+            'ij/process/BinaryProcessor.java'
+        )
+        assert Skeletonize.__processor_version__ == '1.54j'
+
+    def test_reduces_to_thin_line(self):
+        """A thick horizontal bar should be reduced to a thin line."""
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        image = np.zeros((30, 30))
+        image[10:20, 5:25] = 1.0
+        result = skel.apply(image)
+        assert result.sum() < image.sum()
+        assert result.sum() > 0
+
+    def test_single_pixel_preserved(self):
+        """An isolated single pixel should be preserved."""
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        image = np.zeros((20, 20))
+        image[10, 10] = 1.0
+        result = skel.apply(image)
+        assert result[10, 10] == 1.0
+
+    def test_already_thin_line_preserved(self):
+        """A 1-pixel-wide line should remain unchanged."""
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        image = np.zeros((20, 20))
+        image[10, 3:17] = 1.0
+        result = skel.apply(image)
+        assert result[10, 5:15].sum() >= 8.0
+
+    def test_binary_output(self):
+        """Output should be binary (0.0 and 1.0 only)."""
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        image = np.zeros((25, 25))
+        image[5:20, 5:20] = 1.0
+        result = skel.apply(image)
+        unique = set(np.unique(result))
+        assert unique.issubset({0.0, 1.0})
+
+    def test_empty_image(self):
+        """An empty image should return all zeros."""
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        result = skel.apply(np.zeros((20, 20)))
+        assert result.sum() == 0.0
+
+    def test_output_shape(self):
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        image = np.zeros((25, 35))
+        image[5:20, 5:30] = 1.0
+        result = skel.apply(image)
+        assert result.shape == (25, 35)
+        assert result.dtype == np.float64
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import Skeletonize
+        skel = Skeletonize()
+        with pytest.raises(ValueError, match="2D"):
+            skel.apply(np.zeros((3, 10, 10)))
+
+
+# ============================================================================
+# AnisotropicDiffusion Tests
+# ============================================================================
+
+class TestAnisotropicDiffusion:
+    """Tests for Perona-Malik anisotropic diffusion."""
+
+    def test_import(self):
+        from grdl.imagej import AnisotropicDiffusion
+        assert AnisotropicDiffusion is not None
+
+    def test_version_attribute(self):
+        from grdl.imagej import AnisotropicDiffusion
+        assert AnisotropicDiffusion.__imagej_version__ == '2.0.0'
+        assert AnisotropicDiffusion.__imagej_source__ == (
+            'fiji/process/Anisotropic_Diffusion_2D.java'
+        )
+        assert AnisotropicDiffusion.__processor_version__ == '2.0.0'
+
+    def test_reduces_noise(self):
+        """Diffusion should reduce noise in smooth regions."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(n_iterations=20, kappa=30.0)
+        rng = np.random.RandomState(42)
+        clean = np.full((50, 50), 100.0)
+        noisy = clean + rng.randn(50, 50) * 20
+        result = ad.apply(noisy)
+        assert np.std(result[10:40, 10:40]) < np.std(noisy[10:40, 10:40])
+
+    def test_preserves_edges(self):
+        """Strong edges should be preserved after diffusion."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(n_iterations=10, kappa=10.0)
+        image = np.zeros((40, 40))
+        image[:, 20:] = 200.0
+        result = ad.apply(image)
+        assert result[20, 19] < 50
+        assert result[20, 21] > 150
+
+    def test_flat_image_unchanged(self):
+        """A flat image should remain flat (no gradients to diffuse)."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(n_iterations=10, kappa=20.0)
+        flat = np.full((30, 30), 128.0)
+        result = ad.apply(flat)
+        np.testing.assert_allclose(result, flat, atol=1e-10)
+
+    def test_exponential_conductance(self):
+        """Exponential conductance should run without error."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(
+            n_iterations=5, kappa=20.0, conductance='exponential'
+        )
+        image = np.random.RandomState(0).rand(30, 30) * 200
+        result = ad.apply(image)
+        assert result.shape == (30, 30)
+
+    def test_quadratic_conductance(self):
+        """Quadratic conductance should run without error."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(
+            n_iterations=5, kappa=20.0, conductance='quadratic'
+        )
+        image = np.random.RandomState(0).rand(30, 30) * 200
+        result = ad.apply(image)
+        assert result.shape == (30, 30)
+
+    def test_complex_input(self):
+        """Complex-valued input should preserve complex dtype."""
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(n_iterations=5, kappa=20.0)
+        rng = np.random.RandomState(42)
+        cplx = rng.rand(20, 20) + 1j * rng.rand(20, 20)
+        result = ad.apply(cplx)
+        assert np.iscomplexobj(result)
+        assert result.shape == (20, 20)
+
+    def test_output_shape_and_dtype(self):
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion(n_iterations=3)
+        result = ad.apply(np.ones((20, 25), dtype=np.uint8) * 100)
+        assert result.shape == (20, 25)
+        assert result.dtype == np.float64
+
+    def test_rejects_non_2d(self):
+        from grdl.imagej import AnisotropicDiffusion
+        ad = AnisotropicDiffusion()
+        with pytest.raises(ValueError, match="2D"):
+            ad.apply(np.zeros((3, 10, 10)))
+
+    def test_invalid_n_iterations(self):
+        from grdl.imagej import AnisotropicDiffusion
+        with pytest.raises(ValueError, match="n_iterations"):
+            AnisotropicDiffusion(n_iterations=0)
+
+    def test_invalid_kappa(self):
+        from grdl.imagej import AnisotropicDiffusion
+        with pytest.raises(ValueError, match="kappa"):
+            AnisotropicDiffusion(kappa=0)
+        with pytest.raises(ValueError, match="kappa"):
+            AnisotropicDiffusion(kappa=-5)
+
+    def test_invalid_gamma(self):
+        from grdl.imagej import AnisotropicDiffusion
+        with pytest.raises(ValueError, match="gamma"):
+            AnisotropicDiffusion(gamma=0)
+        with pytest.raises(ValueError, match="gamma"):
+            AnisotropicDiffusion(gamma=0.3)
+
+    def test_invalid_conductance(self):
+        from grdl.imagej import AnisotropicDiffusion
+        with pytest.raises(ValueError, match="Unknown conductance"):
+            AnisotropicDiffusion(conductance='linear')
+
+
+# ============================================================================
 # Module-level integration tests
 # ============================================================================
 
@@ -1128,22 +2199,28 @@ def _get_all_classes():
             UnsharpMask, FFTBandpassFilter, ZProjection,
             RankFilters, MorphologicalFilter, EdgeDetector,
             GammaCorrection, FindMaxima, StatisticalRegionMerging,
+            GaussianBlur, Convolver, AutoThreshold, Watershed,
+            AnalyzeParticles, ImageCalculator, ContrastEnhancer,
+            DistanceTransform, Skeletonize, AnisotropicDiffusion,
         )
         ALL_CLASSES = [
             RollingBallBackground, CLAHE, AutoLocalThreshold,
             UnsharpMask, FFTBandpassFilter, ZProjection,
             RankFilters, MorphologicalFilter, EdgeDetector,
             GammaCorrection, FindMaxima, StatisticalRegionMerging,
+            GaussianBlur, Convolver, AutoThreshold, Watershed,
+            AnalyzeParticles, ImageCalculator, ContrastEnhancer,
+            DistanceTransform, Skeletonize, AnisotropicDiffusion,
         ]
     return ALL_CLASSES
 
 
 class TestModuleExports:
-    """Verify all 12 components are importable and properly configured."""
+    """Verify all 22 components are importable and properly configured."""
 
     def test_all_exports(self):
         classes = _get_all_classes()
-        assert len(classes) == 12
+        assert len(classes) == 22
         assert all(cls is not None for cls in classes)
 
     def test_all_inherit_from_image_transform(self):
@@ -1167,3 +2244,8 @@ class TestModuleExports:
             assert hasattr(cls, '__processor_version__'), (
                 f"{cls.__name__} missing __processor_version__"
             )
+
+    def test_all_list_matches_init(self):
+        """__all__ in imagej/__init__.py should have 22 entries."""
+        import grdl.imagej as ij_module
+        assert len(ij_module.__all__) == 22
