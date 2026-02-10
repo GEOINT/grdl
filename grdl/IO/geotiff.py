@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -46,6 +46,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 
 
 class GeoTIFFReader(ImageReader):
@@ -99,23 +100,27 @@ class GeoTIFFReader(ImageReader):
         try:
             self.dataset = rasterio.open(str(self.filepath))
 
-            self.metadata = {
-                'format': 'GeoTIFF',
-                'rows': self.dataset.height,
-                'cols': self.dataset.width,
-                'bands': self.dataset.count,
-                'dtype': str(self.dataset.dtypes[0]),
-                'crs': str(self.dataset.crs),
+            extras: Dict[str, Any] = {
                 'transform': self.dataset.transform,
                 'bounds': self.dataset.bounds,
                 'resolution': self.dataset.res,
-                'nodata': self.dataset.nodata,
             }
 
             if 'TIFFTAG_IMAGEDESCRIPTION' in self.dataset.tags():
-                self.metadata['description'] = (
+                extras['description'] = (
                     self.dataset.tags()['TIFFTAG_IMAGEDESCRIPTION']
                 )
+
+            self.metadata = ImageMetadata(
+                format='GeoTIFF',
+                rows=self.dataset.height,
+                cols=self.dataset.width,
+                bands=self.dataset.count,
+                dtype=str(self.dataset.dtypes[0]),
+                crs=str(self.dataset.crs) if self.dataset.crs else None,
+                nodata=self.dataset.nodata,
+                extras=extras,
+            )
 
         except Exception as e:
             raise ValueError(f"Failed to load GeoTIFF metadata: {e}") from e
@@ -220,21 +225,6 @@ class GeoTIFFReader(ImageReader):
         np.dtype
         """
         return np.dtype(self.metadata['dtype'])
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Dict[str, Any]
-            CRS, affine transform, geographic bounds, and resolution.
-        """
-        return {
-            'crs': self.metadata['crs'],
-            'transform': self.metadata['transform'],
-            'bounds': self.metadata['bounds'],
-            'resolution': self.metadata['resolution'],
-        }
 
     def close(self) -> None:
         """Close the rasterio dataset."""

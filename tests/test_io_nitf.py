@@ -169,18 +169,6 @@ def test_read_chip_out_of_bounds_raises(nitf_file):
             reader.read_chip(0, 100, 0, 10)
 
 
-def test_geolocation_none_without_crs(nitf_file):
-    """get_geolocation returns None when no CRS is set."""
-    from grdl.IO.nitf import NITFReader
-
-    filepath, _ = nitf_file
-    with NITFReader(filepath) as reader:
-        geo = reader.get_geolocation()
-        # NITF created without CRS may return None
-        if reader.metadata['crs'] is None:
-            assert geo is None
-
-
 def test_file_not_found():
     """FileNotFoundError for non-existent file."""
     from grdl.IO.nitf import NITFReader

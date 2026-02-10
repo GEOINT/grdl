@@ -28,11 +28,14 @@ Usage
 Orthorectify a BIOMASS SAR image to a regular geographic grid:
 
     >>> from grdl.IO import BIOMASSL1Reader
-    >>> from grdl.geolocation import Geolocation
+    >>> from grdl.geolocation.sar.gcp import GCPGeolocation
     >>> from grdl.image_processing import Orthorectifier, OutputGrid
     >>>
     >>> with BIOMASSL1Reader('path/to/product') as reader:
-    >>>     geo = Geolocation.from_reader(reader)
+    >>>     geo = GCPGeolocation(
+    ...         reader.metadata['gcps'],
+    ...         (reader.metadata['rows'], reader.metadata['cols']),
+    ...     )
     >>>     grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
     ...                                        pixel_size_lon=0.001)
     >>>     ortho = Orthorectifier(geo, grid)

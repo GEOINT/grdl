@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -38,6 +38,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 from grdl.IO.sar._backend import (
     _HAS_SARKIT,
     _HAS_SARPY,
@@ -108,11 +109,6 @@ class CPHDReader(ImageReader):
 
             xml = self._reader.metadata.xmltree
 
-            self.metadata = {
-                'format': 'CPHD',
-                'backend': 'sarkit',
-            }
-
             # Extract channel information
             channels = {}
             for ch_elem in xml.findall('{*}Data/{*}Channel'):
@@ -124,8 +120,11 @@ class CPHDReader(ImageReader):
                     'num_samples': num_samples,
                 }
 
-            self.metadata['channels'] = channels
-            self.metadata['num_channels'] = len(channels)
+            extras: Dict[str, Any] = {
+                'backend': 'sarkit',
+                'channels': channels,
+                'num_channels': len(channels),
+            }
 
             # Collection info
             collector = xml.findtext(
@@ -138,11 +137,21 @@ class CPHDReader(ImageReader):
                 '{*}CollectionInfo/{*}Classification'
             )
             if collector:
-                self.metadata['collector_name'] = collector
+                extras['collector_name'] = collector
             if core_name:
-                self.metadata['core_name'] = core_name
+                extras['core_name'] = core_name
             if classification:
-                self.metadata['classification'] = classification
+                extras['classification'] = classification
+
+            # Use first channel dimensions as rows/cols
+            first_ch = next(iter(channels.values()))
+            self.metadata = ImageMetadata(
+                format='CPHD',
+                rows=first_ch['num_vectors'],
+                cols=first_ch['num_samples'],
+                dtype='complex64',
+                extras=extras,
+            )
 
             # Store first channel ID for default operations
             self._default_channel = next(iter(channels))
@@ -159,8 +168,14 @@ class CPHDReader(ImageReader):
             self._reader = open_phase_history(str(self.filepath))
             self._sarpy_meta = self._reader.cphd_meta
 
-            self.metadata = {
-                'format': 'CPHD',
+            channels = {}
+            for channel in self._sarpy_meta.Data.Channels:
+                channels[channel.Identifier] = {
+                    'num_vectors': channel.NumVectors,
+                    'num_samples': channel.NumSamples,
+                }
+
+            extras: Dict[str, Any] = {
                 'backend': 'sarpy',
                 'num_channels': self._sarpy_meta.Data.NumCPHDChannels,
                 'classification': (
@@ -170,15 +185,18 @@ class CPHDReader(ImageReader):
                     self._sarpy_meta.CollectionInfo.CollectorName
                 ),
                 'core_name': self._sarpy_meta.CollectionInfo.CoreName,
+                'channels': channels,
             }
 
-            channels = {}
-            for channel in self._sarpy_meta.Data.Channels:
-                channels[channel.Identifier] = {
-                    'num_vectors': channel.NumVectors,
-                    'num_samples': channel.NumSamples,
-                }
-            self.metadata['channels'] = channels
+            # Use first channel dimensions as rows/cols
+            first_ch = next(iter(channels.values()))
+            self.metadata = ImageMetadata(
+                format='CPHD',
+                rows=first_ch['num_vectors'],
+                cols=first_ch['num_samples'],
+                dtype='complex64',
+                extras=extras,
+            )
 
         except Exception as e:
             raise ValueError(f"Failed to load CPHD metadata: {e}") from e
@@ -268,18 +286,6 @@ class CPHDReader(ImageReader):
             ``complex64`` for CPHD data.
         """
         return np.dtype('complex64')
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Reference point and coordinate system info.
-        """
-        return {
-            'projection': 'Phase history space',
-        }
 
     def close(self) -> None:
         """Close the reader and release resources."""

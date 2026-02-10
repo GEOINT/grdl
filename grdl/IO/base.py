@@ -22,14 +22,16 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-10
 """
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+
+from grdl.IO.models import ImageMetadata
 
 
 class ImageReader(ABC):
@@ -38,14 +40,14 @@ class ImageReader(ABC):
 
     Defines the interface for reading geospatial imagery data from various
     formats. Concrete implementations must provide format-specific logic
-    for metadata extraction, data loading, and geolocation.
+    for metadata extraction and data loading.
 
     Attributes
     ----------
     filepath : Path
         Path to the image file or directory
-    metadata : Dict[str, Any]
-        Image metadata extracted from the file
+    metadata : ImageMetadata
+        Typed image metadata extracted from the file
 
     Notes
     -----
@@ -71,7 +73,7 @@ class ImageReader(ABC):
         if not self.filepath.exists():
             raise FileNotFoundError(f"File not found: {self.filepath}")
 
-        self.metadata: Dict[str, Any] = {}
+        self.metadata: ImageMetadata
         self._load_metadata()
 
     @abstractmethod
@@ -169,23 +171,6 @@ class ImageReader(ABC):
         -------
         np.dtype
             NumPy data type of the image pixels
-        """
-        pass
-
-    @abstractmethod
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """
-        Get geolocation information for the image.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Dictionary containing geolocation metadata such as:
-            - 'crs': Coordinate reference system
-            - 'transform': Affine transformation matrix
-            - 'bounds': Geographic bounds (min_x, min_y, max_x, max_y)
-            - 'corner_coords': Corner coordinates
-            Returns None if no geolocation info available
         """
         pass
 

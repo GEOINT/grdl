@@ -364,35 +364,6 @@ def test_no_backend_available(monkeypatch):
         Path(filepath).unlink()
 
 
-# -- Geolocation tests -------------------------------------------------------
-
-@pytest.mark.skipif(not _HAS_RASTERIO, reason="rasterio not installed")
-def test_geolocation_rasterio(single_band_jp2_rasterio):
-    """get_geolocation returns CRS and transform info with rasterio."""
-    from grdl.IO.jpeg2000 import JP2Reader
-
-    filepath, _ = single_band_jp2_rasterio
-    with JP2Reader(filepath) as reader:
-        geo = reader.get_geolocation()
-        assert geo is not None
-        assert 'crs' in geo
-        assert 'transform' in geo
-        assert 'bounds' in geo
-        assert 'EPSG:4326' in geo['crs']
-
-
-@pytest.mark.skipif(not _HAS_GLYMUR, reason="glymur not installed")
-def test_geolocation_none_with_glymur(single_band_jp2_glymur):
-    """get_geolocation returns None with glymur backend."""
-    from grdl.IO.jpeg2000 import JP2Reader
-
-    filepath, _ = single_band_jp2_glymur
-    with JP2Reader(filepath, backend='glymur') as reader:
-        geo = reader.get_geolocation()
-        # Glymur backend doesn't extract geolocation
-        assert geo is None
-
-
 # -- Context manager and cleanup tests ---------------------------------------
 
 @pytest.mark.skipif(not _HAS_RASTERIO, reason="rasterio not installed")

@@ -101,9 +101,10 @@ with SICDReader('sicd_image.nitf') as reader:
     # Convert to dB
     magnitude_db = 20 * np.log10(magnitude + 1e-10)
 
-    # Get geolocation
-    geo = reader.get_geolocation()
-    print(f"Scene Center: {geo['scp_llh']}")  # [lat, lon, height]
+    # Scene center from metadata
+    scp = reader.metadata.get('scp_llh')
+    if scp:
+        print(f"Scene Center: {scp}")  # [lat, lon, height]
 ```
 
 #### CPHD - Phase History Data
@@ -158,11 +159,10 @@ with open_image('scene.tif') as reader:
 
 # Or use the GeoTIFFReader directly
 with GeoTIFFReader('sentinel1_grd.tif') as reader:
-    # Access geolocation
-    geo = reader.get_geolocation()
-    print(f"CRS: {geo['crs']}")
-    print(f"Bounds: {geo['bounds']}")
-    print(f"Resolution: {geo['resolution']}")
+    # Access geolocation from metadata
+    print(f"CRS: {reader.metadata['crs']}")
+    print(f"Bounds: {reader.metadata['bounds']}")
+    print(f"Resolution: {reader.metadata['resolution']}")
 
     # Read data (real-valued, not complex)
     chip = reader.read_chip(0, 1000, 0, 1000)
@@ -223,11 +223,10 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
         mag = np.abs(all_pols[i])
         print(f"{pol}: magnitude range [{mag.min():.2f}, {mag.max():.2f}]")
 
-    # Get geolocation (slant range geometry)
-    geo = reader.get_geolocation()
-    print(f"Projection: {geo['projection']}")  # Slant Range
-    print(f"Range spacing: {geo['range_pixel_spacing']:.2f} m")
-    print(f"Azimuth spacing: {geo['azimuth_pixel_spacing']:.2f} m")
+    # Geolocation info from metadata (slant range geometry)
+    print(f"Projection: {reader.metadata['projection']}")  # Slant Range
+    print(f"Range spacing: {reader.metadata['range_pixel_spacing']:.2f} m")
+    print(f"Azimuth spacing: {reader.metadata['azimuth_pixel_spacing']:.2f} m")
 ```
 
 #### BIOMASS Data Catalog & Download
@@ -289,7 +288,6 @@ All readers inherit from abstract base classes in `base.py`:
   - `read_full()` - Read entire image
   - `get_shape()` - Get image dimensions
   - `get_dtype()` - Get data type
-  - `get_geolocation()` - Get georeferencing info
   - Context manager support (`with` statements)
 
 - **`ImageWriter`** - Base for all imagery writers

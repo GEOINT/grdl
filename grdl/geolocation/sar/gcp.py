@@ -296,8 +296,7 @@ class GCPGeolocation(Geolocation):
         Parameters
         ----------
         geo_info : Dict[str, Any]
-            Geolocation info from reader.get_geolocation()
-            Must contain 'gcps' key
+            Geolocation info dict. Must contain 'gcps' key.
         reader_metadata : Dict[str, Any]
             Reader metadata with 'rows' and 'cols'
 

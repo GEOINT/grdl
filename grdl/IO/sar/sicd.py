@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -38,6 +38,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 from grdl.IO.sar._backend import (
     _HAS_SARKIT,
     _HAS_SARPY,
@@ -110,11 +111,7 @@ class SICDReader(ImageReader):
             num_cols = int(xml.findtext('{*}ImageData/{*}NumCols'))
             pixel_type = xml.findtext('{*}ImageData/{*}PixelType')
 
-            self.metadata = {
-                'format': 'SICD',
-                'rows': num_rows,
-                'cols': num_cols,
-                'dtype': 'complex64',
+            extras: Dict[str, Any] = {
                 'pixel_type': pixel_type,
                 'backend': 'sarkit',
             }
@@ -130,11 +127,11 @@ class SICDReader(ImageReader):
                 '{*}CollectionInfo/{*}Classification'
             )
             if collector:
-                self.metadata['collector_name'] = collector
+                extras['collector_name'] = collector
             if core_name:
-                self.metadata['core_name'] = core_name
+                extras['core_name'] = core_name
             if classification:
-                self.metadata['classification'] = classification
+                extras['classification'] = classification
 
             # Timeline
             collect_start = xml.findtext(
@@ -144,9 +141,9 @@ class SICDReader(ImageReader):
                 '{*}Timeline/{*}CollectDuration'
             )
             if collect_start:
-                self.metadata['collect_start'] = collect_start
+                extras['collect_start'] = collect_start
             if collect_duration:
-                self.metadata['collect_duration'] = float(collect_duration)
+                extras['collect_duration'] = float(collect_duration)
 
             # Geolocation
             scp_lat = xml.findtext(
@@ -159,9 +156,17 @@ class SICDReader(ImageReader):
                 '{*}GeoData/{*}SCP/{*}LLH/{*}HAE'
             )
             if scp_lat is not None:
-                self.metadata['scp_llh'] = [
+                extras['scp_llh'] = [
                     float(scp_lat), float(scp_lon), float(scp_hae),
                 ]
+
+            self.metadata = ImageMetadata(
+                format='SICD',
+                rows=num_rows,
+                cols=num_cols,
+                dtype='complex64',
+                extras=extras,
+            )
 
             # Store raw XML tree for advanced users
             self._xmltree = xml
@@ -177,11 +182,7 @@ class SICDReader(ImageReader):
             self._reader = open_complex(str(self.filepath))
             self._sarpy_meta = self._reader.sicd_meta
 
-            self.metadata = {
-                'format': 'SICD',
-                'rows': self._sarpy_meta.ImageData.NumRows,
-                'cols': self._sarpy_meta.ImageData.NumCols,
-                'dtype': 'complex64',
+            extras: Dict[str, Any] = {
                 'backend': 'sarpy',
                 'collector_name': (
                     self._sarpy_meta.CollectionInfo.CollectorName
@@ -201,17 +202,25 @@ class SICDReader(ImageReader):
 
             if (hasattr(self._sarpy_meta, 'GeoData')
                     and self._sarpy_meta.GeoData is not None):
-                self.metadata['scp_llh'] = (
+                extras['scp_llh'] = (
                     self._sarpy_meta.GeoData.SCP.LLH.get_array()
                 )
                 if self._sarpy_meta.GeoData.ImageCorners is not None:
                     corners = self._sarpy_meta.GeoData.ImageCorners
-                    self.metadata['corner_coords'] = {
+                    extras['corner_coords'] = {
                         'icp1': corners.ICP1.get_array(),
                         'icp2': corners.ICP2.get_array(),
                         'icp3': corners.ICP3.get_array(),
                         'icp4': corners.ICP4.get_array(),
                     }
+
+            self.metadata = ImageMetadata(
+                format='SICD',
+                rows=self._sarpy_meta.ImageData.NumRows,
+                cols=self._sarpy_meta.ImageData.NumCols,
+                dtype='complex64',
+                extras=extras,
+            )
 
         except Exception as e:
             raise ValueError(f"Failed to load SICD metadata: {e}") from e
@@ -304,25 +313,6 @@ class SICDReader(ImageReader):
             ``complex64`` for SICD data.
         """
         return np.dtype('complex64')
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Scene Center Point (SCP) coordinates and image corner
-            coordinates in lat/lon/height. Returns None if no
-            geolocation info is available.
-        """
-        if 'scp_llh' not in self.metadata:
-            return None
-
-        return {
-            'scp_llh': self.metadata['scp_llh'],
-            'corner_coords': self.metadata.get('corner_coords'),
-            'projection': 'SICD native geometry',
-        }
 
     def close(self) -> None:
         """Close the reader and release resources."""

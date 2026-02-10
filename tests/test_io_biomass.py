@@ -185,25 +185,6 @@ def test_magnitude_conversion():
         assert np.all(np.isfinite(db))
 
 
-def test_geolocation():
-    """Test geolocation information."""
-    with BIOMASSL1Reader(TEST_DATA_PATH) as reader:
-        geo = reader.get_geolocation()
-
-        assert geo is not None
-        assert 'crs' in geo
-        assert 'projection' in geo
-        assert 'corner_coords' in geo
-
-        # Check projection is slant range
-        assert geo['projection'] == 'Slant Range'
-
-        # Check corner coordinates exist
-        corners = geo['corner_coords']
-        assert corners is not None
-        assert 'corner1' in corners
-
-
 def test_polarization_names():
     """Test polarization name retrieval."""
     with BIOMASSL1Reader(TEST_DATA_PATH) as reader:

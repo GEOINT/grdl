@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 from pathlib import Path
@@ -44,6 +44,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 
 
 class BIOMASSL1Reader(ImageReader):
@@ -111,7 +112,6 @@ class BIOMASSL1Reader(ImageReader):
             )
 
         self.filepath = filepath
-        self.metadata: Dict[str, Any] = {}
         self.magnitude_dataset = None
         self.phase_dataset = None
         self.polarizations: List[str] = []
@@ -140,8 +140,10 @@ class BIOMASSL1Reader(ImageReader):
             sar_image = root.find('sarImage')
             inst_params = root.find('instrumentParameters')
 
-            self.metadata = {
-                'format': 'BIOMASS_L1_SCS',
+            rows = int(sar_image.findtext('numberOfLines', '0'))
+            cols = int(sar_image.findtext('numberOfSamples', '0'))
+
+            extras: Dict[str, Any] = {
                 'mission': acq_info.findtext('mission', 'BIOMASS'),
                 'swath': acq_info.findtext('swath', ''),
                 'product_type': acq_info.findtext('productType', 'SCS'),
@@ -151,8 +153,6 @@ class BIOMASSL1Reader(ImageReader):
                     acq_info.findtext('absoluteOrbitNumber', '0')
                 ),
                 'orbit_pass': acq_info.findtext('orbitPass', ''),
-                'rows': int(sar_image.findtext('numberOfLines', '0')),
-                'cols': int(sar_image.findtext('numberOfSamples', '0')),
                 'range_pixel_spacing': float(
                     sar_image.findtext('rangePixelSpacing', '0')
                 ),
@@ -178,8 +178,8 @@ class BIOMASSL1Reader(ImageReader):
                 self.polarizations = [
                     pol.text for pol in pol_list.findall('polarisation')
                 ]
-                self.metadata['polarizations'] = self.polarizations
-                self.metadata['num_polarizations'] = len(self.polarizations)
+                extras['polarizations'] = self.polarizations
+                extras['num_polarizations'] = len(self.polarizations)
 
             prf_list = (
                 inst_params.find('prfList')
@@ -189,12 +189,12 @@ class BIOMASSL1Reader(ImageReader):
             if prf_list is not None and len(prf_list) > 0:
                 prf_elem = prf_list.find('prf/value')
                 if prf_elem is not None:
-                    self.metadata['prf'] = float(prf_elem.text)
+                    extras['prf'] = float(prf_elem.text)
 
             footprint = sar_image.findtext('footprint', '')
             if footprint:
                 coords = [float(x) for x in footprint.split()]
-                self.metadata['corner_coords'] = {
+                extras['corner_coords'] = {
                     'corner1': (coords[0], coords[1]),
                     'corner2': (coords[2], coords[3]),
                     'corner3': (coords[4], coords[5]),
@@ -232,16 +232,27 @@ class BIOMASSL1Reader(ImageReader):
                     "Magnitude and phase TIFFs have mismatched dimensions"
                 )
 
-            self.metadata['dtype'] = 'complex64'
-            self.metadata['bands'] = self.magnitude_dataset.count
+            bands = self.magnitude_dataset.count
 
             if self.magnitude_dataset.gcps[0]:
-                gcps, crs = self.magnitude_dataset.gcps
-                self.metadata['gcps'] = [
+                gcps, crs_val = self.magnitude_dataset.gcps
+                extras['gcps'] = [
                     (gcp.x, gcp.y, gcp.z, gcp.row, gcp.col)
                     for gcp in gcps
                 ]
-                self.metadata['crs'] = str(crs)
+                crs_str = str(crs_val)
+            else:
+                crs_str = None
+
+            self.metadata = ImageMetadata(
+                format='BIOMASS_L1_SCS',
+                rows=rows,
+                cols=cols,
+                dtype='complex64',
+                bands=bands,
+                crs=crs_str,
+                extras=extras,
+            )
 
         except Exception as e:
             raise ValueError(
@@ -393,27 +404,6 @@ class BIOMASSL1Reader(ImageReader):
             ``complex64`` for BIOMASS L1 SCS data.
         """
         return np.dtype('complex64')
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            GCPs, corner coordinates, CRS, and pixel spacings.
-        """
-        return {
-            'crs': self.metadata.get('crs', 'WGS84'),
-            'projection': self.metadata.get('projection', 'Slant Range'),
-            'corner_coords': self.metadata.get('corner_coords'),
-            'gcps': self.metadata.get('gcps'),
-            'range_pixel_spacing': self.metadata.get(
-                'range_pixel_spacing'
-            ),
-            'azimuth_pixel_spacing': self.metadata.get(
-                'azimuth_pixel_spacing'
-            ),
-        }
 
     def get_polarization_name(self, band_index: int) -> str:
         """Get polarization name for a band index.

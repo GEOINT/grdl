@@ -125,10 +125,9 @@ def view_sicd(filepath: Path, cmap: str = "gray",
         if duration is not None:
             print(f"  Duration:       {duration:.3f} s")
 
-        # Print geolocation
-        geo = reader.get_geolocation()
-        if geo is not None:
-            scp = geo['scp_llh']
+        # Print geolocation from metadata
+        scp = reader.metadata.get('scp_llh')
+        if scp is not None:
             print(f"  SCP:            ({scp[0]:.6f}, {scp[1]:.6f}, {scp[2]:.1f} m)")
         print()
 
@@ -167,8 +166,7 @@ def view_sicd(filepath: Path, cmap: str = "gray",
     fig.colorbar(im, ax=ax, label="Magnitude", shrink=0.8)
 
     # Annotate SCP if available
-    if geo is not None:
-        scp = geo['scp_llh']
+    if scp is not None:
         scp_row, scp_col = rows // 2, cols // 2
         ax.plot(scp_col, scp_row, 'r*', markersize=12, markeredgecolor='black',
                 markeredgewidth=0.5, zorder=5)

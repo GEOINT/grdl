@@ -202,8 +202,8 @@ def test_io_all_exports():
     """IO __all__ contains expected symbols."""
     import grdl.IO as io_mod
     expected = [
-        'ImageReader', 'ImageWriter', 'CatalogInterface',
-        'GeoTIFFReader', 'HDF5Reader', 'NITFReader',
+        'ImageReader', 'ImageWriter', 'CatalogInterface', 'ImageMetadata',
+        'GeoTIFFReader', 'HDF5Reader', 'JP2Reader', 'NITFReader',
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
         'BIOMASSL1Reader', 'BIOMASSCatalog',
         'open_image', 'open_sar', 'open_biomass', 'load_credentials',

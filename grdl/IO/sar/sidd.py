@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -38,6 +38,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 from grdl.IO.sar._backend import require_sarkit
 
 
@@ -129,12 +130,8 @@ class SIDDReader(ImageReader):
             }
             dtype_str = dtype_map.get(pixel_type, 'uint8')
 
-            self.metadata = {
-                'format': 'SIDD',
+            extras: Dict[str, Any] = {
                 'backend': 'sarkit',
-                'rows': int(num_rows) if num_rows else 0,
-                'cols': int(num_cols) if num_cols else 0,
-                'dtype': dtype_str,
                 'pixel_type': pixel_type,
                 'num_images': num_images,
                 'image_index': self.image_index,
@@ -145,7 +142,15 @@ class SIDDReader(ImageReader):
                 '{*}ProductCreation/{*}Classification/{*}SecurityClassification'
             )
             if classification:
-                self.metadata['classification'] = classification
+                extras['classification'] = classification
+
+            self.metadata = ImageMetadata(
+                format='SIDD',
+                rows=int(num_rows) if num_rows else 0,
+                cols=int(num_cols) if num_cols else 0,
+                dtype=dtype_str,
+                extras=extras,
+            )
 
             self._xmltree = xml
 
@@ -233,18 +238,6 @@ class SIDDReader(ImageReader):
             Data type of the product image.
         """
         return np.dtype(self.metadata['dtype'])
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Measurement pixel footprint and projection info.
-        """
-        return {
-            'projection': 'SIDD derived product',
-        }
 
     def close(self) -> None:
         """Close the reader and release resources."""

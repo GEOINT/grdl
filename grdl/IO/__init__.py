@@ -37,8 +37,9 @@ Modified
 from pathlib import Path
 from typing import Union
 
-# Base classes
+# Base classes and models
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
+from grdl.IO.models import ImageMetadata
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
@@ -133,10 +134,11 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
 
 
 __all__ = [
-    # Base classes
+    # Base classes and models
     'ImageReader',
     'ImageWriter',
     'CatalogInterface',
+    'ImageMetadata',
     # Base format readers
     'GeoTIFFReader',
     'HDF5Reader',

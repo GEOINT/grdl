@@ -56,6 +56,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 
 
 class JP2Reader(ImageReader):
@@ -110,11 +111,9 @@ class JP2Reader(ImageReader):
     ...     print(reader.get_shape())
     ...     full = reader.read_full()
 
-    >>> # Check geolocation info (only available with rasterio backend)
+    >>> # Check CRS (available with rasterio backend)
     >>> with JP2Reader('scene.jp2') as reader:
-    ...     geo = reader.get_geolocation()
-    ...     if geo:
-    ...         print(geo.get('crs'))
+    ...     print(reader.metadata.get('crs'))
     """
 
     def __init__(
@@ -201,15 +200,16 @@ class JP2Reader(ImageReader):
             if tags:
                 extras.update(tags)
 
-        self.metadata = {
-            'format': 'JPEG2000',
-            'rows': rows,
-            'cols': cols,
-            'bands': bands,
-            'dtype': str(ds.dtypes[0]),
-            'backend': 'rasterio',
-            **extras,
-        }
+        extras['backend'] = 'rasterio'
+
+        self.metadata = ImageMetadata(
+            format='JPEG2000',
+            rows=rows,
+            cols=cols,
+            dtype=str(ds.dtypes[0]),
+            bands=bands,
+            extras=extras,
+        )
 
     def _load_metadata_glymur(self) -> None:
         """Load metadata using glymur backend."""
@@ -238,15 +238,16 @@ class JP2Reader(ImageReader):
                 except (IndexError, AttributeError):
                     pass
 
-        self.metadata = {
-            'format': 'JPEG2000',
-            'rows': rows,
-            'cols': cols,
-            'bands': bands,
-            'dtype': str(jp2.dtype),
-            'backend': 'glymur',
-            **extras,
-        }
+        extras['backend'] = 'glymur'
+
+        self.metadata = ImageMetadata(
+            format='JPEG2000',
+            rows=rows,
+            cols=cols,
+            dtype=str(jp2.dtype),
+            bands=bands,
+            extras=extras,
+        )
 
     def read_chip(
         self,
@@ -397,40 +398,6 @@ class JP2Reader(ImageReader):
         np.dtype
         """
         return np.dtype(self.metadata['dtype'])
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information from the JP2 file.
-
-        Geolocation metadata is only available when using the rasterio
-        backend. Glymur does not parse georeferencing information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Geolocation dict with keys:
-            - 'crs': Coordinate reference system string
-            - 'transform': Affine transform coefficients (tuple)
-            - 'bounds': Bounding box (left, bottom, right, top)
-            - 'resolution': Pixel resolution (x, y)
-            Returns None if no geolocation info is available.
-        """
-        if self.backend != 'rasterio':
-            return None
-
-        ds = self._dataset
-        geo: Dict[str, Any] = {}
-
-        if ds.crs:
-            geo['crs'] = str(ds.crs)
-
-        if ds.transform:
-            geo['transform'] = tuple(ds.transform)[:6]
-            geo['resolution'] = (abs(ds.transform.a), abs(ds.transform.e))
-
-        if ds.bounds:
-            geo['bounds'] = tuple(ds.bounds)
-
-        return geo if geo else None
 
     def close(self) -> None:
         """Close the JP2 file handle."""

@@ -137,7 +137,7 @@ GRDL/
 
 ```python
 from grdl.IO import BIOMASSL1Reader
-from grdl.geolocation import Geolocation
+from grdl.geolocation.sar.gcp import GCPGeolocation
 import numpy as np
 
 with BIOMASSL1Reader('path/to/BIO_S3_SCS__1S_...') as reader:
@@ -149,7 +149,9 @@ with BIOMASSL1Reader('path/to/BIO_S3_SCS__1S_...') as reader:
     hh_db = 20 * np.log10(np.abs(hh) + 1e-10)
 
     # Pixel-to-geographic coordinate transform
-    geo = Geolocation.from_reader(reader)
+    geo = GCPGeolocation(
+        reader.metadata['gcps'], (rows, cols),
+    )
     lat, lon, _ = geo.pixel_to_latlon(rows // 2, cols // 2)
     print(f"Center: ({lat:.6f}, {lon:.6f})")
 ```
@@ -177,11 +179,14 @@ catalog.close()
 
 ```python
 from grdl.IO import open_biomass
-from grdl.geolocation import Geolocation
+from grdl.geolocation.sar.gcp import GCPGeolocation
 import numpy as np
 
 with open_biomass('path/to/product') as reader:
-    geo = Geolocation.from_reader(reader)
+    geo = GCPGeolocation(
+        reader.metadata['gcps'],
+        (reader.metadata['rows'], reader.metadata['cols']),
+    )
 
     # Single pixel (returns scalars)
     lat, lon, height = geo.pixel_to_latlon(500, 1000)
@@ -226,7 +231,7 @@ rgb = pauli.to_rgb(components)        # (rows, cols, 3) float32 [0, 1]
 ```python
 from grdl.image_processing import Orthorectifier, OutputGrid
 
-geo = Geolocation.from_reader(reader)
+geo = GCPGeolocation(reader.metadata['gcps'], (rows, cols))
 grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
                                    pixel_size_lon=0.001)
 ortho = Orthorectifier(geo, grid, interpolation='nearest')
