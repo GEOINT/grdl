@@ -443,7 +443,7 @@ class TestImageDetectorABC:
 class _MockGeolocation:
     """Minimal mock for Geolocation that does a simple affine transform."""
 
-    def pixel_to_latlon(self, row, col, height=0.0):
+    def image_to_latlon(self, row, col, height=0.0):
         """Simple transform: lat = row * 0.01, lon = col * 0.01."""
         if isinstance(row, np.ndarray):
             lats = row * 0.01

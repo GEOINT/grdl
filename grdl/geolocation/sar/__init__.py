@@ -22,10 +22,13 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-11
 """
 
-# Implementations will be imported as needed to avoid circular dependencies
-# and to handle optional dependencies (e.g., SARPY for SICD)
+from grdl.geolocation.sar.gcp import GCPGeolocation
+from grdl.geolocation.sar.sicd import SICDGeolocation
 
-__all__ = []
+__all__ = [
+    'GCPGeolocation',
+    'SICDGeolocation',
+]

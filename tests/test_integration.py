@@ -203,7 +203,7 @@ class TestDetectionPipeline:
                 return ds
 
         class MockGeo:
-            def pixel_to_latlon(self, row, col, height=0.0):
+            def image_to_latlon(self, row, col, height=0.0):
                 if isinstance(row, np.ndarray):
                     return row * 0.01 + 40.0, col * 0.01 - 74.0, np.zeros_like(row)
                 return float(row) * 0.01 + 40.0, float(col) * 0.01 - 74.0, 0.0

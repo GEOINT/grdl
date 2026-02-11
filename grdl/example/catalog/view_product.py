@@ -217,7 +217,7 @@ def view_product(product_path: Path) -> None:
     # ------------------------------------------------------------------
     # Center
     center_r, center_c = rows // 2, cols // 2
-    center_lat, center_lon, _ = geo.pixel_to_latlon(center_r, center_c)
+    center_lat, center_lon, _ = geo.image_to_latlon(center_r, center_c)
 
     # Corners (5% inset)
     mr = int(rows * 0.05)
@@ -231,7 +231,7 @@ def view_product(product_path: Path) -> None:
     ]
     corner_latlons = []
     for r, c in corner_rc:
-        lat, lon, _ = geo.pixel_to_latlon(r, c)
+        lat, lon, _ = geo.image_to_latlon(r, c)
         corner_latlons.append((lat, lon))
 
     # Calibration targets
@@ -239,7 +239,7 @@ def view_product(product_path: Path) -> None:
     cal_in_image = []
     for t in cal_targets:
         try:
-            r, c = geo.latlon_to_pixel(t["lat"], t["lon"])
+            r, c = geo.latlon_to_image(t["lat"], t["lon"])
             if 0 <= r < rows and 0 <= c < cols:
                 cal_in_image.append({**t, "row": r, "col": c})
         except Exception:

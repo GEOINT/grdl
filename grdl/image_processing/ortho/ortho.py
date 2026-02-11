@@ -205,7 +205,7 @@ class OutputGrid:
             pixel_size_lon=pixel_size_lon,
         )
 
-    def pixel_to_latlon(
+    def image_to_latlon(
         self,
         row: Union[float, np.ndarray],
         col: Union[float, np.ndarray]
@@ -233,7 +233,7 @@ class OutputGrid:
         lon = self.min_lon + col * self.pixel_size_lon
         return lat, lon
 
-    def latlon_to_pixel(
+    def latlon_to_image(
         self,
         lat: Union[float, np.ndarray],
         lon: Union[float, np.ndarray]
@@ -279,7 +279,7 @@ class Orthorectifier(ImageTransform):
     ---------
     1. Define output grid (``OutputGrid``) with geographic bounds and resolution.
     2. For each output pixel, compute the corresponding source pixel location
-       via ``geolocation.latlon_to_pixel()`` (inverse transform).
+       via ``geolocation.latlon_to_image()`` (inverse transform).
     3. Resample source data at those fractional pixel locations using
        ``scipy.ndimage.map_coordinates``.
 
@@ -289,7 +289,7 @@ class Orthorectifier(ImageTransform):
     Attributes
     ----------
     geolocation : Geolocation
-        Source image geolocation (provides latlon_to_pixel).
+        Source image geolocation (provides latlon_to_image).
     output_grid : OutputGrid
         Specification of the output geographic grid.
     interpolation : str
@@ -329,7 +329,7 @@ class Orthorectifier(ImageTransform):
         ----------
         geolocation : Geolocation
             Geolocation for the source image. Must support
-            ``latlon_to_pixel()`` for inverse mapping.
+            ``latlon_to_image()`` for inverse mapping.
         output_grid : OutputGrid
             Output grid specification defining bounds and resolution.
         interpolation : str, default='bilinear'
@@ -368,7 +368,7 @@ class Orthorectifier(ImageTransform):
         """
         Compute the source pixel coordinates for every output pixel.
 
-        For each output grid pixel, uses ``geolocation.latlon_to_pixel()``
+        For each output grid pixel, uses ``geolocation.latlon_to_image()``
         to find the corresponding source (row, col). The mapping is computed
         once and cached for reuse across bands.
 
@@ -385,7 +385,7 @@ class Orthorectifier(ImageTransform):
         Notes
         -----
         Vectorized: generates full lat/lon grids with ``np.meshgrid``,
-        calls ``latlon_to_pixel`` on flattened arrays, reshapes to 2D.
+        calls ``latlon_to_image`` on flattened arrays, reshapes to 2D.
         """
         grid = self.output_grid
 
@@ -400,7 +400,7 @@ class Orthorectifier(ImageTransform):
         lons_flat = lon_grid.ravel()
 
         # Inverse geolocation: output lat/lon -> source pixel (row, col)
-        src_rows_flat, src_cols_flat = self.geolocation.latlon_to_pixel(
+        src_rows_flat, src_cols_flat = self.geolocation.latlon_to_image(
             lats_flat, lons_flat
         )
 

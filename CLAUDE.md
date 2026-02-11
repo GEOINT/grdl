@@ -8,10 +8,10 @@ This is a **library, not a framework**. Every module must be independently usabl
 
 ## Development Environment
 
-**Python Environment:** Always use the `starlight` conda environment for all Python operations (testing, development, package installation).
+**Python Environment:** Always use the `grdl` conda environment for all Python operations (testing, development, package installation).
 
 ```bash
-conda activate starlight
+conda activate grdl
 python tests/test_io_biomass.py --quick
 ```
 
@@ -34,7 +34,8 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Load any imagery format | `grdl.IO` readers | Raw `rasterio.open()` / `h5py.File()` |
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
 | Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
-| Pixel to lat/lon | `grdl.geolocation` | Manual GCP interpolation |
+| Image to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `GCPGeolocation`) | Manual affine math or GCP interpolation |
+| Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
 | SAR decomposition | `grdl.image_processing` | Manual complex arithmetic |
 | Image alignment | `grdl.coregistration` | Custom OpenCV wrappers |
 
@@ -231,6 +232,27 @@ GRDL/
         viirs.py             # VIIRSReader
       eo/                    # EO modality submodule (scaffold)
         _backend.py          # rasterio/glymur availability
+    geolocation/             # Image-to-geographic coordinate transforms with DEM integration
+      base.py                # Geolocation ABC, NoGeolocation
+      utils.py               # Footprint, bounds, distance helpers
+      __init__.py            # Re-exports all public classes
+      sar/                   # SAR geolocation submodule
+        _backend.py          # sarpy/sarkit availability probing
+        gcp.py               # GCPGeolocation (BIOMASS Delaunay interpolation)
+        sicd.py              # SICDGeolocation (SICD imagery via sarpy/sarkit)
+        __init__.py
+      eo/                    # EO geolocation submodule
+        _backend.py          # rasterio/pyproj availability probing
+        affine.py            # AffineGeolocation (geocoded rasters, affine + pyproj)
+        __init__.py
+      elevation/             # Terrain elevation models
+        _backend.py          # rasterio availability probing
+        base.py              # ElevationModel ABC
+        constant.py          # ConstantElevation (fixed-height fallback)
+        dted.py              # DTEDElevation (DTED tiles via rasterio)
+        geotiff_dem.py       # GeoTIFFDEM (GeoTIFF DEM via rasterio)
+        geoid.py             # GeoidCorrection (EGM96 geoid undulation lookup)
+        __init__.py
     <domain>/                # Other top-level module areas
       base.py                # ABCs defining the domain's contracts
       <submodule>.py         # Concrete implementations
@@ -259,7 +281,7 @@ Domain directories map to the module areas defined in the README:
 |-----------|--------|
 | `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
 | `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
-| `geolocation/` | Pixel-to-geographic coordinate transforms |
+| `geolocation/` | Image-to-geographic coordinate transforms with DEM integration (`sar/`, `eo/`, `elevation/` submodules) |
 | `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, tunable parameters, pipeline, transforms |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
@@ -452,7 +474,7 @@ def transform_pixels(geo, rows, cols):
     lats = []
     lons = []
     for i in range(len(rows)):
-        lat, lon, _ = geo.pixel_to_latlon(rows[i], cols[i])
+        lat, lon, _ = geo.image_to_latlon(rows[i], cols[i])
         lats.append(lat)
         lons.append(lon)
     return np.array(lats), np.array(lons)
@@ -461,7 +483,7 @@ def transform_pixels(geo, rows, cols):
 **Good (pass arrays directly -- the same method handles both):**
 ```python
 def transform_pixels(geo, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    lats, lons, _ = geo.pixel_to_latlon(rows, cols)
+    lats, lons, _ = geo.image_to_latlon(rows, cols)
     return lats, lons
 ```
 
@@ -475,13 +497,13 @@ def transform_pixels(geo, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarra
 ```python
 class Geolocation(ABC):
     @abstractmethod
-    def _pixel_to_latlon_array(
+    def _image_to_latlon_array(
         self, rows: np.ndarray, cols: np.ndarray, height: float = 0.0
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Subclasses implement vectorized array transform."""
         pass
 
-    def pixel_to_latlon(
+    def image_to_latlon(
         self,
         row: Union[float, list, np.ndarray],
         col: Union[float, list, np.ndarray],
@@ -492,7 +514,7 @@ class Geolocation(ABC):
         scalar = _is_scalar(row) and _is_scalar(col)
         rows_arr = _to_array(row)
         cols_arr = _to_array(col)
-        lats, lons, heights = self._pixel_to_latlon_array(rows_arr, cols_arr, height)
+        lats, lons, heights = self._image_to_latlon_array(rows_arr, cols_arr, height)
         if scalar:
             return (float(lats[0]), float(lons[0]), float(heights[0]))
         return lats, lons, heights
@@ -522,9 +544,35 @@ class Geolocation(ABC):
 
 ## Dependencies
 
-- `numpy` is always available. It is the common data type across all modules.
+**Core** (always required):
+- `numpy>=1.20.0` — common array type across all modules.
+- `scipy>=1.7.0` — interpolation, ndimage filters, scientific computing.
+
+**Optional** (install per module group):
+
+| Extra | Packages | Modules |
+|-------|----------|---------|
+| `sar` | `sarpy`, `sarkit` | `grdl.IO.sar` (SICD, CPHD, CRSD, SIDD) |
+| `eo` | `rasterio`, `glymur` | `grdl.IO.geotiff`, `grdl.IO.jpeg2000`, `grdl.IO.eo` |
+| `hdf5` | `h5py` | `grdl.IO.hdf5` |
+| `multispectral` | `h5py`, `xarray`, `spectral` | `grdl.IO.multispectral` |
+| `ir` | `rasterio`, `h5py` | `grdl.IO.ir` |
+| `biomass` | `rasterio`, `requests` | `grdl.IO.sar.biomass`, `grdl.IO.sar.biomass_catalog` |
+| `geolocation` | `pyproj` | `grdl.geolocation.eo`, `grdl.geolocation.elevation` |
+| `coregistration` | `opencv-python-headless` | `grdl.coregistration.feature_match` |
+| `examples` | `matplotlib` | `grdl.example.*` |
+| `all` | everything above | full installation |
+
+**Dev** (testing & code quality): `pytest`, `pytest-cov`, `pytest-benchmark`, `ruff`, `black`, `mypy`.
+
+**Environment setup** (conda-forge preferred):
+```bash
+conda activate grdl
+```
+
+**Dependency rules:**
 - All imports go at the top of the file. If a dependency is not installed, the module must fail immediately on import with a clear `ImportError`.
-- **Optional dependencies** (e.g., `sarpy`, `rasterio`, `scipy`) may use a `try`/`except` guard at the module level to allow partial installation. In this case, the module must raise a clear `ImportError` with installation instructions at construction time (i.e., in `__init__`), not silently degrade. This pattern allows `import grdl` to succeed even when only a subset of optional dependencies are installed.
+- **Optional dependencies** (e.g., `sarpy`, `rasterio`, `h5py`) may use a `try`/`except` guard at the module level to allow partial installation. In this case, the module must raise a clear `ImportError` with installation instructions at construction time (i.e., in `__init__`), not silently degrade. This pattern allows `import grdl` to succeed even when only a subset of optional dependencies are installed.
 - Each module that requires dependencies beyond numpy must document them in the file header's Dependencies section.
 - Never add dependencies for convenience. Prefer numpy over pulling in pandas for a single operation.
 

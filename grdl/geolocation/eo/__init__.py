@@ -22,9 +22,11 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-11
 """
 
-# Implementations will be imported as needed to avoid circular dependencies
+from grdl.geolocation.eo.affine import AffineGeolocation
 
-__all__ = []
+__all__ = [
+    'AffineGeolocation',
+]
