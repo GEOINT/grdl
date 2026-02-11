@@ -47,6 +47,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 
 
 def _find_datasets(
@@ -232,14 +233,14 @@ class HDF5Reader(ImageReader):
             except Exception:
                 pass
 
-        self.metadata = {
-            'format': 'HDF5',
-            'rows': rows,
-            'cols': cols,
-            'bands': bands,
-            'dtype': str(ds.dtype),
-            **extras,
-        }
+        self.metadata = ImageMetadata(
+            format='HDF5',
+            rows=rows,
+            cols=cols,
+            dtype=str(ds.dtype),
+            bands=bands,
+            extras=extras,
+        )
 
     def read_chip(
         self,
@@ -351,57 +352,6 @@ class HDF5Reader(ImageReader):
         np.dtype
         """
         return np.dtype(self.metadata['dtype'])
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information from HDF5 attributes.
-
-        Attempts to extract CRS and spatial extent from dataset or
-        file-level attributes. Returns None if no geolocation
-        metadata is found.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Geolocation dict if available, else None.
-        """
-        geo: Dict[str, Any] = {}
-
-        # Common HDF-EOS / CF attribute names for CRS
-        for key in ('crs', 'spatial_ref', 'Projection', 'file_crs',
-                     'file_spatial_ref'):
-            if key in self.metadata:
-                geo['crs'] = self.metadata[key]
-                break
-
-        # Common attribute names for bounds
-        for key in ('bounds', 'geospatial_bounds', 'file_geospatial_bounds'):
-            if key in self.metadata:
-                geo['bounds'] = self.metadata[key]
-                break
-
-        # Lat/lon extent attributes (NASA Earthdata convention)
-        lat_keys = ('geospatial_lat_min', 'file_geospatial_lat_min',
-                     'SouthBoundingCoordinate')
-        lon_keys = ('geospatial_lon_min', 'file_geospatial_lon_min',
-                     'WestBoundingCoordinate')
-        for lat_key in lat_keys:
-            if lat_key in self.metadata:
-                prefix = lat_key.rsplit('min', 1)[0] if 'min' in lat_key else ''
-                max_lat_key = f"{prefix}max" if prefix else lat_key.replace(
-                    'South', 'North')
-                geo.setdefault('lat_min', self.metadata.get(lat_key))
-                geo.setdefault('lat_max', self.metadata.get(max_lat_key))
-                break
-        for lon_key in lon_keys:
-            if lon_key in self.metadata:
-                prefix = lon_key.rsplit('min', 1)[0] if 'min' in lon_key else ''
-                max_lon_key = f"{prefix}max" if prefix else lon_key.replace(
-                    'West', 'East')
-                geo.setdefault('lon_min', self.metadata.get(lon_key))
-                geo.setdefault('lon_max', self.metadata.get(max_lon_key))
-                break
-
-        return geo if geo else None
 
     def close(self) -> None:
         """Close the HDF5 file handle."""

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -46,6 +46,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 
 
 class NITFReader(ImageReader):
@@ -101,21 +102,25 @@ class NITFReader(ImageReader):
         try:
             self.dataset = rasterio.open(str(self.filepath))
 
-            self.metadata = {
-                'format': 'NITF',
-                'rows': self.dataset.height,
-                'cols': self.dataset.width,
-                'bands': self.dataset.count,
-                'dtype': str(self.dataset.dtypes[0]),
-                'crs': str(self.dataset.crs) if self.dataset.crs else None,
+            extras: Dict[str, Any] = {
                 'transform': self.dataset.transform,
                 'bounds': self.dataset.bounds,
-                'nodata': self.dataset.nodata,
             }
 
             tags = self.dataset.tags()
             if tags:
-                self.metadata['tags'] = dict(tags)
+                extras['tags'] = dict(tags)
+
+            self.metadata = ImageMetadata(
+                format='NITF',
+                rows=self.dataset.height,
+                cols=self.dataset.width,
+                bands=self.dataset.count,
+                dtype=str(self.dataset.dtypes[0]),
+                crs=str(self.dataset.crs) if self.dataset.crs else None,
+                nodata=self.dataset.nodata,
+                extras=extras,
+            )
 
         except Exception as e:
             raise ValueError(f"Failed to load NITF metadata: {e}") from e
@@ -220,24 +225,6 @@ class NITFReader(ImageReader):
         np.dtype
         """
         return np.dtype(self.metadata['dtype'])
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            CRS, affine transform, and bounds if available.
-            Returns None if no geolocation info is present.
-        """
-        if self.metadata['crs'] is None:
-            return None
-
-        return {
-            'crs': self.metadata['crs'],
-            'transform': self.metadata['transform'],
-            'bounds': self.metadata['bounds'],
-        }
 
     def close(self) -> None:
         """Close the rasterio dataset."""

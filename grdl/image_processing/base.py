@@ -3,10 +3,12 @@
 Image Processing Base Classes - Abstract interfaces for image processors.
 
 Defines the ``ImageProcessor`` common base class for all image processor types
-(transforms, detectors, decompositions) and the ``ImageTransform`` ABC for
-dense raster transforms. ``ImageProcessor`` provides version checking at
-first instantiation and detection input declaration/validation so that any
-processor can accept upstream ``DetectionSet`` objects through ``**kwargs``.
+(transforms, detectors, decompositions, SAR-specific processors) and the
+``ImageTransform`` ABC for dense raster transforms. ``ImageProcessor``
+provides version checking at first instantiation, detection input
+declaration/validation, and tunable parameter flow so that any processor
+can accept upstream ``DetectionSet`` objects and runtime parameters
+through ``**kwargs``.
 
 Author
 ------
@@ -25,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-10
 """
 
 # Standard library
@@ -49,9 +51,9 @@ class ImageProcessor(ABC):
     Common base class for all image processors.
 
     All processor types -- dense raster transforms (``ImageTransform``),
-    sparse vector detectors (``ImageDetector``), and polarimetric
-    decompositions (``PolarimetricDecomposition``) -- inherit from this
-    class.
+    sparse vector detectors (``ImageDetector``), polarimetric
+    decompositions (``PolarimetricDecomposition``), and SAR-specific
+    processors (``SublookDecomposition``) -- inherit from this class.
 
     Provides three cross-cutting capabilities:
 

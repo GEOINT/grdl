@@ -1,25 +1,41 @@
 # -*- coding: utf-8 -*-
 """
-Image Processing Module - Geometric and radiometric transforms for imagery.
+Image Processing Module - Geometric, radiometric, and SAR-specific transforms.
 
 Provides interfaces and implementations for image processors including
 dense raster transforms (orthorectification, filtering, enhancement),
-polarimetric decompositions, and sparse vector detectors. All processor
-types inherit from ``ImageProcessor`` which provides version checking
-and detection input flow.
+polarimetric decompositions, SAR sub-aperture decomposition, and sparse
+vector detectors. All processor types inherit from ``ImageProcessor``
+which provides version checking, detection input flow, and tunable
+parameter validation.
+
+Sub-modules
+-----------
+ortho/
+    Orthorectification from native acquisition geometry to geographic grids.
+decomposition/
+    Polarimetric decomposition of quad-pol SAR scattering matrices.
+detection/
+    Sparse geo-registered vector detections (points, bounding boxes).
+sar/
+    SAR-specific transforms requiring sensor metadata (sublook, etc.).
 
 Key Classes
 -----------
 - ImageProcessor: Common base class for all processor types
 - ImageTransform: ABC for dense raster transforms (ndarray -> ndarray)
+- BandwiseTransformMixin: Auto-apply 2D transforms across 3D band stacks
 - ImageDetector: ABC for sparse vector detectors (ndarray -> DetectionSet)
 - Orthorectifier: Orthorectify imagery from native geometry to geographic grid
 - OutputGrid: Specification for an orthorectified output grid
 - PolarimetricDecomposition: ABC for polarimetric decomposition methods
 - PauliDecomposition: Quad-pol Pauli basis decomposition
+- SublookDecomposition: Sub-aperture spectral splitting of complex SAR imagery
 - Detection, DetectionSet, Geometry: Detection output data models
 - OutputField, OutputSchema: Self-declared output format declarations
+- Pipeline: Sequential composition of ImageTransform steps
 - processor_version: Version decorator for all processor types
+- processor_tags: Capability metadata decorator (modalities, category)
 - DetectionInputSpec: Declaration of detection inputs a processor accepts
 - TunableParameterSpec: Declaration of tunable parameters a processor accepts
 
@@ -28,15 +44,18 @@ Usage
 Orthorectify a BIOMASS SAR image to a regular geographic grid:
 
     >>> from grdl.IO import BIOMASSL1Reader
-    >>> from grdl.geolocation import Geolocation
+    >>> from grdl.geolocation.sar.gcp import GCPGeolocation
     >>> from grdl.image_processing import Orthorectifier, OutputGrid
     >>>
     >>> with BIOMASSL1Reader('path/to/product') as reader:
-    >>>     geo = Geolocation.from_reader(reader)
-    >>>     grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
+    ...     geo = GCPGeolocation(
+    ...         reader.metadata['gcps'],
+    ...         (reader.metadata['rows'], reader.metadata['cols']),
+    ...     )
+    ...     grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
     ...                                        pixel_size_lon=0.001)
-    >>>     ortho = Orthorectifier(geo, grid)
-    >>>     result = ortho.apply_from_reader(reader, bands=[0])
+    ...     ortho = Orthorectifier(geo, grid)
+    ...     result = ortho.apply_from_reader(reader, bands=[0])
 
 Pauli decomposition of quad-pol SAR data:
 
@@ -45,9 +64,22 @@ Pauli decomposition of quad-pol SAR data:
     >>> components = pauli.decompose(shh, shv, svh, svv)
     >>> rgb = pauli.to_rgb(components)
 
+Sub-aperture (sublook) decomposition of complex SAR imagery:
+
+    >>> from grdl.IO.sar import SICDReader
+    >>> from grdl.image_processing import SublookDecomposition
+    >>>
+    >>> with SICDReader('image.nitf') as reader:
+    ...     image = reader.read_full()
+    ...     sublook = SublookDecomposition(reader.metadata, num_looks=3,
+    ...                                    overlap=0.1)
+    ...     looks = sublook.decompose(image)   # (3, rows, cols) complex
+    ...     db = sublook.to_db(looks)          # (3, rows, cols) float
+
 Dependencies
 ------------
 scipy
+torch (optional, for GPU-accelerated SAR transforms)
 
 Author
 ------
@@ -66,7 +98,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-10
 """
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
@@ -83,6 +115,7 @@ from grdl.image_processing.detection import (
     OutputField,
     OutputSchema,
 )
+from grdl.image_processing.sar import SublookDecomposition
 from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
     processor_version,
@@ -111,6 +144,7 @@ __all__ = [
     'Geometry',
     'OutputField',
     'OutputSchema',
+    'SublookDecomposition',
     'Pipeline',
     'processor_version',
     'processor_tags',

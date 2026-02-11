@@ -17,11 +17,14 @@ and ``latlon_to_pixel`` methods accept scalar, list, or ndarray inputs and
 return matching types (scalar in → scalar out, array in → array out):
 
     >>> from grdl.IO import open_biomass
-    >>> from grdl.geolocation import Geolocation
+    >>> from grdl.geolocation.sar.gcp import GCPGeolocation
     >>> import numpy as np
     >>>
     >>> with open_biomass('path/to/biomass_product') as reader:
-    >>>     geo = Geolocation.from_reader(reader)
+    >>>     geo = GCPGeolocation(
+    ...         reader.metadata['gcps'],
+    ...         (reader.metadata['rows'], reader.metadata['cols']),
+    ...     )
     >>>
     >>>     # Single pixel (returns scalars)
     >>>     lat, lon, height = geo.pixel_to_latlon(1000, 500)

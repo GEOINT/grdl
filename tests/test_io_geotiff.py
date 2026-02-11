@@ -203,20 +203,6 @@ def test_read_chip_out_of_bounds_raises(single_band_tiff):
             reader.read_chip(0, 200, 0, 10)
 
 
-def test_geolocation(single_band_tiff):
-    """get_geolocation returns CRS and transform info."""
-    from grdl.IO.geotiff import GeoTIFFReader
-
-    filepath, _ = single_band_tiff
-    with GeoTIFFReader(filepath) as reader:
-        geo = reader.get_geolocation()
-        assert geo is not None
-        assert 'crs' in geo
-        assert 'transform' in geo
-        assert 'bounds' in geo
-        assert 'resolution' in geo
-
-
 def test_file_not_found():
     """FileNotFoundError for non-existent file."""
     from grdl.IO.geotiff import GeoTIFFReader

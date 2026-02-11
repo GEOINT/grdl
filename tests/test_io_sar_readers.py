@@ -33,6 +33,8 @@ import pytest
 import numpy as np
 from unittest import mock
 
+from grdl.IO.models import ImageMetadata, SICDMetadata, SIDDMetadata
+
 
 # -- SICDReader tests -------------------------------------------------------
 
@@ -66,7 +68,9 @@ class TestSICDReader:
             SICDReader, '__init__', lambda self, fp: None
         ):
             reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {'dtype': 'complex64'}
+            reader.metadata = SICDMetadata(
+                format='SICD', rows=100, cols=200, dtype='complex64',
+            )
             assert reader.get_dtype() == np.dtype('complex64')
 
     def test_get_shape_returns_tuple(self):
@@ -76,7 +80,9 @@ class TestSICDReader:
             SICDReader, '__init__', lambda self, fp: None
         ):
             reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {'rows': 1000, 'cols': 2000}
+            reader.metadata = SICDMetadata(
+                format='SICD', rows=1000, cols=2000, dtype='complex64',
+            )
             assert reader.get_shape() == (1000, 2000)
 
     def test_file_not_found(self):
@@ -212,7 +218,9 @@ class TestSIDDReader:
             SIDDReader, '__init__', lambda self, fp, **kw: None
         ):
             reader = SIDDReader.__new__(SIDDReader)
-            reader.metadata = {'rows': 512, 'cols': 768}
+            reader.metadata = SIDDMetadata(
+                format='SIDD', rows=512, cols=768, dtype='uint8',
+            )
             assert reader.get_shape() == (512, 768)
 
     def test_image_index_parameter(self):
@@ -243,81 +251,23 @@ class TestOpenSar:
         """open_sar falls back to GeoTIFF for .tif files."""
         try:
             import rasterio
+            from rasterio.transform import from_bounds
         except ImportError:
             pytest.skip("rasterio not installed")
 
         filepath = tmp_path / "test.tif"
         data = np.ones((10, 20), dtype=np.float32)
+
+        transform = from_bounds(-180, -90, 180, 90, 20, 10)
+
         with rasterio.open(
             str(filepath), 'w', driver='GTiff',
             height=10, width=20, count=1, dtype='float32',
+            transform=transform,
+            crs='EPSG:4326',
         ) as ds:
             ds.write(data, 1)
 
         from grdl.IO.sar import open_sar
         with open_sar(filepath) as reader:
             assert reader.metadata['format'] == 'GeoTIFF'
-
-
-# -- Geolocation tests ------------------------------------------------------
-
-class TestGeolocation:
-    """Tests for reader geolocation methods."""
-
-    def test_sicd_geolocation_with_scp(self):
-        """SICDReader returns geolocation when SCP is available."""
-        from grdl.IO.sar.sicd import SICDReader
-        with mock.patch.object(
-            SICDReader, '__init__', lambda self, fp: None
-        ):
-            reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {
-                'scp_llh': [34.0, -118.0, 100.0],
-                'corner_coords': None,
-            }
-            geo = reader.get_geolocation()
-            assert geo is not None
-            assert 'scp_llh' in geo
-
-    def test_sicd_geolocation_none_without_scp(self):
-        """SICDReader returns None when no SCP is available."""
-        from grdl.IO.sar.sicd import SICDReader
-        with mock.patch.object(
-            SICDReader, '__init__', lambda self, fp: None
-        ):
-            reader = SICDReader.__new__(SICDReader)
-            reader.metadata = {}
-            assert reader.get_geolocation() is None
-
-    def test_cphd_geolocation(self):
-        """CPHDReader returns phase history space projection."""
-        from grdl.IO.sar.cphd import CPHDReader
-        with mock.patch.object(
-            CPHDReader, '__init__', lambda self, fp: None
-        ):
-            reader = CPHDReader.__new__(CPHDReader)
-            geo = reader.get_geolocation()
-            assert geo is not None
-            assert geo['projection'] == 'Phase history space'
-
-    def test_crsd_geolocation(self):
-        """CRSDReader returns radar signal space projection."""
-        from grdl.IO.sar.crsd import CRSDReader
-        with mock.patch.object(
-            CRSDReader, '__init__', lambda self, fp: None
-        ):
-            reader = CRSDReader.__new__(CRSDReader)
-            geo = reader.get_geolocation()
-            assert geo is not None
-            assert geo['projection'] == 'Radar signal space'
-
-    def test_sidd_geolocation(self):
-        """SIDDReader returns derived product projection."""
-        from grdl.IO.sar.sidd import SIDDReader
-        with mock.patch.object(
-            SIDDReader, '__init__', lambda self, fp, **kw: None
-        ):
-            reader = SIDDReader.__new__(SIDDReader)
-            geo = reader.get_geolocation()
-            assert geo is not None
-            assert 'SIDD' in geo['projection']

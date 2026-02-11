@@ -347,68 +347,6 @@ class Geolocation(ABC):
 
         return bounds
 
-    @classmethod
-    def from_reader(cls, reader: 'ImageReader') -> 'Geolocation':
-        """
-        Factory method to create geolocation object from imagery reader.
-
-        Parameters
-        ----------
-        reader : ImageReader
-            Imagery reader with geolocation metadata
-
-        Returns
-        -------
-        Geolocation
-            Appropriate geolocation subclass based on reader geometry
-
-        Notes
-        -----
-        Factory detects geometry type from reader metadata and returns:
-        - GCPGeolocation: for SAR slant range with GCPs (BIOMASS L1)
-        - SICDGeolocation: for SICD imagery with projection model
-        - SARGeolocation/EOGeolocation: for geocoded imagery with affine transform
-        - NoGeolocation: fallback when no geolocation available
-        """
-        geo_info = reader.get_geolocation()
-
-        if geo_info is None:
-            return NoGeolocation(reader.get_shape()[:2])
-
-        # Detect geometry type from projection and available metadata
-        projection = geo_info.get('projection', '').lower()
-
-        # Determine modality (SAR vs EO) from reader module
-        reader_module = reader.__class__.__module__.lower()
-        is_sar = ('sar' in reader_module or
-                  'biomass' in reader_module or
-                  'sicd' in reader_module or
-                  'cphd' in reader_module)
-
-        # Route to appropriate implementation
-        if 'slant' in projection and 'gcps' in geo_info:
-            # SAR slant range with GCPs (BIOMASS)
-            from grdl.geolocation.sar.gcp import GCPGeolocation
-            return GCPGeolocation.from_dict(geo_info, reader.metadata)
-
-        elif 'sicd' in projection or 'sicd' in reader_module:
-            # SICD with SARPY projection model (not yet implemented)
-            raise NotImplementedError(
-                "SICD geolocation is not yet implemented. "
-                "See grdl/geolocation/sar/ for available implementations."
-            )
-
-        elif 'transform' in geo_info or 'affine' in str(type(geo_info.get('transform', ''))):
-            # Affine transform geolocation (not yet implemented)
-            raise NotImplementedError(
-                "Affine transform geolocation is not yet implemented. "
-                "See grdl/geolocation/sar/ for available implementations."
-            )
-
-        else:
-            # No geolocation available
-            return NoGeolocation(reader.get_shape()[:2])
-
 
 class NoGeolocation(Geolocation):
     """

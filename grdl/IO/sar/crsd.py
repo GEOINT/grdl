@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-10
 """
 
 # Standard library
@@ -38,6 +38,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ImageMetadata
 from grdl.IO.sar._backend import require_sarkit
 
 
@@ -91,11 +92,6 @@ class CRSDReader(ImageReader):
 
             xml = self._reader.metadata.xmltree
 
-            self.metadata = {
-                'format': 'CRSD',
-                'backend': 'sarkit',
-            }
-
             # Extract channel information from Receive element
             channels = {}
             for ch_elem in xml.findall(
@@ -109,8 +105,11 @@ class CRSDReader(ImageReader):
                     'num_samples': num_samples,
                 }
 
-            self.metadata['channels'] = channels
-            self.metadata['num_channels'] = len(channels)
+            extras: Dict[str, Any] = {
+                'backend': 'sarkit',
+                'channels': channels,
+                'num_channels': len(channels),
+            }
 
             # Collection info
             collector = xml.findtext(
@@ -120,9 +119,19 @@ class CRSDReader(ImageReader):
                 '{*}CollectionInfo/{*}Classification'
             )
             if collector:
-                self.metadata['collector_name'] = collector
+                extras['collector_name'] = collector
             if classification:
-                self.metadata['classification'] = classification
+                extras['classification'] = classification
+
+            # Use first channel dimensions as rows/cols
+            first_ch = next(iter(channels.values()))
+            self.metadata = ImageMetadata(
+                format='CRSD',
+                rows=first_ch['num_vectors'],
+                cols=first_ch['num_samples'],
+                dtype='complex64',
+                extras=extras,
+            )
 
             self._xmltree = xml
 
@@ -199,18 +208,6 @@ class CRSDReader(ImageReader):
             ``complex64`` for CRSD signal data.
         """
         return np.dtype('complex64')
-
-    def get_geolocation(self) -> Optional[Dict[str, Any]]:
-        """Get geolocation information.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            Reference geometry information.
-        """
-        return {
-            'projection': 'Radar signal space',
-        }
 
     def close(self) -> None:
         """Close the reader and release resources."""

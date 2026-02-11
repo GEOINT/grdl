@@ -69,7 +69,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.IO import BIOMASSL1Reader
-from grdl.geolocation import Geolocation
+from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.image_processing import Orthorectifier, OutputGrid, PauliDecomposition
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def _normalize(arr: np.ndarray, valid: np.ndarray,
     return np.clip(out, 0, 1)
 
 
-def _compute_resolution(reader: BIOMASSL1Reader, geo: Geolocation):
+def _compute_resolution(reader: BIOMASSL1Reader, geo: GCPGeolocation):
     """
     Compute output grid resolution from the reader's pixel spacings.
 
@@ -186,7 +186,11 @@ def ortho_biomass(product_path: Path, save_path: Path = None,
     """
     print(f"Loading: {product_path.name}")
     reader = BIOMASSL1Reader(product_path)
-    geo = Geolocation.from_reader(reader)
+    geo_info = {
+        'gcps': reader.metadata['gcps'],
+        'crs': reader.metadata.get('crs', 'WGS84'),
+    }
+    geo = GCPGeolocation.from_dict(geo_info, reader.metadata)
     rows, cols = geo.shape
     pols = reader.metadata["polarizations"]
 

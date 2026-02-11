@@ -299,11 +299,14 @@ class Orthorectifier(ImageTransform):
     Orthorectify BIOMASS SAR data:
 
     >>> from grdl.IO import BIOMASSL1Reader
-    >>> from grdl.geolocation import Geolocation
+    >>> from grdl.geolocation.sar.gcp import GCPGeolocation
     >>> from grdl.image_processing import Orthorectifier, OutputGrid
     >>>
     >>> with BIOMASSL1Reader('product_dir') as reader:
-    ...     geo = Geolocation.from_reader(reader)
+    ...     geo = GCPGeolocation(
+    ...         reader.metadata['gcps'],
+    ...         (reader.metadata['rows'], reader.metadata['cols']),
+    ...     )
     ...     grid = OutputGrid.from_geolocation(geo, 0.001, 0.001)
     ...     ortho = Orthorectifier(geo, grid)
     ...     result = ortho.apply_from_reader(reader, bands=[0])

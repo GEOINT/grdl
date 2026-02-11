@@ -58,7 +58,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from grdl.IO import BIOMASSL1Reader
-from grdl.geolocation import Geolocation
+from grdl.geolocation.sar.gcp import GCPGeolocation
 
 
 # Path to test data
@@ -96,10 +96,19 @@ def reader():
     r.close()
 
 
+def _geo_from_reader(reader):
+    """Build GCPGeolocation from BIOMASS reader metadata."""
+    geo_info = {
+        'gcps': reader.metadata['gcps'],
+        'crs': reader.metadata.get('crs', 'WGS84'),
+    }
+    return GCPGeolocation.from_dict(geo_info, reader.metadata)
+
+
 @pytest.fixture(scope="module")
 def geo(reader):
     """Create geolocation object from reader."""
-    return Geolocation.from_reader(reader)
+    return _geo_from_reader(reader)
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +116,8 @@ def geo(reader):
 # ---------------------------------------------------------------------------
 
 def test_geolocation_creation(reader):
-    """Test that Geolocation.from_reader works with BIOMASS data."""
-    geo = Geolocation.from_reader(reader)
+    """Test that GCPGeolocation creation works with BIOMASS data."""
+    geo = _geo_from_reader(reader)
     assert geo is not None
     assert geo.shape[0] == reader.metadata['rows']
     assert geo.shape[1] == reader.metadata['cols']
@@ -410,7 +419,7 @@ def plot_geolocation_markers(save_path=None):
 
     print("Opening BIOMASS reader...")
     reader = BIOMASSL1Reader(TEST_DATA_PATH)
-    geo = Geolocation.from_reader(reader)
+    geo = _geo_from_reader(reader)
     rows, cols = geo.shape
 
     # --- Read HH polarization (band 0) as dB magnitude ---

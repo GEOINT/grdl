@@ -4,7 +4,8 @@ IO Module - Input/Output Operations for Geospatial Imagery.
 
 Handles reading and writing various geospatial data formats. Base data
 format readers (GeoTIFF, NITF, HDF5) live at this level.  Modality-specific
-readers are organized into submodules (``sar/``).
+readers are organized into submodules (``sar/``, ``eo/``, ``ir/``,
+``multispectral/``).
 
 Dependencies
 ------------
@@ -37,12 +38,17 @@ Modified
 from pathlib import Path
 from typing import Union
 
-# Base classes
+# Base classes and models
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
+from grdl.IO.models import (
+    ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata,
+    VIIRSMetadata, ASTERMetadata,
+)
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
 from grdl.IO.hdf5 import HDF5Reader
+from grdl.IO.jpeg2000 import JP2Reader
 from grdl.IO.nitf import NITFReader
 
 # SAR submodule
@@ -57,6 +63,15 @@ from grdl.IO.sar import (
     open_biomass,
     load_credentials,
 )
+
+# EO submodule
+from grdl.IO.eo import open_eo
+
+# IR submodule
+from grdl.IO.ir import ASTERReader, open_ir
+
+# Multispectral submodule
+from grdl.IO.multispectral import VIIRSReader, open_multispectral
 
 
 def open_image(filepath: Union[str, Path]) -> ImageReader:
@@ -110,6 +125,13 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError):
             pass
 
+    # Try JPEG2000
+    if filepath.suffix.lower() in ('.jp2', '.j2k', '.j2c', '.jpx'):
+        try:
+            return JP2Reader(filepath)
+        except (ValueError, ImportError):
+            pass
+
     # Try GeoTIFF as fallback for unknown extensions
     try:
         return GeoTIFFReader(filepath)
@@ -118,20 +140,27 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
 
     raise ValueError(
         f"Could not open {filepath}. "
-        "Ensure file is a valid GeoTIFF, NITF, or HDF5 and the required "
-        "library (rasterio, h5py) is installed. "
+        "Ensure file is a valid GeoTIFF, NITF, HDF5, or JPEG2000 and the required "
+        "library (rasterio, h5py, glymur) is installed. "
         "For SAR-specific formats (SICD, CPHD, CRSD), use open_sar()."
     )
 
 
 __all__ = [
-    # Base classes
+    # Base classes and models
     'ImageReader',
     'ImageWriter',
     'CatalogInterface',
+    'ImageMetadata',
+    'SICDMetadata',
+    'SIDDMetadata',
+    'BIOMASSMetadata',
+    'VIIRSMetadata',
+    'ASTERMetadata',
     # Base format readers
     'GeoTIFFReader',
     'HDF5Reader',
+    'JP2Reader',
     'NITFReader',
     # SAR readers
     'SICDReader',
@@ -141,9 +170,16 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # IR readers
+    'ASTERReader',
+    # Multispectral readers
+    'VIIRSReader',
     # Convenience functions
     'open_image',
     'open_sar',
     'open_biomass',
+    'open_eo',
+    'open_ir',
+    'open_multispectral',
     'load_credentials',
 ]

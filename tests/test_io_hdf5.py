@@ -325,30 +325,6 @@ def test_file_not_found():
         HDF5Reader('/nonexistent/file.h5')
 
 
-# -- Geolocation tests -------------------------------------------------------
-
-def test_geolocation_from_attributes(geo_h5):
-    """get_geolocation extracts CRS and extent from attributes."""
-    from grdl.IO.hdf5 import HDF5Reader
-
-    filepath, _ = geo_h5
-    with HDF5Reader(filepath) as reader:
-        geo = reader.get_geolocation()
-        assert geo is not None
-        assert geo['crs'] == 'EPSG:4326'
-
-
-def test_geolocation_none_when_absent(single_band_h5):
-    """get_geolocation returns None when no geo attributes."""
-    from grdl.IO.hdf5 import HDF5Reader
-
-    filepath, _ = single_band_h5
-    with HDF5Reader(filepath) as reader:
-        geo = reader.get_geolocation()
-        # File has 'producer' attribute but no geo attributes
-        assert geo is None
-
-
 # -- Context manager and cleanup tests ---------------------------------------
 
 def test_context_manager(single_band_h5):

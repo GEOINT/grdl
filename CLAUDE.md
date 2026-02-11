@@ -25,6 +25,22 @@ python tests/test_io_biomass.py --quick
 - No global state. No singletons. No module-level side effects on import.
 - All public functions and classes operate on numpy arrays or standard Python types as their primary data interface.
 
+### Use GRDL Modules for Their Purpose
+
+Every GRDL module owns a specific responsibility. **Always use the purpose-built module instead of writing ad-hoc code.** If a GRDL module exists for the task, use it.
+
+| Task | Use this | Not this |
+|------|----------|----------|
+| Load any imagery format | `grdl.IO` readers | Raw `rasterio.open()` / `h5py.File()` |
+| Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
+| Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
+| Pixel to lat/lon | `grdl.geolocation` | Manual GCP interpolation |
+| Spatial filters, contrast | `grdl.imagej` | Re-implementing algorithms |
+| SAR decomposition | `grdl.image_processing` | Manual complex arithmetic |
+| Image alignment | `grdl.coregistration` | Custom OpenCV wrappers |
+
+Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` for a full integration example.
+
 ### Fail Fast
 
 - All imports at the top of the file. If a dependency is missing, the module fails on import -- not buried in a runtime call.
@@ -79,16 +95,39 @@ GRDL/
   grdl/
     exceptions.py            # Custom exception hierarchy (GrdlError → ValidationError, ProcessorError, etc.)
     py.typed                 # PEP 561 type stub marker
-    <domain>/                # Top-level module area (e.g. image_processing/)
+    IO/                      # Input/Output — format readers and writers
+      base.py                # ImageReader / ImageWriter / CatalogInterface ABCs
+      geotiff.py             # GeoTIFFReader (rasterio), open_image()
+      hdf5.py                # HDF5Reader (h5py)
+      jpeg2000.py            # JP2Reader (glymur)
+      nitf.py                # NITFReader (rasterio/GDAL)
+      models/                # Typed metadata dataclasses
+        base.py              # ImageMetadata base class
+        common.py            # Shared primitives (XYZ, LatLonHAE, Poly2D, ...)
+        sicd.py              # SICDMetadata (~35 nested dataclasses)
+        sidd.py              # SIDDMetadata (~25 nested dataclasses)
+        biomass.py           # BIOMASSMetadata
+        viirs.py             # VIIRSMetadata
+        aster.py             # ASTERMetadata
+      sar/                   # SAR modality submodule
+        _backend.py          # sarkit/sarpy availability
+        sicd.py, cphd.py     # SICDReader, CPHDReader (sarkit/sarpy)
+        crsd.py, sidd.py     # CRSDReader, SIDDReader (sarkit)
+        biomass.py           # BIOMASSL1Reader
+        biomass_catalog.py   # BIOMASSCatalog
+      ir/                    # IR/thermal modality submodule
+        _backend.py          # rasterio/h5py availability
+        aster.py             # ASTERReader (L1T, GDEM)
+      multispectral/         # Multispectral modality submodule
+        _backend.py          # h5py/xarray/spectral availability
+        viirs.py             # VIIRSReader
+      eo/                    # EO modality submodule (scaffold)
+        _backend.py          # rasterio/glymur availability
+    <domain>/                # Other top-level module areas
       base.py                # ABCs defining the domain's contracts
-      versioning.py          # Cross-cutting: @processor_version, @processor_tags, TunableParameterSpec
-      pipeline.py            # Pipeline (sequential transform composition with progress rescaling)
       <submodule>.py         # Concrete implementations
       __init__.py            # Expose public API
       <subdomain>/           # Nested subdomains (e.g. detection/, ortho/, decomposition/)
-        base.py              # Subdomain ABCs
-        models.py            # Data models (if applicable)
-        __init__.py          # Subdomain exports
     imagej/                  # ImageJ/Fiji ports (organized by ImageJ menu category)
       __init__.py            # Barrel re-exports all 12 components (backward compat)
       _taxonomy.py           # Category constants shared with GRDK
@@ -102,7 +141,7 @@ GRDL/
       threshold/             # Image > Adjust > Threshold (AutoLocalThreshold)
       segmentation/          # Plugins > Segmentation (StatisticalRegionMerging)
       stacks/                # Image > Stacks (ZProjection)
-    data_prep/               # ML/AI data preparation
+    data_prep/               # ML/AI data preparation — index-only chip/tile planning
       base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
       tiler.py               # Tiler (stride-based tile region computation)
       chip_extractor.py      # ChipExtractor (point-centered and whole-image chip regions)
@@ -123,11 +162,12 @@ Domain directories map to the module areas defined in the README:
 
 | Directory | Domain |
 |-----------|--------|
-| `IO/` | Format readers and writers |
+| `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
+| `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
-| `image_processing/` | Orthorectification, polarimetric decomposition, detection, versioning, pipeline, transforms |
+| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, pipeline, transforms |
 | `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms in 10 subdirectories matching ImageJ menu hierarchy |
-| `data_prep/` | Chip/tile index computation and normalization for ML/AI pipelines |
+| `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |
