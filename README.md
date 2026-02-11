@@ -26,7 +26,6 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 | Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
 | Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
 | Transform pixel to lat/lon | `grdl.geolocation` (`GCPGeolocation`, etc.) | Manual interpolation of GCPs |
-| Apply spatial filters or enhance contrast | `grdl.imagej` (`CLAHE`, `RankFilters`, ...) | Re-implementing median filters from scratch |
 | Decompose polarimetric SAR | `grdl.image_processing` (`PauliDecomposition`) | Manual `(shh + svv) / sqrt(2)` arithmetic |
 | Align two images | `grdl.coregistration` (`AffineCoRegistration`, ...) | Custom OpenCV `findHomography` wrappers |
 
@@ -67,7 +66,6 @@ with SICDReader('image.nitf') as reader:
 | | EO: scaffold (Landsat, Sentinel-2, WorldView planned) | |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
 | **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning | Implemented |
-| **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
 | **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
@@ -130,31 +128,6 @@ GRDL/
 │   │   │   └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
 │   │   └── sar/                     #   SAR-specific transforms (metadata-dependent)
 │   │       └── sublook.py           #   SublookDecomposition (sub-aperture splitting)
-│   ├── imagej/                      # ImageJ/Fiji algorithm ports (organized by ImageJ menu)
-│   │   ├── __init__.py              #   Barrel re-exports all 12 components
-│   │   ├── _taxonomy.py             #   Category constants shared with GRDK
-│   │   ├── filters/                 #   Process > Filters
-│   │   │   ├── rank_filters.py      #     RankFilters (median, min, max, mean, variance, despeckle)
-│   │   │   └── unsharp_mask.py      #     UnsharpMask (Gaussian-based sharpening)
-│   │   ├── background/              #   Process > Subtract Background
-│   │   │   └── rolling_ball.py      #     RollingBallBackground (Sternberg background subtraction)
-│   │   ├── binary/                  #   Process > Binary
-│   │   │   └── morphology.py        #     MorphologicalFilter (erode, dilate, open, close, tophat)
-│   │   ├── enhance/                 #   Process > Enhance Contrast
-│   │   │   ├── clahe.py             #     CLAHE (vectorized CLAHE + reference implementation)
-│   │   │   └── gamma.py             #     GammaCorrection (power-law intensity transform)
-│   │   ├── edges/                   #   Process > Find Edges
-│   │   │   └── edge_detection.py    #     EdgeDetector (Sobel, Prewitt, Roberts, LoG, Scharr)
-│   │   ├── fft/                     #   Process > FFT
-│   │   │   └── fft_bandpass.py      #     FFTBandpassFilter (frequency-domain bandpass + stripe suppression)
-│   │   ├── find_maxima/             #   Process > Find Maxima
-│   │   │   └── find_maxima.py       #     FindMaxima (prominence-based peak/target detection)
-│   │   ├── threshold/               #   Image > Adjust > Threshold
-│   │   │   └── auto_local_threshold.py  #  AutoLocalThreshold (8 local thresholding methods)
-│   │   ├── segmentation/            #   Plugins > Segmentation
-│   │   │   └── statistical_region_merging.py  #  StatisticalRegionMerging (vectorized SRM)
-│   │   └── stacks/                  #   Image > Stacks
-│   │       └── z_projection.py      #     ZProjection (stack projection: max, mean, median, etc.)
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
 │   │   ├── __init__.py              #   Module exports (ChipBase, ChipRegion, ChipExtractor, Tiler, Normalizer)
 │   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
@@ -197,7 +170,6 @@ GRDL/
 │   ├── test_image_processing_versioning.py      #   Processor versioning tests
 │   ├── test_image_processing_tunable.py         #   Tunable parameter tests
 │   ├── test_image_processing_sar_sublook.py     #   SAR sublook decomposition tests
-│   ├── test_imagej.py                           #   ImageJ/Fiji ports (12 components)
 │   ├── test_coregistration.py                   #   Coregistration tests
 │   └── test_benchmarks.py                       #   Performance benchmarks (pytest-benchmark)
 ├── example_images/                  # Small sample data for tests and demos
@@ -392,64 +364,6 @@ class MyDetector(ImageDetector):
         ...
 ```
 
-### ImageJ/Fiji Algorithm Ports
-
-12 classic image processing algorithms ported from ImageJ/Fiji, selected for relevance to remotely sensed imagery. All inherit from `ImageTransform`, carry `@processor_tags` metadata for capability discovery, and declare `__gpu_compatible__` for downstream GPU dispatch.
-
-```python
-from grdl.imagej import (
-    RollingBallBackground, CLAHE, UnsharpMask, FFTBandpassFilter,
-    RankFilters, MorphologicalFilter, EdgeDetector, GammaCorrection,
-    FindMaxima, AutoLocalThreshold, StatisticalRegionMerging, ZProjection,
-)
-
-# Background subtraction for SAR amplitude
-rb = RollingBallBackground(radius=50)
-corrected = rb.apply(sar_amplitude)
-
-# Local contrast enhancement for thermal imagery
-clahe = CLAHE(block_size=127, max_slope=3.0)
-enhanced = clahe.apply(thermal_band)
-
-# Edge detection in PAN imagery
-edges = EdgeDetector(method='sobel').apply(pan_image)
-
-# Frequency-domain stripe removal from pushbroom sensor artifacts
-bp = FFTBandpassFilter(suppress_stripes='horizontal', stripe_tolerance=5.0)
-cleaned = bp.apply(msi_band)
-
-# Peak/target detection in SAR amplitude
-fm = FindMaxima(prominence=20.0)
-targets = fm.find_peaks(sar_amplitude)  # (N, 2) array of [row, col]
-
-# Region segmentation for land cover analysis
-srm = StatisticalRegionMerging(Q=50)
-labels = srm.apply(msi_band)
-
-# Stack projection for multi-temporal composites
-zp = ZProjection(method='median')
-composite = zp.apply(image_stack)  # (slices, rows, cols) -> (rows, cols)
-```
-
-### Pipeline Composition
-
-Chain multiple transforms into a single callable pipeline:
-
-```python
-from grdl.imagej import GammaCorrection, UnsharpMask, EdgeDetector
-from grdl.image_processing import Pipeline
-
-pipe = Pipeline([
-    GammaCorrection(gamma=0.5),
-    UnsharpMask(sigma=2.0, weight=0.6),
-    EdgeDetector(method='sobel'),
-])
-result = pipe.apply(image)
-
-# With progress reporting
-result = pipe.apply(image, progress_callback=lambda f: print(f"{f:.0%}"))
-```
-
 ### Data Preparation
 
 Chip/tile index computation and normalization for ML/AI pipelines. `ChipExtractor` and `Tiler` compute index bounds only -- they never touch pixel data. Pair them with an IO reader for the actual read:
@@ -497,11 +411,10 @@ Processors declare their capabilities for downstream discovery and dispatch:
 from grdl.image_processing import processor_tags
 
 # Query processor capabilities
-print(CLAHE.__processor_tags__)
-# {'modalities': ('SAR', 'PAN', 'EO', 'MSI', 'HSI', 'thermal'), 'category': 'enhance', ...}
+print(PauliDecomposition.__processor_tags__)
+# {'modalities': ('SAR',), 'category': 'decomposition', ...}
 
-print(CLAHE.__gpu_compatible__)   # True  (pure numpy, CuPy-friendly)
-print(RollingBallBackground.__gpu_compatible__)  # False (scipy dependency)
+print(PauliDecomposition.__gpu_compatible__)
 ```
 
 ### Custom Exceptions
@@ -542,7 +455,7 @@ pip install -e ".[dev]"         # Development tools (pytest, ruff, mypy, etc.)
 Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extras by module:
 
 - `numpy` -- Used across all modules (core)
-- `scipy` -- Geolocation interpolation, ImageJ port filters (core)
+- `scipy` -- Geolocation interpolation (core)
 - `sarkit` -- SICD / CPHD / CRSD / SIDD format support (primary SAR backend, `[sar]` extra)
 - `sarpy` -- SICD / CPHD fallback backend (`[sar]` extra)
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)

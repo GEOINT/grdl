@@ -52,8 +52,7 @@ class ProcessorCategory(Enum):
     """Processing categories for processor tagging.
 
     Each value corresponds to a functional grouping of image processing
-    operations (and, for ImageJ ports, to the subdirectory under
-    ``grdl/imagej/``).
+    operations.
     """
 
     FILTERS = "filters"

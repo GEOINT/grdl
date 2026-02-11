@@ -63,7 +63,7 @@ These all match between docs and implementation:
 - `OutputGrid.from_geolocation()` with `pixel_size_lat`/`pixel_size_lon`
 - `PauliDecomposition.to_rgb()` with `representation` param
 - `DetectionSet.to_geojson()` and `filter_by_confidence()`
-- All 12 ImageJ ports (implemented and exported)
+- Image processing pipeline and transforms
 - All 3 co-registration strategies (Affine, Projective, FeatureMatch)
 - BIOMASS L1 reader + catalog + OAuth2
 - SICD, CPHD, GRD readers

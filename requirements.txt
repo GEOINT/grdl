@@ -2,11 +2,9 @@
 # Required for basic functionality
 
 # Core numerical computing
-# Used by: virtually every module (IO, geolocation, image_processing, coregistration, data_prep, imagej)
+# Used by: virtually every module (IO, geolocation, image_processing, coregistration, data_prep)
 numpy>=1.20.0
 
 # Scientific computing (interpolation, ndimage filters)
-# Used by: coregistration/utils.py, geolocation/sar/gcp.py, image_processing/ortho/ortho.py,
-#          imagej/background, imagej/binary, imagej/edges, imagej/filters,
-#          imagej/find_maxima, imagej/threshold
+# Used by: coregistration/utils.py, geolocation/sar/gcp.py, image_processing/ortho/ortho.py
 scipy>=1.7.0
