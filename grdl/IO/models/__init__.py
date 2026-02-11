@@ -138,6 +138,9 @@ from grdl.IO.models.viirs import VIIRSMetadata
 # ASTER
 from grdl.IO.models.aster import ASTERMetadata
 
+# Sentinel-2
+from grdl.IO.models.sentinel2 import Sentinel2Metadata
+
 __all__ = [
     # Base
     'ImageMetadata',
@@ -238,4 +241,6 @@ __all__ = [
     'VIIRSMetadata',
     # ASTER
     'ASTERMetadata',
+    # Sentinel-2
+    'Sentinel2Metadata',
 ]
