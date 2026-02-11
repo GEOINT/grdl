@@ -87,6 +87,115 @@ class MedianFilter(ImageFilter):
         ...
 ```
 
+### Processor Metadata (Highly Recommended)
+
+Every concrete `ImageProcessor` subclass (transforms, detectors, decompositions) should declare metadata via decorators and `Annotated` type hints. This metadata is what makes processors discoverable in grdl-runtime's catalog and configurable in grdk's UI. **Always add this metadata when creating new processors.**
+
+#### 1. `@processor_version` — Algorithm version stamp
+
+```python
+from grdl.image_processing.versioning import processor_version
+
+@processor_version('1.0.0')
+class MyFilter(ImageTransform):
+    ...
+```
+
+- Sets `__processor_version__` on the class.
+- A runtime warning fires at first instantiation if this decorator is missing.
+- Use semantic versioning. Bump when the algorithm or output format changes.
+
+#### 2. `@processor_tags` — Capability discovery metadata
+
+```python
+from grdl.image_processing.versioning import processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
+
+@processor_tags(
+    modalities=[IM.SAR, IM.PAN],
+    category=PC.FILTERS,
+    description='Adaptive edge-preserving smoothing',
+)
+class MyFilter(ImageTransform):
+    ...
+```
+
+- Sets `__processor_tags__` dict on the class.
+- `modalities`: which imagery types the processor supports (enum from `grdl.vocabulary.ImageModality`).
+- `category`: functional grouping (enum from `grdl.vocabulary.ProcessorCategory`).
+- `description`: short human-readable purpose string.
+- Also accepts `detection_types` and `segmentation_types` for detector/segmentation processors.
+- All enum values are validated eagerly at decorator time (fail-fast on typos).
+- grdl-runtime uses these tags for catalog filtering; grdk uses them for widget discovery.
+
+#### 3. `Annotated` Tunable Parameters — Declarative constraints
+
+Declare tunable parameters as class-body annotations with constraint markers from `grdl.image_processing.params`:
+
+```python
+from typing import Annotated
+from grdl.image_processing.params import Range, Options, Desc
+
+@processor_version('1.0.0')
+@processor_tags(modalities=[IM.PAN], category=PC.FILTERS)
+class MyFilter(ImageTransform):
+    sigma: Annotated[float, Range(min=0.1, max=100.0),
+                     Desc('Gaussian sigma')] = 2.0
+    method: Annotated[str, Options('bilateral', 'guided'),
+                      Desc('Filter algorithm')] = 'bilateral'
+
+    def apply(self, source, **kwargs):
+        params = self._resolve_params(kwargs)
+        # Use params['sigma'], params['method']
+        ...
+```
+
+**Constraint markers:**
+
+| Marker | Purpose | Example |
+|--------|---------|---------|
+| `Range(min=, max=)` | Inclusive numeric bounds | `Range(min=0.0, max=1.0)` |
+| `Options(...)` | Discrete allowed values | `Options('nearest', 'bilinear')` |
+| `Desc('...')` | Human-readable label for GUIs | `Desc('Kernel radius in pixels')` |
+
+**How the machinery works:**
+
+- `ImageProcessor.__init_subclass__` calls `collect_param_specs(cls)` → populates `cls.__param_specs__`.
+- If no custom `__init__` is defined, one is auto-generated with keyword-only args, defaults, and validation.
+- `_resolve_params(kwargs)` merges instance defaults with runtime overrides and validates all values.
+- `Range` and `Options` are mutually exclusive on the same parameter.
+- grdk reads `__param_specs__` to build dynamic slider/dropdown/checkbox controls.
+
+**When to use a custom `__init__`:** If the processor needs non-tunable constructor arguments (e.g., metadata objects, geolocation references), define a custom `__init__`. The `__param_specs__` tuple is still built for introspection, but the auto-generated init is skipped.
+
+#### Complete Example
+
+```python
+from typing import Annotated, Any
+import numpy as np
+from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.image_processing.params import Range, Options, Desc
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
+
+@processor_version('1.0.0')
+@processor_tags(
+    modalities=[IM.PAN, IM.SAR, IM.MSI],
+    category=PC.FILTERS,
+    description='Configurable spatial median filter',
+)
+class MedianFilter(ImageTransform):
+    radius: Annotated[int, Range(min=1, max=50),
+                      Desc('Filter kernel radius')] = 2
+    boundary: Annotated[str, Options('reflect', 'constant', 'wrap'),
+                        Desc('Boundary handling mode')] = 'reflect'
+
+    def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
+        params = self._resolve_params(kwargs)
+        # params['radius'] and params['boundary'] are validated
+        ...
+```
+
 ### Directory Structure
 
 ```
@@ -151,7 +260,7 @@ Domain directories map to the module areas defined in the README:
 | `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
 | `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
-| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, pipeline, transforms |
+| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, tunable parameters, pipeline, transforms |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
@@ -448,7 +557,13 @@ pytest tests/test_benchmarks.py --benchmark-only  # Benchmarks only
 3. Create the concrete module file with the standard file header (encoding, docstring with title, dependencies, author, license, created/modified dates).
 4. Place all imports at the top of the file, below the header. Fail fast if dependencies are missing.
 5. Inherit from the domain's ABC. Implement all abstract methods.
-6. Write full docstrings (NumPy style) and type hints on all public members.
-7. Add exports to `__init__.py`.
-8. Write tests in `tests/`.
-9. Verify the module works in isolation: `from grdl.<domain>.<module> import <Thing>`.
+6. **For ImageProcessor subclasses** (transforms, detectors, decompositions):
+   - Add `@processor_version('x.y.z')` decorator.
+   - Add `@processor_tags(modalities=[...], category=..., description='...')` decorator.
+   - Declare tunable parameters as `Annotated` class-body fields with `Range`, `Options`, and `Desc` markers.
+   - Use `self._resolve_params(kwargs)` in `apply()`/`detect()` to merge and validate parameters.
+   - See the "Processor Metadata" section above for full details and examples.
+7. Write full docstrings (NumPy style) and type hints on all public members.
+8. Add exports to `__init__.py`.
+9. Write tests in `tests/`.
+10. Verify the module works in isolation: `from grdl.<domain>.<module> import <Thing>`.
