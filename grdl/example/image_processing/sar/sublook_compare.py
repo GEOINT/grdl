@@ -306,7 +306,8 @@ def sublook_compare(
         meta = reader.metadata
         rows, cols = reader.get_shape()
         print(f"  Image size: {rows} x {cols}")
-        print(f'collection time: {meta.timeline.CollectStart} to {meta.timeline.CollectEnd}')
+        print(f'collection time: {meta.timeline.collect_start}, '
+              f'duration: {meta.timeline.collect_duration}s')
         # Plan center chip (index-only)
         extractor = ChipExtractor(nrows=rows, ncols=cols)
         region = extractor.chip_at_point(
