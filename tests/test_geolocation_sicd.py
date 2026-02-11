@@ -386,8 +386,30 @@ class TestFromReader:
         assert geo.backend == 'sarpy'
         assert geo.shape == (2048, 4096)
 
-    def test_from_sarkit_reader(self, metadata):
-        """Test from_reader with sarkit backend."""
+    @patch(
+        'sarpy.io.complex.converter.open_complex',
+    )
+    def test_from_sarkit_reader_with_sarpy_available(self, mock_open, metadata):
+        """Test from_reader with sarkit reader promotes to sarpy for projection."""
+        sarpy_meta = MagicMock(name='SICDType')
+        mock_sarpy_reader = MagicMock()
+        mock_sarpy_reader.sicd_meta = sarpy_meta
+        mock_open.return_value = mock_sarpy_reader
+
+        mock_reader = MagicMock()
+        mock_reader.metadata = metadata
+        mock_reader.backend = 'sarkit'
+        mock_reader.filepath = '/fake/path.nitf'
+        mock_reader._xmltree = MagicMock(name='XMLTree')
+
+        geo = SICDGeolocation.from_reader(mock_reader)
+        assert geo.backend == 'sarpy'
+        assert geo.shape == (2048, 4096)
+        mock_open.assert_called_once_with('/fake/path.nitf')
+
+    @patch('grdl.geolocation.sar._backend._HAS_SARPY', False)
+    def test_from_sarkit_reader_sarpy_unavailable(self, metadata):
+        """Test from_reader with sarkit reader when sarpy is not installed."""
         xmltree = MagicMock(name='XMLTree')
         mock_reader = MagicMock()
         mock_reader.metadata = metadata

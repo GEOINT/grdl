@@ -29,7 +29,8 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-02-11  Reversed projection backend preference: sarpy first (implements
+            point_projection), sarkit fallback.
 """
 
 _HAS_SARKIT = False
@@ -51,8 +52,10 @@ except ImportError:
 def require_projection_backend(format_name: str) -> str:
     """Return the best available SAR projection backend name.
 
-    Prefers sarkit when both are available. Falls back to sarpy if sarkit
-    is not installed.
+    Prefers sarpy when both are available because sarpy provides the
+    ``point_projection`` module with full SICD Volume 3 projection.
+    Sarkit is returned as a fallback when sarpy is not installed, though
+    sarkit projection support is not yet implemented for all formats.
 
     Parameters
     ----------
@@ -63,19 +66,19 @@ def require_projection_backend(format_name: str) -> str:
     Returns
     -------
     str
-        ``'sarkit'`` or ``'sarpy'``.
+        ``'sarpy'`` or ``'sarkit'``.
 
     Raises
     ------
     ImportError
         If neither sarkit nor sarpy is installed.
     """
-    if _HAS_SARKIT:
-        return 'sarkit'
     if _HAS_SARPY:
         return 'sarpy'
+    if _HAS_SARKIT:
+        return 'sarkit'
     raise ImportError(
-        f"Geolocation for {format_name} imagery requires sarkit or sarpy "
-        f"(sarpy.geometry.point_projection). "
-        f"Install with: pip install sarkit"
+        f"Geolocation for {format_name} imagery requires sarpy "
+        f"(sarpy.geometry.point_projection) or sarkit. "
+        f"Install with: pip install sarpy"
     )

@@ -141,3 +141,6 @@ checkpoints/
 
 # Logs
 *.log
+
+# Local workflow notes
+.git-workflow

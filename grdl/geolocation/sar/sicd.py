@@ -28,7 +28,8 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-02-11  Fixed from_reader() to prefer sarpy for projection even when
+            reader used sarkit backend.
 """
 
 # Standard library
@@ -415,7 +416,12 @@ class SICDGeolocation(Geolocation):
         """Create SICDGeolocation from a SICDReader instance.
 
         Extracts the raw backend metadata from the reader and constructs
-        the geolocation object with the appropriate backend.
+        the geolocation object with the best available projection backend.
+
+        When the reader used sarkit for I/O but sarpy is available, this
+        method opens the file with sarpy to obtain the ``SICDType`` object
+        needed for projection (sarpy provides the only working SICD
+        Volume 3 projection implementation).
 
         Parameters
         ----------
@@ -441,10 +447,22 @@ class SICDGeolocation(Geolocation):
         ...     geo = SICDGeolocation.from_reader(reader)
         ...     lat, lon, h = geo.image_to_latlon(500, 1000)
         """
-        if reader.backend == 'sarpy':
+        # Determine projection backend (prefers sarpy for projection)
+        proj_backend = require_projection_backend('SICD')
+
+        if proj_backend == 'sarpy' and reader.backend == 'sarpy':
+            # Reader already used sarpy — grab the SICDType directly
             raw_meta = reader._sarpy_meta
+        elif proj_backend == 'sarpy' and reader.backend == 'sarkit':
+            # Reader used sarkit for I/O, but sarpy is available for
+            # projection. Open the file with sarpy to get SICDType.
+            from sarpy.io.complex.converter import open_complex
+            sarpy_reader = open_complex(str(reader.filepath))
+            raw_meta = sarpy_reader.sicd_meta
         elif reader.backend == 'sarkit':
             raw_meta = reader._xmltree
+        elif reader.backend == 'sarpy':
+            raw_meta = reader._sarpy_meta
         else:
             raise ValueError(
                 f"Unsupported SICDReader backend: {reader.backend!r}"
@@ -453,5 +471,5 @@ class SICDGeolocation(Geolocation):
         return cls(
             metadata=reader.metadata,
             raw_meta=raw_meta,
-            backend=reader.backend,
+            backend=proj_backend,
         )
