@@ -24,7 +24,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-11
 """
 
 # Standard library
@@ -34,6 +34,9 @@ from typing import Any, Dict, Optional, Tuple
 # Third-party
 import numpy as np
 
+# GRDL internal
+from grdl.coregistration.utils import apply_transform_to_points
+
 
 class RegistrationResult:
     """Result of an image co-registration estimation.
@@ -41,6 +44,14 @@ class RegistrationResult:
     Contains the estimated spatial transform and quality metrics produced by
     a ``CoRegistration.estimate()`` call. The transform maps pixel coordinates
     from the moving image to the fixed image coordinate frame.
+
+    The transform can be applied to:
+
+    - **Raster data**: via ``CoRegistration.apply()`` (warps image pixels).
+    - **Vector data**: via ``transform_points()`` on this object, or the
+      ``transform_geometry`` / ``transform_detection_set`` bridge functions
+      in ``grdl.transforms`` (transforms detection coordinates without
+      raster interpolation).
 
     Parameters
     ----------
@@ -105,6 +116,59 @@ class RegistrationResult:
             True if transform_matrix has shape (3, 3).
         """
         return self.transform_matrix.shape == (3, 3)
+
+    @property
+    def inverse_transform_matrix(self) -> np.ndarray:
+        """Inverse of the transform matrix (fixed -> moving).
+
+        For affine (2, 3) transforms, the matrix is expanded to (3, 3)
+        before inversion. The result is always (3, 3).
+
+        Returns
+        -------
+        np.ndarray
+            Inverse transform matrix, shape (3, 3).
+
+        Raises
+        ------
+        np.linalg.LinAlgError
+            If the transform matrix is singular.
+        """
+        if self.transform_matrix.shape == (2, 3):
+            full = np.eye(3, dtype=np.float64)
+            full[:2, :] = self.transform_matrix
+            return np.linalg.inv(full)
+        return np.linalg.inv(self.transform_matrix)
+
+    def transform_points(
+        self,
+        points: np.ndarray,
+        inverse: bool = False,
+    ) -> np.ndarray:
+        """Transform a set of 2D points using this registration result.
+
+        Convenience wrapper around ``apply_transform_to_points`` that
+        uses the stored transform matrix (or its inverse).
+
+        Parameters
+        ----------
+        points : np.ndarray
+            Points to transform. Shape (N, 2), columns are (row, col).
+        inverse : bool
+            If False (default), apply the forward transform
+            (moving -> fixed). If True, apply the inverse transform
+            (fixed -> moving).
+
+        Returns
+        -------
+        np.ndarray
+            Transformed points. Shape (N, 2), columns are (row, col).
+        """
+        matrix = (
+            self.inverse_transform_matrix if inverse
+            else self.transform_matrix
+        )
+        return apply_transform_to_points(points, matrix)
 
     def __repr__(self) -> str:
         shape = self.transform_matrix.shape
