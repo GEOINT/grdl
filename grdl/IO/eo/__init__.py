@@ -42,6 +42,36 @@ from grdl.IO.base import ImageReader
 from grdl.IO.eo._backend import _HAS_RASTERIO, _HAS_GLYMUR
 
 
+def _is_sentinel2(filepath: Path) -> bool:
+    """Detect if filepath is a Sentinel-2 product.
+
+    Parameters
+    ----------
+    filepath : Path
+        Path to potential Sentinel-2 file.
+
+    Returns
+    -------
+    bool
+        True if likely Sentinel-2, False otherwise.
+    """
+    name = filepath.name.upper()
+
+    # Standalone band: T*_*_B*.jp2
+    if name.startswith('T') and '_B' in name and name.endswith('.JP2'):
+        return True
+
+    # SAFE archive or satellite prefix
+    if 'S2A' in name or 'S2B' in name or 'S2C' in name:
+        return True
+
+    # Within SAFE directory structure
+    if 'GRANULE' in str(filepath).upper() and 'IMG_DATA' in str(filepath).upper():
+        return True
+
+    return False
+
+
 def open_eo(filepath: Union[str, Path]) -> ImageReader:
     """Auto-detect EO format and return appropriate reader.
 
@@ -81,8 +111,19 @@ def open_eo(filepath: Union[str, Path]) -> ImageReader:
                 f"Failed to open EO file {filepath}: {e}"
             ) from e
 
-    # JPEG2000 fallback (Sentinel-2, Pleiades)
+    # JPEG2000 with Sentinel-2 detection
     if filepath.suffix.lower() in ('.jp2', '.j2k'):
+        # Check if it's Sentinel-2
+        if _is_sentinel2(filepath):
+            try:
+                from grdl.IO.eo.sentinel2 import Sentinel2Reader
+                return Sentinel2Reader(filepath)
+            except (ValueError, ImportError) as e:
+                raise ValueError(
+                    f"Failed to open Sentinel-2 file {filepath}: {e}"
+                ) from e
+
+        # Fallback to generic JP2Reader (Pleiades, SPOT, EnMAP)
         try:
             from grdl.IO.jpeg2000 import JP2Reader
             return JP2Reader(filepath)
@@ -98,6 +139,11 @@ def open_eo(filepath: Union[str, Path]) -> ImageReader:
     )
 
 
+# Sentinel-2 reader
+from grdl.IO.eo.sentinel2 import Sentinel2Reader
+
+
 __all__ = [
     'open_eo',
+    'Sentinel2Reader',
 ]
