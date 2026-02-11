@@ -35,22 +35,51 @@ dependencies = [
 [project.optional-dependencies]
 sar = [
     "sarpy>=1.3.0",
+    "sarkit>=1.3.0",
 ]
 eo = [
     "rasterio>=1.2.0",
+    "glymur>=0.9.0",
+]
+hdf5 = [
+    "h5py>=3.0.0",
+]
+multispectral = [
+    "h5py>=3.0.0",
+    "xarray>=2022.0.0",
+    "spectral>=0.23",
+]
+ir = [
+    "rasterio>=1.2.0",
+    "h5py>=3.0.0",
 ]
 biomass = [
     "rasterio>=1.2.0",
     "requests>=2.25.0",
 ]
+geolocation = [
+    "pyproj>=3.4.0",
+]
 coregistration = [
     "opencv-python-headless>=4.5.0",
 ]
+examples = [
+    "matplotlib>=3.5.0",
+    "PySide6>=6.5.0",
+]
 all = [
     "sarpy>=1.3.0",
+    "sarkit>=1.3.0",
     "rasterio>=1.2.0",
+    "glymur>=0.9.0",
+    "h5py>=3.0.0",
+    "xarray>=2022.0.0",
+    "spectral>=0.23",
+    "pyproj>=3.4.0",
     "opencv-python-headless>=4.5.0",
     "requests>=2.25.0",
+    "matplotlib>=3.5.0",
+    "PySide6>=6.5.0",
 ]
 dev = [
     "pytest>=7.0.0",

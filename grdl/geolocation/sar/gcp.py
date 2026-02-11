@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-11
 """
 
 from typing import Dict, List, Tuple, Any
@@ -158,7 +158,7 @@ class GCPGeolocation(Geolocation):
         self._row_interp = LinearNDInterpolator(geo_points, rows, fill_value=np.nan)
         self._col_interp = LinearNDInterpolator(geo_points, cols, fill_value=np.nan)
 
-    def _pixel_to_latlon_array(
+    def _image_to_latlon_array(
         self,
         rows: np.ndarray,
         cols: np.ndarray,
@@ -193,7 +193,7 @@ class GCPGeolocation(Geolocation):
 
         return lats, lons, heights
 
-    def _latlon_to_pixel_array(
+    def _latlon_to_image_array(
         self,
         lats: np.ndarray,
         lons: np.ndarray,
@@ -263,7 +263,7 @@ class GCPGeolocation(Geolocation):
 
             try:
                 # Interpolate using other GCPs
-                interp_lat, interp_lon, _ = temp_geo.pixel_to_latlon(true_row, true_col)
+                interp_lat, interp_lon, _ = temp_geo.image_to_latlon(true_row, true_col)
 
                 # Calculate error in meters
                 error_m = geographic_distance(true_lat, true_lon, interp_lat, interp_lon)

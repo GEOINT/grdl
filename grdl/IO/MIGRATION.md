@@ -269,7 +269,7 @@ Tests use synthetic data or mock backends — no real SAR files in repo.
 ## Verification
 
 ```bash
-source /Users/duanesmalley/opt/anaconda3/etc/profile.d/conda.sh && conda activate starlight
+source /Users/duanesmalley/opt/anaconda3/etc/profile.d/conda.sh && conda activate grdl
 
 # Import checks
 python -c "from grdl.IO import SICDReader, CPHDReader, CRSDReader, SIDDReader; print('SAR imports OK')"

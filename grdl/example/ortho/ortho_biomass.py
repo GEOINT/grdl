@@ -145,7 +145,7 @@ def _compute_resolution(reader: BIOMASSL1Reader, geo: GCPGeolocation):
         return 0.0005, 0.0005
 
     # Use image center latitude for meters-to-degrees conversion
-    center_lat, _, _ = geo.pixel_to_latlon(
+    center_lat, _, _ = geo.image_to_latlon(
         geo.shape[0] // 2, geo.shape[1] // 2
     )
 

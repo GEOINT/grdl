@@ -71,7 +71,7 @@ class AffineGeolocation(Geolocation):
         self.pixel_size_lat = pixel_size_lat
         self.pixel_size_lon = pixel_size_lon
 
-    def _pixel_to_latlon_array(
+    def _image_to_latlon_array(
         self,
         rows: np.ndarray,
         cols: np.ndarray,
@@ -82,7 +82,7 @@ class AffineGeolocation(Geolocation):
         heights = np.full_like(lats, height)
         return lats, lons, heights
 
-    def _latlon_to_pixel_array(
+    def _latlon_to_image_array(
         self,
         lats: np.ndarray,
         lons: np.ndarray,
@@ -166,36 +166,36 @@ class TestOutputGrid:
         assert grid.rows == 100
         assert grid.cols == 200
 
-    def test_pixel_to_latlon_scalar(self):
+    def test_image_to_latlon_scalar(self):
         """Test pixel-to-latlon for scalar inputs."""
         grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
-        lat, lon = grid.pixel_to_latlon(0, 0)
+        lat, lon = grid.image_to_latlon(0, 0)
         assert lat == pytest.approx(-30.0, abs=1e-10)
         assert lon == pytest.approx(115.0, abs=1e-10)
 
-    def test_pixel_to_latlon_corner(self):
+    def test_image_to_latlon_corner(self):
         """Test that last pixel maps to the grid's south-east corner."""
         grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
-        lat, lon = grid.pixel_to_latlon(grid.rows - 1, grid.cols - 1)
+        lat, lon = grid.image_to_latlon(grid.rows - 1, grid.cols - 1)
         # Last row is near min_lat, last col is near max_lon
         assert lat == pytest.approx(-30.99, abs=0.01)
         assert lon == pytest.approx(115.99, abs=0.01)
 
-    def test_pixel_to_latlon_array(self):
+    def test_image_to_latlon_array(self):
         """Test pixel-to-latlon for array inputs."""
         grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         rows = np.array([0, 50, 99])
         cols = np.array([0, 50, 99])
-        lats, lons = grid.pixel_to_latlon(rows, cols)
+        lats, lons = grid.image_to_latlon(rows, cols)
         assert lats.shape == (3,)
         assert lons.shape == (3,)
 
-    def test_latlon_to_pixel_roundtrip(self):
+    def test_latlon_to_image_roundtrip(self):
         """Test that pixel->latlon->pixel round-trips accurately."""
         grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         row_in, col_in = 42.0, 73.0
-        lat, lon = grid.pixel_to_latlon(row_in, col_in)
-        row_out, col_out = grid.latlon_to_pixel(lat, lon)
+        lat, lon = grid.image_to_latlon(row_in, col_in)
+        row_out, col_out = grid.latlon_to_image(lat, lon)
         assert row_out == pytest.approx(row_in, abs=1e-10)
         assert col_out == pytest.approx(col_in, abs=1e-10)
 

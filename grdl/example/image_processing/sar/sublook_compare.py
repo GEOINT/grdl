@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Sublook Comparison - Split a SICD image into 3 sub-aperture looks.
+Sublook Comparison - Split a SICD image into sub-aperture looks.
 
 Loads a SICD file, uses ``ChipExtractor`` from ``data_prep`` to plan a
 center chip, reads the chip via ``SICDReader``, decomposes it into
-3 azimuth sub-apertures with zero overlap, and displays the
-full-resolution chip alongside the three sub-looks for visual
-comparison.
+azimuth sub-apertures, and displays them.
+
+Two display modes:
+  - **Static** (default): 3 non-overlapping sub-looks side-by-side.
+  - **Movie** (``--movie``): Animated sweep through many overlapping
+    sub-apertures, revealing scatterer motion across the aperture.
 
 Demonstrates full GRDL integration:
   - ``grdl.IO.SICDReader`` for metadata + pixel access
@@ -16,6 +19,8 @@ Demonstrates full GRDL integration:
 
 Usage:
   python sublook_compare.py <sicd_file>
+  python sublook_compare.py <sicd_file> --movie
+  python sublook_compare.py <sicd_file> --movie --num-frames 30
   python sublook_compare.py <sicd_file> --chip-size 2048
   python sublook_compare.py <sicd_file> --plow 1 --phigh 99
   python sublook_compare.py --help
@@ -135,6 +140,65 @@ def plot_sublook_comparison(
     plt.show()
 
 
+def animate_sublooks(
+    looks_stretched: np.ndarray,
+    *,
+    title: str = "",
+    cmap: str = "gray",
+    interval_ms: int = 120,
+    look_labels: Optional[List[str]] = None,
+) -> None:
+    """Animate a sweep through sub-aperture looks.
+
+    Parameters
+    ----------
+    looks_stretched : np.ndarray
+        3D stack of display-ready sub-looks, shape ``(N, rows, cols)``,
+        values in [0, 1].
+    title : str
+        Figure super-title.
+    cmap : str
+        Matplotlib colormap.
+    interval_ms : int
+        Delay between frames in milliseconds.
+    look_labels : list of str, optional
+        Per-frame axis titles.  Defaults to "Frame 1 / N" etc.
+    """
+    import matplotlib
+    matplotlib.use("QtAgg")
+    import matplotlib.pyplot as plt  # noqa: E402
+    from matplotlib.animation import FuncAnimation  # noqa: E402
+
+    num_frames = looks_stretched.shape[0]
+    look_labels = look_labels or [
+        f"Sub-aperture {i + 1} / {num_frames}" for i in range(num_frames)
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    im = ax.imshow(
+        looks_stretched[0], cmap=cmap, aspect="auto",
+        interpolation="nearest", vmin=0, vmax=1,
+    )
+    frame_title = ax.set_title(look_labels[0], fontsize=11)
+    ax.set_xlabel("Column (range)")
+    ax.set_ylabel("Row (azimuth)")
+    if title:
+        fig.suptitle(title, fontsize=12, y=0.98)
+
+    def _update(frame: int) -> list:
+        im.set_data(looks_stretched[frame])
+        frame_title.set_text(look_labels[frame])
+        return [im, frame_title]
+
+    _anim = FuncAnimation(  # noqa: F841  prevent GC
+        fig, _update, frames=num_frames,
+        interval=interval_ms, blit=True, repeat=True,
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
 
 
@@ -179,6 +243,24 @@ def parse_args() -> argparse.Namespace:
         default="gray",
         help="Matplotlib colormap (default: gray).",
     )
+    parser.add_argument(
+        "--movie",
+        action="store_true",
+        default=False,
+        help="Animate a sweep through overlapping sub-apertures.",
+    )
+    parser.add_argument(
+        "--num-frames",
+        type=int,
+        default=20,
+        help="Number of sub-aperture frames for movie mode (default: 20).",
+    )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=8,
+        help="Playback speed in frames per second for movie (default: 8).",
+    )
     return parser.parse_args()
 
 
@@ -188,6 +270,9 @@ def sublook_compare(
     plow: float = 2.0,
     phigh: float = 98.0,
     cmap: str = "gray",
+    movie: bool = False,
+    num_frames: int = 20,
+    fps: int = 8,
 ) -> None:
     """Load a SICD, extract center chip, decompose, and plot.
 
@@ -203,6 +288,13 @@ def sublook_compare(
         Upper percentile for contrast stretch.
     cmap : str
         Matplotlib colormap name.
+    movie : bool
+        If True, animate a sweep through overlapping sub-apertures
+        instead of the static 3-panel comparison.
+    num_frames : int
+        Number of sub-aperture frames for movie mode.
+    fps : int
+        Playback speed in frames per second for movie mode.
     """
     print(f"Opening: {filepath}")
 
@@ -214,7 +306,7 @@ def sublook_compare(
         meta = reader.metadata
         rows, cols = reader.get_shape()
         print(f"  Image size: {rows} x {cols}")
-
+        print(f'collection time: {meta.timeline.CollectStart} to {meta.timeline.CollectEnd}')
         # Plan center chip (index-only)
         extractor = ChipExtractor(nrows=rows, ncols=cols)
         region = extractor.chip_at_point(
@@ -233,17 +325,23 @@ def sublook_compare(
         )
         print(f"  Chip shape: {chip.shape}, dtype: {chip.dtype}")
 
-        # Sublook decomposition
-        print("  Decomposing into 3 azimuth sub-apertures (0% overlap)...")
-        sublook = SublookDecomposition(
-            meta, num_looks=3, dimension='azimuth', overlap=0.0,
-        )
+        # Sublook decomposition — static or movie
+        if movie:
+            overlap = 1.0 - (1.0 / num_frames)
+            print(f"  Decomposing into {num_frames} azimuth sub-apertures "
+                  f"({overlap:.0%} overlap) for movie...")
+            sublook = SublookDecomposition(
+                meta, num_looks=num_frames, dimension='azimuth',
+                overlap=overlap,
+            )
+        else:
+            print("  Decomposing into 3 azimuth sub-apertures (0% overlap)...")
+            sublook = SublookDecomposition(
+                meta, num_looks=3, dimension='azimuth', overlap=0.0,
+            )
+
         looks = sublook.decompose(chip)
         print(f"  Sublook stack: {looks.shape}")
-
-    # ── Convert to display ───────────────────────────────────────────
-    chip_stretched = stretch.apply(to_db.apply(chip))
-    looks_stretched = stretch.apply(to_db.apply(looks))
 
     # ── Build title ──────────────────────────────────────────────────
     ci = meta.collection_info
@@ -252,13 +350,25 @@ def sublook_compare(
         title_parts.append(ci.collector_name)
     file_title = "  |  ".join(title_parts)
 
-    # ── Plot ─────────────────────────────────────────────────────────
-    plot_sublook_comparison(
-        chip_stretched, looks_stretched,
-        title=file_title,
-        chip_shape=(chip_h, chip_w),
-        cmap=cmap,
-    )
+    # ── Display ──────────────────────────────────────────────────────
+    if movie:
+        looks_stretched = stretch.apply(to_db.apply(looks))
+        print(f"  Animating {num_frames} frames at {fps} fps …")
+        animate_sublooks(
+            looks_stretched,
+            title=file_title,
+            cmap=cmap,
+            interval_ms=int(1000 / fps),
+        )
+    else:
+        chip_stretched = stretch.apply(to_db.apply(chip))
+        looks_stretched = stretch.apply(to_db.apply(looks))
+        plot_sublook_comparison(
+            chip_stretched, looks_stretched,
+            title=file_title,
+            chip_shape=(chip_h, chip_w),
+            cmap=cmap,
+        )
 
 
 if __name__ == "__main__":
@@ -269,4 +379,7 @@ if __name__ == "__main__":
         plow=args.plow,
         phigh=args.phigh,
         cmap=args.cmap,
+        movie=args.movie,
+        num_frames=args.num_frames,
+        fps=args.fps,
     )

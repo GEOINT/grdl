@@ -12,8 +12,8 @@ Key Classes
 
 Usage
 -----
-Create a geolocation object from an imagery reader. The ``pixel_to_latlon``
-and ``latlon_to_pixel`` methods accept scalar, list, or ndarray inputs and
+Create a geolocation object from an imagery reader. The ``image_to_latlon``
+and ``latlon_to_image`` methods accept scalar, list, or ndarray inputs and
 return matching types (scalar in → scalar out, array in → array out):
 
     >>> from grdl.IO import open_biomass
@@ -27,10 +27,10 @@ return matching types (scalar in → scalar out, array in → array out):
     ...     )
     >>>
     >>>     # Single pixel (returns scalars)
-    >>>     lat, lon, height = geo.pixel_to_latlon(1000, 500)
+    >>>     lat, lon, height = geo.image_to_latlon(1000, 500)
     >>>
     >>>     # Array of pixels (returns arrays, vectorized)
-    >>>     lats, lons, heights = geo.pixel_to_latlon(
+    >>>     lats, lons, heights = geo.image_to_latlon(
     ...         np.array([100, 200, 300]), np.array([400, 500, 600])
     ...     )
 
@@ -62,14 +62,24 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-11
 """
 
 from grdl.geolocation.base import Geolocation, NoGeolocation
+from grdl.geolocation.sar.gcp import GCPGeolocation
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.constant import ConstantElevation
 
 __all__ = [
     'Geolocation',
     'NoGeolocation',
+    'GCPGeolocation',
+    'SICDGeolocation',
+    'AffineGeolocation',
+    'ElevationModel',
+    'ConstantElevation',
 ]
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'

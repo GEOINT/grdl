@@ -130,7 +130,7 @@ class ImageDetector(ImageProcessor):
         Transform pixel coordinates to geographic coordinates in-place.
 
         Collects all pixel coordinates from the detection geometries,
-        batch-transforms them via ``geolocation.pixel_to_latlon()``,
+        batch-transforms them via ``geolocation.image_to_latlon()``,
         and populates each detection's geographic coordinates.
 
         Parameters
@@ -148,7 +148,7 @@ class ImageDetector(ImageProcessor):
 
             if geom.geometry_type == 'Point':
                 row, col = float(geom.pixel_coordinates[0]), float(geom.pixel_coordinates[1])
-                lat, lon, _ = geolocation.pixel_to_latlon(row, col)
+                lat, lon, _ = geolocation.image_to_latlon(row, col)
                 geom.geographic_coordinates = np.array(
                     [lat, lon], dtype=np.float64
                 )
@@ -162,7 +162,7 @@ class ImageDetector(ImageProcessor):
                     geom.pixel_coordinates[1],
                     geom.pixel_coordinates[3],
                 ], dtype=np.float64)
-                lats, lons, _ = geolocation.pixel_to_latlon(rows, cols)
+                lats, lons, _ = geolocation.image_to_latlon(rows, cols)
                 geom.geographic_coordinates = np.array([
                     float(np.min(lats)), float(np.min(lons)),
                     float(np.max(lats)), float(np.max(lons)),
@@ -171,5 +171,5 @@ class ImageDetector(ImageProcessor):
             elif geom.geometry_type == 'Polygon':
                 rows = geom.pixel_coordinates[:, 0]
                 cols = geom.pixel_coordinates[:, 1]
-                lats, lons, _ = geolocation.pixel_to_latlon(rows, cols)
+                lats, lons, _ = geolocation.image_to_latlon(rows, cols)
                 geom.geographic_coordinates = np.column_stack([lats, lons])

@@ -139,7 +139,7 @@ def test_image_center(geo):
     center_row = geo.shape[0] // 2
     center_col = geo.shape[1] // 2
 
-    lat, lon, height = geo.pixel_to_latlon(center_row, center_col)
+    lat, lon, height = geo.image_to_latlon(center_row, center_col)
 
     assert -90 <= lat <= 90
     assert -180 <= lon <= 180
@@ -168,7 +168,7 @@ def test_image_corners(geo):
 
     print(f"\n--- Image Corners (5% inset) ---")
     for name, (r, c) in corners.items():
-        lat, lon, height = geo.pixel_to_latlon(r, c)
+        lat, lon, height = geo.image_to_latlon(r, c)
 
         assert -90 <= lat <= 90, f"{name}: lat {lat} out of range"
         assert -180 <= lon <= 180, f"{name}: lon {lon} out of range"
@@ -190,7 +190,7 @@ def test_grid_sample(geo):
     print(f"\n--- 3x3 Grid Sample (10% inset) ---")
     for r in sample_rows:
         for c in sample_cols:
-            lat, lon, height = geo.pixel_to_latlon(float(r), float(c))
+            lat, lon, height = geo.image_to_latlon(float(r), float(c))
 
             assert -90 <= lat <= 90
             assert -180 <= lon <= 180
@@ -208,8 +208,8 @@ def test_round_trip_center(geo):
     center_row = float(geo.shape[0] // 2)
     center_col = float(geo.shape[1] // 2)
 
-    lat, lon, height = geo.pixel_to_latlon(center_row, center_col)
-    row_back, col_back = geo.latlon_to_pixel(lat, lon)
+    lat, lon, height = geo.image_to_latlon(center_row, center_col)
+    row_back, col_back = geo.latlon_to_image(lat, lon)
 
     row_err = abs(row_back - center_row)
     col_err = abs(col_back - center_col)
@@ -237,8 +237,8 @@ def test_round_trip_grid(geo):
 
     for r in sample_rows:
         for c in sample_cols:
-            lat, lon, _ = geo.pixel_to_latlon(float(r), float(c))
-            r_back, c_back = geo.latlon_to_pixel(lat, lon)
+            lat, lon, _ = geo.image_to_latlon(float(r), float(c))
+            r_back, c_back = geo.latlon_to_image(lat, lon)
 
             row_errors.append(abs(r_back - r))
             col_errors.append(abs(c_back - c))
@@ -258,7 +258,7 @@ def test_round_trip_grid(geo):
 # Batch operations
 # ---------------------------------------------------------------------------
 
-def test_array_pixel_to_latlon(geo):
+def test_array_image_to_latlon(geo):
     """Test array pixel-to-latlon conversion (unified API accepts arrays)."""
     rows, cols = geo.shape
     margin_r = int(rows * 0.1)
@@ -268,7 +268,7 @@ def test_array_pixel_to_latlon(geo):
     sample_cols = np.linspace(margin_c, cols - 1 - margin_c, 10)
 
     # Same method handles both scalars and arrays
-    lats, lons, heights = geo.pixel_to_latlon(sample_rows, sample_cols)
+    lats, lons, heights = geo.image_to_latlon(sample_rows, sample_cols)
 
     assert lats.shape == (10,)
     assert lons.shape == (10,)
@@ -276,7 +276,7 @@ def test_array_pixel_to_latlon(geo):
 
     # Verify against individual scalar calls
     for i in range(len(sample_rows)):
-        lat_single, lon_single, h_single = geo.pixel_to_latlon(
+        lat_single, lon_single, h_single = geo.image_to_latlon(
             float(sample_rows[i]), float(sample_cols[i])
         )
         assert abs(lats[i] - lat_single) < 1e-10
@@ -373,7 +373,7 @@ def test_gcp_vs_interpolated(geo, reader):
     errors_m = []
     print(f"\n--- GCP vs Interpolated ({len(sample)} interior points) ---")
     for lon_true, lat_true, h_true, row, col in sample:
-        lat_interp, lon_interp, _ = geo.pixel_to_latlon(row, col)
+        lat_interp, lon_interp, _ = geo.image_to_latlon(row, col)
 
         from grdl.geolocation.utils import geographic_distance
         err = geographic_distance(lat_true, lon_true, lat_interp, lon_interp)
@@ -434,7 +434,7 @@ def plot_geolocation_markers(save_path=None):
     # --- Compute marker locations ---
     # Center
     center_r, center_c = rows // 2, cols // 2
-    center_lat, center_lon, _ = geo.pixel_to_latlon(center_r, center_c)
+    center_lat, center_lon, _ = geo.image_to_latlon(center_r, center_c)
 
     # Corners (5% inset)
     mr = int(rows * 0.05)
@@ -448,7 +448,7 @@ def plot_geolocation_markers(save_path=None):
     ]
     corner_latlons = []
     for r, c in corner_rc:
-        lat, lon, _ = geo.pixel_to_latlon(r, c)
+        lat, lon, _ = geo.image_to_latlon(r, c)
         corner_latlons.append((lat, lon))
 
     # 3x3 grid (10% inset)
@@ -459,7 +459,7 @@ def plot_geolocation_markers(save_path=None):
     grid_points = []
     for r in grid_rows:
         for c in grid_cols:
-            lat, lon, _ = geo.pixel_to_latlon(float(r), float(c))
+            lat, lon, _ = geo.image_to_latlon(float(r), float(c))
             grid_points.append((r, c, lat, lon))
 
     # GCPs

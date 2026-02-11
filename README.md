@@ -25,7 +25,8 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 | Load imagery from any format | `grdl.IO` (`SICDReader`, `VIIRSReader`, `ASTERReader`, ...) | Raw `rasterio.open()` / `h5py.File()` calls |
 | Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
 | Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
-| Transform pixel to lat/lon | `grdl.geolocation` (`GCPGeolocation`, etc.) | Manual interpolation of GCPs |
+| Transform pixel to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `GCPGeolocation`) | Manual interpolation of GCPs or affine math |
+| Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
 | Decompose polarimetric SAR | `grdl.image_processing` (`PauliDecomposition`) | Manual `(shh + svv) / sqrt(2)` arithmetic |
 | Align two images | `grdl.coregistration` (`AffineCoRegistration`, ...) | Custom OpenCV `findHomography` wrappers |
 
@@ -64,7 +65,10 @@ with SICDReader('image.nitf') as reader:
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
 | | EO: scaffold (Landsat, Sentinel-2, WorldView planned) | |
-| **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
+| **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
+| | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
+| | SAR: `SICDGeolocation` (SICD complex imagery via sarpy/sarkit), `GCPGeolocation` (BIOMASS GCPs) | |
+| | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
 | **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning & metadata | Implemented |
 | **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
@@ -112,8 +116,16 @@ GRDL/
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
 │   │   ├── sar/
-│   │   │   └── gcp.py               #   GCPGeolocation (Delaunay interpolation)
-│   │   └── eo/                      #   EO geolocation (planned)
+│   │   │   ├── gcp.py               #   GCPGeolocation (Delaunay interpolation)
+│   │   │   └── sicd.py              #   SICDGeolocation (SICD imagery via sarpy/sarkit)
+│   │   ├── eo/
+│   │   │   └── affine.py            #   AffineGeolocation (geocoded rasters, affine + pyproj)
+│   │   └── elevation/               #   Terrain elevation models
+│   │       ├── base.py              #   ElevationModel ABC
+│   │       ├── constant.py          #   ConstantElevation (fixed-height fallback)
+│   │       ├── dted.py              #   DTEDElevation (DTED tiles via rasterio)
+│   │       ├── geotiff_dem.py       #   GeoTIFFDEM (GeoTIFF DEM via rasterio)
+│   │       └── geoid.py             #   GeoidCorrection (EGM96 geoid undulation)
 │   ├── image_processing/            # Image transforms module
 │   │   ├── base.py                  #   ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
 │   │   ├── params.py                #   Range, Options, Desc, ParamSpec (Annotated constraint markers)
@@ -199,7 +211,7 @@ with BIOMASSL1Reader('path/to/BIO_S3_SCS__1S_...') as reader:
     geo = GCPGeolocation(
         reader.metadata['gcps'], (rows, cols),
     )
-    lat, lon, _ = geo.pixel_to_latlon(rows // 2, cols // 2)
+    lat, lon, _ = geo.image_to_latlon(rows // 2, cols // 2)
     print(f"Center: ({lat:.6f}, {lon:.6f})")
 ```
 
@@ -224,10 +236,16 @@ catalog.close()
 
 ### Geolocation Transforms
 
+All geolocation classes share the same `Geolocation` ABC and support three input forms: scalar, separate arrays, or `(2, N)` stacked ndarray. The ABC constructor accepts optional `dem_path` and `geoid_path` parameters for DEM integration.
+
 ```python
-from grdl.IO import open_biomass
 from grdl.geolocation.sar.gcp import GCPGeolocation
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.eo.affine import AffineGeolocation
 import numpy as np
+
+# --- GCPGeolocation (BIOMASS SAR via Delaunay interpolation) ---
+from grdl.IO import open_biomass
 
 with open_biomass('path/to/product') as reader:
     geo = GCPGeolocation(
@@ -236,15 +254,51 @@ with open_biomass('path/to/product') as reader:
     )
 
     # Single pixel (returns scalars)
-    lat, lon, height = geo.pixel_to_latlon(500, 1000)
+    lat, lon, height = geo.image_to_latlon(500, 1000)
 
     # Array of pixels (returns arrays, vectorized)
     rows = np.array([100, 200, 300])
     cols = np.array([400, 500, 600])
-    lats, lons, heights = geo.pixel_to_latlon(rows, cols)
+    lats, lons, heights = geo.image_to_latlon(rows, cols)
 
     # Inverse: geographic to pixel (also accepts scalar or array)
-    row, col = geo.latlon_to_pixel(-31.05, 116.19)
+    row, col = geo.latlon_to_image(-31.05, 116.19)
+
+# --- AffineGeolocation (geocoded rasters: GeoTIFF, SAR GRD, etc.) ---
+geo = AffineGeolocation('scene.tif')
+lat, lon, height = geo.image_to_latlon(100, 200)
+
+# --- SICDGeolocation (SICD complex SAR imagery) ---
+from grdl.IO.sar import SICDReader
+
+with SICDReader('image.nitf') as reader:
+    geo = SICDGeolocation(reader.metadata)
+    lat, lon, height = geo.image_to_latlon(500, 1000)
+```
+
+#### Elevation Models
+
+Plug a DEM into any geolocation class for terrain-corrected transforms:
+
+```python
+from grdl.geolocation.elevation import (
+    DTEDElevation, GeoTIFFDEM, ConstantElevation, GeoidCorrection,
+)
+
+# DTED tiles (directory of .dt1/.dt2 files)
+dem = DTEDElevation('/data/dted/')
+
+# GeoTIFF DEM (single file)
+dem = GeoTIFFDEM('/data/srtm_30m.tif')
+
+# Fixed-height fallback (e.g., sea-level for ocean scenes)
+dem = ConstantElevation(height=0.0)
+
+# EGM96 geoid undulation correction
+geoid = GeoidCorrection('/data/egm96.tif')
+
+# Pass DEM path to any Geolocation subclass
+geo = AffineGeolocation('scene.tif', dem_path='/data/srtm_30m.tif')
 ```
 
 ### Pauli Decomposition (Quad-Pol SAR)
