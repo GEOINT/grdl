@@ -46,6 +46,8 @@ from grdl.vocabulary import (
     ProcessorCategory,
     DetectionType,
     SegmentationType,
+    ExecutionPhase,
+    OutputFormat,
 )
 
 # Re-export coregistration classes for convenience
@@ -81,5 +83,7 @@ __all__ = [
     'ProcessorCategory',
     'DetectionType',
     'SegmentationType',
+    'ExecutionPhase',
+    'OutputFormat',
     *_COREG_EXPORTS,
 ]

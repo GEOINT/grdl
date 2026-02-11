@@ -31,8 +31,8 @@ Key Classes
 - PolarimetricDecomposition: ABC for polarimetric decomposition methods
 - PauliDecomposition: Quad-pol Pauli basis decomposition
 - SublookDecomposition: Sub-aperture spectral splitting of complex SAR imagery
-- Detection, DetectionSet, Geometry: Detection output data models
-- OutputField, OutputSchema: Self-declared output format declarations
+- Detection, DetectionSet: Detection output data models
+- FieldDefinition, Fields, DATA_DICTIONARY: Standardized data dictionary
 - Pipeline: Sequential composition of ImageTransform steps
 - processor_version: Version decorator for all processor types
 - processor_tags: Capability metadata decorator (modalities, category)
@@ -112,9 +112,9 @@ from grdl.image_processing.detection import (
     ImageDetector,
     Detection,
     DetectionSet,
-    Geometry,
-    OutputField,
-    OutputSchema,
+    FieldDefinition,
+    Fields,
+    DATA_DICTIONARY,
 )
 from grdl.image_processing.sar import SublookDecomposition
 from grdl.image_processing.intensity import ToDecibels, PercentileStretch
@@ -122,6 +122,7 @@ from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
     processor_version,
     processor_tags,
+    globalprocessor,
     DetectionInputSpec,
 )
 from grdl.image_processing.params import (
@@ -148,15 +149,16 @@ __all__ = [
     'ImageDetector',
     'Detection',
     'DetectionSet',
-    'Geometry',
-    'OutputField',
-    'OutputSchema',
+    'FieldDefinition',
+    'Fields',
+    'DATA_DICTIONARY',
     'SublookDecomposition',
     'ToDecibels',
     'PercentileStretch',
     'Pipeline',
     'processor_version',
     'processor_tags',
+    'globalprocessor',
     'DetectionInputSpec',
     'Range',
     'Options',

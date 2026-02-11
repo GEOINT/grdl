@@ -33,6 +33,7 @@ import importlib.metadata
 # GRDL vocabulary
 from grdl.vocabulary import (
     DetectionType,
+    ExecutionPhase,
     ImageModality,
     ProcessorCategory,
     SegmentationType,
@@ -101,6 +102,7 @@ def processor_tags(
     description: Optional[str] = None,
     detection_types: Optional[Sequence[DetectionType]] = None,
     segmentation_types: Optional[Sequence[SegmentationType]] = None,
+    phases: Optional[Sequence[ExecutionPhase]] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -124,13 +126,18 @@ def processor_tags(
     segmentation_types : Sequence[SegmentationType], optional
         Types of segmentation this processor produces. Applicable to
         segmentation processors.
+    phases : Sequence[ExecutionPhase], optional
+        Pipeline execution phases this processor is compatible with.
+        When not provided, defaults to an empty tuple (no phase
+        restriction -- compatible with any phase).
 
     Raises
     ------
     TypeError
         If any element of *modalities* is not an ``ImageModality``, or
         *category* is not a ``ProcessorCategory``, or any element of
-        *detection_types*/*segmentation_types* is not the correct enum.
+        *detection_types*/*segmentation_types*/*phases* is not the
+        correct enum type.
 
     Examples
     --------
@@ -167,6 +174,12 @@ def processor_tags(
                     f"segmentation_types must be SegmentationType members, "
                     f"got {s!r}"
                 )
+    if phases is not None:
+        for p in phases:
+            if not isinstance(p, ExecutionPhase):
+                raise TypeError(
+                    f"phases must be ExecutionPhase members, got {p!r}"
+                )
 
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
@@ -179,6 +192,7 @@ def processor_tags(
             'segmentation_types': (
                 tuple(segmentation_types) if segmentation_types else ()
             ),
+            'phases': tuple(phases) if phases else (),
         }
         return cls
     return decorator
@@ -230,5 +244,44 @@ class DetectionInputSpec:
             f"required={self.required!r}, "
             f"description={self.description!r})"
         )
+
+
+def globalprocessor(method):
+    """Mark a method as a global-pass callback on an ImageProcessor subclass.
+
+    Applied to **methods** on ``ImageProcessor`` subclasses.  At class
+    definition time, ``ImageProcessor.__init_subclass__`` collects all
+    methods decorated with ``@globalprocessor`` into
+    ``cls.__global_callbacks__`` and sets ``cls.__has_global_pass__``.
+
+    Parameters
+    ----------
+    method : callable
+        The method to mark as a global-pass callback.
+
+    Returns
+    -------
+    callable
+        The same method with ``__is_global_callback__`` set to ``True``.
+
+    Examples
+    --------
+    >>> from grdl.image_processing.versioning import globalprocessor
+    >>> from grdl.image_processing.base import ImageTransform
+    >>>
+    >>> class MyProcessor(ImageTransform):
+    ...     @globalprocessor
+    ...     def compute_stats(self, source):
+    ...         return source.mean()
+    ...     def apply(self, source, **kwargs):
+    ...         return source
+    >>>
+    >>> MyProcessor.__has_global_pass__
+    True
+    >>> MyProcessor.__global_callbacks__
+    ('compute_stats',)
+    """
+    method.__is_global_callback__ = True
+    return method
 
 

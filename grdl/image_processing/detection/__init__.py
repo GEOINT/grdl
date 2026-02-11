@@ -4,16 +4,17 @@ Detection Sub-module - Sparse geo-registered vector detections.
 
 Provides the ``ImageDetector`` ABC for processors that produce sparse
 vector detections (points, bounding boxes, polygons) and the data models
-for representing detection output.
+for representing detection output.  Geometry is represented using
+``shapely.geometry`` objects directly on ``Detection``.
 
 Key Classes
 -----------
 - ImageDetector: ABC for sparse vector detectors
-- Detection: Single geo-registered detection
+- Detection: Single geo-registered detection with shapely geometry
 - DetectionSet: Collection of detections from a detector run
-- Geometry: Spatial location in pixel and geographic space
-- OutputField: Declaration of a single output property
-- OutputSchema: Self-declared output format for a detector
+- FieldDefinition: Definition of a data dictionary field
+- Fields: Accessor class for standard field name constants
+- DATA_DICTIONARY: Registry of standardized field definitions
 
 Author
 ------
@@ -32,23 +33,31 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-11
 """
 
 from grdl.image_processing.detection.base import ImageDetector
 from grdl.image_processing.detection.models import (
     Detection,
     DetectionSet,
-    Geometry,
-    OutputField,
-    OutputSchema,
+)
+from grdl.image_processing.detection.fields import (
+    DATA_DICTIONARY,
+    FieldDefinition,
+    Fields,
+    is_dictionary_field,
+    list_fields,
+    lookup_field,
 )
 
 __all__ = [
     'ImageDetector',
     'Detection',
     'DetectionSet',
-    'Geometry',
-    'OutputField',
-    'OutputSchema',
+    'FieldDefinition',
+    'Fields',
+    'DATA_DICTIONARY',
+    'lookup_field',
+    'is_dictionary_field',
+    'list_fields',
 ]

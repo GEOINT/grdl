@@ -92,3 +92,35 @@ class SegmentationType(Enum):
     INSTANCE = "instance"
     SEMANTIC = "semantic"
     PANOPTIC = "panoptic"
+
+
+class ExecutionPhase(Enum):
+    """Pipeline execution phases for processor and workflow tagging.
+
+    Each value corresponds to a distinct stage in the grdl-runtime
+    execution pipeline.  Processors tagged with one or more phases
+    are restricted to those stages.
+    """
+
+    IO = "io"
+    GLOBAL_PROCESSING = "global_processing"
+    DATA_PREP = "data_prep"
+    TILING = "tiling"
+    TILE_PROCESSING = "tile_processing"
+    EXTRACTION = "extraction"
+    VECTOR_PROCESSING = "vector_processing"
+    FINALIZATION = "finalization"
+
+
+class OutputFormat(Enum):
+    """Supported output file formats for write configuration.
+
+    Used by tap-out nodes and write steps to select the appropriate
+    ``ImageWriter`` implementation.
+    """
+
+    GEOTIFF = "geotiff"
+    NUMPY = "numpy"
+    PNG = "png"
+    HDF5 = "hdf5"
+    NITF = "nitf"

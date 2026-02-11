@@ -46,7 +46,7 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
-from grdl.IO.base import ImageReader
+from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
 
 
@@ -404,3 +404,183 @@ class HDF5Reader(ImageReader):
 
         with h5py.File(str(filepath), "r") as f:
             return _find_datasets(f, min_ndim=min_ndim)
+
+
+class HDF5Writer(ImageWriter):
+    """Write arrays and metadata to HDF5 files.
+
+    Supports named datasets, optional compression (gzip or lzf), and
+    metadata attributes stored alongside the data. Uses h5py as the
+    backend.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Output HDF5 file path.
+    metadata : ImageMetadata, optional
+        Typed writer metadata.  Recognized extras keys:
+
+        - ``'dataset_name'``: Name of the primary dataset
+          (default ``'data'``).
+        - ``'compression'``: Compression filter -- ``'gzip'`` or
+          ``'lzf'`` (default ``None``).
+        - ``'compression_opts'``: Compression level for gzip (1-9).
+        - ``'attributes'``: Dict of HDF5 attributes to write on the
+          dataset.
+
+    Raises
+    ------
+    ImportError
+        If h5py is not installed.
+
+    Examples
+    --------
+    >>> from grdl.IO.hdf5 import HDF5Writer
+    >>> from grdl.IO.models import ImageMetadata
+    >>> import numpy as np
+    >>> data = np.random.rand(64, 64).astype(np.float32)
+    >>> meta = ImageMetadata(format='HDF5', rows=64, cols=64, dtype='float32',
+    ...                      extras={'compression': 'gzip'})
+    >>> with HDF5Writer('output.h5', metadata=meta) as w:
+    ...     w.write(data)
+    """
+
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        metadata: Optional[ImageMetadata] = None,
+    ) -> None:
+        if not _HAS_H5PY:
+            raise ImportError(
+                "h5py is required for HDF5 writing. "
+                "Install with: pip install h5py"
+            )
+        super().__init__(filepath, metadata)
+        self._file = None
+
+    def write(
+        self,
+        data: np.ndarray,
+        geolocation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write array data to an HDF5 file.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Array data to write.
+        geolocation : Dict[str, Any], optional
+            Geolocation information stored as dataset attributes.
+        """
+        dataset_name = self.metadata.get('dataset_name', 'data') if self.metadata else 'data'
+        compression = self.metadata.get('compression') if self.metadata else None
+        compression_opts = self.metadata.get('compression_opts') if self.metadata else None
+        attributes = self.metadata.get('attributes', {}) if self.metadata else {}
+
+        kwargs: Dict[str, Any] = {}
+        if compression:
+            kwargs['compression'] = compression
+        if compression_opts is not None:
+            kwargs['compression_opts'] = compression_opts
+
+        self._file = h5py.File(str(self.filepath), 'w')
+        ds = self._file.create_dataset(dataset_name, data=data, **kwargs)
+
+        for key, val in attributes.items():
+            ds.attrs[key] = val
+
+        if geolocation:
+            for key, val in geolocation.items():
+                ds.attrs[f'geo_{key}'] = str(val)
+
+        self._file.flush()
+
+    def write_dataset(
+        self,
+        name: str,
+        data: np.ndarray,
+        attributes: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write an additional named dataset to the HDF5 file.
+
+        The file must already be open (via a prior ``write()`` call
+        or by entering the context manager).
+
+        Parameters
+        ----------
+        name : str
+            Dataset name within the HDF5 hierarchy.
+        data : np.ndarray
+            Array data to write.
+        attributes : Dict[str, Any], optional
+            Attributes to attach to the dataset.
+        """
+        if self._file is None:
+            self._file = h5py.File(str(self.filepath), 'a')
+
+        compression = self.metadata.get('compression') if self.metadata else None
+        compression_opts = self.metadata.get('compression_opts') if self.metadata else None
+        kwargs: Dict[str, Any] = {}
+        if compression:
+            kwargs['compression'] = compression
+        if compression_opts is not None:
+            kwargs['compression_opts'] = compression_opts
+
+        ds = self._file.create_dataset(name, data=data, **kwargs)
+        if attributes:
+            for key, val in attributes.items():
+                ds.attrs[key] = val
+        self._file.flush()
+
+    def write_chip(
+        self,
+        data: np.ndarray,
+        row_start: int,
+        col_start: int,
+        geolocation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write a spatial subset to an existing HDF5 dataset.
+
+        The file and primary dataset must already exist (via a prior
+        ``write()`` call).
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Chip data to write.
+        row_start : int
+            Starting row index in the dataset.
+        col_start : int
+            Starting column index in the dataset.
+        geolocation : Dict[str, Any], optional
+            Not used for chip writes.
+
+        Raises
+        ------
+        IOError
+            If the HDF5 file is not open.
+        """
+        if self._file is None:
+            raise IOError(
+                "HDF5 file is not open. Call write() first to create "
+                "the file and primary dataset."
+            )
+
+        dataset_name = self.metadata.get('dataset_name', 'data') if self.metadata else 'data'
+        ds = self._file[dataset_name]
+
+        if data.ndim == 2:
+            rows, cols = data.shape
+            ds[row_start:row_start + rows, col_start:col_start + cols] = data
+        elif data.ndim == 3:
+            bands, rows, cols = data.shape
+            ds[
+                :, row_start:row_start + rows, col_start:col_start + cols
+            ] = data
+        self._file.flush()
+
+    def close(self) -> None:
+        """Close the HDF5 file handle."""
+        if self._file is not None:
+            self._file.close()
+            self._file = None

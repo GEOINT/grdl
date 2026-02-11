@@ -205,14 +205,14 @@ class ImageWriter(ABC):
     ----------
     filepath : Path
         Path where the image will be written
-    metadata : Dict[str, Any]
-        Image metadata to be written
+    metadata : Optional[ImageMetadata]
+        Typed image metadata to be written
     """
 
     def __init__(
         self,
         filepath: Union[str, Path],
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[ImageMetadata] = None
     ) -> None:
         """
         Initialize the image writer.
@@ -221,11 +221,11 @@ class ImageWriter(ABC):
         ----------
         filepath : Union[str, Path]
             Path where the image will be written
-        metadata : Optional[Dict[str, Any]], default=None
-            Metadata to include in the output file
+        metadata : Optional[ImageMetadata], default=None
+            Typed metadata to include in the output file
         """
         self.filepath = Path(filepath)
-        self.metadata = metadata or {}
+        self.metadata = metadata
 
     @abstractmethod
     def write(

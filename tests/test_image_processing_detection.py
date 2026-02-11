@@ -2,8 +2,9 @@
 """
 Image Detection Tests.
 
-Tests for the detection data models (Geometry, OutputField, OutputSchema,
-Detection, DetectionSet), the ImageDetector ABC, and geo-registration.
+Tests for the detection data models (Detection, DetectionSet), the
+ImageDetector ABC, geo-registration, the data dictionary (FieldDefinition,
+DATA_DICTIONARY, Fields), and detection input flow.
 All tests use synthetic data.
 
 Author
@@ -23,22 +24,29 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-11
 """
 
+import warnings
 from typing import Any, Optional, Tuple
 
 import numpy as np
 import pytest
+from shapely.geometry import Point, Polygon, box
 
 from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.detection.base import ImageDetector
 from grdl.image_processing.detection.models import (
     Detection,
     DetectionSet,
-    Geometry,
-    OutputField,
-    OutputSchema,
+)
+from grdl.image_processing.detection.fields import (
+    DATA_DICTIONARY,
+    FieldDefinition,
+    Fields,
+    is_dictionary_field,
+    list_fields,
+    lookup_field,
 )
 from grdl.image_processing.versioning import (
     DetectionInputSpec,
@@ -47,173 +55,135 @@ from grdl.image_processing.versioning import (
 
 
 # ---------------------------------------------------------------------------
-# Geometry
+# FieldDefinition
 # ---------------------------------------------------------------------------
 
-class TestGeometry:
-    """Test Geometry creation and GeoJSON export."""
-
-    def test_point_creation(self):
-        g = Geometry.point(10.0, 20.0)
-        assert g.geometry_type == 'Point'
-        np.testing.assert_array_equal(g.pixel_coordinates, [10.0, 20.0])
-        assert g.geographic_coordinates is None
-
-    def test_point_with_geo(self):
-        g = Geometry.point(10.0, 20.0, lat=45.0, lon=-73.0)
-        np.testing.assert_array_equal(
-            g.geographic_coordinates, [45.0, -73.0]
-        )
-
-    def test_bounding_box_creation(self):
-        g = Geometry.bounding_box(5.0, 10.0, 50.0, 100.0)
-        assert g.geometry_type == 'BoundingBox'
-        np.testing.assert_array_equal(
-            g.pixel_coordinates, [5.0, 10.0, 50.0, 100.0]
-        )
-
-    def test_polygon_creation(self):
-        verts = np.array([[0, 0], [0, 10], [10, 10], [10, 0]], dtype=np.float64)
-        g = Geometry.polygon(verts)
-        assert g.geometry_type == 'Polygon'
-        assert g.pixel_coordinates.shape == (4, 2)
-
-    def test_polygon_invalid_shape_raises(self):
-        with pytest.raises(ValueError, match="shape"):
-            Geometry.polygon(np.array([1, 2, 3]))
-
-    def test_invalid_geometry_type_raises(self):
-        with pytest.raises(ValueError, match="geometry_type"):
-            Geometry('Circle', np.array([0, 0]))
-
-    def test_non_array_raises(self):
-        with pytest.raises(TypeError, match="ndarray"):
-            Geometry('Point', [10, 20])
-
-    def test_to_geojson_point_pixel(self):
-        g = Geometry.point(10.0, 20.0)
-        gj = g.to_geojson()
-        assert gj['type'] == 'Point'
-        # GeoJSON: [col/lon, row/lat]
-        assert gj['coordinates'] == [20.0, 10.0]
-
-    def test_to_geojson_point_geo(self):
-        g = Geometry.point(10.0, 20.0, lat=45.0, lon=-73.0)
-        gj = g.to_geojson()
-        assert gj['type'] == 'Point'
-        # GeoJSON: [lon, lat]
-        assert gj['coordinates'] == [-73.0, 45.0]
-
-    def test_to_geojson_bbox(self):
-        g = Geometry.bounding_box(0.0, 0.0, 10.0, 20.0)
-        gj = g.to_geojson()
-        assert gj['type'] == 'Polygon'
-        assert len(gj['coordinates']) == 1  # one ring
-        ring = gj['coordinates'][0]
-        assert len(ring) == 5  # closed ring
-        assert ring[0] == ring[-1]  # closure
-
-    def test_to_geojson_polygon(self):
-        verts = np.array([[0, 0], [0, 10], [10, 10]], dtype=np.float64)
-        g = Geometry.polygon(verts)
-        gj = g.to_geojson()
-        assert gj['type'] == 'Polygon'
-        ring = gj['coordinates'][0]
-        # 3 vertices + closure = 4 points
-        assert len(ring) == 4
-        assert ring[0] == ring[-1]
-
-    def test_repr(self):
-        g = Geometry.point(1.0, 2.0)
-        r = repr(g)
-        assert 'Point' in r
-
-
-# ---------------------------------------------------------------------------
-# OutputField
-# ---------------------------------------------------------------------------
-
-class TestOutputField:
-    """Test OutputField construction."""
+class TestFieldDefinition:
+    """Test FieldDefinition construction."""
 
     def test_construction(self):
-        f = OutputField('magnitude', 'float', 'Signal magnitude', units='dB')
-        assert f.name == 'magnitude'
+        f = FieldDefinition('sar.sigma0', 'float', 'Sigma naught', 'dB')
+        assert f.name == 'sar.sigma0'
         assert f.dtype == 'float'
-        assert f.description == 'Signal magnitude'
+        assert f.description == 'Sigma naught'
         assert f.units == 'dB'
+        assert f.domain == 'sar'
 
     def test_without_units(self):
-        f = OutputField('label', 'str', 'Class label')
+        f = FieldDefinition('identity.label', 'str', 'Class label')
         assert f.units is None
+        assert f.domain == 'identity'
 
-    def test_invalid_dtype_raises(self):
-        with pytest.raises(ValueError, match="dtype"):
-            OutputField('x', 'complex', 'Bad type')
+    def test_domain_extraction(self):
+        f = FieldDefinition('physical.rcs_db', 'float', 'RCS in dB', 'dBsm')
+        assert f.domain == 'physical'
 
     def test_repr(self):
-        f = OutputField('x', 'float', 'desc', units='m')
+        f = FieldDefinition('sar.sigma0', 'float', 'Sigma naught', 'dB')
         r = repr(f)
-        assert 'x' in r
-        assert 'm' in r
+        assert 'sar.sigma0' in r
+        assert 'dB' in r
 
 
 # ---------------------------------------------------------------------------
-# OutputSchema
+# Data Dictionary
 # ---------------------------------------------------------------------------
 
-class TestOutputSchema:
-    """Test OutputSchema construction and validation."""
+class TestDataDictionary:
+    """Test DATA_DICTIONARY contents and helpers."""
 
-    @pytest.fixture
-    def phenomenological_schema(self):
-        return OutputSchema(fields=(
-            OutputField('change_magnitude', 'float', 'Change in dB', units='dB'),
-            OutputField('coherence_loss', 'float', 'Coherence loss ratio'),
-        ))
+    def test_dictionary_not_empty(self):
+        assert len(DATA_DICTIONARY) > 0
 
-    @pytest.fixture
-    def classification_schema(self):
-        return OutputSchema(fields=(
-            OutputField('label', 'str', 'Semantic class label'),
-            OutputField('label_confidence', 'float', 'Classification confidence'),
-        ))
+    def test_all_entries_are_field_definitions(self):
+        for name, field in DATA_DICTIONARY.items():
+            assert isinstance(field, FieldDefinition)
+            assert field.name == name
 
-    def test_field_names(self, phenomenological_schema):
-        assert phenomenological_schema.field_names == (
-            'change_magnitude', 'coherence_loss'
-        )
+    def test_domains_present(self):
+        domains = {f.domain for f in DATA_DICTIONARY.values()}
+        expected = {
+            'physical', 'sar', 'spectral', 'volume',
+            'identity', 'trait', 'temporal', 'context',
+        }
+        assert expected == domains
 
-    def test_validate_valid_properties(self, phenomenological_schema):
-        props = {'change_magnitude': 3.5, 'coherence_loss': 0.2}
-        # Should not raise
-        phenomenological_schema.validate_properties(props)
+    def test_lookup_field_existing(self):
+        f = lookup_field('sar.coherence')
+        assert f is not None
+        assert f.name == 'sar.coherence'
+        assert f.dtype == 'float'
 
-    def test_validate_missing_field_raises(self, phenomenological_schema):
-        with pytest.raises(ValueError, match="Missing"):
-            phenomenological_schema.validate_properties(
-                {'change_magnitude': 3.5}
-            )
+    def test_lookup_field_missing(self):
+        assert lookup_field('nonexistent.field') is None
 
-    def test_validate_wrong_type_raises(self, classification_schema):
-        with pytest.raises(ValueError, match="type"):
-            classification_schema.validate_properties(
-                {'label': 123, 'label_confidence': 0.9}
-            )
+    def test_is_dictionary_field(self):
+        assert is_dictionary_field('identity.label') is True
+        assert is_dictionary_field('custom_field') is False
 
-    def test_classification_schema_valid(self, classification_schema):
-        props = {'label': 'building', 'label_confidence': 0.95}
-        # Should not raise
-        classification_schema.validate_properties(props)
+    def test_list_fields_all(self):
+        all_fields = list_fields()
+        assert len(all_fields) == len(DATA_DICTIONARY)
+        # Sorted by name
+        names = [f.name for f in all_fields]
+        assert names == sorted(names)
 
-    def test_int_accepted_as_float(self, phenomenological_schema):
-        """int values are valid for float fields."""
-        props = {'change_magnitude': 3, 'coherence_loss': 0}
-        phenomenological_schema.validate_properties(props)
+    def test_list_fields_by_domain(self):
+        sar_fields = list_fields(domain='sar')
+        assert len(sar_fields) > 0
+        assert all(f.domain == 'sar' for f in sar_fields)
 
-    def test_repr(self, phenomenological_schema):
-        r = repr(phenomenological_schema)
-        assert 'change_magnitude' in r
+    def test_list_fields_empty_domain(self):
+        result = list_fields(domain='nonexistent')
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Fields Accessor
+# ---------------------------------------------------------------------------
+
+class TestFieldsAccessor:
+    """Test Fields constant accessor class."""
+
+    def test_sar_field(self):
+        assert Fields.sar.CHANGE_MAGNITUDE == 'sar.change_magnitude'
+
+    def test_identity_field(self):
+        assert Fields.identity.LABEL == 'identity.label'
+
+    def test_physical_field(self):
+        assert Fields.physical.RCS_DB == 'physical.rcs_db'
+
+    def test_spectral_field(self):
+        assert Fields.spectral.NDVI == 'spectral.ndvi'
+
+    def test_volume_field(self):
+        assert Fields.volume.CANOPY_HEIGHT == 'volume.canopy_height'
+
+    def test_trait_field(self):
+        assert Fields.trait.COLOR == 'trait.color'
+
+    def test_temporal_field(self):
+        assert Fields.temporal.FIRST_SEEN == 'temporal.first_seen'
+
+    def test_context_field(self):
+        assert Fields.context.ELEVATION == 'context.elevation'
+
+    def test_all_accessor_values_are_in_dictionary(self):
+        """Every Fields constant should map to a DATA_DICTIONARY entry."""
+        for domain_name in [
+            'physical', 'sar', 'spectral', 'volume',
+            'identity', 'trait', 'temporal', 'context',
+        ]:
+            domain_obj = getattr(Fields, domain_name)
+            for attr in dir(domain_obj):
+                if attr.startswith('_'):
+                    continue
+                value = getattr(domain_obj, attr)
+                assert is_dictionary_field(value), (
+                    f"Fields.{domain_name}.{attr} = {value!r} "
+                    f"not in DATA_DICTIONARY"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -223,37 +193,72 @@ class TestOutputSchema:
 class TestDetection:
     """Test Detection construction and GeoJSON export."""
 
-    def test_construction(self):
-        g = Geometry.point(10.0, 20.0)
-        d = Detection(g, {'label': 'car'}, confidence=0.9)
-        assert d.geometry is g
-        assert d.properties == {'label': 'car'}
+    def test_construction_point(self):
+        geom = Point(20.0, 10.0)  # x=col=20, y=row=10
+        d = Detection(geom, {'identity.label': 'car'}, confidence=0.9)
+        assert d.pixel_geometry is geom
+        assert d.properties == {'identity.label': 'car'}
         assert d.confidence == 0.9
+        assert d.geo_geometry is None
+
+    def test_construction_with_geo(self):
+        pixel = Point(20.0, 10.0)
+        geo = Point(-73.0, 45.0)  # x=lon, y=lat
+        d = Detection(pixel, {}, geo_geometry=geo)
+        assert d.geo_geometry is geo
 
     def test_confidence_optional(self):
-        g = Geometry.point(5.0, 5.0)
-        d = Detection(g, {'value': 1.0})
+        d = Detection(Point(5.0, 5.0), {'value': 1.0})
         assert d.confidence is None
 
-    def test_to_geojson_feature(self):
-        g = Geometry.point(10.0, 20.0, lat=45.0, lon=-73.0)
-        d = Detection(g, {'label': 'tree'}, confidence=0.8)
+    def test_to_geojson_feature_with_geo(self):
+        pixel = Point(20.0, 10.0)
+        geo = Point(-73.0, 45.0)
+        d = Detection(
+            pixel, {'identity.label': 'tree'}, confidence=0.8,
+            geo_geometry=geo,
+        )
         feature = d.to_geojson_feature()
         assert feature['type'] == 'Feature'
         assert feature['geometry']['type'] == 'Point'
-        assert feature['properties']['label'] == 'tree'
+        # GeoJSON coords from shapely mapping: [lon, lat] = [-73, 45]
+        assert feature['geometry']['coordinates'] == (-73.0, 45.0)
+        assert feature['properties']['identity.label'] == 'tree'
         assert feature['properties']['confidence'] == 0.8
 
+    def test_to_geojson_feature_pixel_fallback(self):
+        d = Detection(Point(20.0, 10.0), {'value': 3.0})
+        feature = d.to_geojson_feature()
+        assert feature['geometry']['type'] == 'Point'
+        # Falls back to pixel geometry: (col=20, row=10)
+        assert feature['geometry']['coordinates'] == (20.0, 10.0)
+        assert 'confidence' not in feature['properties']
+
     def test_to_geojson_feature_no_confidence(self):
-        g = Geometry.point(10.0, 20.0)
-        d = Detection(g, {'value': 3.0})
+        d = Detection(Point(20.0, 10.0), {'value': 3.0})
         feature = d.to_geojson_feature()
         assert 'confidence' not in feature['properties']
         assert feature['properties']['value'] == 3.0
 
+    def test_to_geojson_bbox(self):
+        """Bounding box via shapely.geometry.box()."""
+        geom = box(10.0, 5.0, 100.0, 50.0)  # minx, miny, maxx, maxy
+        d = Detection(geom, {})
+        feature = d.to_geojson_feature()
+        assert feature['geometry']['type'] == 'Polygon'
+
+    def test_to_geojson_polygon(self):
+        verts = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+        geom = Polygon(verts)
+        d = Detection(geom, {})
+        feature = d.to_geojson_feature()
+        assert feature['geometry']['type'] == 'Polygon'
+        coords = feature['geometry']['coordinates']
+        assert len(coords) == 1  # one ring
+        assert len(coords[0]) == 5  # closed ring
+
     def test_repr(self):
-        g = Geometry.point(1.0, 2.0)
-        d = Detection(g, {}, confidence=0.5)
+        d = Detection(Point(1.0, 2.0), {}, confidence=0.5)
         r = repr(d)
         assert 'Point' in r
         assert '0.5' in r
@@ -267,23 +272,20 @@ class TestDetectionSet:
     """Test DetectionSet construction, protocol, and methods."""
 
     @pytest.fixture
-    def sample_schema(self):
-        return OutputSchema(fields=(
-            OutputField('label', 'str', 'Class label'),
-        ))
-
-    @pytest.fixture
-    def sample_set(self, sample_schema):
+    def sample_set(self):
         detections = [
-            Detection(Geometry.point(i, i), {'label': f'obj_{i}'},
-                       confidence=i * 0.25)
+            Detection(
+                Point(float(i), float(i)),
+                {Fields.identity.LABEL: f'obj_{i}'},
+                confidence=i * 0.25,
+            )
             for i in range(4)
         ]
         return DetectionSet(
             detections=detections,
             detector_name='TestDetector',
             detector_version='1.0.0',
-            output_schema=sample_schema,
+            output_fields=(Fields.identity.LABEL,),
         )
 
     def test_len(self, sample_set):
@@ -296,7 +298,7 @@ class TestDetectionSet:
 
     def test_getitem(self, sample_set):
         d = sample_set[2]
-        assert d.properties['label'] == 'obj_2'
+        assert d.properties[Fields.identity.LABEL] == 'obj_2'
 
     def test_to_geojson(self, sample_set):
         gj = sample_set.to_geojson()
@@ -304,35 +306,61 @@ class TestDetectionSet:
         assert len(gj['features']) == 4
         assert gj['properties']['detector_name'] == 'TestDetector'
         assert gj['properties']['detector_version'] == '1.0.0'
+        assert gj['properties']['output_fields'] == (Fields.identity.LABEL,)
 
     def test_filter_by_confidence(self, sample_set):
         filtered = sample_set.filter_by_confidence(0.5)
         assert len(filtered) == 2  # confidence 0.5 and 0.75
         assert filtered.detector_name == 'TestDetector'
 
-    def test_filter_excludes_none_confidence(self, sample_schema):
+    def test_filter_excludes_none_confidence(self):
         detections = [
-            Detection(Geometry.point(0, 0), {'label': 'a'}),  # None confidence
-            Detection(Geometry.point(1, 1), {'label': 'b'}, confidence=0.9),
+            Detection(Point(0, 0), {Fields.identity.LABEL: 'a'}),
+            Detection(
+                Point(1, 1), {Fields.identity.LABEL: 'b'}, confidence=0.9,
+            ),
         ]
-        ds = DetectionSet(detections, 'Det', '1.0', sample_schema)
+        ds = DetectionSet(
+            detections, 'Det', '1.0',
+            output_fields=(Fields.identity.LABEL,),
+        )
         filtered = ds.filter_by_confidence(0.0)
         assert len(filtered) == 1
 
-    def test_empty_set(self, sample_schema):
-        ds = DetectionSet([], 'Empty', '1.0', sample_schema)
+    def test_empty_set(self):
+        ds = DetectionSet([], 'Empty', '1.0')
         assert len(ds) == 0
         gj = ds.to_geojson()
         assert gj['features'] == []
 
-    def test_metadata(self, sample_schema):
+    def test_metadata(self):
         ds = DetectionSet(
-            [], 'Det', '1.0', sample_schema,
+            [], 'Det', '1.0',
             metadata={'processing_time_ms': 42},
         )
         assert ds.metadata['processing_time_ms'] == 42
         gj = ds.to_geojson()
         assert gj['properties']['processing_time_ms'] == 42
+
+    def test_non_dictionary_field_warns(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            DetectionSet(
+                [], 'Det', '1.0',
+                output_fields=('custom_nonstandard_field',),
+            )
+            assert len(w) == 1
+            assert 'custom_nonstandard_field' in str(w[0].message)
+            assert 'data dictionary' in str(w[0].message)
+
+    def test_dictionary_field_no_warning(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            DetectionSet(
+                [], 'Det', '1.0',
+                output_fields=(Fields.sar.CHANGE_MAGNITUDE,),
+            )
+            assert len(w) == 0
 
     def test_repr(self, sample_set):
         r = repr(sample_set)
@@ -352,10 +380,8 @@ class DummyDetector(ImageDetector):
         self.threshold = threshold
 
     @property
-    def output_schema(self) -> OutputSchema:
-        return OutputSchema(fields=(
-            OutputField('intensity', 'float', 'Pixel intensity'),
-        ))
+    def output_fields(self) -> Tuple[str, ...]:
+        return ('intensity',)
 
     def detect(
         self,
@@ -367,19 +393,20 @@ class DummyDetector(ImageDetector):
         rows, cols = np.where(source > self.threshold)
         detections = []
         for r, c in zip(rows, cols):
-            geom = Geometry.point(float(r), float(c))
+            geom = Point(float(c), float(r))  # x=col, y=row
             props = {'intensity': float(source[r, c])}
-            detections.append(Detection(geom, props, confidence=float(source[r, c])))
+            detections.append(
+                Detection(geom, props, confidence=float(source[r, c]))
+            )
 
         ds = DetectionSet(
             detections=detections,
             detector_name=self.__class__.__name__,
-            detector_version=getattr(self.__class__, '__processor_version__', 'unknown'),
-            output_schema=self.output_schema,
+            detector_version=getattr(
+                self.__class__, '__processor_version__', 'unknown'
+            ),
+            output_fields=self.output_fields,
         )
-
-        if geolocation is not None:
-            self._geo_register_detections(ds, geolocation)
 
         return ds
 
@@ -412,18 +439,18 @@ class TestImageDetectorABC:
         result = detector.detect(image)
         assert len(result) == 2  # pixels at (0,1) and (1,1)
 
-    def test_output_schema_property(self):
+    def test_output_fields_property(self):
         detector = DummyDetector()
-        schema = detector.output_schema
-        assert isinstance(schema, OutputSchema)
-        assert 'intensity' in schema.field_names
+        fields = detector.output_fields
+        assert isinstance(fields, tuple)
+        assert 'intensity' in fields
 
     def test_detect_without_geolocation(self):
         detector = DummyDetector(threshold=0.0)
         image = np.array([[1.0]], dtype=np.float64)
         result = detector.detect(image)
         assert len(result) == 1
-        assert result[0].geometry.geographic_coordinates is None
+        assert result[0].geo_geometry is None
 
     def test_detector_version(self):
         assert DummyDetector.__processor_version__ == '1.0.0'
@@ -436,63 +463,6 @@ class TestImageDetectorABC:
         assert result.detector_version == '1.0.0'
 
 
-# ---------------------------------------------------------------------------
-# Geo-registration
-# ---------------------------------------------------------------------------
-
-class _MockGeolocation:
-    """Minimal mock for Geolocation that does a simple affine transform."""
-
-    def image_to_latlon(self, row, col, height=0.0):
-        """Simple transform: lat = row * 0.01, lon = col * 0.01."""
-        if isinstance(row, np.ndarray):
-            lats = row * 0.01
-            lons = col * 0.01
-            heights = np.full_like(row, height)
-            return lats, lons, heights
-        return float(row) * 0.01, float(col) * 0.01, height
-
-
-class TestGeoRegistration:
-    """Test _geo_register_detections."""
-
-    def test_point_geo_registration(self):
-        detector = DummyDetector(threshold=0.0)
-        image = np.array([[1.0]], dtype=np.float64)
-        geo = _MockGeolocation()
-        result = detector.detect(image, geolocation=geo)
-
-        assert len(result) == 1
-        d = result[0]
-        assert d.geometry.geographic_coordinates is not None
-        lat, lon = d.geometry.geographic_coordinates
-        assert lat == pytest.approx(0.0)  # row=0 * 0.01
-        assert lon == pytest.approx(0.0)  # col=0 * 0.01
-
-    def test_multi_point_geo_registration(self):
-        detector = DummyDetector(threshold=0.0)
-        image = np.array([
-            [1.0, 2.0],
-            [3.0, 4.0],
-        ], dtype=np.float64)
-        geo = _MockGeolocation()
-        result = detector.detect(image, geolocation=geo)
-
-        assert len(result) == 4
-        # Check pixel (1, 1) -> lat=0.01, lon=0.01
-        d_11 = [d for d in result
-                 if d.geometry.pixel_coordinates[0] == 1.0
-                 and d.geometry.pixel_coordinates[1] == 1.0][0]
-        lat, lon = d_11.geometry.geographic_coordinates
-        assert lat == pytest.approx(0.01)
-        assert lon == pytest.approx(0.01)
-
-    def test_empty_detections_no_error(self):
-        detector = DummyDetector(threshold=100.0)
-        image = np.array([[0.5]], dtype=np.float64)
-        geo = _MockGeolocation()
-        result = detector.detect(image, geolocation=geo)
-        assert len(result) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -504,10 +474,8 @@ class _BiasedDetector(ImageDetector):
     """Detector that accepts prior detections to bias threshold."""
 
     @property
-    def output_schema(self) -> OutputSchema:
-        return OutputSchema(fields=(
-            OutputField('value', 'float', 'Detection value'),
-        ))
+    def output_fields(self) -> Tuple[str, ...]:
+        return ('value',)
 
     @property
     def detection_input_specs(self) -> Tuple[DetectionInputSpec, ...]:
@@ -529,7 +497,7 @@ class _BiasedDetector(ImageDetector):
         rows, cols = np.where(source > threshold)
         detections = [
             Detection(
-                Geometry.point(float(r), float(c)),
+                Point(float(c), float(r)),
                 {'value': float(source[r, c])},
             )
             for r, c in zip(rows, cols)
@@ -538,7 +506,7 @@ class _BiasedDetector(ImageDetector):
             detections=detections,
             detector_name='BiasedDetector',
             detector_version='1.0.0',
-            output_schema=self.output_schema,
+            output_fields=self.output_fields,
         )
 
 
@@ -556,12 +524,10 @@ class TestDetectionInputFlow:
         image = np.array([[0.3, 0.7]], dtype=np.float64)
 
         # Create a dummy prior DetectionSet
-        prior_schema = OutputSchema(fields=(
-            OutputField('label', 'str', 'Label'),
-        ))
         prior = DetectionSet(
-            [Detection(Geometry.point(0, 0), {'label': 'x'})],
-            'PriorDet', '1.0', prior_schema,
+            [Detection(Point(0, 0), {Fields.identity.LABEL: 'x'})],
+            'PriorDet', '1.0',
+            output_fields=(Fields.identity.LABEL,),
         )
 
         result = detector.detect(image, prior_detections=prior)

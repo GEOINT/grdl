@@ -124,8 +124,9 @@ class TestDetectionPipeline:
 
     def test_detect_and_export_geojson(self):
         """Full pipeline: image → detector → geo-register → GeoJSON."""
+        from shapely.geometry import Point
         from grdl.image_processing.detection.models import (
-            Detection, DetectionSet, Geometry, OutputField, OutputSchema,
+            Detection, DetectionSet,
         )
         from grdl.image_processing.versioning import processor_version
         from grdl.image_processing.detection.base import ImageDetector
@@ -137,16 +138,14 @@ class TestDetectionPipeline:
                 self.threshold = threshold
 
             @property
-            def output_schema(self):
-                return OutputSchema(fields=(
-                    OutputField('intensity', 'float', 'Pixel value'),
-                ))
+            def output_fields(self):
+                return ('intensity',)
 
             def detect(self, source, geolocation=None, **kwargs):
                 rows, cols = np.where(source > self.threshold)
                 detections = [
                     Detection(
-                        Geometry.point(float(r), float(c)),
+                        Point(float(c), float(r)),  # x=col, y=row
                         {'intensity': float(source[r, c])},
                         confidence=float(source[r, c]),
                     )
@@ -156,7 +155,7 @@ class TestDetectionPipeline:
                     detections=detections,
                     detector_name='BrightPixelDetector',
                     detector_version='1.0.0',
-                    output_schema=self.output_schema,
+                    output_fields=self.output_fields,
                 )
                 if geolocation is not None:
                     self._geo_register_detections(ds, geolocation)
@@ -179,8 +178,9 @@ class TestDetectionPipeline:
 
     def test_detect_with_geo_registration(self):
         """Detections should get geographic coordinates from geolocation."""
+        from shapely.geometry import Point
         from grdl.image_processing.detection.models import (
-            Detection, DetectionSet, Geometry, OutputField, OutputSchema,
+            Detection, DetectionSet,
         )
         from grdl.image_processing.versioning import processor_version
         from grdl.image_processing.detection.base import ImageDetector
@@ -188,15 +188,14 @@ class TestDetectionPipeline:
         @processor_version('1.0.0')
         class SimpleDetector(ImageDetector):
             @property
-            def output_schema(self):
-                return OutputSchema(fields=(
-                    OutputField('val', 'float', 'v'),
-                ))
+            def output_fields(self):
+                return ('val',)
 
             def detect(self, source, geolocation=None, **kwargs):
                 ds = DetectionSet(
-                    [Detection(Geometry.point(0.0, 0.0), {'val': 1.0})],
-                    'SD', '1.0', self.output_schema,
+                    [Detection(Point(0.0, 0.0), {'val': 1.0})],
+                    'SD', '1.0',
+                    output_fields=self.output_fields,
                 )
                 if geolocation is not None:
                     self._geo_register_detections(ds, geolocation)
@@ -214,10 +213,10 @@ class TestDetectionPipeline:
 
         assert len(result) == 1
         d = result[0]
-        assert d.geometry.geographic_coordinates is not None
-        lat, lon = d.geometry.geographic_coordinates
-        assert lat == pytest.approx(40.0)
-        assert lon == pytest.approx(-74.0)
+        assert d.geo_geometry is not None
+        # geo_geometry is Point(lon, lat)
+        assert d.geo_geometry.y == pytest.approx(40.0)   # lat
+        assert d.geo_geometry.x == pytest.approx(-74.0)  # lon
 
 
 # ---------------------------------------------------------------------------

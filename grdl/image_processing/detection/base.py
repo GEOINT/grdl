@@ -24,19 +24,19 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-11
 """
 
 # Standard library
 from abc import abstractmethod
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor
-from grdl.image_processing.detection.models import DetectionSet, OutputSchema
+from grdl.image_processing.detection.models import DetectionSet
 
 if TYPE_CHECKING:
     from grdl.geolocation.base import Geolocation
@@ -60,12 +60,7 @@ class ImageDetector(ImageProcessor):
     Subclasses must implement:
 
     - ``detect()`` -- run detection on image data
-    - ``output_schema`` (property) -- declare the output format
-
-    The base class provides:
-
-    - ``_geo_register_detections()`` -- batch-transform pixel coordinates
-      to geographic coordinates using a ``Geolocation`` object
+    - ``output_fields`` (property) -- declare the output field names
 
     Examples
     --------
@@ -73,8 +68,8 @@ class ImageDetector(ImageProcessor):
     >>> detections = detector.detect(image, geolocation=geo)
     >>> len(detections)
     42
-    >>> detections.output_schema.field_names
-    ('label', 'label_confidence')
+    >>> detections.output_fields
+    ('sar.change_magnitude', 'identity.label')
     """
 
     @abstractmethod
@@ -106,70 +101,20 @@ class ImageDetector(ImageProcessor):
 
     @property
     @abstractmethod
-    def output_schema(self) -> OutputSchema:
+    def output_fields(self) -> Tuple[str, ...]:
         """
-        Declare the output schema for this detector.
+        Declare the output field names for this detector.
 
-        The schema describes what fields appear in each detection's
-        ``properties`` dictionary. This enables downstream consumers
-        to inspect the output format without running the detector.
+        Returns field names that appear in each detection's ``properties``
+        dictionary. Names from the GRDL data dictionary are strongly
+        encouraged (e.g., ``'sar.change_magnitude'``). Custom names are
+        permitted but will generate a ``UserWarning`` when the
+        ``DetectionSet`` is created.
 
         Returns
         -------
-        OutputSchema
-            Schema describing detection properties.
+        Tuple[str, ...]
+            Field name strings.
         """
         ...
 
-    def _geo_register_detections(
-        self,
-        detections: DetectionSet,
-        geolocation: 'Geolocation',
-    ) -> None:
-        """
-        Transform pixel coordinates to geographic coordinates in-place.
-
-        Collects all pixel coordinates from the detection geometries,
-        batch-transforms them via ``geolocation.image_to_latlon()``,
-        and populates each detection's geographic coordinates.
-
-        Parameters
-        ----------
-        detections : DetectionSet
-            Detections with pixel coordinates to geo-register.
-        geolocation : Geolocation
-            Coordinate transform to apply.
-        """
-        if len(detections) == 0:
-            return
-
-        for detection in detections:
-            geom = detection.geometry
-
-            if geom.geometry_type == 'Point':
-                row, col = float(geom.pixel_coordinates[0]), float(geom.pixel_coordinates[1])
-                lat, lon, _ = geolocation.image_to_latlon(row, col)
-                geom.geographic_coordinates = np.array(
-                    [lat, lon], dtype=np.float64
-                )
-
-            elif geom.geometry_type == 'BoundingBox':
-                rows = np.array([
-                    geom.pixel_coordinates[0],
-                    geom.pixel_coordinates[2],
-                ], dtype=np.float64)
-                cols = np.array([
-                    geom.pixel_coordinates[1],
-                    geom.pixel_coordinates[3],
-                ], dtype=np.float64)
-                lats, lons, _ = geolocation.image_to_latlon(rows, cols)
-                geom.geographic_coordinates = np.array([
-                    float(np.min(lats)), float(np.min(lons)),
-                    float(np.max(lats)), float(np.max(lons)),
-                ], dtype=np.float64)
-
-            elif geom.geometry_type == 'Polygon':
-                rows = geom.pixel_coordinates[:, 0]
-                cols = geom.pixel_coordinates[:, 1]
-                lats, lons, _ = geolocation.image_to_latlon(rows, cols)
-                geom.geographic_coordinates = np.column_stack([lats, lons])

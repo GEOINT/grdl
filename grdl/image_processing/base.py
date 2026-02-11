@@ -95,6 +95,12 @@ class ImageProcessor(ABC):
     # -----------------------------------------------------------------
     # Subclass hook: collect Annotated params & generate __init__
     # -----------------------------------------------------------------
+    #: Tuple of method names decorated with ``@globalprocessor``.
+    __global_callbacks__: Tuple[str, ...] = ()
+
+    #: Whether this processor class has any global-pass callbacks.
+    __has_global_pass__: bool = False
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls.__param_specs__ = collect_param_specs(cls)
@@ -102,6 +108,22 @@ class ImageProcessor(ABC):
         # params and did NOT define its own __init__.
         if cls.__param_specs__ and '__init__' not in cls.__dict__:
             cls.__init__ = _make_init(cls.__param_specs__)
+
+        # Collect @globalprocessor-decorated methods
+        new_callbacks = []
+        for name in list(cls.__dict__):
+            attr = cls.__dict__[name]
+            if callable(attr) and getattr(attr, '__is_global_callback__', False):
+                new_callbacks.append(name)
+        parent_callbacks = getattr(
+            super(cls, cls), '__global_callbacks__', ()
+        )
+        # Preserve order: parent callbacks first, then new ones (dedup)
+        all_callbacks = tuple(
+            dict.fromkeys((*parent_callbacks, *new_callbacks))
+        )
+        cls.__global_callbacks__ = all_callbacks
+        cls.__has_global_pass__ = bool(all_callbacks)
 
     # -----------------------------------------------------------------
     # Version checking (fires once per class at first instantiation)

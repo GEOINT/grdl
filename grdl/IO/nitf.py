@@ -45,7 +45,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
-from grdl.IO.base import ImageReader
+from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
 
 
@@ -230,3 +230,164 @@ class NITFReader(ImageReader):
         """Close the rasterio dataset."""
         if hasattr(self, 'dataset') and self.dataset is not None:
             self.dataset.close()
+
+
+class NITFWriter(ImageWriter):
+    """Write arrays to NITF format via rasterio's NITF driver.
+
+    Writes single-band and multi-band arrays to NITF format with
+    optional geolocation metadata (CRS and affine transform). Uses
+    rasterio (GDAL NITF driver) as the backend.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Output NITF file path (``.nitf`` or ``.ntf``).
+    metadata : ImageMetadata, optional
+        Typed metadata to embed. Recognized extras keys:
+
+        - ``'ic'``: Image compression (``'NC'`` for no compression,
+          default).
+        - ``'irep'``: Image representation (``'MONO'``, ``'MULTI'``,
+          ``'RGB'``).
+
+    Raises
+    ------
+    ImportError
+        If rasterio is not installed.
+
+    Examples
+    --------
+    >>> from grdl.IO.nitf import NITFWriter
+    >>> import numpy as np
+    >>> data = np.random.rand(64, 64).astype(np.float32)
+    >>> with NITFWriter('output.nitf') as writer:
+    ...     writer.write(data)
+    """
+
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        metadata: Optional[ImageMetadata] = None,
+    ) -> None:
+        if not _HAS_RASTERIO:
+            raise ImportError(
+                "rasterio is required for NITF writing. "
+                "Install with: pip install rasterio"
+            )
+        super().__init__(filepath, metadata)
+
+    def write(
+        self,
+        data: np.ndarray,
+        geolocation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write image data to a NITF file.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Image data with shape ``(rows, cols)`` for single-band or
+            ``(bands, rows, cols)`` for multi-band.
+        geolocation : Dict[str, Any], optional
+            Geolocation information. Recognized keys:
+
+            - ``'crs'``: CRS string (e.g., ``'EPSG:4326'``)
+            - ``'transform'``: Affine transform (rasterio ``Affine`` or
+              6-element tuple)
+
+        Raises
+        ------
+        ValueError
+            If data has unsupported number of dimensions.
+        """
+        if data.ndim == 2:
+            count = 1
+            height, width = data.shape
+            write_data = data[np.newaxis, :, :]
+        elif data.ndim == 3:
+            count, height, width = data.shape
+            write_data = data
+        else:
+            raise ValueError(
+                f"Expected 2D or 3D array, got {data.ndim}D"
+            )
+
+        crs = None
+        transform = None
+        if geolocation:
+            crs = geolocation.get('crs')
+            transform = geolocation.get('transform')
+
+        profile = {
+            'driver': 'NITF',
+            'height': height,
+            'width': width,
+            'count': count,
+            'dtype': str(data.dtype),
+        }
+
+        ic = self.metadata.get('ic', 'NC') if self.metadata else 'NC'
+        profile['IC'] = ic
+
+        if crs is not None:
+            profile['crs'] = crs
+            # NITF driver requires ICORDS creation option for CRS
+            profile['ICORDS'] = 'G'
+        if transform is not None:
+            profile['transform'] = transform
+
+        with rasterio.open(str(self.filepath), 'w', **profile) as ds:
+            ds.write(write_data)
+
+    def write_chip(
+        self,
+        data: np.ndarray,
+        row_start: int,
+        col_start: int,
+        geolocation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write a spatial subset to an existing NITF file.
+
+        The file must already exist (created by a prior ``write()`` call).
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Image chip with shape ``(rows, cols)`` for single-band or
+            ``(bands, rows, cols)`` for multi-band.
+        row_start : int
+            Starting row index in the output file.
+        col_start : int
+            Starting column index in the output file.
+        geolocation : Dict[str, Any], optional
+            Not used for chip writes (geolocation is set at file level).
+
+        Raises
+        ------
+        IOError
+            If the output file does not exist.
+        ValueError
+            If data has unsupported number of dimensions.
+        """
+        if not self.filepath.exists():
+            raise IOError(
+                f"File {self.filepath} does not exist. "
+                "Call write() first to create the file."
+            )
+
+        if data.ndim == 2:
+            write_data = data[np.newaxis, :, :]
+        elif data.ndim == 3:
+            write_data = data
+        else:
+            raise ValueError(
+                f"Expected 2D or 3D array, got {data.ndim}D"
+            )
+
+        height = write_data.shape[1]
+        width = write_data.shape[2]
+        window = Window(col_start, row_start, width, height)
+
+        with rasterio.open(str(self.filepath), 'r+') as ds:
+            ds.write(write_data, window=window)
