@@ -34,6 +34,7 @@ import importlib.metadata
 from grdl.vocabulary import (
     DetectionType,
     ExecutionPhase,
+    GpuCapability,
     ImageModality,
     ProcessorCategory,
     SegmentationType,
@@ -103,6 +104,7 @@ def processor_tags(
     detection_types: Optional[Sequence[DetectionType]] = None,
     segmentation_types: Optional[Sequence[SegmentationType]] = None,
     phases: Optional[Sequence[ExecutionPhase]] = None,
+    gpu_capability: Optional[GpuCapability] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -130,6 +132,13 @@ def processor_tags(
         Pipeline execution phases this processor is compatible with.
         When not provided, defaults to an empty tuple (no phase
         restriction -- compatible with any phase).
+    gpu_capability : GpuCapability, optional
+        Declares the processor's GPU hardware requirement.
+        ``REQUIRED`` means the processor cannot run without a GPU.
+        ``PREFERRED`` means GPU accelerates but CPU fallback exists.
+        ``CPU_ONLY`` means GPU will not help.
+        When ``None``, the execution resolver falls back to reading
+        the legacy ``__gpu_compatible__`` class attribute.
 
     Raises
     ------
@@ -180,6 +189,11 @@ def processor_tags(
                 raise TypeError(
                     f"phases must be ExecutionPhase members, got {p!r}"
                 )
+    if gpu_capability is not None and not isinstance(gpu_capability, GpuCapability):
+        raise TypeError(
+            f"gpu_capability must be a GpuCapability member, "
+            f"got {gpu_capability!r}"
+        )
 
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
@@ -193,6 +207,7 @@ def processor_tags(
                 tuple(segmentation_types) if segmentation_types else ()
             ),
             'phases': tuple(phases) if phases else (),
+            'gpu_capability': gpu_capability,
         }
         return cls
     return decorator

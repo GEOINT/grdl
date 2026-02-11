@@ -206,3 +206,51 @@ class TestGlobalCallbacksInheritance:
 
         assert Parent.__global_callbacks__ == ('parent_callback',)
         assert 'child_callback' not in Parent.__global_callbacks__
+
+
+class TestHasGlobalPassProperty:
+    """Tests for the has_global_pass instance property."""
+
+    def test_property_true_for_global_processor(self):
+        """Instance of a class with @globalprocessor returns True."""
+        from grdl.image_processing.base import ImageTransform
+
+        @processor_version('1.0.0')
+        class WithGlobal(ImageTransform):
+            @globalprocessor
+            def compute_stats(self, source):
+                self._mean = source.mean()
+
+            def apply(self, source, **kwargs):
+                return source
+
+        proc = WithGlobal()
+        assert proc.has_global_pass is True
+
+    def test_property_false_for_plain_processor(self):
+        """Instance of a plain class returns False."""
+        from grdl.image_processing.base import ImageTransform
+
+        @processor_version('1.0.0')
+        class Plain(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        proc = Plain()
+        assert proc.has_global_pass is False
+
+    def test_property_reflects_class_attribute(self):
+        """Property matches __has_global_pass__ class attribute."""
+        from grdl.image_processing.base import ImageTransform
+
+        @processor_version('1.0.0')
+        class TestProc(ImageTransform):
+            @globalprocessor
+            def compute(self, source):
+                pass
+
+            def apply(self, source, **kwargs):
+                return source
+
+        assert TestProc.__has_global_pass__ is True
+        assert TestProc().has_global_pass is True
