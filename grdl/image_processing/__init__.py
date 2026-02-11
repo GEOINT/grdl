@@ -117,6 +117,7 @@ from grdl.image_processing.detection import (
     OutputSchema,
 )
 from grdl.image_processing.sar import SublookDecomposition
+from grdl.image_processing.intensity import ToDecibels, PercentileStretch
 from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
     processor_version,
@@ -151,6 +152,8 @@ __all__ = [
     'OutputField',
     'OutputSchema',
     'SublookDecomposition',
+    'ToDecibels',
+    'PercentileStretch',
     'Pipeline',
     'processor_version',
     'processor_tags',
