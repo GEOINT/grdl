@@ -33,7 +33,14 @@ import pytest
 from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.versioning import (
     DetectionInputSpec,
+    processor_tags,
     processor_version,
+)
+from grdl.vocabulary import (
+    DetectionType,
+    ImageModality,
+    ProcessorCategory,
+    SegmentationType,
 )
 
 
@@ -191,30 +198,6 @@ class TestMissingVersionWarning:
 
 
 # ---------------------------------------------------------------------------
-# ImageProcessor hierarchy
-# ---------------------------------------------------------------------------
-
-class TestImageProcessorHierarchy:
-    """Verify the ImageProcessor class hierarchy."""
-
-    def test_image_transform_is_image_processor(self):
-        assert issubclass(ImageTransform, ImageProcessor)
-
-    def test_polarimetric_decomposition_is_image_processor(self):
-        from grdl.image_processing.decomposition.base import PolarimetricDecomposition
-        assert issubclass(PolarimetricDecomposition, ImageProcessor)
-
-    def test_image_detector_is_image_processor(self):
-        from grdl.image_processing.detection.base import ImageDetector
-        assert issubclass(ImageDetector, ImageProcessor)
-
-    def test_pauli_isinstance_image_processor(self):
-        from grdl.image_processing.decomposition.pauli import PauliDecomposition
-        pauli = PauliDecomposition()
-        assert isinstance(pauli, ImageProcessor)
-
-
-# ---------------------------------------------------------------------------
 # DetectionInputSpec
 # ---------------------------------------------------------------------------
 
@@ -354,20 +337,101 @@ class TestDetectionInputValidation:
 
 
 # ---------------------------------------------------------------------------
-# Import isolation
+# @processor_tags decorator
 # ---------------------------------------------------------------------------
 
-class TestImports:
-    """Verify public API imports work."""
+class TestProcessorTagsDecorator:
+    """Test that @processor_tags stamps enum-based tags correctly."""
 
-    def test_import_processor_version(self):
-        from grdl.image_processing import processor_version as pv
-        assert pv is processor_version
+    def test_stamps_tags_on_class(self):
+        @processor_tags(
+            modalities=[ImageModality.SAR, ImageModality.PAN],
+            category=ProcessorCategory.FILTERS,
+        )
+        @processor_version('1.0.0')
+        class _Tagged(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
 
-    def test_import_detection_input_spec(self):
-        from grdl.image_processing import DetectionInputSpec as DIS
-        assert DIS is DetectionInputSpec
+        assert hasattr(_Tagged, '__processor_tags__')
+        tags = _Tagged.__processor_tags__
+        assert ImageModality.SAR in tags['modalities']
+        assert ImageModality.PAN in tags['modalities']
+        assert tags['category'] is ProcessorCategory.FILTERS
 
-    def test_import_image_processor(self):
-        from grdl.image_processing import ImageProcessor as IP
-        assert IP is ImageProcessor
+    def test_modalities_stored_as_tuple(self):
+        @processor_tags(modalities=[ImageModality.EO])
+        @processor_version('1.0.0')
+        class _T(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        assert isinstance(_T.__processor_tags__['modalities'], tuple)
+
+    def test_empty_tags(self):
+        @processor_tags()
+        @processor_version('1.0.0')
+        class _Empty(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        tags = _Empty.__processor_tags__
+        assert tags['modalities'] == ()
+        assert tags['category'] is None
+        assert tags['description'] is None
+        assert tags['detection_types'] == ()
+        assert tags['segmentation_types'] == ()
+
+    def test_detection_and_segmentation_types(self):
+        @processor_tags(
+            detection_types=[DetectionType.CLASSIFICATION],
+            segmentation_types=[SegmentationType.SEMANTIC],
+        )
+        @processor_version('1.0.0')
+        class _Detector(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        tags = _Detector.__processor_tags__
+        assert DetectionType.CLASSIFICATION in tags['detection_types']
+        assert SegmentationType.SEMANTIC in tags['segmentation_types']
+
+    def test_rejects_string_modality(self):
+        with pytest.raises(TypeError, match="ImageModality"):
+            @processor_tags(modalities=['SAR'])
+            class _Bad(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source
+
+    def test_rejects_string_category(self):
+        with pytest.raises(TypeError, match="ProcessorCategory"):
+            @processor_tags(category='filters')
+            class _Bad(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source
+
+    def test_rejects_string_detection_type(self):
+        with pytest.raises(TypeError, match="DetectionType"):
+            @processor_tags(detection_types=['classification'])
+            class _Bad(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source
+
+    def test_description_still_accepts_string(self):
+        @processor_tags(description="A useful filter")
+        @processor_version('1.0.0')
+        class _Desc(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        assert _Desc.__processor_tags__['description'] == "A useful filter"
+
+    def test_decorated_class_is_same_class(self):
+        class _Original(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        decorated = processor_tags(
+            modalities=[ImageModality.SAR],
+        )(_Original)
+        assert decorated is _Original

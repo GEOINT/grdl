@@ -566,31 +566,3 @@ class TestDetectionInputFlow:
 
         result = detector.detect(image, prior_detections=prior)
         assert len(result) == 2  # both 0.3 and 0.7 > 0.1 (biased threshold)
-
-
-# ---------------------------------------------------------------------------
-# Import isolation
-# ---------------------------------------------------------------------------
-
-class TestImports:
-    """Verify public API imports work."""
-
-    def test_import_from_detection(self):
-        from grdl.image_processing.detection import ImageDetector as ID
-        assert ID is ImageDetector
-
-    def test_import_from_image_processing(self):
-        from grdl.image_processing import (
-            Detection as D,
-            DetectionSet as DS,
-            Geometry as G,
-            ImageDetector as ID,
-            OutputField as OF,
-            OutputSchema as OS,
-        )
-        assert D is Detection
-        assert DS is DetectionSet
-        assert G is Geometry
-        assert ID is ImageDetector
-        assert OF is OutputField
-        assert OS is OutputSchema

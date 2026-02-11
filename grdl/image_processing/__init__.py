@@ -37,7 +37,8 @@ Key Classes
 - processor_version: Version decorator for all processor types
 - processor_tags: Capability metadata decorator (modalities, category)
 - DetectionInputSpec: Declaration of detection inputs a processor accepts
-- TunableParameterSpec: Declaration of tunable parameters a processor accepts
+- Range, Options, Desc: Annotated constraint markers for tunable parameters
+- ParamSpec: Introspection data class for tunable parameters
 
 Usage
 -----
@@ -121,7 +122,18 @@ from grdl.image_processing.versioning import (
     processor_version,
     processor_tags,
     DetectionInputSpec,
-    TunableParameterSpec,
+)
+from grdl.image_processing.params import (
+    Range,
+    Options,
+    Desc,
+    ParamSpec,
+)
+from grdl.vocabulary import (
+    ImageModality,
+    ProcessorCategory,
+    DetectionType,
+    SegmentationType,
 )
 
 __all__ = [
@@ -143,5 +155,12 @@ __all__ = [
     'processor_version',
     'processor_tags',
     'DetectionInputSpec',
-    'TunableParameterSpec',
+    'Range',
+    'Options',
+    'Desc',
+    'ParamSpec',
+    'ImageModality',
+    'ProcessorCategory',
+    'DetectionType',
+    'SegmentationType',
 ]

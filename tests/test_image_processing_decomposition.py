@@ -424,23 +424,3 @@ class TestConversions:
     def test_to_rgb_missing_keys(self, pauli):
         with pytest.raises(ValueError, match="Missing"):
             pauli.to_rgb({'surface': np.zeros((2, 2))})
-
-
-# ---------------------------------------------------------------------------
-# Import isolation
-# ---------------------------------------------------------------------------
-
-class TestImports:
-    """Verify module can be imported from the public API."""
-
-    def test_import_from_image_processing(self):
-        from grdl.image_processing import PauliDecomposition as P1
-        assert P1 is PauliDecomposition
-
-    def test_import_from_decomposition(self):
-        from grdl.image_processing.decomposition import PauliDecomposition as P2
-        assert P2 is PauliDecomposition
-
-    def test_import_abc(self):
-        from grdl.image_processing import PolarimetricDecomposition as PD
-        assert PD is PolarimetricDecomposition

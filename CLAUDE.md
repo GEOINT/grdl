@@ -35,7 +35,6 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
 | Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
 | Pixel to lat/lon | `grdl.geolocation` | Manual GCP interpolation |
-| Spatial filters, contrast | `grdl.imagej` | Re-implementing algorithms |
 | SAR decomposition | `grdl.image_processing` | Manual complex arithmetic |
 | Image alignment | `grdl.coregistration` | Custom OpenCV wrappers |
 
@@ -128,19 +127,6 @@ GRDL/
       <submodule>.py         # Concrete implementations
       __init__.py            # Expose public API
       <subdomain>/           # Nested subdomains (e.g. detection/, ortho/, decomposition/)
-    imagej/                  # ImageJ/Fiji ports (organized by ImageJ menu category)
-      __init__.py            # Barrel re-exports all 12 components (backward compat)
-      _taxonomy.py           # Category constants shared with GRDK
-      filters/               # Process > Filters (RankFilters, UnsharpMask)
-      background/            # Process > Subtract Background (RollingBallBackground)
-      binary/                # Process > Binary (MorphologicalFilter)
-      enhance/               # Process > Enhance Contrast (CLAHE, GammaCorrection)
-      edges/                 # Process > Find Edges (EdgeDetector)
-      fft/                   # Process > FFT (FFTBandpassFilter)
-      find_maxima/           # Process > Find Maxima (FindMaxima)
-      threshold/             # Image > Adjust > Threshold (AutoLocalThreshold)
-      segmentation/          # Plugins > Segmentation (StatisticalRegionMerging)
-      stacks/                # Image > Stacks (ZProjection)
     data_prep/               # ML/AI data preparation — index-only chip/tile planning
       base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
       tiler.py               # Tiler (stride-based tile region computation)
@@ -166,7 +152,6 @@ Domain directories map to the module areas defined in the README:
 | `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
 | `geolocation/` | Pixel-to-geographic coordinate transforms |
 | `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, pipeline, transforms |
-| `imagej/` | ImageJ/Fiji algorithm ports -- 12 classic algorithms in 10 subdirectories matching ImageJ menu hierarchy |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |

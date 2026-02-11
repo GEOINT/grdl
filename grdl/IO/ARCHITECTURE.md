@@ -60,7 +60,6 @@ grdl/
 │   ├── versioning.py        # @processor_version, @processor_tags, TunableParameterSpec
 │   ├── pipeline.py          # Pipeline (sequential transform composition)
 │   └── ...                  # ortho/, decomposition/, detection/ subdomains
-├── imagej/                  # 12 ImageJ/Fiji ports (10 subdirs matching ImageJ menu hierarchy)
 ├── data_prep/               # ChipBase ABC, ChipExtractor, Tiler, Normalizer
 └── coregistration/          # Affine, projective, feature-matching alignment
 ```
@@ -201,8 +200,6 @@ with SICDReader('image.nitf') as reader:
   enabling all single-band processors to work on multi-band imagery without manual band looping.
 - **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
   `progress_callback` keyword argument for real-time progress reporting.
-- **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
-  direct use in processing pipelines alongside orthorectification and decomposition.
 
 ## SAR Readers Implementation
 
@@ -702,7 +699,6 @@ Each reader/module has a dedicated test suite. Shared fixtures live in `tests/co
 - `tests/test_image_processing_detection.py` - Detection models, geo-registration, GeoJSON
 - `tests/test_image_processing_versioning.py` - Processor versioning decorator
 - `tests/test_image_processing_tunable.py` - Tunable parameter validation
-- `tests/test_imagej.py` - ImageJ/Fiji port tests (12 components)
 - `tests/test_coregistration.py` - Coregistration tests
 - `tests/test_benchmarks.py` - Performance benchmarks (pytest-benchmark)
 

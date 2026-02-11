@@ -397,9 +397,9 @@ class TestVersioning:
         assert SublookDecomposition.__processor_version__ == '0.1.0'
 
     def test_has_tags(self):
+        from grdl.vocabulary import ImageModality
         tags = SublookDecomposition.__processor_tags__
-        assert 'SAR' in tags['modalities']
-        assert tags['category'] == 'decomposition'
+        assert ImageModality.SAR in tags['modalities']
 
 
 # ===================================================================

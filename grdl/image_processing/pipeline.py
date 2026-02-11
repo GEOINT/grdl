@@ -55,14 +55,9 @@ class Pipeline(ImageTransform):
 
     Examples
     --------
-    >>> from grdl.imagej import GammaCorrection, UnsharpMask, EdgeDetector
     >>> from grdl.image_processing import Pipeline
     >>>
-    >>> pipe = Pipeline([
-    ...     GammaCorrection(gamma=0.5),
-    ...     UnsharpMask(sigma=2.0, weight=0.6),
-    ...     EdgeDetector(method='sobel'),
-    ... ])
+    >>> pipe = Pipeline([transform_a, transform_b, transform_c])
     >>> result = pipe.apply(image)
 
     With progress reporting:

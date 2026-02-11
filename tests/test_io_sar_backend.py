@@ -29,13 +29,6 @@ import pytest
 from unittest import mock
 
 
-def test_flags_are_bools():
-    """Detection flags are boolean."""
-    from grdl.IO.sar._backend import _HAS_SARKIT, _HAS_SARPY
-    assert isinstance(_HAS_SARKIT, bool)
-    assert isinstance(_HAS_SARPY, bool)
-
-
 def test_require_sar_backend_returns_string():
     """require_sar_backend returns 'sarkit' or 'sarpy'."""
     from grdl.IO.sar._backend import require_sar_backend

@@ -41,6 +41,12 @@ from grdl.exceptions import (
     DependencyError,
     GeolocationError,
 )
+from grdl.vocabulary import (
+    ImageModality,
+    ProcessorCategory,
+    DetectionType,
+    SegmentationType,
+)
 
 # Re-export coregistration classes for convenience
 try:
@@ -71,5 +77,9 @@ __all__ = [
     'ProcessorError',
     'DependencyError',
     'GeolocationError',
+    'ImageModality',
+    'ProcessorCategory',
+    'DetectionType',
+    'SegmentationType',
     *_COREG_EXPORTS,
 ]

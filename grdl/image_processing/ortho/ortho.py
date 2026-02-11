@@ -30,8 +30,9 @@ Modified
 2026-02-06
 """
 
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
+from grdl.image_processing.params import Desc, Options
 from grdl.image_processing.versioning import processor_version
 
 import numpy as np
@@ -311,6 +312,9 @@ class Orthorectifier(ImageTransform):
     ...     ortho = Orthorectifier(geo, grid)
     ...     result = ortho.apply_from_reader(reader, bands=[0])
     """
+
+    # -- Annotated scalar field for GUI introspection (__param_specs__) --
+    interpolation: Annotated[str, Options('nearest', 'bilinear', 'bicubic'), Desc('Resampling interpolation method')] = 'bilinear'
 
     def __init__(
         self,

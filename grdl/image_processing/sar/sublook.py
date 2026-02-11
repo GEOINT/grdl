@@ -37,7 +37,7 @@ Modified
 """
 
 # Standard library
-from typing import Optional, Tuple, Union
+from typing import Annotated, Optional, Tuple, Union
 
 # Third-party
 import numpy as np
@@ -50,7 +50,9 @@ except ImportError:
 
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality
 from grdl.IO.models import SICDMetadata
 
 
@@ -121,7 +123,7 @@ def _validate_complex_2d_torch(tensor: 'torch.Tensor') -> None:
 # ===================================================================
 
 @processor_version('0.1.0')
-@processor_tags(modalities=['SAR'], category='decomposition')
+@processor_tags(modalities=[ImageModality.SAR])
 class SublookDecomposition(ImageProcessor):
     """Split a complex SAR image into sub-aperture looks.
 
@@ -181,6 +183,12 @@ class SublookDecomposition(ImageProcessor):
     """
 
     __gpu_compatible__ = True
+
+    # -- Annotated scalar fields for GUI introspection (__param_specs__) --
+    num_looks: Annotated[int, Range(min=2), Desc('Number of sublooks')] = 2
+    dimension: Annotated[str, Options('azimuth', 'range'), Desc('Split dimension (azimuth or range)')] = 'azimuth'
+    overlap: Annotated[float, Range(min=0.0, max=0.99), Desc('Fractional overlap between sublooks')] = 0.0
+    deweight: Annotated[bool, Desc('Apply deweighting before decomposition')] = True
 
     def __init__(
         self,

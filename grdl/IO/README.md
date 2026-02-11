@@ -510,42 +510,6 @@ See `grdl/example/` for working workflows:
 - `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - `image_processing/sar/sublook_compare.py` - **Full GRDL integration**: IO + data_prep + image_processing
 
-## ImageJ/Fiji Algorithm Ports
-
-GRDL includes 12 classic image processing algorithms ported from ImageJ/Fiji under `grdl.imagej`, selected for relevance to remotely sensed imagery (PAN, MSI, HSI, SAR, thermal). All inherit from `ImageTransform`, carry `@processor_tags` metadata for capability discovery, and declare `__gpu_compatible__` for downstream GPU dispatch.
-
-| Subdirectory | ImageJ Menu | Components | GPU | Use Cases |
-|-------------|------------|-----------|-----|-----------|
-| `filters/` | Process > Filters | RankFilters, UnsharpMask | No | Noise removal, sharpening |
-| `background/` | Process > Subtract Background | RollingBallBackground | No | Background subtraction |
-| `binary/` | Process > Binary | MorphologicalFilter | No | Morphological operations |
-| `enhance/` | Process > Enhance Contrast | CLAHE, GammaCorrection | Yes | Dynamic range, local contrast |
-| `edges/` | Process > Find Edges | EdgeDetector | No | Boundary detection |
-| `fft/` | Process > FFT | FFTBandpassFilter | Yes | Bandpass filtering, stripe removal |
-| `find_maxima/` | Process > Find Maxima | FindMaxima | No | Target/peak detection |
-| `threshold/` | Image > Adjust > Threshold | AutoLocalThreshold | No | Local thresholding, OBIA |
-| `segmentation/` | Plugins > Segmentation | StatisticalRegionMerging | No | Land cover segmentation |
-| `stacks/` | Image > Stacks | ZProjection | Yes | Multi-temporal composites |
-
-```python
-from grdl.imagej import CLAHE, FindMaxima, StatisticalRegionMerging
-from grdl.image_processing import Pipeline
-
-# Enhance local contrast for thermal imagery
-enhanced = CLAHE(block_size=127, max_slope=3.0).apply(thermal_band)
-
-# Detect bright targets in SAR amplitude
-targets = FindMaxima(prominence=20.0).find_peaks(sar_amplitude)
-
-# Segment MSI band into land cover regions
-labels = StatisticalRegionMerging(Q=50).apply(msi_band)
-
-# Compose a multi-step pipeline
-pipe = Pipeline([CLAHE(block_size=63), FindMaxima(prominence=10.0)])
-```
-
-Each ported component carries `__imagej_source__`, `__imagej_version__`, `__gpu_compatible__`, and `@processor_tags` metadata. ImageJ 1.x ports are public domain; Fiji plugin ports (CLAHE, AutoLocalThreshold, SRM) are independent NumPy reimplementations of published algorithms.
-
 ## Data Preparation
 
 The `grdl.data_prep` module provides index-only chip/tile planning and normalization. `ChipExtractor` and `Tiler` compute `ChipRegion` bounds -- they never touch pixel data. **Use them with IO readers instead of writing ad-hoc chunking loops:**
