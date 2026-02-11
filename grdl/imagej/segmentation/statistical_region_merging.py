@@ -49,13 +49,14 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -197,19 +198,8 @@ class StatisticalRegionMerging(ImageTransform):
     __imagej_version__ = '1.0'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        Q: float = 25.0,
-        output: str = 'labels',
-    ) -> None:
-        if Q <= 0:
-            raise ValueError(f"Q must be > 0, got {Q}")
-        if output not in ('labels', 'mean'):
-            raise ValueError(
-                f"output must be 'labels' or 'mean', got {output!r}"
-            )
-        self.Q = Q
-        self.output = output
+    Q: Annotated[float, Range(min=0.001), Desc('Coarseness parameter')] = 25.0
+    output: Annotated[str, Options('labels', 'mean'), Desc('Output format')] = 'labels'
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply SRM segmentation to a 2D image.
@@ -236,6 +226,11 @@ class StatisticalRegionMerging(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        q = p['Q']
+        output = p['output']
+
         image = source.astype(np.float64)
         rows, cols = image.shape
         n = rows * cols
@@ -244,7 +239,7 @@ class StatisticalRegionMerging(ImageTransform):
         g = image.max() - image.min()
         if g < 1e-15:
             # Uniform image → single region
-            if self.output == 'labels':
+            if output == 'labels':
                 return np.ones_like(image)
             else:
                 return image.copy()
@@ -277,7 +272,6 @@ class StatisticalRegionMerging(ImageTransform):
         region_sum = flat.copy()  # Sum of intensities per region
 
         # Merge pass
-        q = self.Q
         total_edges = len(edge_a)
         report_interval = max(1, total_edges // 20)
         for edge_i in range(total_edges):
@@ -305,7 +299,7 @@ class StatisticalRegionMerging(ImageTransform):
         self._report_progress(kwargs, 1.0)
 
         # Build output
-        if self.output == 'labels':
+        if output == 'labels':
             # Relabel regions to consecutive integers
             label_map = np.zeros(n, dtype=np.float64)
             root_to_label = {}

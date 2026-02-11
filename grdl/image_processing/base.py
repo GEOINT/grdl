@@ -6,8 +6,8 @@ Defines the ``ImageProcessor`` common base class for all image processor types
 (transforms, detectors, decompositions, SAR-specific processors) and the
 ``ImageTransform`` ABC for dense raster transforms. ``ImageProcessor``
 provides version checking at first instantiation, detection input
-declaration/validation, and tunable parameter flow so that any processor
-can accept upstream ``DetectionSet`` objects and runtime parameters
+declaration/validation, and ``typing.Annotated``-based tunable parameter
+declarations with automatic ``__init__`` generation and runtime resolution
 through ``**kwargs``.
 
 Author
@@ -34,15 +34,17 @@ Modified
 import logging
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+from grdl.image_processing.params import ParamSpec, collect_param_specs, _make_init
+
 if TYPE_CHECKING:
-    from grdl.image_processing.versioning import DetectionInputSpec, TunableParameterSpec
+    from grdl.image_processing.versioning import DetectionInputSpec
     from grdl.image_processing.detection.models import DetectionSet
 
 
@@ -59,38 +61,51 @@ class ImageProcessor(ABC):
 
     **Version checking**: Concrete subclasses that do not declare a processor
     version via ``@processor_version('x.y.z')`` will trigger a
-    ``UserWarning`` at first instantiation. The check uses ``__new__``
+    ``UserWarning`` at first instantiation.  The check uses ``__new__``
     rather than ``__init_subclass__`` so that decorators have been applied
     by the time the check runs.
 
     **Detection input flow**: Any processor can declare that it accepts
     ``DetectionSet`` inputs from upstream detectors by overriding
-    ``detection_input_specs``. Detection inputs are passed as keyword
+    ``detection_input_specs``.  Detection inputs are passed as keyword
     arguments to ``apply()`` or ``detect()``, flowing through the
     existing ``**kwargs`` mechanism.
 
-    **Tunable parameter flow**: Any processor can declare runtime-adjustable
-    parameters by overriding ``tunable_parameter_specs``. Tunable parameters
-    are passed as keyword arguments to ``apply()``, ``detect()``, or
-    ``decompose()``, flowing through the existing ``**kwargs`` mechanism.
-    Parameters are validated for type, range, and allowed values.
-
-    Notes
-    -----
-    This class intentionally has no ``__init__`` method so that existing
-    subclasses (which may not call ``super().__init__()``) remain
-    backward-compatible. Abstract classes cannot be instantiated, so
-    the version warning only fires for concrete processors.
+    **Tunable parameter flow**: Subclasses declare tunable parameters as
+    ``typing.Annotated`` class-body fields using constraint markers from
+    :mod:`grdl.image_processing.params` (``Range``, ``Options``, ``Desc``).
+    ``__init_subclass__`` collects these into ``__param_specs__`` and
+    auto-generates an ``__init__`` (unless the subclass defines its own).
+    At runtime, ``_resolve_params(kwargs)`` merges instance defaults with
+    keyword-argument overrides and validates constraints.
     """
 
     # Track which classes have been checked to warn only once per class.
     _version_warned_classes: set = set()
 
     #: Whether this processor uses only numpy operations (True) or
-    #: depends on scipy/other CPU-only libraries (False). Used by
+    #: depends on scipy/other CPU-only libraries (False).  Used by
     #: GRDK's GpuBackend to skip futile GPU attempts.
     __gpu_compatible__: bool = False
 
+    #: Tuple of :class:`~grdl.image_processing.params.ParamSpec` built
+    #: automatically by ``__init_subclass__`` from ``Annotated`` fields.
+    __param_specs__: Tuple[ParamSpec, ...] = ()
+
+    # -----------------------------------------------------------------
+    # Subclass hook: collect Annotated params & generate __init__
+    # -----------------------------------------------------------------
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.__param_specs__ = collect_param_specs(cls)
+        # Auto-generate __init__ only when the subclass has Annotated
+        # params and did NOT define its own __init__.
+        if cls.__param_specs__ and '__init__' not in cls.__dict__:
+            cls.__init__ = _make_init(cls.__param_specs__)
+
+    # -----------------------------------------------------------------
+    # Version checking (fires once per class at first instantiation)
+    # -----------------------------------------------------------------
     def __new__(cls, *args: Any, **kwargs: Any) -> 'ImageProcessor':
         if cls not in ImageProcessor._version_warned_classes:
             ImageProcessor._version_warned_classes.add(cls)
@@ -107,26 +122,29 @@ class ImageProcessor(ABC):
         logger.debug("Instantiating %s", cls.__qualname__)
         return super().__new__(cls)
 
+    # -----------------------------------------------------------------
+    # Detection input specs (unchanged)
+    # -----------------------------------------------------------------
     @property
     def detection_input_specs(self) -> Tuple['DetectionInputSpec', ...]:
         """
         Declare detection inputs this processor accepts.
 
         Override in subclasses that consume ``DetectionSet`` objects from
-        upstream detectors. Each spec describes a keyword argument name,
+        upstream detectors.  Each spec describes a keyword argument name,
         whether it is required, and what it is used for.
 
         Returns
         -------
         Tuple[DetectionInputSpec, ...]
-            Detection input declarations. Default is an empty tuple
+            Detection input declarations.  Default is an empty tuple
             (processor accepts no detection inputs).
         """
         return ()
 
     def _validate_detection_inputs(self, kwargs: Dict[str, Any]) -> None:
         """
-        Check that required detection inputs are present in kwargs.
+        Check that required detection inputs are present in *kwargs*.
 
         Call this at the start of ``apply()`` or ``detect()`` in processors
         that declare detection inputs.
@@ -139,7 +157,7 @@ class ImageProcessor(ABC):
         Raises
         ------
         ValueError
-            If a required detection input is missing from kwargs.
+            If a required detection input is missing from *kwargs*.
         """
         for spec in self.detection_input_specs:
             if spec.required and spec.name not in kwargs:
@@ -152,7 +170,7 @@ class ImageProcessor(ABC):
         self, name: str, kwargs: Dict[str, Any]
     ) -> Optional['DetectionSet']:
         """
-        Extract a named detection input from kwargs.
+        Extract a named detection input from *kwargs*.
 
         Parameters
         ----------
@@ -164,134 +182,56 @@ class ImageProcessor(ABC):
         Returns
         -------
         Optional[DetectionSet]
-            The detection set if present, otherwise None.
+            The detection set if present, otherwise ``None``.
         """
         return kwargs.get(name)
 
-    @property
-    def tunable_parameter_specs(self) -> Tuple['TunableParameterSpec', ...]:
-        """
-        Declare tunable parameters this processor accepts.
+    # -----------------------------------------------------------------
+    # Tunable parameter resolution
+    # -----------------------------------------------------------------
+    def _resolve_params(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge instance defaults with runtime *kwargs* overrides.
 
-        Override in subclasses that accept runtime-adjustable parameters
-        through ``**kwargs``. Each spec describes a keyword argument name,
-        expected type, default value, and optional constraints.
+        For each declared parameter in ``__param_specs__``:
 
-        Returns
-        -------
-        Tuple[TunableParameterSpec, ...]
-            Tunable parameter declarations. Default is an empty tuple
-            (processor accepts no tunable parameters).
-        """
-        return ()
+        1. If present in *kwargs*, use the *kwargs* value.
+        2. Otherwise use the instance attribute (``self.<name>``).
 
-    def _validate_tunable_parameters(self, kwargs: Dict[str, Any]) -> None:
-        """
-        Check tunable parameter types, required presence, and constraints.
-
-        Call this at the start of ``apply()``, ``detect()``, or
-        ``decompose()`` in processors that declare tunable parameters.
-
-        For each declared tunable parameter:
-
-        1. If required and missing from kwargs, raises ``ValueError``.
-        2. If present, checks ``isinstance`` against the spec's
-           ``param_type``. ``int`` is accepted for ``float`` parameters.
-        3. If range constraints (``min_value``/``max_value``) are set,
-           validates the value falls within bounds (inclusive).
-        4. If ``choices`` is set, validates the value is in the tuple.
+        Every resolved value is validated against its spec's type, range,
+        and choices constraints.
 
         Parameters
         ----------
         kwargs : Dict[str, Any]
-            The keyword arguments passed to the processor method.
+            Runtime keyword arguments.  May contain non-param keys
+            (e.g. ``progress_callback``, detection inputs); those are
+            ignored.
+
+        Returns
+        -------
+        Dict[str, Any]
+            ``{param_name: resolved_value}`` for every declared param.
 
         Raises
         ------
-        ValueError
-            If a required parameter is missing, or a value violates
-            range or choices constraints.
         TypeError
             If a value has the wrong type.
+        ValueError
+            If a value violates range or choices constraints.
         """
-        for spec in self.tunable_parameter_specs:
-            if spec.name not in kwargs:
-                if spec.required:
-                    raise ValueError(
-                        f"Required tunable parameter '{spec.name}' not provided. "
-                        f"Description: {spec.description}"
-                    )
-                continue
-
-            value = kwargs[spec.name]
-
-            # Type check: allow int for float
-            if spec.param_type is float:
-                if not isinstance(value, (int, float)):
-                    raise TypeError(
-                        f"Tunable parameter '{spec.name}' must be "
-                        f"{spec.param_type.__name__}, got {type(value).__name__}"
-                    )
+        resolved: Dict[str, Any] = {}
+        for spec in type(self).__param_specs__:
+            if spec.name in kwargs:
+                value = kwargs[spec.name]
             else:
-                if not isinstance(value, spec.param_type):
-                    raise TypeError(
-                        f"Tunable parameter '{spec.name}' must be "
-                        f"{spec.param_type.__name__}, got {type(value).__name__}"
-                    )
+                value = getattr(self, spec.name)
+            spec.validate(value)
+            resolved[spec.name] = value
+        return resolved
 
-            # Range constraints
-            if spec.min_value is not None and value < spec.min_value:
-                raise ValueError(
-                    f"Tunable parameter '{spec.name}' value {value!r} "
-                    f"is below minimum {spec.min_value!r}"
-                )
-            if spec.max_value is not None and value > spec.max_value:
-                raise ValueError(
-                    f"Tunable parameter '{spec.name}' value {value!r} "
-                    f"is above maximum {spec.max_value!r}"
-                )
-
-            # Choices constraint
-            if spec.choices is not None and value not in spec.choices:
-                raise ValueError(
-                    f"Tunable parameter '{spec.name}' value {value!r} "
-                    f"is not in allowed choices {spec.choices!r}"
-                )
-
-    def _get_tunable_parameter(
-        self, name: str, kwargs: Dict[str, Any]
-    ) -> Any:
-        """
-        Extract a tunable parameter from kwargs, falling back to its default.
-
-        Looks up the parameter by name in kwargs. If not present, returns
-        the default value from the matching ``TunableParameterSpec``. If
-        no matching spec exists, returns ``None``.
-
-        Parameters
-        ----------
-        name : str
-            The keyword argument name for the tunable parameter.
-        kwargs : Dict[str, Any]
-            The keyword arguments passed to the processor method.
-
-        Returns
-        -------
-        Any
-            The parameter value if present in kwargs, the spec's default
-            if not present and a default exists, or None if no matching
-            spec is found.
-        """
-        if name in kwargs:
-            return kwargs[name]
-        for spec in self.tunable_parameter_specs:
-            if spec.name == name:
-                if not spec.required:
-                    return spec.default
-                return None
-        return None
-
-
+    # -----------------------------------------------------------------
+    # Progress reporting (unchanged)
+    # -----------------------------------------------------------------
     def _report_progress(
         self, kwargs: Dict[str, Any], fraction: float
     ) -> None:

@@ -42,13 +42,14 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -115,19 +116,12 @@ class ContrastEnhancer(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(
-        self,
-        saturated: float = 0.35,
-        equalize: bool = False,
-        normalize: bool = False,
-    ) -> None:
-        if not (0.0 <= saturated < 100.0):
-            raise ValueError(
-                f"saturated must be in [0, 100), got {saturated}"
-            )
-        self.saturated = saturated
-        self.equalize = equalize
-        self.normalize = normalize
+    saturated: Annotated[float, Range(min=0.0, max=99.99),
+                          Desc('Saturation percentage')] = 0.35
+    equalize: Annotated[bool, Desc('Histogram equalization instead of stretch')] = False
+    normalize: Annotated[bool, Desc('Normalize output to [0, 1]')] = False
+
+    def __post_init__(self):
         self.min_val_: float = 0.0
         self.max_val_: float = 0.0
 
@@ -154,14 +148,16 @@ class ContrastEnhancer(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
         image = source.astype(np.float64)
 
-        if self.equalize:
-            return self._equalize(image)
+        if p['equalize']:
+            return self._equalize(image, p)
 
-        return self._linear_stretch(image)
+        return self._linear_stretch(image, p)
 
-    def _linear_stretch(self, image: np.ndarray) -> np.ndarray:
+    def _linear_stretch(self, image: np.ndarray, p: dict) -> np.ndarray:
         """Apply linear histogram stretching with saturation."""
         vmin = image.min()
         vmax = image.max()
@@ -172,7 +168,7 @@ class ContrastEnhancer(ImageTransform):
             return image.copy()
 
         # Compute percentile clip values
-        half_sat = self.saturated / 2.0
+        half_sat = p['saturated'] / 2.0
         low_clip = np.percentile(image, half_sat)
         high_clip = np.percentile(image, 100.0 - half_sat)
 
@@ -185,7 +181,7 @@ class ContrastEnhancer(ImageTransform):
         # Clip and stretch
         result = np.clip(image, low_clip, high_clip)
 
-        if self.normalize:
+        if p['normalize']:
             result = (result - low_clip) / (high_clip - low_clip)
         else:
             result = (result - low_clip) / (high_clip - low_clip) * \
@@ -193,7 +189,7 @@ class ContrastEnhancer(ImageTransform):
 
         return result
 
-    def _equalize(self, image: np.ndarray) -> np.ndarray:
+    def _equalize(self, image: np.ndarray, p: dict) -> np.ndarray:
         """Apply global histogram equalization."""
         vmin = image.min()
         vmax = image.max()
@@ -226,7 +222,7 @@ class ContrastEnhancer(ImageTransform):
         self.min_val_ = vmin
         self.max_val_ = vmax
 
-        if not self.normalize:
+        if not p['normalize']:
             result = result * (vmax - vmin) + vmin
 
         return result

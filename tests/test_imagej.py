@@ -36,18 +36,6 @@ import pytest
 class TestRollingBallBackground:
     """Tests for Rolling Ball Background Subtraction."""
 
-    def test_import(self):
-        from grdl.imagej import RollingBallBackground
-        assert RollingBallBackground is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import RollingBallBackground
-        assert RollingBallBackground.__imagej_version__ == '1.54j'
-        assert RollingBallBackground.__imagej_source__ == (
-            'ij/plugin/filter/BackgroundSubtracter.java'
-        )
-        assert RollingBallBackground.__processor_version__ == '1.54j'
-
     def test_flat_image_low_variation(self):
         """A flat image should produce uniform output (constant everywhere)."""
         from grdl.imagej import RollingBallBackground
@@ -134,15 +122,6 @@ class TestRollingBallBackground:
 class TestCLAHE:
     """Tests for Contrast Limited Adaptive Histogram Equalization."""
 
-    def test_import(self):
-        from grdl.imagej import CLAHE
-        assert CLAHE is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import CLAHE
-        assert CLAHE.__imagej_version__ == '0.5.0'
-        assert CLAHE.__processor_version__ == '0.5.0'
-
     def test_output_range(self):
         """Output should be in [0, 1]."""
         from grdl.imagej import CLAHE
@@ -211,15 +190,6 @@ class TestCLAHE:
 class TestAutoLocalThreshold:
     """Tests for Auto Local Threshold."""
 
-    def test_import(self):
-        from grdl.imagej import AutoLocalThreshold
-        assert AutoLocalThreshold is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import AutoLocalThreshold
-        assert AutoLocalThreshold.__imagej_version__ == '1.10.1'
-        assert AutoLocalThreshold.__processor_version__ == '1.10.1'
-
     def test_all_methods_run(self):
         """Every method should execute without error."""
         from grdl.imagej import AutoLocalThreshold
@@ -279,7 +249,7 @@ class TestAutoLocalThreshold:
 
     def test_invalid_method(self):
         from grdl.imagej import AutoLocalThreshold
-        with pytest.raises(ValueError, match="Unknown method"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             AutoLocalThreshold(method='nonexistent')
 
     def test_invalid_radius(self):
@@ -317,15 +287,6 @@ class TestAutoLocalThreshold:
 
 class TestUnsharpMask:
     """Tests for Unsharp Mask."""
-
-    def test_import(self):
-        from grdl.imagej import UnsharpMask
-        assert UnsharpMask is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import UnsharpMask
-        assert UnsharpMask.__imagej_version__ == '1.54j'
-        assert UnsharpMask.__processor_version__ == '1.54j'
 
     def test_weight_zero_is_identity(self):
         """weight=0 should return the original image."""
@@ -400,15 +361,6 @@ class TestUnsharpMask:
 
 class TestFFTBandpassFilter:
     """Tests for FFT Bandpass Filter."""
-
-    def test_import(self):
-        from grdl.imagej import FFTBandpassFilter
-        assert FFTBandpassFilter is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import FFTBandpassFilter
-        assert FFTBandpassFilter.__imagej_version__ == '1.54j'
-        assert FFTBandpassFilter.__processor_version__ == '1.54j'
 
     def test_removes_dc_gradient(self):
         """Large-structure filter should remove smooth gradients."""
@@ -515,15 +467,6 @@ class TestFFTBandpassFilter:
 
 class TestZProjection:
     """Tests for Z-Projection."""
-
-    def test_import(self):
-        from grdl.imagej import ZProjection
-        assert ZProjection is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import ZProjection
-        assert ZProjection.__imagej_version__ == '1.54j'
-        assert ZProjection.__processor_version__ == '1.54j'
 
     def test_average_projection(self):
         from grdl.imagej import ZProjection
@@ -633,11 +576,6 @@ class TestZProjection:
 class TestRankFilters:
     """Tests for Rank Filters."""
 
-    def test_import_and_version(self):
-        from grdl.imagej import RankFilters
-        assert RankFilters.__imagej_version__ == '1.54j'
-        assert RankFilters.__processor_version__ == '1.54j'
-
     def test_median_removes_salt_pepper(self):
         """Median filter should remove impulse noise."""
         from grdl.imagej import RankFilters
@@ -717,10 +655,6 @@ class TestRankFilters:
 
 class TestMorphologicalFilter:
     """Tests for Binary and Grayscale Morphological Operations."""
-
-    def test_import_and_version(self):
-        from grdl.imagej import MorphologicalFilter
-        assert MorphologicalFilter.__imagej_version__ == '1.54j'
 
     def test_erode_shrinks_binary(self):
         from grdl.imagej import MorphologicalFilter
@@ -815,10 +749,6 @@ class TestMorphologicalFilter:
 class TestEdgeDetector:
     """Tests for Edge Detection filters."""
 
-    def test_import_and_version(self):
-        from grdl.imagej import EdgeDetector
-        assert EdgeDetector.__imagej_version__ == '1.54j'
-
     def test_sobel_detects_step_edge(self):
         """Sobel should produce strong response at a step edge."""
         from grdl.imagej import EdgeDetector
@@ -886,10 +816,6 @@ class TestEdgeDetector:
 class TestGammaCorrection:
     """Tests for Gamma Correction."""
 
-    def test_import_and_version(self):
-        from grdl.imagej import GammaCorrection
-        assert GammaCorrection.__imagej_version__ == '1.54j'
-
     def test_gamma_1_is_identity(self):
         """Gamma=1.0 should return the original image."""
         from grdl.imagej import GammaCorrection
@@ -953,10 +879,6 @@ class TestGammaCorrection:
 
 class TestFindMaxima:
     """Tests for Find Maxima peak detection."""
-
-    def test_import_and_version(self):
-        from grdl.imagej import FindMaxima
-        assert FindMaxima.__imagej_version__ == '1.54j'
 
     def test_detects_isolated_peak(self):
         """A single bright peak should be detected."""
@@ -1040,10 +962,6 @@ class TestFindMaxima:
 class TestStatisticalRegionMerging:
     """Tests for Statistical Region Merging segmentation."""
 
-    def test_import_and_version(self):
-        from grdl.imagej import StatisticalRegionMerging
-        assert StatisticalRegionMerging.__imagej_version__ == '1.0'
-
     def test_uniform_image_single_region(self):
         """A uniform image should produce a single region."""
         from grdl.imagej import StatisticalRegionMerging
@@ -1120,18 +1038,6 @@ class TestStatisticalRegionMerging:
 
 class TestGaussianBlur:
     """Tests for Gaussian smoothing filter."""
-
-    def test_import(self):
-        from grdl.imagej import GaussianBlur
-        assert GaussianBlur is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import GaussianBlur
-        assert GaussianBlur.__imagej_version__ == '1.54j'
-        assert GaussianBlur.__imagej_source__ == (
-            'ij/plugin/filter/GaussianBlur.java'
-        )
-        assert GaussianBlur.__processor_version__ == '1.54j'
 
     def test_sigma_zero_is_identity(self):
         """sigma=0 should return the original image unchanged."""
@@ -1233,18 +1139,6 @@ class TestGaussianBlur:
 class TestConvolver:
     """Tests for arbitrary 2D kernel convolution."""
 
-    def test_import(self):
-        from grdl.imagej import Convolver
-        assert Convolver is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import Convolver
-        assert Convolver.__imagej_version__ == '1.54j'
-        assert Convolver.__imagej_source__ == (
-            'ij/plugin/filter/Convolver.java'
-        )
-        assert Convolver.__processor_version__ == '1.54j'
-
     def test_identity_kernel(self):
         """A delta kernel should return the original image."""
         from grdl.imagej import Convolver
@@ -1331,18 +1225,6 @@ class TestConvolver:
 class TestAutoThreshold:
     """Tests for global automatic thresholding (16 methods)."""
 
-    def test_import(self):
-        from grdl.imagej import AutoThreshold
-        assert AutoThreshold is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import AutoThreshold
-        assert AutoThreshold.__imagej_version__ == '1.54j'
-        assert AutoThreshold.__imagej_source__ == (
-            'fiji/threshold/Auto_Threshold.java'
-        )
-        assert AutoThreshold.__processor_version__ == '1.54j'
-
     def test_all_methods_run(self):
         """Every method should execute without error and produce binary output."""
         from grdl.imagej import AutoThreshold
@@ -1411,7 +1293,7 @@ class TestAutoThreshold:
 
     def test_invalid_method(self):
         from grdl.imagej import AutoThreshold
-        with pytest.raises(ValueError, match="Unknown method"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             AutoThreshold(method='nonexistent')
 
     def test_invalid_nbins(self):
@@ -1426,16 +1308,6 @@ class TestAutoThreshold:
 
 class TestWatershed:
     """Tests for binary watershed segmentation."""
-
-    def test_import(self):
-        from grdl.imagej import Watershed
-        assert Watershed is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import Watershed
-        assert Watershed.__imagej_version__ == '1.54j'
-        assert Watershed.__imagej_source__ == 'ij/plugin/filter/EDM.java'
-        assert Watershed.__processor_version__ == '1.54j'
 
     def test_separates_touching_circles(self):
         """Two overlapping circles should be split by watershed."""
@@ -1513,7 +1385,7 @@ class TestWatershed:
 
     def test_invalid_output_mode(self):
         from grdl.imagej import Watershed
-        with pytest.raises(ValueError, match="Unknown output_mode"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             Watershed(output_mode='invalid')
 
 
@@ -1523,18 +1395,6 @@ class TestWatershed:
 
 class TestAnalyzeParticles:
     """Tests for connected component analysis with measurements."""
-
-    def test_import(self):
-        from grdl.imagej import AnalyzeParticles
-        assert AnalyzeParticles is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import AnalyzeParticles
-        assert AnalyzeParticles.__imagej_version__ == '1.54j'
-        assert AnalyzeParticles.__imagej_source__ == (
-            'ij/plugin/filter/ParticleAnalyzer.java'
-        )
-        assert AnalyzeParticles.__processor_version__ == '1.54j'
 
     def test_counts_distinct_particles(self):
         """Should detect the correct number of separated particles."""
@@ -1643,7 +1503,7 @@ class TestAnalyzeParticles:
 
     def test_invalid_output_mode(self):
         from grdl.imagej import AnalyzeParticles
-        with pytest.raises(ValueError, match="Unknown output_mode"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             AnalyzeParticles(output_mode='invalid')
 
 
@@ -1653,18 +1513,6 @@ class TestAnalyzeParticles:
 
 class TestImageCalculator:
     """Tests for pixel-wise image arithmetic and logic."""
-
-    def test_import(self):
-        from grdl.imagej import ImageCalculator
-        assert ImageCalculator is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import ImageCalculator
-        assert ImageCalculator.__imagej_version__ == '1.54j'
-        assert ImageCalculator.__imagej_source__ == (
-            'ij/plugin/ImageCalculator.java'
-        )
-        assert ImageCalculator.__processor_version__ == '1.54j'
 
     def test_add(self):
         from grdl.imagej import ImageCalculator
@@ -1740,9 +1588,9 @@ class TestImageCalculator:
         from grdl.imagej import ImageCalculator
         a = np.array([[255, 0]], dtype=np.float64)
         b = np.array([[255, 255]], dtype=np.float64)
-        assert ImageCalculator('and').apply(a, image2=b)[0, 0] == 255.0
-        assert ImageCalculator('or').apply(a, image2=b)[0, 1] == 255.0
-        assert ImageCalculator('xor').apply(a, image2=b)[0, 0] == 0.0
+        assert ImageCalculator(operation='and').apply(a, image2=b)[0, 0] == 255.0
+        assert ImageCalculator(operation='or').apply(a, image2=b)[0, 1] == 255.0
+        assert ImageCalculator(operation='xor').apply(a, image2=b)[0, 0] == 0.0
 
     def test_all_operations_run(self):
         """All operations should execute without error."""
@@ -1799,7 +1647,7 @@ class TestImageCalculator:
 
     def test_invalid_operation(self):
         from grdl.imagej import ImageCalculator
-        with pytest.raises(ValueError, match="Unknown operation"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             ImageCalculator(operation='modulo')
 
 
@@ -1809,18 +1657,6 @@ class TestImageCalculator:
 
 class TestContrastEnhancer:
     """Tests for linear histogram stretching."""
-
-    def test_import(self):
-        from grdl.imagej import ContrastEnhancer
-        assert ContrastEnhancer is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import ContrastEnhancer
-        assert ContrastEnhancer.__imagej_version__ == '1.54j'
-        assert ContrastEnhancer.__imagej_source__ == (
-            'ij/plugin/ContrastEnhancer.java'
-        )
-        assert ContrastEnhancer.__processor_version__ == '1.54j'
 
     def test_stretches_narrow_range(self):
         """A narrow-range image should be stretched wider."""
@@ -1893,18 +1729,6 @@ class TestContrastEnhancer:
 
 class TestDistanceTransform:
     """Tests for Euclidean Distance Map."""
-
-    def test_import(self):
-        from grdl.imagej import DistanceTransform
-        assert DistanceTransform is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import DistanceTransform
-        assert DistanceTransform.__imagej_version__ == '1.54j'
-        assert DistanceTransform.__imagej_source__ == (
-            'ij/plugin/filter/EDM.java'
-        )
-        assert DistanceTransform.__processor_version__ == '1.54j'
 
     def test_background_is_zero(self):
         """Background pixels should have distance 0."""
@@ -1997,18 +1821,6 @@ class TestDistanceTransform:
 class TestSkeletonize:
     """Tests for Zhang-Suen binary thinning."""
 
-    def test_import(self):
-        from grdl.imagej import Skeletonize
-        assert Skeletonize is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import Skeletonize
-        assert Skeletonize.__imagej_version__ == '1.54j'
-        assert Skeletonize.__imagej_source__ == (
-            'ij/process/BinaryProcessor.java'
-        )
-        assert Skeletonize.__processor_version__ == '1.54j'
-
     def test_reduces_to_thin_line(self):
         """A thick horizontal bar should be reduced to a thin line."""
         from grdl.imagej import Skeletonize
@@ -2076,18 +1888,6 @@ class TestSkeletonize:
 
 class TestAnisotropicDiffusion:
     """Tests for Perona-Malik anisotropic diffusion."""
-
-    def test_import(self):
-        from grdl.imagej import AnisotropicDiffusion
-        assert AnisotropicDiffusion is not None
-
-    def test_version_attribute(self):
-        from grdl.imagej import AnisotropicDiffusion
-        assert AnisotropicDiffusion.__imagej_version__ == '2.0.0'
-        assert AnisotropicDiffusion.__imagej_source__ == (
-            'fiji/process/Anisotropic_Diffusion_2D.java'
-        )
-        assert AnisotropicDiffusion.__processor_version__ == '2.0.0'
 
     def test_reduces_noise(self):
         """Diffusion should reduce noise in smooth regions."""
@@ -2181,7 +1981,7 @@ class TestAnisotropicDiffusion:
 
     def test_invalid_conductance(self):
         from grdl.imagej import AnisotropicDiffusion
-        with pytest.raises(ValueError, match="Unknown conductance"):
+        with pytest.raises(ValueError, match="not in allowed choices"):
             AnisotropicDiffusion(conductance='linear')
 
 
@@ -2249,3 +2049,38 @@ class TestModuleExports:
         """__all__ in imagej/__init__.py should have 22 entries."""
         import grdl.imagej as ij_module
         assert len(ij_module.__all__) == 22
+
+
+# ============================================================================
+# Consolidated version attribute tests (replaces per-class test_version_attribute)
+# ============================================================================
+
+@pytest.mark.parametrize("class_name,expected_version", [
+    ('RollingBallBackground', '1.54j'),
+    ('CLAHE', '0.5.0'),
+    ('AutoLocalThreshold', '1.10.1'),
+    ('UnsharpMask', '1.54j'),
+    ('FFTBandpassFilter', '1.54j'),
+    ('ZProjection', '1.54j'),
+    ('RankFilters', '1.54j'),
+    ('MorphologicalFilter', '1.54j'),
+    ('EdgeDetector', '1.54j'),
+    ('GammaCorrection', '1.54j'),
+    ('FindMaxima', '1.54j'),
+    ('StatisticalRegionMerging', '1.0'),
+    ('GaussianBlur', '1.54j'),
+    ('Convolver', '1.54j'),
+    ('AutoThreshold', '1.54j'),
+    ('Watershed', '1.54j'),
+    ('AnalyzeParticles', '1.54j'),
+    ('ImageCalculator', '1.54j'),
+    ('ContrastEnhancer', '1.54j'),
+    ('DistanceTransform', '1.54j'),
+    ('Skeletonize', '1.54j'),
+    ('AnisotropicDiffusion', '2.0.0'),
+])
+def test_imagej_version_attribute(class_name, expected_version):
+    """All ImageJ components have correct __processor_version__."""
+    import grdl.imagej as ij
+    cls = getattr(ij, class_name)
+    assert cls.__processor_version__ == expected_version

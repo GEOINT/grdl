@@ -48,14 +48,15 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -159,22 +160,9 @@ class CLAHE(ImageTransform):
     __imagej_version__ = '0.5.0'
     __gpu_compatible__ = True
 
-    def __init__(
-        self,
-        block_size: int = 127,
-        n_bins: int = 256,
-        max_slope: float = 3.0,
-    ) -> None:
-        if block_size < 2:
-            raise ValueError(f"block_size must be >= 2, got {block_size}")
-        if n_bins < 2:
-            raise ValueError(f"n_bins must be >= 2, got {n_bins}")
-        if max_slope < 1.0:
-            raise ValueError(f"max_slope must be >= 1.0, got {max_slope}")
-
-        self.block_size = block_size
-        self.n_bins = n_bins
-        self.max_slope = max_slope
+    block_size: Annotated[int, Range(min=2), Desc('Tile side length in pixels')] = 127
+    n_bins: Annotated[int, Range(min=2), Desc('Number of histogram bins')] = 256
+    max_slope: Annotated[float, Range(min=1.0), Desc('Maximum CDF slope (clip limit)')] = 3.0
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply CLAHE to a 2D image (vectorized).
@@ -213,9 +201,11 @@ class CLAHE(ImageTransform):
             return np.zeros_like(image, dtype=np.float64)
         image = (image - vmin) / (vmax - vmin)
 
+        p = self._resolve_params(kwargs)
+
         rows, cols = image.shape
-        bs = self.block_size
-        n_bins = self.n_bins
+        bs = p['block_size']
+        n_bins = p['n_bins']
 
         n_tiles_r = max(2, (rows + bs - 1) // bs)
         n_tiles_c = max(2, (cols + bs - 1) // bs)
@@ -228,7 +218,7 @@ class CLAHE(ImageTransform):
         ).astype(int)
 
         block_pixels = bs * bs
-        clip_limit = max(1, int(self.max_slope * block_pixels / n_bins))
+        clip_limit = max(1, int(p['max_slope'] * block_pixels / n_bins))
 
         # Compute CDFs for all tiles
         cdfs = np.zeros((n_tiles_r, n_tiles_c, n_bins), dtype=np.float64)

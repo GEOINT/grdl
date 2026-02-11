@@ -44,14 +44,15 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Options, Range
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -225,30 +226,12 @@ class FFTBandpassFilter(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(
-        self,
-        filter_large: float = 40.0,
-        filter_small: float = 3.0,
-        suppress_stripes: Optional[str] = None,
-        stripe_tolerance: float = 5.0,
-        autoscale: bool = True,
-    ) -> None:
-        if filter_large < 0:
-            raise ValueError(f"filter_large must be >= 0, got {filter_large}")
-        if filter_small < 0:
-            raise ValueError(f"filter_small must be >= 0, got {filter_small}")
-        if suppress_stripes is not None:
-            if suppress_stripes not in ('horizontal', 'vertical'):
-                raise ValueError(
-                    f"suppress_stripes must be 'horizontal', 'vertical', "
-                    f"or None, got {suppress_stripes!r}"
-                )
-
-        self.filter_large = filter_large
-        self.filter_small = filter_small
-        self.suppress_stripes = suppress_stripes
-        self.stripe_tolerance = stripe_tolerance
-        self.autoscale = autoscale
+    filter_large: Annotated[float, Range(min=0), Desc('Cutoff size for large structures (pixels)')] = 40.0
+    filter_small: Annotated[float, Range(min=0), Desc('Cutoff size for small structures (pixels)')] = 3.0
+    suppress_stripes: Annotated[object, Options(None, 'horizontal', 'vertical'),
+                                Desc('Direction of stripes to suppress')] = None
+    stripe_tolerance: Annotated[float, Range(min=0), Desc('Angular tolerance for stripe suppression')] = 5.0
+    autoscale: Annotated[bool, Desc('Normalize result to input statistics')] = True
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply FFT bandpass filter.
@@ -273,6 +256,7 @@ class FFTBandpassFilter(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
         image = source.astype(np.float64)
         orig_mean = image.mean()
         orig_std = image.std()
@@ -298,17 +282,17 @@ class FFTBandpassFilter(ImageTransform):
         # Build combined mask
         mask = np.ones((pad_rows, pad_cols), dtype=np.float64)
 
-        if self.filter_large > 0 or self.filter_small > 0:
+        if p['filter_large'] > 0 or p['filter_small'] > 0:
             bp_mask = _make_bandpass_mask(
-                (pad_rows, pad_cols), self.filter_large, self.filter_small
+                (pad_rows, pad_cols), p['filter_large'], p['filter_small']
             )
             mask *= bp_mask
 
-        if self.suppress_stripes is not None:
+        if p['suppress_stripes'] is not None:
             stripe_mask = _make_stripe_mask(
                 (pad_rows, pad_cols),
-                self.suppress_stripes,
-                self.stripe_tolerance,
+                p['suppress_stripes'],
+                p['stripe_tolerance'],
             )
             mask *= stripe_mask
 
@@ -322,7 +306,7 @@ class FFTBandpassFilter(ImageTransform):
         result = result_padded[:rows, :cols]
 
         # Autoscale to match input statistics
-        if self.autoscale:
+        if p['autoscale']:
             result_std = result.std()
             result_mean = result.mean()
             if result_std > 1e-15:

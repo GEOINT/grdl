@@ -47,13 +47,14 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -168,34 +169,10 @@ class AnisotropicDiffusion(ImageTransform):
 
     CONDUCTANCE_FUNCS = ('exponential', 'quadratic')
 
-    def __init__(
-        self,
-        n_iterations: int = 20,
-        kappa: float = 20.0,
-        gamma: float = 0.1,
-        conductance: str = 'exponential',
-    ) -> None:
-        if n_iterations < 1:
-            raise ValueError(
-                f"n_iterations must be >= 1, got {n_iterations}"
-            )
-        if kappa <= 0:
-            raise ValueError(f"kappa must be > 0, got {kappa}")
-        if not (0 < gamma <= 0.25):
-            raise ValueError(
-                f"gamma must be in (0, 0.25], got {gamma}"
-            )
-        cond_lower = conductance.lower()
-        if cond_lower not in self.CONDUCTANCE_FUNCS:
-            raise ValueError(
-                f"Unknown conductance '{conductance}'. "
-                f"Must be one of {self.CONDUCTANCE_FUNCS}"
-            )
-
-        self.n_iterations = n_iterations
-        self.kappa = kappa
-        self.gamma = gamma
-        self.conductance = cond_lower
+    n_iterations: Annotated[int, Range(min=1), Desc('Number of diffusion iterations')] = 20
+    kappa: Annotated[float, Range(min=0.001), Desc('Conductance parameter (gradient threshold)')] = 20.0
+    gamma: Annotated[float, Range(min=0.001, max=0.25), Desc('Integration constant (time step)')] = 0.1
+    conductance: Annotated[str, Options('exponential', 'quadratic'), Desc('Conductance function')] = 'exponential'
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply anisotropic diffusion to a 2D image.
@@ -222,23 +199,25 @@ class AnisotropicDiffusion(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
         is_complex = np.iscomplexobj(source)
         if is_complex:
             image = source.astype(np.complex128)
         else:
             image = source.astype(np.float64)
 
-        kappa_sq = self.kappa * self.kappa
+        kappa_sq = p['kappa'] * p['kappa']
 
         # Select conductance function
-        if self.conductance == 'exponential':
+        if p['conductance'] == 'exponential':
             g_func = _conductance_exp
         else:
             g_func = _conductance_inv
 
         result = image.copy()
 
-        for _ in range(self.n_iterations):
+        for _ in range(p['n_iterations']):
             # Compute gradients in 4 directions using finite differences
             # Pad with replicate boundary to avoid edge effects
             padded = np.pad(result, 1, mode='edge')
@@ -272,7 +251,7 @@ class AnisotropicDiffusion(ImageTransform):
             # Update: accumulate weighted flux from all directions.
             # For complex data, real-valued conductance * complex delta
             # preserves the phase of the diffusion flux.
-            result += self.gamma * (
+            result += p['gamma'] * (
                 c_n * delta_n + c_s * delta_s +
                 c_e * delta_e + c_w * delta_w
             )

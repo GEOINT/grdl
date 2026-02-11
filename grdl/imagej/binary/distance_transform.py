@@ -50,7 +50,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Tuple
+from typing import Annotated, Any, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -58,6 +58,7 @@ from scipy.ndimage import distance_transform_edt
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -115,22 +116,20 @@ class DistanceTransform(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(
-        self,
-        normalize: bool = False,
-        pixel_size: Optional[Tuple[float, float]] = None,
-    ) -> None:
-        self.normalize = normalize
-        if pixel_size is not None:
-            if len(pixel_size) != 2:
+    normalize: Annotated[bool, Desc('Normalize output to [0, 1]')] = False
+    pixel_size: Annotated[object, Desc('Pixel spacing (row, col)')] = None
+
+    def __post_init__(self):
+        if self.pixel_size is not None:
+            if len(self.pixel_size) != 2:
                 raise ValueError(
-                    f"pixel_size must have 2 elements, got {len(pixel_size)}"
+                    f"pixel_size must have 2 elements, got {len(self.pixel_size)}"
                 )
-            if any(p <= 0 for p in pixel_size):
+            if any(p <= 0 for p in self.pixel_size):
                 raise ValueError(
-                    f"pixel_size values must be > 0, got {pixel_size}"
+                    f"pixel_size values must be > 0, got {self.pixel_size}"
                 )
-            self.pixel_size = tuple(float(p) for p in pixel_size)
+            self.pixel_size = tuple(float(p) for p in self.pixel_size)
         else:
             self.pixel_size = (1.0, 1.0)
 
@@ -159,14 +158,19 @@ class DistanceTransform(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        normalize = p['normalize']
+        pixel_size = p['pixel_size']
+
         mask = source.astype(np.float64) > 0
 
         if not mask.any():
             return np.zeros_like(source, dtype=np.float64)
 
-        edt = distance_transform_edt(mask, sampling=self.pixel_size)
+        edt = distance_transform_edt(mask, sampling=pixel_size)
 
-        if self.normalize:
+        if normalize:
             edt_max = edt.max()
             if edt_max > 0:
                 edt = edt / edt_max

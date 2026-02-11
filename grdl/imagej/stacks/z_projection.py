@@ -39,14 +39,15 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Options
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -115,6 +116,8 @@ class ZProjection(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
+    method: Annotated[str, Options(*PROJECTION_METHODS), Desc('Projection method')] = 'max'
+
     def __init__(
         self,
         method: str = 'max',
@@ -154,6 +157,10 @@ class ZProjection(ImageTransform):
                 f"Expected 3D stack (slices, rows, cols), got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        method = p['method']
+
         stack = source.astype(np.float64)
 
         # Slice range
@@ -164,17 +171,17 @@ class ZProjection(ImageTransform):
         if stack.shape[0] == 0:
             raise ValueError("Empty stack after slicing")
 
-        if self.method == 'average':
+        if method == 'average':
             return np.mean(stack, axis=0)
-        elif self.method == 'max':
+        elif method == 'max':
             return np.max(stack, axis=0)
-        elif self.method == 'min':
+        elif method == 'min':
             return np.min(stack, axis=0)
-        elif self.method == 'sum':
+        elif method == 'sum':
             return np.sum(stack, axis=0)
-        elif self.method == 'std':
+        elif method == 'std':
             return np.std(stack, axis=0, ddof=0)
-        elif self.method == 'median':
+        elif method == 'median':
             return np.median(stack, axis=0)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown method: {method}")

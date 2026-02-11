@@ -46,7 +46,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 # Third-party
 import numpy as np
@@ -62,6 +62,7 @@ from scipy.ndimage import (
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -170,33 +171,10 @@ class MorphologicalFilter(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        operation: str = 'erode',
-        radius: int = 1,
-        kernel_shape: str = 'square',
-        iterations: int = 1,
-    ) -> None:
-        op_lower = operation.lower()
-        if op_lower not in MORPHOLOGY_OPERATIONS:
-            raise ValueError(
-                f"Unknown operation '{operation}'. "
-                f"Must be one of {MORPHOLOGY_OPERATIONS}"
-            )
-        if kernel_shape.lower() not in KERNEL_SHAPES:
-            raise ValueError(
-                f"Unknown kernel_shape '{kernel_shape}'. "
-                f"Must be one of {KERNEL_SHAPES}"
-            )
-        if radius < 1:
-            raise ValueError(f"radius must be >= 1, got {radius}")
-        if iterations < 1:
-            raise ValueError(f"iterations must be >= 1, got {iterations}")
-
-        self.operation = op_lower
-        self.radius = radius
-        self.kernel_shape = kernel_shape.lower()
-        self.iterations = iterations
+    operation: Annotated[str, Options(*MORPHOLOGY_OPERATIONS), Desc('Morphological operation')] = 'erode'
+    radius: Annotated[int, Range(min=1), Desc('Structuring element half-size')] = 1
+    kernel_shape: Annotated[str, Options(*KERNEL_SHAPES), Desc('Structuring element shape')] = 'square'
+    iterations: Annotated[int, Range(min=1), Desc('Number of iterations')] = 1
 
     def _is_binary(self, image: np.ndarray) -> bool:
         """Check if image is binary (only 0 and 1 values)."""
@@ -284,32 +262,38 @@ class MorphologicalFilter(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
-        image = source.astype(np.float64)
-        se = _make_structuring_element(self.kernel_shape, self.radius)
+        p = self._resolve_params(kwargs)
 
-        if self.operation == 'erode':
+        operation = p['operation']
+        kernel_shape = p['kernel_shape']
+        radius = p['radius']
+
+        image = source.astype(np.float64)
+        se = _make_structuring_element(kernel_shape, radius)
+
+        if operation == 'erode':
             return self._erode(image, se)
 
-        elif self.operation == 'dilate':
+        elif operation == 'dilate':
             return self._dilate(image, se)
 
-        elif self.operation == 'open':
+        elif operation == 'open':
             return self._open(image, se)
 
-        elif self.operation == 'close':
+        elif operation == 'close':
             return self._close(image, se)
 
-        elif self.operation == 'tophat':
+        elif operation == 'tophat':
             opened = self._open(image, se)
             return image - opened
 
-        elif self.operation == 'blackhat':
+        elif operation == 'blackhat':
             closed = self._close(image, se)
             return closed - image
 
-        elif self.operation == 'gradient':
+        elif operation == 'gradient':
             dilated = self._dilate(image, se)
             eroded = self._erode(image, se)
             return dilated - eroded
 
-        raise ValueError(f"Unknown operation: {self.operation}")
+        raise ValueError(f"Unknown operation: {operation}")

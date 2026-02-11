@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Tunable Parameter Tests.
+Annotated Tunable Parameter Tests.
 
-Tests for TunableParameterSpec declaration, validation, type checking,
-default value resolution, range enforcement, and choices constraints
-on ImageProcessor subclasses.
+Tests for the typing.Annotated-based tunable parameter system: constraint
+markers (Range, Options, Desc), ParamSpec introspection, __init_subclass__
+annotation collection, auto-generated __init__, __post_init__ hook,
+_resolve_params runtime resolution, validation, and inheritance.
 
 Author
 ------
-Duane Smalley, PhD
-duane.d.smalley@gmail.com
+Steven Siebert
 
 License
 -------
@@ -19,426 +19,677 @@ See LICENSE file for full text.
 
 Created
 -------
-2026-02-06
+2026-02-10
 
 Modified
 --------
-2026-02-06
+2026-02-10
 """
+
+from typing import Annotated
 
 import numpy as np
 import pytest
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform
-from grdl.image_processing.versioning import (
-    TunableParameterSpec,
-    _NO_DEFAULT,
-    _NoDefault,
-    processor_version,
+from grdl.image_processing.params import (
+    Desc,
+    Options,
+    ParamMeta,
+    ParamSpec,
+    Range,
+    collect_param_specs,
+    _make_init,
 )
+from grdl.image_processing.versioning import processor_version
 
 
 # ---------------------------------------------------------------------------
-# TunableParameterSpec construction
+# Constraint marker construction
 # ---------------------------------------------------------------------------
 
-class TestTunableParameterSpecConstruction:
-    """Test TunableParameterSpec construction and attributes."""
+class TestRange:
+    """Test Range constraint marker."""
+
+    def test_basic(self):
+        r = Range(min=0.0, max=1.0)
+        assert r.min == 0.0
+        assert r.max == 1.0
+
+    def test_defaults_none(self):
+        r = Range()
+        assert r.min is None
+        assert r.max is None
+
+    def test_min_only(self):
+        r = Range(min=0)
+        assert r.min == 0
+        assert r.max is None
+
+    def test_max_only(self):
+        r = Range(max=100)
+        assert r.min is None
+        assert r.max == 100
+
+    def test_is_param_meta(self):
+        assert isinstance(Range(), ParamMeta)
+
+    def test_repr(self):
+        assert 'min=0' in repr(Range(min=0, max=1))
+
+
+class TestOptions:
+    """Test Options constraint marker."""
+
+    def test_basic(self):
+        o = Options('a', 'b', 'c')
+        assert o.choices == ('a', 'b', 'c')
+
+    def test_single_choice(self):
+        o = Options('only')
+        assert o.choices == ('only',)
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="at least one"):
+            Options()
+
+    def test_is_param_meta(self):
+        assert isinstance(Options('x'), ParamMeta)
+
+
+class TestDesc:
+    """Test Desc constraint marker."""
+
+    def test_basic(self):
+        d = Desc('A description')
+        assert d.text == 'A description'
+
+    def test_is_param_meta(self):
+        assert isinstance(Desc('x'), ParamMeta)
+
+
+# ---------------------------------------------------------------------------
+# ParamSpec construction and validation
+# ---------------------------------------------------------------------------
+
+class TestParamSpec:
+    """Test ParamSpec introspection data class."""
 
     def test_basic_construction(self):
-        """Spec stores name, param_type, default, and description."""
-        spec = TunableParameterSpec(
-            name='threshold',
-            param_type=float,
-            default=0.5,
-            description='Detection threshold',
+        spec = ParamSpec(
+            name='threshold', param_type=float, default=0.5,
+            has_default=True, description='A threshold',
+            min_value=0.0, max_value=1.0, choices=None,
         )
         assert spec.name == 'threshold'
         assert spec.param_type is float
         assert spec.default == 0.5
-        assert spec.description == 'Detection threshold'
+        assert spec.required is False
+        assert spec.min_value == 0.0
+        assert spec.max_value == 1.0
 
     def test_required_when_no_default(self):
-        """Spec is required when no default is provided."""
-        spec = TunableParameterSpec(
-            name='mode',
-            param_type=str,
-            description='Processing mode',
+        spec = ParamSpec(
+            name='mode', param_type=str, default=None,
+            has_default=False, description='', min_value=None,
+            max_value=None, choices=None,
         )
         assert spec.required is True
 
-    def test_not_required_when_default_provided(self):
-        """Spec is optional when a default is provided."""
-        spec = TunableParameterSpec(
-            name='alpha',
-            param_type=float,
-            default=0.5,
-        )
-        assert spec.required is False
+    def test_validate_type_correct(self):
+        spec = ParamSpec('x', float, 0.5, True, '', None, None, None)
+        spec.validate(0.7)  # no error
 
-    def test_none_is_valid_default(self):
-        """None as default means optional, not required."""
-        spec = TunableParameterSpec(
-            name='mask',
-            param_type=object,
-            default=None,
-        )
-        assert spec.required is False
-        assert spec.default is None
+    def test_validate_int_accepted_as_float(self):
+        spec = ParamSpec('x', float, 0.5, True, '', None, None, None)
+        spec.validate(1)  # no error
 
-    def test_min_max_stored(self):
-        """Range constraints are stored on the spec."""
-        spec = TunableParameterSpec(
-            name='gain',
-            param_type=float,
-            default=1.0,
-            min_value=0.0,
-            max_value=10.0,
-        )
-        assert spec.min_value == 0.0
-        assert spec.max_value == 10.0
+    def test_validate_type_wrong_raises(self):
+        spec = ParamSpec('x', float, 0.5, True, '', None, None, None)
+        with pytest.raises(TypeError, match="x"):
+            spec.validate('bad')
 
-    def test_choices_stored(self):
-        """Choices constraint is stored on the spec."""
-        spec = TunableParameterSpec(
-            name='method',
-            param_type=str,
-            default='hard',
-            choices=('hard', 'soft'),
-        )
-        assert spec.choices == ('hard', 'soft')
+    def test_validate_min_boundary(self):
+        spec = ParamSpec('x', float, 0.5, True, '', 0.0, None, None)
+        spec.validate(0.0)  # exact boundary OK
+        with pytest.raises(ValueError, match="below minimum"):
+            spec.validate(-0.1)
 
-    def test_range_and_choices_mutually_exclusive(self):
-        """Cannot specify both range and choices."""
-        with pytest.raises(ValueError, match="cannot specify both"):
-            TunableParameterSpec(
-                name='x',
-                param_type=float,
-                default=1.0,
-                min_value=0.0,
-                choices=(1.0, 2.0),
-            )
+    def test_validate_max_boundary(self):
+        spec = ParamSpec('x', float, 0.5, True, '', None, 1.0, None)
+        spec.validate(1.0)  # exact boundary OK
+        with pytest.raises(ValueError, match="above maximum"):
+            spec.validate(1.1)
+
+    def test_validate_choices_valid(self):
+        spec = ParamSpec('m', str, 'a', True, '', None, None, ('a', 'b'))
+        spec.validate('b')  # no error
+
+    def test_validate_choices_invalid(self):
+        spec = ParamSpec('m', str, 'a', True, '', None, None, ('a', 'b'))
+        with pytest.raises(ValueError, match="not in allowed choices"):
+            spec.validate('c')
 
     def test_repr_required(self):
-        """Repr for required spec omits default."""
-        spec = TunableParameterSpec(
-            name='mode',
-            param_type=str,
-        )
+        spec = ParamSpec('x', float, None, False, '', None, None, None)
         r = repr(spec)
-        assert 'mode' in r
         assert 'required=True' in r
         assert 'default=' not in r
 
-    def test_repr_optional_with_constraints(self):
-        """Repr for optional spec shows default and constraints."""
-        spec = TunableParameterSpec(
-            name='gain',
-            param_type=float,
-            default=1.0,
-            min_value=0.0,
-            max_value=10.0,
-        )
+    def test_repr_optional(self):
+        spec = ParamSpec('x', float, 0.5, True, '', 0.0, 1.0, None)
         r = repr(spec)
         assert 'required=False' in r
-        assert 'default=1.0' in r
+        assert 'default=0.5' in r
         assert 'min_value=0.0' in r
-        assert 'max_value=10.0' in r
+        assert 'max_value=1.0' in r
 
 
 # ---------------------------------------------------------------------------
-# Default specs on ImageProcessor
+# collect_param_specs
 # ---------------------------------------------------------------------------
 
-class TestTunableParameterDefaultSpecs:
-    """Test default tunable_parameter_specs behavior."""
+class TestCollectParamSpecs:
+    """Test annotation collection from Annotated class-body fields."""
 
-    def test_default_specs_empty(self):
-        """ImageTransform subclass returns empty tuple by default."""
+    def test_empty_class(self):
+        class C:
+            pass
+        assert collect_param_specs(C) == ()
+
+    def test_plain_annotations_ignored(self):
+        class C:
+            x: float = 1.0
+        assert collect_param_specs(C) == ()
+
+    def test_annotated_without_param_meta_ignored(self):
+        class C:
+            x: Annotated[float, "just a string"] = 1.0
+        assert collect_param_specs(C) == ()
+
+    def test_single_annotated_field(self):
+        class C:
+            x: Annotated[float, Range(min=0), Desc('test')] = 1.0
+
+        specs = collect_param_specs(C)
+        assert len(specs) == 1
+        assert specs[0].name == 'x'
+        assert specs[0].param_type is float
+        assert specs[0].default == 1.0
+        assert specs[0].required is False
+        assert specs[0].min_value == 0
+        assert specs[0].description == 'test'
+
+    def test_multiple_fields(self):
+        class C:
+            a: Annotated[float, Range(min=0)] = 1.0
+            b: Annotated[str, Options('x', 'y')] = 'x'
+
+        specs = collect_param_specs(C)
+        assert len(specs) == 2
+        assert specs[0].name == 'a'
+        assert specs[1].name == 'b'
+        assert specs[1].choices == ('x', 'y')
+
+    def test_required_field_no_default(self):
+        class C:
+            x: Annotated[float, Desc('required')]
+
+        specs = collect_param_specs(C)
+        assert len(specs) == 1
+        assert specs[0].required is True
+
+    def test_range_and_options_mutually_exclusive(self):
+        with pytest.raises(TypeError, match="mutually exclusive"):
+            class C:
+                x: Annotated[float, Range(min=0), Options(1, 2)] = 1.0
+            collect_param_specs(C)
+
+    def test_desc_only(self):
+        """Desc alone is enough to mark as tunable."""
+        class C:
+            x: Annotated[float, Desc('hello')] = 5.0
+
+        specs = collect_param_specs(C)
+        assert len(specs) == 1
+        assert specs[0].description == 'hello'
+        assert specs[0].min_value is None
+        assert specs[0].choices is None
+
+    def test_inheritance_merges_specs(self):
+        class Parent:
+            a: Annotated[float, Range(min=0)] = 1.0
+
+        class Child(Parent):
+            b: Annotated[int, Range(min=1)] = 5
+
+        specs = collect_param_specs(Child)
+        assert len(specs) == 2
+        names = [s.name for s in specs]
+        assert 'a' in names
+        assert 'b' in names
+
+    def test_child_overrides_parent_param(self):
+        class Parent:
+            x: Annotated[float, Range(max=10)] = 1.0
+
+        class Child(Parent):
+            x: Annotated[float, Range(max=100)] = 5.0
+
+        specs = collect_param_specs(Child)
+        assert len(specs) == 1
+        assert specs[0].name == 'x'
+        assert specs[0].max_value == 100
+        assert specs[0].default == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated __init__
+# ---------------------------------------------------------------------------
+
+class TestMakeInit:
+    """Test _make_init auto-generated constructor."""
+
+    def test_sets_attributes(self):
         @processor_version('1.0.0')
-        class _NoTunables(ImageTransform):
+        class P(ImageTransform):
+            threshold: Annotated[float, Range(min=0, max=1)] = 0.5
+
             def apply(self, source, **kwargs):
                 return source
 
-        obj = _NoTunables()
-        assert obj.tunable_parameter_specs == ()
+        p = P()
+        assert p.threshold == 0.5
 
-    def test_custom_specs(self):
-        """Subclass can override tunable_parameter_specs."""
+    def test_custom_value(self):
         @processor_version('1.0.0')
-        class _WithTunables(ImageTransform):
-            @property
-            def tunable_parameter_specs(self):
-                return (
-                    TunableParameterSpec('threshold', float, 0.5, 'A threshold'),
-                )
+        class P(ImageTransform):
+            threshold: Annotated[float, Range(min=0, max=1)] = 0.5
 
             def apply(self, source, **kwargs):
                 return source
 
-        obj = _WithTunables()
-        assert len(obj.tunable_parameter_specs) == 1
-        assert obj.tunable_parameter_specs[0].name == 'threshold'
+        p = P(threshold=0.8)
+        assert p.threshold == 0.8
 
-
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-class TestTunableParameterValidation:
-    """Test _validate_tunable_parameters on ImageProcessor."""
-
-    def _make_processor(self, specs):
-        """Create a versioned processor with given tunable specs."""
+    def test_required_missing_raises(self):
         @processor_version('1.0.0')
-        class _Proc(ImageTransform):
-            @property
-            def tunable_parameter_specs(self_inner):
-                return specs
+        class P(ImageTransform):
+            threshold: Annotated[float, Desc('required')]
 
-            def apply(self_inner, source, **kwargs):
+            def apply(self, source, **kwargs):
                 return source
 
-        return _Proc()
+        with pytest.raises(TypeError, match="missing required"):
+            P()
 
-    def test_validate_passes_all_present(self):
-        """No error when all required params are provided."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float),
-        ))
-        proc._validate_tunable_parameters({'x': 1.0})
+    def test_validation_in_init(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            threshold: Annotated[float, Range(min=0, max=1)] = 0.5
 
-    def test_validate_raises_required_missing(self):
-        """ValueError when required param is missing."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, description='Required x'),
-        ))
-        with pytest.raises(ValueError, match="x"):
-            proc._validate_tunable_parameters({})
+            def apply(self, source, **kwargs):
+                return source
 
-    def test_validate_passes_optional_missing(self):
-        """No error when optional param is missing."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        proc._validate_tunable_parameters({})
-
-    def test_validate_type_correct(self):
-        """No error for correct type."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        proc._validate_tunable_parameters({'x': 0.7})
-
-    def test_validate_int_accepted_as_float(self):
-        """int is accepted when param_type is float."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        proc._validate_tunable_parameters({'x': 1})
-
-    def test_validate_type_wrong_raises(self):
-        """TypeError when value has wrong type."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        with pytest.raises(TypeError, match="x"):
-            proc._validate_tunable_parameters({'x': 'not_a_float'})
-
-    def test_validate_min_value_passes(self):
-        """No error when value equals min_value."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5, min_value=0.0),
-        ))
-        proc._validate_tunable_parameters({'x': 0.0})
-
-    def test_validate_min_value_below_raises(self):
-        """ValueError when value is below min_value."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5, min_value=0.0),
-        ))
-        with pytest.raises(ValueError, match="below minimum"):
-            proc._validate_tunable_parameters({'x': -0.1})
-
-    def test_validate_max_value_passes(self):
-        """No error when value equals max_value."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5, max_value=1.0),
-        ))
-        proc._validate_tunable_parameters({'x': 1.0})
-
-    def test_validate_max_value_above_raises(self):
-        """ValueError when value is above max_value."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5, max_value=1.0),
-        ))
         with pytest.raises(ValueError, match="above maximum"):
-            proc._validate_tunable_parameters({'x': 1.1})
+            P(threshold=2.0)
 
-    def test_validate_choices_valid(self):
-        """No error when value is in choices."""
-        proc = self._make_processor((
-            TunableParameterSpec('m', str, default='a', choices=('a', 'b')),
-        ))
-        proc._validate_tunable_parameters({'m': 'b'})
-
-    def test_validate_choices_invalid_raises(self):
-        """ValueError when value is not in choices."""
-        proc = self._make_processor((
-            TunableParameterSpec('m', str, default='a', choices=('a', 'b')),
-        ))
-        with pytest.raises(ValueError, match="not in allowed choices"):
-            proc._validate_tunable_parameters({'m': 'c'})
-
-    def test_validate_multiple_params(self):
-        """Validates all params, not just the first."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5, min_value=0.0),
-            TunableParameterSpec('m', str, default='a', choices=('a', 'b')),
-        ))
-        # Both valid
-        proc._validate_tunable_parameters({'x': 0.5, 'm': 'a'})
-        # Second invalid
-        with pytest.raises(ValueError, match="not in allowed choices"):
-            proc._validate_tunable_parameters({'x': 0.5, 'm': 'c'})
-
-
-# ---------------------------------------------------------------------------
-# _get_tunable_parameter
-# ---------------------------------------------------------------------------
-
-class TestGetTunableParameter:
-    """Test _get_tunable_parameter default resolution."""
-
-    def _make_processor(self, specs):
+    def test_unexpected_kwargs_raises(self):
         @processor_version('1.0.0')
-        class _Proc(ImageTransform):
-            @property
-            def tunable_parameter_specs(self_inner):
-                return specs
+        class P(ImageTransform):
+            threshold: Annotated[float, Range(min=0, max=1)] = 0.5
 
-            def apply(self_inner, source, **kwargs):
+            def apply(self, source, **kwargs):
                 return source
 
-        return _Proc()
+        with pytest.raises(TypeError, match="unexpected"):
+            P(nonexistent=42)
 
-    def test_returns_value_when_present(self):
-        """Returns the kwarg value when provided."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        assert proc._get_tunable_parameter('x', {'x': 0.9}) == 0.9
+    def test_choices_validation_in_init(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            method: Annotated[str, Options('a', 'b')] = 'a'
 
-    def test_returns_default_when_absent(self):
-        """Returns spec default when kwarg is not provided."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', float, default=0.5),
-        ))
-        assert proc._get_tunable_parameter('x', {}) == 0.5
+            def apply(self, source, **kwargs):
+                return source
 
-    def test_returns_none_when_no_spec(self):
-        """Returns None when no matching spec exists."""
-        proc = self._make_processor(())
-        assert proc._get_tunable_parameter('unknown', {}) is None
+        P(method='b')  # OK
+        with pytest.raises(ValueError, match="not in allowed choices"):
+            P(method='c')
 
-    def test_returns_none_default_correctly(self):
-        """When default is None, returns None (not confused with no-spec)."""
-        proc = self._make_processor((
-            TunableParameterSpec('x', object, default=None),
-        ))
-        assert proc._get_tunable_parameter('x', {}) is None
+    def test_signature_introspectable(self):
+        """Generated __init__ has a proper inspect.Signature."""
+        import inspect
+
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            x: Annotated[float, Range(min=0)] = 1.0
+            y: Annotated[int, Desc('count')] = 5
+
+            def apply(self, source, **kwargs):
+                return source
+
+        sig = inspect.signature(P)
+        params = list(sig.parameters)
+        assert 'x' in params
+        assert 'y' in params
 
 
 # ---------------------------------------------------------------------------
-# Integration: concrete processor using tunable parameters
+# __post_init__ hook
+# ---------------------------------------------------------------------------
+
+class TestPostInit:
+    """Test __post_init__ is called after attribute assignment."""
+
+    def test_post_init_called(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            method: Annotated[str, Options('a', 'b', 'A', 'B')] = 'A'
+
+            def __post_init__(self):
+                self.method = self.method.lower()
+
+            def apply(self, source, **kwargs):
+                return source
+
+        p = P(method='A')
+        assert p.method == 'a'
+
+    def test_post_init_can_derive_state(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            radius: Annotated[float, Range(min=0), Desc('radius')] = 5.5
+
+            def __post_init__(self):
+                self._int_radius = max(1, int(round(self.radius)))
+
+            def apply(self, source, **kwargs):
+                return source
+
+        p = P(radius=3.2)
+        assert p._int_radius == 3
+
+
+# ---------------------------------------------------------------------------
+# Custom __init__ preserved
+# ---------------------------------------------------------------------------
+
+class TestCustomInit:
+    """Class with own __init__ keeps it; __param_specs__ still built."""
+
+    def test_custom_init_not_overwritten(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            sigma: Annotated[float, Range(min=0.1), Desc('sigma')] = 2.0
+
+            def __init__(self, sigma=2.0, extra='custom'):
+                self.sigma = sigma
+                self.extra = extra
+
+            def apply(self, source, **kwargs):
+                return source
+
+        p = P(sigma=3.0, extra='hello')
+        assert p.sigma == 3.0
+        assert p.extra == 'hello'
+
+    def test_param_specs_still_built(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            sigma: Annotated[float, Range(min=0.1), Desc('sigma')] = 2.0
+
+            def __init__(self, sigma=2.0):
+                self.sigma = sigma
+
+            def apply(self, source, **kwargs):
+                return source
+
+        assert len(P.__param_specs__) == 1
+        assert P.__param_specs__[0].name == 'sigma'
+
+
+# ---------------------------------------------------------------------------
+# __param_specs__ class attribute
+# ---------------------------------------------------------------------------
+
+class TestParamSpecsAttribute:
+    """Test __param_specs__ is set correctly on classes."""
+
+    def test_no_annotated_fields(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        assert P.__param_specs__ == ()
+
+    def test_base_class_empty(self):
+        assert ImageProcessor.__param_specs__ == ()
+
+    def test_specs_on_class_not_instance(self):
+        """__param_specs__ is readable from the class directly."""
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            x: Annotated[float, Desc('test')] = 1.0
+
+            def apply(self, source, **kwargs):
+                return source
+
+        assert len(P.__param_specs__) == 1
+        assert P.__param_specs__[0].name == 'x'
+
+
+# ---------------------------------------------------------------------------
+# _resolve_params
+# ---------------------------------------------------------------------------
+
+class TestResolveParams:
+    """Test _resolve_params runtime resolution."""
+
+    def _make_processor(self):
+        @processor_version('1.0.0')
+        class P(ImageTransform):
+            threshold: Annotated[float, Range(min=0, max=1), Desc('t')] = 0.5
+            method: Annotated[str, Options('hard', 'soft'), Desc('m')] = 'hard'
+
+            def apply(self, source, **kwargs):
+                return source
+
+        return P
+
+    def test_defaults_resolved(self):
+        P = self._make_processor()
+        p = P()
+        params = p._resolve_params({})
+        assert params == {'threshold': 0.5, 'method': 'hard'}
+
+    def test_kwargs_override(self):
+        P = self._make_processor()
+        p = P()
+        params = p._resolve_params({'threshold': 0.8})
+        assert params['threshold'] == 0.8
+        assert params['method'] == 'hard'
+
+    def test_construction_override_persists(self):
+        P = self._make_processor()
+        p = P(threshold=0.3)
+        params = p._resolve_params({})
+        assert params['threshold'] == 0.3
+
+    def test_kwargs_override_construction(self):
+        """Runtime kwargs override construction-time values."""
+        P = self._make_processor()
+        p = P(threshold=0.3)
+        params = p._resolve_params({'threshold': 0.9})
+        assert params['threshold'] == 0.9
+
+    def test_validation_on_resolve(self):
+        P = self._make_processor()
+        p = P()
+        with pytest.raises(ValueError, match="above maximum"):
+            p._resolve_params({'threshold': 2.0})
+
+    def test_type_error_on_resolve(self):
+        P = self._make_processor()
+        p = P()
+        with pytest.raises(TypeError, match="threshold"):
+            p._resolve_params({'threshold': 'bad'})
+
+    def test_non_param_kwargs_ignored(self):
+        """Non-param kwargs (e.g. progress_callback) pass through."""
+        P = self._make_processor()
+        p = P()
+        params = p._resolve_params({
+            'threshold': 0.7,
+            'progress_callback': lambda f: None,
+        })
+        assert params == {'threshold': 0.7, 'method': 'hard'}
+
+
+# ---------------------------------------------------------------------------
+# Inheritance
+# ---------------------------------------------------------------------------
+
+class TestInheritance:
+    """Test parameter inheritance across processor hierarchy."""
+
+    def test_child_inherits_parent_params(self):
+        @processor_version('1.0.0')
+        class Parent(ImageTransform):
+            sigma: Annotated[float, Range(min=0), Desc('sigma')] = 2.0
+
+            def apply(self, source, **kwargs):
+                return source
+
+        @processor_version('1.0.0')
+        class Child(Parent):
+            extra: Annotated[int, Range(min=1), Desc('extra')] = 5
+
+        assert len(Child.__param_specs__) == 2
+        names = [s.name for s in Child.__param_specs__]
+        assert 'sigma' in names
+        assert 'extra' in names
+
+        c = Child(sigma=3.0, extra=10)
+        assert c.sigma == 3.0
+        assert c.extra == 10
+
+    def test_child_override_narrows_constraint(self):
+        @processor_version('1.0.0')
+        class Parent(ImageTransform):
+            x: Annotated[float, Range(max=100)] = 1.0
+
+            def apply(self, source, **kwargs):
+                return source
+
+        @processor_version('1.0.0')
+        class Child(Parent):
+            x: Annotated[float, Range(max=50)] = 1.0
+
+        assert len(Child.__param_specs__) == 1
+        assert Child.__param_specs__[0].max_value == 50
+
+
+# ---------------------------------------------------------------------------
+# Integration: concrete processor end-to-end
 # ---------------------------------------------------------------------------
 
 @processor_version('1.0.0')
 class _ThresholdTransform(ImageTransform):
-    """Test transform that uses tunable threshold and method params."""
+    """Test transform with Annotated tunable parameters."""
 
-    @property
-    def tunable_parameter_specs(self):
-        return (
-            TunableParameterSpec(
-                name='threshold',
-                param_type=float,
-                default=0.5,
-                description='Pixel intensity threshold',
-                min_value=0.0,
-                max_value=1.0,
-            ),
-            TunableParameterSpec(
-                name='method',
-                param_type=str,
-                default='hard',
-                description='Thresholding method',
-                choices=('hard', 'soft'),
-            ),
-        )
+    threshold: Annotated[float, Range(min=0.0, max=1.0),
+                          Desc('Pixel intensity threshold')] = 0.5
+    method: Annotated[str, Options('hard', 'soft'),
+                       Desc('Thresholding method')] = 'hard'
 
     def apply(self, source, **kwargs):
-        self._validate_tunable_parameters(kwargs)
-        threshold = self._get_tunable_parameter('threshold', kwargs)
-        method = self._get_tunable_parameter('method', kwargs)
+        params = self._resolve_params(kwargs)
+        threshold = params['threshold']
+        method = params['method']
         if method == 'hard':
             return (source > threshold).astype(source.dtype)
         else:
             return np.clip(source - threshold, 0, None)
 
 
-class TestTunableParameterIntegration:
-    """End-to-end tests with a concrete tunable processor."""
+class TestAnnotatedIntegration:
+    """End-to-end tests with a concrete Annotated processor."""
 
     def test_apply_with_defaults(self):
-        """apply() uses default threshold=0.5, method='hard'."""
         proc = _ThresholdTransform()
         img = np.array([[0.3, 0.7], [0.5, 0.9]])
         result = proc.apply(img)
         expected = (img > 0.5).astype(img.dtype)
         np.testing.assert_array_equal(result, expected)
 
-    def test_apply_with_custom_values(self):
-        """apply() uses provided threshold and method."""
+    def test_apply_with_runtime_override(self):
         proc = _ThresholdTransform()
         img = np.array([[0.3, 0.7], [0.5, 0.9]])
         result = proc.apply(img, threshold=0.3, method='soft')
         expected = np.clip(img - 0.3, 0, None)
         np.testing.assert_array_almost_equal(result, expected)
 
-    def test_apply_with_invalid_type_raises(self):
-        """TypeError when threshold is a string."""
+    def test_construction_override(self):
+        proc = _ThresholdTransform(threshold=0.1)
+        assert proc.threshold == 0.1
+        img = np.array([[0.05, 0.2], [0.1, 0.3]])
+        result = proc.apply(img)
+        expected = (img > 0.1).astype(img.dtype)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_runtime_overrides_construction(self):
+        proc = _ThresholdTransform(threshold=0.1)
+        img = np.array([[0.3, 0.7], [0.5, 0.9]])
+        result = proc.apply(img, threshold=0.6)
+        expected = (img > 0.6).astype(img.dtype)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_invalid_type_raises(self):
         proc = _ThresholdTransform()
         img = np.zeros((2, 2))
         with pytest.raises(TypeError, match="threshold"):
             proc.apply(img, threshold='high')
 
-    def test_apply_with_out_of_range_raises(self):
-        """ValueError when threshold exceeds max."""
+    def test_out_of_range_raises(self):
         proc = _ThresholdTransform()
         img = np.zeros((2, 2))
         with pytest.raises(ValueError, match="above maximum"):
             proc.apply(img, threshold=2.0)
 
-    def test_apply_with_invalid_choice_raises(self):
-        """ValueError when method is not in choices."""
+    def test_invalid_choice_raises(self):
         proc = _ThresholdTransform()
         img = np.zeros((2, 2))
         with pytest.raises(ValueError, match="not in allowed choices"):
             proc.apply(img, method='fuzzy')
+
+    def test_param_specs_introspectable(self):
+        specs = _ThresholdTransform.__param_specs__
+        assert len(specs) == 2
+        assert specs[0].name == 'threshold'
+        assert specs[0].param_type is float
+        assert specs[0].min_value == 0.0
+        assert specs[0].max_value == 1.0
+        assert specs[1].name == 'method'
+        assert specs[1].choices == ('hard', 'soft')
 
 
 # ---------------------------------------------------------------------------
 # Import checks
 # ---------------------------------------------------------------------------
 
-class TestTunableParameterImports:
+class TestAnnotatedImports:
     """Verify public API imports work."""
 
-    def test_import_from_versioning(self):
-        from grdl.image_processing.versioning import TunableParameterSpec as TPS
-        assert TPS is TunableParameterSpec
+    def test_import_constraint_types(self):
+        from grdl.image_processing.params import Range, Options, Desc, ParamSpec
+        assert Range is not None
+        assert Options is not None
+        assert Desc is not None
+        assert ParamSpec is not None
 
-    def test_import_from_image_processing(self):
-        from grdl.image_processing import TunableParameterSpec as TPS
-        assert TPS is TunableParameterSpec
+    def test_param_specs_on_base(self):
+        """ImageProcessor has __param_specs__ as empty tuple."""
+        assert hasattr(ImageProcessor, '__param_specs__')
+        assert ImageProcessor.__param_specs__ == ()

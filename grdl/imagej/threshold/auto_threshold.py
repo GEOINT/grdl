@@ -77,13 +77,14 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Tuple
+from typing import Annotated, Any, Optional, Tuple
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -641,24 +642,11 @@ class AutoThreshold(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(
-        self,
-        method: str = 'otsu',
-        n_bins: int = 256,
-        dark_background: bool = True,
-    ) -> None:
-        method_lower = method.lower()
-        if method_lower not in THRESHOLD_METHODS:
-            raise ValueError(
-                f"Unknown method '{method}'. "
-                f"Must be one of {THRESHOLD_METHODS}"
-            )
-        if n_bins < 2:
-            raise ValueError(f"n_bins must be >= 2, got {n_bins}")
+    method: Annotated[str, Options(*THRESHOLD_METHODS), Desc('Thresholding method')] = 'otsu'
+    n_bins: Annotated[int, Range(min=2), Desc('Histogram bins')] = 256
+    dark_background: Annotated[bool, Desc('Dark background convention')] = True
 
-        self.method = method_lower
-        self.n_bins = n_bins
-        self.dark_background = dark_background
+    def __post_init__(self):
         self.threshold_: Optional[float] = None
         self.threshold_bin_: Optional[int] = None
 
@@ -686,6 +674,12 @@ class AutoThreshold(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        method = p['method']
+        n_bins = p['n_bins']
+        dark_background = p['dark_background']
+
         image = source.astype(np.float64)
         vmin = image.min()
         vmax = image.max()
@@ -696,22 +690,22 @@ class AutoThreshold(ImageTransform):
             return np.zeros_like(image, dtype=np.float64)
 
         # Build histogram
-        hist, bin_edges = np.histogram(image, bins=self.n_bins,
+        hist, bin_edges = np.histogram(image, bins=n_bins,
                                        range=(vmin, vmax))
 
         # Compute threshold bin
-        func = _METHOD_DISPATCH[self.method]
+        func = _METHOD_DISPATCH[method]
         t_bin = func(hist.astype(np.float64))
-        t_bin = max(0, min(self.n_bins - 1, t_bin))
+        t_bin = max(0, min(n_bins - 1, t_bin))
 
         # Convert bin index to image value
-        bin_width = (vmax - vmin) / self.n_bins
+        bin_width = (vmax - vmin) / n_bins
         threshold_value = vmin + (t_bin + 0.5) * bin_width
 
         self.threshold_bin_ = t_bin
         self.threshold_ = threshold_value
 
-        if self.dark_background:
+        if dark_background:
             return (image > threshold_value).astype(np.float64)
         else:
             return (image < threshold_value).astype(np.float64)

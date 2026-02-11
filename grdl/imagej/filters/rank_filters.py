@@ -46,7 +46,7 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
@@ -59,6 +59,7 @@ from scipy.ndimage import (
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -124,21 +125,12 @@ class RankFilters(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        method: str = 'median',
-        radius: int = 2,
-    ) -> None:
-        method_lower = method.lower()
-        if method_lower not in RANK_METHODS:
-            raise ValueError(
-                f"Unknown method '{method}'. Must be one of {RANK_METHODS}"
-            )
-        if radius < 1 and method_lower != 'despeckle':
-            raise ValueError(f"radius must be >= 1, got {radius}")
+    method: Annotated[str, Options(*RANK_METHODS), Desc('Filter type')] = 'median'
+    radius: Annotated[int, Range(min=1), Desc('Filter window half-size')] = 2
 
-        self.method = method_lower
-        self.radius = 1 if method_lower == 'despeckle' else radius
+    def __post_init__(self):
+        if self.method == 'despeckle':
+            self.radius = 1
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply rank filter to a 2D image.
@@ -163,24 +155,28 @@ class RankFilters(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
-        image = source.astype(np.float64)
-        size = 2 * self.radius + 1
+        p = self._resolve_params(kwargs)
 
-        if self.method in ('median', 'despeckle'):
+        image = source.astype(np.float64)
+        method = p['method']
+        radius = p['radius']
+        size = 2 * radius + 1
+
+        if method in ('median', 'despeckle'):
             return median_filter(image, size=size, mode='nearest')
 
-        elif self.method == 'min':
+        elif method == 'min':
             return minimum_filter(image, size=size, mode='nearest')
 
-        elif self.method == 'max':
+        elif method == 'max':
             return maximum_filter(image, size=size, mode='nearest')
 
-        elif self.method == 'mean':
+        elif method == 'mean':
             return uniform_filter(image, size=size, mode='nearest')
 
-        elif self.method == 'variance':
+        elif method == 'variance':
             mean = uniform_filter(image, size=size, mode='nearest')
             mean_sq = uniform_filter(image * image, size=size, mode='nearest')
             return np.maximum(mean_sq - mean * mean, 0.0)
 
-        raise ValueError(f"Unknown method: {self.method}")
+        raise ValueError(f"Unknown method: {method}")

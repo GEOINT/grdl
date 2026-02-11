@@ -59,7 +59,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 # Third-party
 import numpy as np
@@ -67,7 +67,8 @@ from scipy.ndimage import uniform_filter, median_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Options, Range
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -213,33 +214,14 @@ class AutoLocalThreshold(ImageTransform):
     __imagej_version__ = '1.10.1'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        method: str = 'sauvola',
-        radius: int = 15,
-        k: float = 0.5,
-        r: float = 128.0,
-        c: float = 0.0,
-        contrast_threshold: float = 15.0,
-        p: float = 2.0,
-        q: float = 10.0,
-    ) -> None:
-        method_lower = method.lower()
-        if method_lower not in METHODS:
-            raise ValueError(
-                f"Unknown method '{method}'. Must be one of {METHODS}"
-            )
-        if radius < 1:
-            raise ValueError(f"radius must be >= 1, got {radius}")
-
-        self.method = method_lower
-        self.radius = radius
-        self.k = k
-        self.r = r
-        self.c = c
-        self.contrast_threshold = contrast_threshold
-        self.p = p
-        self.q = q
+    method: Annotated[str, Options(*METHODS), Desc('Thresholding method')] = 'sauvola'
+    radius: Annotated[int, Range(min=1), Desc('Local window half-size')] = 15
+    k: Annotated[float, Desc('Sensitivity to local std deviation')] = 0.5
+    r: Annotated[float, Desc('Dynamic range of standard deviation')] = 128.0
+    c: Annotated[float, Desc('Offset constant for Mean/Median/MidGrey')] = 0.0
+    contrast_threshold: Annotated[float, Desc('Minimum local contrast for Bernsen/Contrast')] = 15.0
+    p: Annotated[float, Desc('Phansalkar p parameter')] = 2.0
+    q: Annotated[float, Desc('Phansalkar q parameter')] = 10.0
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply local thresholding to a 2D image.
@@ -265,26 +247,27 @@ class AutoLocalThreshold(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
         image = source.astype(np.float64)
 
-        if self.method == 'bernsen':
+        if p['method'] == 'bernsen':
             return self._bernsen(image)
-        elif self.method == 'mean':
+        elif p['method'] == 'mean':
             return self._mean(image)
-        elif self.method == 'median':
+        elif p['method'] == 'median':
             return self._median(image)
-        elif self.method == 'midgrey':
+        elif p['method'] == 'midgrey':
             return self._midgrey(image)
-        elif self.method == 'niblack':
+        elif p['method'] == 'niblack':
             return self._niblack(image)
-        elif self.method == 'sauvola':
+        elif p['method'] == 'sauvola':
             return self._sauvola(image)
-        elif self.method == 'phansalkar':
+        elif p['method'] == 'phansalkar':
             return self._phansalkar(image)
-        elif self.method == 'contrast':
+        elif p['method'] == 'contrast':
             return self._contrast(image)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown method: {p['method']}")
 
     def _bernsen(self, image: np.ndarray) -> np.ndarray:
         local_min, local_max = _local_min_max(image, self.radius)

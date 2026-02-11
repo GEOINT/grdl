@@ -48,7 +48,7 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
@@ -56,6 +56,7 @@ from scipy.ndimage import convolve, gaussian_filter, laplace
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -156,21 +157,10 @@ class EdgeDetector(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        method: str = 'sobel',
-        sigma: float = 1.4,
-    ) -> None:
-        method_lower = method.lower()
-        if method_lower not in EDGE_METHODS:
-            raise ValueError(
-                f"Unknown method '{method}'. Must be one of {EDGE_METHODS}"
-            )
-        if sigma <= 0:
-            raise ValueError(f"sigma must be > 0, got {sigma}")
-
-        self.method = method_lower
-        self.sigma = sigma
+    method: Annotated[str, Options(*EDGE_METHODS),
+                       Desc('Edge detection operator')] = 'sobel'
+    sigma: Annotated[float, Range(min=0.001),
+                      Desc('Gaussian sigma for LoG method')] = 1.4
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply edge detection to a 2D image.
@@ -196,31 +186,33 @@ class EdgeDetector(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+        method = p['method']
         image = source.astype(np.float64)
 
-        if self.method == 'sobel':
+        if method == 'sobel':
             gx = convolve(image, _SOBEL_X, mode='nearest')
             gy = convolve(image, _SOBEL_Y, mode='nearest')
             return np.sqrt(gx * gx + gy * gy)
 
-        elif self.method == 'prewitt':
+        elif method == 'prewitt':
             gx = convolve(image, _PREWITT_X, mode='nearest')
             gy = convolve(image, _PREWITT_Y, mode='nearest')
             return np.sqrt(gx * gx + gy * gy)
 
-        elif self.method == 'roberts':
+        elif method == 'roberts':
             gx = convolve(image, _ROBERTS_X, mode='nearest')
             gy = convolve(image, _ROBERTS_Y, mode='nearest')
             return np.sqrt(gx * gx + gy * gy)
 
-        elif self.method == 'log':
-            smoothed = gaussian_filter(image, sigma=self.sigma,
+        elif method == 'log':
+            smoothed = gaussian_filter(image, sigma=p['sigma'],
                                        mode='nearest')
             return np.abs(laplace(smoothed, mode='nearest'))
 
-        elif self.method == 'scharr':
+        elif method == 'scharr':
             gx = convolve(image, _SCHARR_X, mode='nearest')
             gy = convolve(image, _SCHARR_Y, mode='nearest')
             return np.sqrt(gx * gx + gy * gy)
 
-        raise ValueError(f"Unknown method: {self.method}")
+        raise ValueError(f"Unknown method: {method}")

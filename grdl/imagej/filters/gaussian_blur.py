@@ -50,7 +50,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Tuple, Union
+from typing import Annotated, Any, Optional, Tuple, Union
 
 # Third-party
 import numpy as np
@@ -58,6 +58,7 @@ from scipy.ndimage import gaussian_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -134,6 +135,10 @@ class GaussianBlur(ImageTransform):
     __imagej_source__ = 'ij/plugin/filter/GaussianBlur.java'
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
+
+    # -- Annotated scalar fields for GUI introspection (__param_specs__) --
+    sigma: Annotated[float, Range(min=0.001), Desc('Gaussian sigma in pixels')] = 2.0
+    accuracy: Annotated[float, Range(min=0.0001, max=1.0), Desc('Accuracy parameter for kernel size')] = 0.002
 
     def __init__(
         self,

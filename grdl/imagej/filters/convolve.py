@@ -44,7 +44,7 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
@@ -52,6 +52,7 @@ from scipy.ndimage import convolve
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -125,6 +126,9 @@ class Convolver(ImageTransform):
     __imagej_source__ = 'ij/plugin/filter/Convolver.java'
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
+
+    # -- Annotated scalar field for GUI introspection (__param_specs__) --
+    normalize: Annotated[bool, Desc('Normalize kernel to sum to 1')] = True
 
     def __init__(
         self,

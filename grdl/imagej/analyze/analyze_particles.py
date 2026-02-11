@@ -46,7 +46,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -54,6 +54,7 @@ from scipy.ndimage import label, find_objects
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -209,46 +210,23 @@ class AnalyzeParticles(ImageTransform):
 
     OUTPUT_MODES = ('labels', 'mask', 'outlines')
 
-    def __init__(
-        self,
-        min_area: float = 0,
-        max_area: float = np.inf,
-        min_circularity: float = 0.0,
-        max_circularity: float = 1.0,
-        connectivity: int = 8,
-        output_mode: str = 'labels',
-    ) -> None:
-        if min_area < 0:
-            raise ValueError(f"min_area must be >= 0, got {min_area}")
-        if max_area < min_area:
-            raise ValueError(
-                f"max_area ({max_area}) must be >= min_area ({min_area})"
-            )
-        if not (0.0 <= min_circularity <= 1.0):
-            raise ValueError(
-                f"min_circularity must be in [0, 1], got {min_circularity}"
-            )
-        if not (0.0 <= max_circularity <= 1.0):
-            raise ValueError(
-                f"max_circularity must be in [0, 1], got {max_circularity}"
-            )
-        if connectivity not in (4, 8):
-            raise ValueError(
-                f"connectivity must be 4 or 8, got {connectivity}"
-            )
-        out_lower = output_mode.lower()
-        if out_lower not in self.OUTPUT_MODES:
-            raise ValueError(
-                f"Unknown output_mode '{output_mode}'. "
-                f"Must be one of {self.OUTPUT_MODES}"
-            )
+    min_area: Annotated[float, Range(min=0), Desc('Minimum particle area in pixels')] = 0
+    max_area: Annotated[float, Desc('Maximum particle area in pixels')] = np.inf
+    min_circularity: Annotated[float, Range(min=0.0, max=1.0), Desc('Minimum circularity')] = 0.0
+    max_circularity: Annotated[float, Range(min=0.0, max=1.0), Desc('Maximum circularity')] = 1.0
+    connectivity: Annotated[int, Options(4, 8), Desc('Labeling connectivity')] = 8
+    output_mode: Annotated[str, Options('labels', 'mask', 'outlines'), Desc('Output format')] = 'labels'
 
-        self.min_area = min_area
-        self.max_area = max_area
-        self.min_circularity = min_circularity
-        self.max_circularity = max_circularity
-        self.connectivity = connectivity
-        self.output_mode = out_lower
+    def __post_init__(self):
+        if self.max_area < self.min_area:
+            raise ValueError(
+                f"max_area ({self.max_area}) must be >= min_area ({self.min_area})"
+            )
+        if self.max_circularity < self.min_circularity:
+            raise ValueError(
+                f"max_circularity ({self.max_circularity}) must be >= "
+                f"min_circularity ({self.min_circularity})"
+            )
         self.results_: List[Dict[str, float]] = []
         self.n_particles_: int = 0
 
@@ -277,6 +255,7 @@ class AnalyzeParticles(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
         binary = source.astype(np.float64) > 0
 
         if not binary.any():
@@ -285,7 +264,7 @@ class AnalyzeParticles(ImageTransform):
             return np.zeros_like(source, dtype=np.float64)
 
         # Label connected components
-        struct = np.ones((3, 3)) if self.connectivity == 8 else None
+        struct = np.ones((3, 3)) if p['connectivity'] == 8 else None
         labeled, n_labels = label(binary, structure=struct)
         slices = find_objects(labeled)
 
@@ -313,9 +292,9 @@ class AnalyzeParticles(ImageTransform):
             circ = measurements['circularity']
 
             # Filter by area and circularity
-            if area < self.min_area or area > self.max_area:
+            if area < p['min_area'] or area > p['max_area']:
                 continue
-            if circ < self.min_circularity or circ > self.max_circularity:
+            if circ < p['min_circularity'] or circ > p['max_circularity']:
                 continue
 
             new_label += 1
@@ -323,11 +302,11 @@ class AnalyzeParticles(ImageTransform):
             measurements['label'] = float(new_label)
             self.results_.append(measurements)
 
-            if self.output_mode == 'labels':
+            if p['output_mode'] == 'labels':
                 output[sl][region_mask] = float(new_label)
-            elif self.output_mode == 'mask':
+            elif p['output_mode'] == 'mask':
                 output[sl][region_mask] = 1.0
-            elif self.output_mode == 'outlines':
+            elif p['output_mode'] == 'outlines':
                 # Compute boundary of this particle
                 padded = np.pad(region_mask, 1, mode='constant',
                                 constant_values=False)

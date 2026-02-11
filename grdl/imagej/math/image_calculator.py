@@ -42,13 +42,14 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -132,14 +133,8 @@ class ImageCalculator(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(self, operation: str = 'add') -> None:
-        op_lower = operation.lower()
-        if op_lower not in CALC_OPERATIONS:
-            raise ValueError(
-                f"Unknown operation '{operation}'. "
-                f"Must be one of {CALC_OPERATIONS}"
-            )
-        self.operation = op_lower
+    operation: Annotated[str, Options(*CALC_OPERATIONS),
+                          Desc('Pixel-wise operation')] = 'add'
 
     # Operations that have no meaning for complex-valued data
     _REAL_ONLY_OPS = frozenset({'and', 'or', 'xor', 'min', 'max'})
@@ -170,6 +165,9 @@ class ImageCalculator(ImageTransform):
             do not match, or if a real-only operation is used with
             complex input.
         """
+        p = self._resolve_params(kwargs)
+        operation = p['operation']
+
         if source.ndim != 2:
             raise ValueError(
                 f"Expected 2D image, got shape {source.shape}"
@@ -191,7 +189,7 @@ class ImageCalculator(ImageTransform):
 
         is_complex = np.iscomplexobj(source) or np.iscomplexobj(image2)
 
-        if is_complex and self.operation in self._REAL_ONLY_OPS:
+        if is_complex and operation in self._REAL_ONLY_OPS:
             raise ValueError(
                 f"Operation '{self.operation}' is not defined for "
                 f"complex-valued data. Use 'add', 'subtract', "
@@ -206,47 +204,47 @@ class ImageCalculator(ImageTransform):
             img1 = source.astype(np.float64)
             img2 = image2.astype(np.float64)
 
-        if self.operation == 'add':
+        if operation == 'add':
             return img1 + img2
 
-        elif self.operation == 'subtract':
+        elif operation == 'subtract':
             return img1 - img2
 
-        elif self.operation == 'multiply':
+        elif operation == 'multiply':
             return img1 * img2
 
-        elif self.operation in ('divide', 'ratio'):
+        elif operation in ('divide', 'ratio'):
             result = np.zeros_like(img1)
             nonzero = img2 != 0
             result[nonzero] = img1[nonzero] / img2[nonzero]
             return result
 
-        elif self.operation == 'and':
+        elif operation == 'and':
             return (img1.astype(np.int64) & img2.astype(np.int64)).astype(
                 np.float64
             )
 
-        elif self.operation == 'or':
+        elif operation == 'or':
             return (img1.astype(np.int64) | img2.astype(np.int64)).astype(
                 np.float64
             )
 
-        elif self.operation == 'xor':
+        elif operation == 'xor':
             return (img1.astype(np.int64) ^ img2.astype(np.int64)).astype(
                 np.float64
             )
 
-        elif self.operation == 'min':
+        elif operation == 'min':
             return np.minimum(img1, img2)
 
-        elif self.operation == 'max':
+        elif operation == 'max':
             return np.maximum(img1, img2)
 
-        elif self.operation == 'average':
+        elif operation == 'average':
             return (img1 + img2) / 2.0
 
-        elif self.operation == 'difference':
+        elif operation == 'difference':
             # For complex data, return magnitude of complex difference
             return np.abs(img1 - img2)
 
-        raise ValueError(f"Unknown operation: {self.operation}")
+        raise ValueError(f"Unknown operation: {operation}")

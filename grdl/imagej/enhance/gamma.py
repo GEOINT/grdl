@@ -43,13 +43,14 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -102,10 +103,7 @@ class GammaCorrection(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = True
 
-    def __init__(self, gamma: float = 0.5) -> None:
-        if gamma <= 0:
-            raise ValueError(f"gamma must be > 0, got {gamma}")
-        self.gamma = gamma
+    gamma: Annotated[float, Range(min=0.001), Desc('Gamma exponent')] = 0.5
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply gamma correction to a 2D image.
@@ -131,6 +129,8 @@ class GammaCorrection(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
         image = source.astype(np.float64)
         vmin = image.min()
         vmax = image.max()
@@ -140,5 +140,5 @@ class GammaCorrection(ImageTransform):
 
         # Normalize to [0, 1], apply gamma, scale back
         normalized = (image - vmin) / (vmax - vmin)
-        corrected = np.power(normalized, self.gamma)
+        corrected = np.power(normalized, p['gamma'])
         return corrected * (vmax - vmin) + vmin

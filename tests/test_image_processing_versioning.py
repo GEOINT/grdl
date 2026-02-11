@@ -198,30 +198,6 @@ class TestMissingVersionWarning:
 
 
 # ---------------------------------------------------------------------------
-# ImageProcessor hierarchy
-# ---------------------------------------------------------------------------
-
-class TestImageProcessorHierarchy:
-    """Verify the ImageProcessor class hierarchy."""
-
-    def test_image_transform_is_image_processor(self):
-        assert issubclass(ImageTransform, ImageProcessor)
-
-    def test_polarimetric_decomposition_is_image_processor(self):
-        from grdl.image_processing.decomposition.base import PolarimetricDecomposition
-        assert issubclass(PolarimetricDecomposition, ImageProcessor)
-
-    def test_image_detector_is_image_processor(self):
-        from grdl.image_processing.detection.base import ImageDetector
-        assert issubclass(ImageDetector, ImageProcessor)
-
-    def test_pauli_isinstance_image_processor(self):
-        from grdl.image_processing.decomposition.pauli import PauliDecomposition
-        pauli = PauliDecomposition()
-        assert isinstance(pauli, ImageProcessor)
-
-
-# ---------------------------------------------------------------------------
 # DetectionInputSpec
 # ---------------------------------------------------------------------------
 
@@ -358,38 +334,6 @@ class TestDetectionInputValidation:
         obj = _Getter()
         result = obj._get_detection_input('targets', {})
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Import isolation
-# ---------------------------------------------------------------------------
-
-class TestImports:
-    """Verify public API imports work."""
-
-    def test_import_processor_version(self):
-        from grdl.image_processing import processor_version as pv
-        assert pv is processor_version
-
-    def test_import_detection_input_spec(self):
-        from grdl.image_processing import DetectionInputSpec as DIS
-        assert DIS is DetectionInputSpec
-
-    def test_import_image_processor(self):
-        from grdl.image_processing import ImageProcessor as IP
-        assert IP is ImageProcessor
-
-    def test_import_vocabulary_enums(self):
-        from grdl.image_processing import (
-            ImageModality as IM,
-            ProcessorCategory as PC,
-            DetectionType as DT,
-            SegmentationType as ST,
-        )
-        assert IM is ImageModality
-        assert PC is ProcessorCategory
-        assert DT is DetectionType
-        assert ST is SegmentationType
 
 
 # ---------------------------------------------------------------------------

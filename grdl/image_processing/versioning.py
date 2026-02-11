@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Processor Versioning - Version decorator, detection input, and tunable parameter declarations.
+Processor Versioning - Version decorator and detection input declarations.
 
 Provides the ``@processor_version`` class decorator for stamping semantic
 version strings on any image processor class (ImageTransform, ImageDetector,
 PolarimetricDecomposition, etc.). Also provides ``DetectionInputSpec`` for
-processors to declare what DetectionSet inputs they accept, and
-``TunableParameterSpec`` for processors to declare runtime-adjustable
-parameters with type checking and constraint validation.
+processors to declare what DetectionSet inputs they accept.
 
 Author
 ------
@@ -29,7 +27,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Sequence, Tuple, Type, TypeVar, Union, overload
+from typing import Optional, Sequence, Type, TypeVar, overload
 import importlib.metadata
 
 # GRDL vocabulary
@@ -234,126 +232,3 @@ class DetectionInputSpec:
         )
 
 
-class _NoDefault:
-    """Sentinel indicating a tunable parameter has no default value.
-
-    Singleton so that ``isinstance(obj, _NoDefault)`` works reliably.
-    Needed because ``None`` can be a valid default for an optional parameter.
-    """
-
-    _instance: Optional['_NoDefault'] = None
-
-    def __new__(cls) -> '_NoDefault':
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return '<NO_DEFAULT>'
-
-
-_NO_DEFAULT = _NoDefault()
-
-
-class TunableParameterSpec:
-    """Declaration of a tunable parameter that a processor accepts.
-
-    Processors that accept runtime-adjustable parameters declare them
-    via ``tunable_parameter_specs``. Each spec describes a keyword
-    argument that the processor's ``apply()``, ``detect()``, or
-    ``decompose()`` method accepts through ``**kwargs``.
-
-    Whether the parameter is required is determined by the ``default``
-    argument: if no default is provided (i.e., ``default`` is the
-    sentinel ``_NO_DEFAULT``), the parameter is required.
-
-    Parameters
-    ----------
-    name : str
-        Keyword argument name (e.g., ``'threshold'``).
-    param_type : type
-        Expected Python type (e.g., ``float``, ``int``, ``str``).
-        For numeric parameters, ``int`` values are accepted when
-        ``param_type`` is ``float``.
-    default : Any, optional
-        Default value when the kwarg is not provided. Omit to make
-        the parameter required.
-    description : str, optional
-        Human-readable description of the parameter.
-    min_value : int or float, optional
-        Minimum allowed value (inclusive). Only for numeric types.
-    max_value : int or float, optional
-        Maximum allowed value (inclusive). Only for numeric types.
-    choices : tuple, optional
-        Allowed values. If set, the parameter value must be in this
-        tuple. Mutually exclusive with ``min_value``/``max_value``.
-
-    Raises
-    ------
-    ValueError
-        If both range constraints (``min_value``/``max_value``) and
-        ``choices`` are specified.
-
-    Examples
-    --------
-    >>> spec = TunableParameterSpec(
-    ...     name='threshold',
-    ...     param_type=float,
-    ...     default=0.5,
-    ...     description='Detection confidence threshold',
-    ...     min_value=0.0,
-    ...     max_value=1.0,
-    ... )
-    >>> spec.required
-    False
-    """
-
-    def __init__(
-        self,
-        name: str,
-        param_type: type,
-        default: Any = _NO_DEFAULT,
-        description: str = '',
-        min_value: Optional[Union[int, float]] = None,
-        max_value: Optional[Union[int, float]] = None,
-        choices: Optional[Tuple] = None,
-    ) -> None:
-        if (min_value is not None or max_value is not None) and choices is not None:
-            raise ValueError(
-                f"Parameter '{name}': cannot specify both "
-                f"range (min_value/max_value) and choices constraints."
-            )
-        self.name = name
-        self.param_type = param_type
-        self.default = default
-        self.description = description
-        self.min_value = min_value
-        self.max_value = max_value
-        self.choices = choices
-
-    @property
-    def required(self) -> bool:
-        """Whether this parameter is required (has no default value).
-
-        Returns
-        -------
-        bool
-            True if no default value was specified.
-        """
-        return isinstance(self.default, _NoDefault)
-
-    def __repr__(self) -> str:
-        parts = (
-            f"TunableParameterSpec(name={self.name!r}, "
-            f"param_type={self.param_type.__name__}, "
-            f"required={self.required!r}"
-        )
-        if not self.required:
-            parts += f", default={self.default!r}"
-        if self.min_value is not None:
-            parts += f", min_value={self.min_value!r}"
-        if self.max_value is not None:
-            parts += f", max_value={self.max_value!r}"
-        if self.choices is not None:
-            parts += f", choices={self.choices!r}"
-        return parts + ")"

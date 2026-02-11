@@ -53,7 +53,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Optional, Tuple
+from typing import Annotated, Any, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -61,7 +61,8 @@ from scipy.ndimage import uniform_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -348,17 +349,13 @@ class RollingBallBackground(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        radius: float = 50.0,
-        light_background: bool = False,
-        create_background: bool = False,
-        smoothing: bool = True,
-    ) -> None:
-        self.radius = max(1, int(round(radius)))
-        self.light_background = light_background
-        self.create_background = create_background
-        self.smoothing = smoothing
+    radius: Annotated[float, Range(min=0.5), Desc('Rolling ball radius in pixels')] = 50.0
+    light_background: Annotated[bool, Desc('Assume bright background and dark objects')] = False
+    create_background: Annotated[bool, Desc('Return estimated background instead of subtracted')] = False
+    smoothing: Annotated[bool, Desc('Apply 3x3 mean smoothing to shrunken image')] = True
+
+    def __post_init__(self):
+        self.radius = max(1, int(round(self.radius)))
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply rolling-ball background subtraction.
@@ -386,18 +383,21 @@ class RollingBallBackground(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
         image = source.astype(np.float64)
 
-        if self.light_background:
+        radius = max(1, int(round(p['radius'])))
+
+        if p['light_background']:
             image = -image
 
         # Shrink-smooth-expand optimization
-        shrink_factor = max(self.radius // 10, 1)
-        effective_radius = max(self.radius // shrink_factor, 1)
+        shrink_factor = max(radius // 10, 1)
+        effective_radius = max(radius // shrink_factor, 1)
 
         small = _shrink_image(image, shrink_factor)
 
-        if self.smoothing and shrink_factor > 1:
+        if p['smoothing'] and shrink_factor > 1:
             small = uniform_filter(small, size=3, mode='nearest')
 
         background_small = _roll_paraboloid_vectorized(small, effective_radius)
@@ -406,11 +406,11 @@ class RollingBallBackground(ImageTransform):
             background_small, image.shape, shrink_factor
         )
 
-        if self.light_background:
+        if p['light_background']:
             image = -image
             background = -background
 
-        if self.create_background:
+        if p['create_background']:
             return background
 
         result = image - background

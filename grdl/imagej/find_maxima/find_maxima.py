@@ -48,7 +48,7 @@ Modified
 """
 
 # Standard library
-from typing import Any, Tuple
+from typing import Annotated, Any, Tuple
 
 # Third-party
 import numpy as np
@@ -56,6 +56,7 @@ from scipy.ndimage import maximum_filter, label
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -119,22 +120,9 @@ class FindMaxima(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        prominence: float = 10.0,
-        output: str = 'point_map',
-        exclude_on_edges: bool = False,
-    ) -> None:
-        if prominence < 0:
-            raise ValueError(f"prominence must be >= 0, got {prominence}")
-        if output not in ('point_map', 'count_map'):
-            raise ValueError(
-                f"output must be 'point_map' or 'count_map', got {output!r}"
-            )
-
-        self.prominence = prominence
-        self.output = output
-        self.exclude_on_edges = exclude_on_edges
+    prominence: Annotated[float, Range(min=0.0), Desc('Minimum peak-to-saddle height')] = 10.0
+    output: Annotated[str, Options('point_map', 'count_map'), Desc('Output format')] = 'point_map'
+    exclude_on_edges: Annotated[bool, Desc('Exclude maxima on image borders')] = False
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Detect local maxima in a 2D image.
@@ -162,6 +150,12 @@ class FindMaxima(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        prominence = p['prominence']
+        output = p['output']
+        exclude_on_edges = p['exclude_on_edges']
+
         image = source.astype(np.float64)
         rows, cols = image.shape
 
@@ -178,7 +172,7 @@ class FindMaxima(ImageTransform):
         # maximum_filter on the suppressed image to find the highest
         # non-peak value in each neighborhood. This gives the saddle
         # level without the peak contaminating its own background.
-        if self.prominence > 0:
+        if prominence > 0:
             from scipy.ndimage import minimum_filter as min_filt
 
             # Create a suppressed image: replace local max pixels with
@@ -191,7 +185,7 @@ class FindMaxima(ImageTransform):
 
             # Now find the highest "saddle" value around each peak
             # using progressively larger neighborhoods
-            bg_size = max(5, int(self.prominence) * 2 + 1)
+            bg_size = max(5, int(prominence) * 2 + 1)
             bg_size = min(bg_size, min(rows, cols))
             if bg_size % 2 == 0:
                 bg_size += 1
@@ -200,18 +194,18 @@ class FindMaxima(ImageTransform):
                 suppressed, size=bg_size, mode='nearest'
             )
 
-            is_prominent = (image - saddle) >= self.prominence
+            is_prominent = (image - saddle) >= prominence
             is_max = is_max & is_prominent
 
         # Step 3: Exclude edge maxima
-        if self.exclude_on_edges:
+        if exclude_on_edges:
             is_max[0, :] = False
             is_max[-1, :] = False
             is_max[:, 0] = False
             is_max[:, -1] = False
 
         # Step 4: Output
-        if self.output == 'count_map':
+        if output == 'count_map':
             # Label connected maxima regions
             labeled, n_features = label(is_max)
             return labeled.astype(np.float64)

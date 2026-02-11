@@ -50,7 +50,7 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
@@ -64,6 +64,7 @@ from scipy.ndimage import (
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
@@ -217,26 +218,8 @@ class Watershed(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    OUTPUT_MODES = ('labels', 'lines', 'binary')
-
-    def __init__(
-        self,
-        min_seed_distance: int = 2,
-        output_mode: str = 'labels',
-    ) -> None:
-        if min_seed_distance < 1:
-            raise ValueError(
-                f"min_seed_distance must be >= 1, got {min_seed_distance}"
-            )
-        out_lower = output_mode.lower()
-        if out_lower not in self.OUTPUT_MODES:
-            raise ValueError(
-                f"Unknown output_mode '{output_mode}'. "
-                f"Must be one of {self.OUTPUT_MODES}"
-            )
-
-        self.min_seed_distance = min_seed_distance
-        self.output_mode = out_lower
+    min_seed_distance: Annotated[int, Range(min=1), Desc('Minimum pixel distance between seeds')] = 2
+    output_mode: Annotated[str, Options('labels', 'lines', 'binary'), Desc('Output format')] = 'labels'
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply watershed segmentation to a binary image.
@@ -266,6 +249,11 @@ class Watershed(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
+        min_seed_distance = p['min_seed_distance']
+        output_mode = p['output_mode']
+
         mask = source.astype(np.float64) > 0
 
         # Trivial case: no foreground
@@ -276,16 +264,16 @@ class Watershed(ImageTransform):
         edt = distance_transform_edt(mask)
 
         # Find seeds as local maxima of EDT
-        seeds = _find_seeds(edt, self.min_seed_distance)
+        seeds = _find_seeds(edt, min_seed_distance)
 
         # Label the seeds
         labeled_seeds, n_seeds = label(seeds)
 
         if n_seeds <= 1:
             # Nothing to split
-            if self.output_mode == 'labels':
+            if output_mode == 'labels':
                 return mask.astype(np.float64)
-            elif self.output_mode == 'lines':
+            elif output_mode == 'lines':
                 return np.zeros_like(source, dtype=np.float64)
             else:
                 return mask.astype(np.float64)
@@ -293,9 +281,9 @@ class Watershed(ImageTransform):
         # Grow watershed regions
         labeled = _watershed_from_markers(edt, labeled_seeds, mask)
 
-        if self.output_mode == 'labels':
+        if output_mode == 'labels':
             return labeled.astype(np.float64)
-        elif self.output_mode == 'lines':
+        elif output_mode == 'lines':
             lines = mask & (labeled == 0)
             return lines.astype(np.float64)
         else:  # binary

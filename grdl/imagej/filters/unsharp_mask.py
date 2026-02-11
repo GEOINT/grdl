@@ -44,7 +44,7 @@ Modified
 """
 
 # Standard library
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
@@ -52,7 +52,8 @@ from scipy.ndimage import gaussian_filter
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
-from grdl.image_processing.versioning import processor_version, processor_tags, TunableParameterSpec
+from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
@@ -96,18 +97,10 @@ class UnsharpMask(ImageTransform):
     __imagej_version__ = '1.54j'
     __gpu_compatible__ = False
 
-    def __init__(
-        self,
-        sigma: float = 1.0,
-        weight: float = 0.6,
-    ) -> None:
-        if sigma <= 0:
-            raise ValueError(f"sigma must be > 0, got {sigma}")
-        if weight < 0:
-            raise ValueError(f"weight must be >= 0, got {weight}")
-
-        self.sigma = sigma
-        self.weight = weight
+    sigma: Annotated[float, Range(min=0.001),
+                      Desc('Gaussian blur sigma in pixels')] = 1.0
+    weight: Annotated[float, Range(min=0.0),
+                       Desc('Sharpening strength (mask weight)')] = 0.6
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply unsharp mask sharpening.
@@ -132,10 +125,12 @@ class UnsharpMask(ImageTransform):
                 f"Expected 2D image, got shape {source.shape}"
             )
 
+        p = self._resolve_params(kwargs)
+
         image = source.astype(np.float64)
-        blurred = gaussian_filter(image, sigma=self.sigma, mode='nearest')
+        blurred = gaussian_filter(image, sigma=p['sigma'], mode='nearest')
 
         # output = image + weight * (image - blurred)
-        sharpened = image + self.weight * (image - blurred)
+        sharpened = image + p['weight'] * (image - blurred)
 
         return sharpened
