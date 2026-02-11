@@ -19,8 +19,30 @@ grdl/
 ├── IO/
 │   ├── __init__.py          # Public API exports + open_image()
 │   ├── base.py              # Abstract base classes (ABCs)
+│   ├── models/              # Typed metadata dataclasses
+│   │   ├── __init__.py      # Re-exports all metadata classes
+│   │   ├── base.py          # ImageMetadata (base dataclass)
+│   │   ├── common.py        # Shared primitives (XYZ, LatLonHAE, RowCol, Poly1D, Poly2D, XYZPoly)
+│   │   ├── sicd.py          # SICDMetadata + ~35 nested section dataclasses
+│   │   ├── sidd.py          # SIDDMetadata + ~25 nested section dataclasses
+│   │   ├── biomass.py       # BIOMASSMetadata (flat typed fields)
+│   │   ├── viirs.py         # VIIRSMetadata (flat typed fields)
+│   │   └── aster.py         # ASTERMetadata (flat typed fields)
 │   ├── geotiff.py           # GeoTIFFReader (base data format, rasterio)
+│   ├── hdf5.py              # HDF5Reader (base data format, h5py)
+│   ├── jpeg2000.py          # JP2Reader (base data format, glymur)
 │   ├── nitf.py              # NITFReader (base data format, rasterio/GDAL)
+│   ├── eo/                  # EO (visible/panchromatic) readers — scaffold
+│   │   ├── __init__.py      # EO exports + open_eo()
+│   │   └── _backend.py      # rasterio/glymur availability detection
+│   ├── ir/                  # IR/thermal readers
+│   │   ├── __init__.py      # IR exports + open_ir()
+│   │   ├── _backend.py      # rasterio/h5py availability detection
+│   │   └── aster.py         # ASTERReader (wraps GeoTIFFReader)
+│   ├── multispectral/       # Multispectral/hyperspectral readers
+│   │   ├── __init__.py      # MS exports + open_multispectral()
+│   │   ├── _backend.py      # h5py/xarray/spectral availability detection
+│   │   └── viirs.py         # VIIRSReader (wraps h5py)
 │   ├── sar/                 # SAR-specific format readers
 │   │   ├── __init__.py      # SAR exports + open_sar()
 │   │   ├── _backend.py      # sarkit/sarpy availability detection
@@ -79,12 +101,25 @@ The root abstract class for all imagery readers.
 
 **Metadata Contract:**
 
-All `ImageReader` subclasses must populate `self.metadata` dict with:
-- `'format'`: Format name (e.g., 'SICD', 'GRD')
-- `'rows'`: Image height in pixels
-- `'cols'`: Image width in pixels
-- `'dtype'`: NumPy dtype string
-- Format-specific fields as needed
+All `ImageReader` subclasses must populate `self.metadata` with an `ImageMetadata` dataclass (or a format-specific subclass). Required fields on every metadata instance:
+
+- `format`: Format name (e.g., `'SICD'`, `'GRD'`, `'BIOMASS_L1_SCS'`)
+- `rows`: Image height in pixels
+- `cols`: Image width in pixels
+- `dtype`: NumPy dtype string (e.g., `'complex64'`, `'float32'`)
+
+Format-specific metadata is provided via typed subclasses:
+
+| Format | Metadata Class | Notes |
+|--------|---------------|-------|
+| GeoTIFF, NITF, HDF5 | `ImageMetadata` | Base class; `bands`, `crs` on base |
+| SICD | `SICDMetadata(ImageMetadata)` | 17 nested section dataclasses (collection_info, geo_data, grid, etc.) |
+| SIDD | `SIDDMetadata(ImageMetadata)` | 13 nested section dataclasses (product_creation, display, measurement, etc.) |
+| BIOMASS | `BIOMASSMetadata(ImageMetadata)` | Flat typed fields (mission, swath, polarizations, etc.) |
+| VIIRS | `VIIRSMetadata(ImageMetadata)` | Flat typed fields (satellite, product, calibration, etc.) |
+| ASTER | `ASTERMetadata(ImageMetadata)` | Flat typed fields (acquisition, orbital, solar geometry, etc.) |
+
+All metadata classes support dict-like `[]` access for backward compatibility (`meta['format']`, `'rows' in meta`, `meta.keys()`) alongside native attribute access (`meta.format`, `meta.collection_info.radar_mode.mode_type`)
 
 ### ImageWriter (ABC)
 
@@ -123,10 +158,39 @@ Abstract class for image discovery and spatial queries.
 **Implemented**: `BIOMASSCatalog` in `sar/biomass_catalog.py` provides local
 discovery, ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
 
-### Integration with Image Processing
+### Integration with Other GRDL Modules
 
-IO readers integrate with the image processing module through composable patterns:
+IO readers are designed to compose with other GRDL modules. **Always use the purpose-built GRDL module for each task** — IO for loading, `data_prep` for chip planning, `image_processing` for transforms:
 
+**Data Preparation (chip/tile planning):**
+- `ChipExtractor` and `Tiler` from `grdl.data_prep` compute chip and tile index bounds (index-only, no pixel data). Use their `ChipRegion` output to drive `reader.read_chip()` calls instead of hand-rolling `for r in range(0, rows, chunk):` loops.
+- `Normalizer` handles intensity normalization (`minmax`, `zscore`, `percentile`, `unit_norm`).
+
+**Full integration example** (see `grdl/example/image_processing/sar/sublook_compare.py`):
+
+```python
+from grdl.IO import SICDReader                           # IO: load imagery
+from grdl.data_prep import ChipExtractor                 # data_prep: plan chips
+from grdl.image_processing.sar import SublookDecomposition  # processing: transform
+
+with SICDReader('image.nitf') as reader:
+    rows, cols = reader.get_shape()
+
+    # data_prep plans the chip (boundary-snapped, index-only)
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
+    region = extractor.chip_at_point(rows // 2, cols // 2,
+                                     row_width=2048, col_width=2048)
+
+    # IO reads only the planned region
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
+
+    # image_processing transforms the data
+    sublook = SublookDecomposition(reader.metadata, num_looks=3)
+    looks = sublook.decompose(chip)
+```
+
+**Other integration points:**
 - **Geolocation**: `Geolocation.from_reader(reader)` constructs coordinate transforms
 - **Orthorectification**: `Orthorectifier.apply_from_reader()` reads chips directly from a reader
 - **Decomposition**: Complex data from `BIOMASSL1Reader` feeds directly into `PauliDecomposition`
@@ -137,15 +201,8 @@ IO readers integrate with the image processing module through composable pattern
   enabling all single-band processors to work on multi-band imagery without manual band looping.
 - **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
   `progress_callback` keyword argument for real-time progress reporting.
-- **Data Preparation**: `ChipExtractor` and `Tiler` (both inheriting `ChipBase`) in `grdl.data_prep` compute
-  chip and tile index bounds within bounded images. `Normalizer` handles intensity normalization.
 - **ImageJ Ports**: 12 classic ImageJ/Fiji algorithms (`grdl.imagej`) inherit from `ImageTransform`, enabling
-  direct use in processing pipelines alongside orthorectification and decomposition. Includes spatial filters
-  (RollingBallBackground, UnsharpMask, RankFilters, MorphologicalFilter), contrast enhancement (CLAHE,
-  GammaCorrection), thresholding/segmentation (AutoLocalThreshold, StatisticalRegionMerging), edge/feature
-  detection (EdgeDetector, FindMaxima), frequency-domain filtering (FFTBandpassFilter), and stack operations
-  (ZProjection). Each port carries `__imagej_source__`, `__imagej_version__`, `__gpu_compatible__`, and
-  `@processor_tags` metadata for provenance tracking and capability discovery.
+  direct use in processing pipelines alongside orthorectification and decomposition.
 
 ## SAR Readers Implementation
 
@@ -289,6 +346,35 @@ Convenience function that tries readers in order:
 - High-performance pipelines (use specific reader)
 - Large batch jobs (overhead adds up)
 
+## Metadata Architecture
+
+### Package Structure (`models/`)
+
+Metadata is organized as a Python package at `grdl/IO/models/` with the following modules:
+
+| Module | Contents |
+|--------|----------|
+| `base.py` | `ImageMetadata` — base dataclass with `format`, `rows`, `cols`, `dtype`, `bands`, `crs`; dict-like `__getitem__`/`__contains__`/`keys()` |
+| `common.py` | Shared primitive types: `XYZ`, `LatLon`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly` |
+| `sicd.py` | `SICDMetadata` + ~35 nested dataclasses covering all 17 SICD sections |
+| `sidd.py` | `SIDDMetadata` + ~25 nested dataclasses covering all 13 SIDD sections |
+| `biomass.py` | `BIOMASSMetadata` — flat typed fields for BIOMASS annotation XML |
+| `viirs.py` | `VIIRSMetadata` — flat typed fields for VIIRS HDF5 attributes |
+| `aster.py` | `ASTERMetadata` — flat typed fields for ASTER GeoTIFF + XML |
+| `__init__.py` | Re-exports everything; preserves `from grdl.IO.models import ...` paths |
+
+### Design Decisions
+
+1. **Dataclasses over dicts**: Provides IDE autocomplete, type checking, and self-documenting field names while remaining lightweight (no runtime overhead vs. plain attributes).
+
+2. **Nested composition**: Complex formats (SICD, SIDD) use deeply nested dataclasses mirroring the source specification structure. Example: `meta.geo_data.scp.llh.lat` mirrors the SICD XML path `GeoData/SCP/LLH/Lat`.
+
+3. **Optional sections**: All format-specific nested sections default to `None`, so metadata is always constructible even when the source file has incomplete metadata.
+
+4. **Backward-compatible dict access**: `ImageMetadata.__getitem__` and `__contains__` use `dataclasses.fields()` introspection, so existing code using `meta['format']` continues to work.
+
+5. **Shared primitives**: Types like `XYZ`, `LatLonHAE`, `Poly2D` are reused across SICD and SIDD, avoiding duplication.
+
 ## Mission-Specific Readers
 
 ### BIOMASS Implementation
@@ -419,6 +505,50 @@ class BIOMASSCatalog(CatalogInterface):
    - Never committed to version control
    - Follows XDG Base Directory convention
 
+## EO / IR / Multispectral Submodules
+
+### Modality-Based Organization
+
+Following the `sar/` pattern, new modality submodules wrap base-level format readers
+(GeoTIFFReader, HDF5Reader) with sensor-specific metadata extraction:
+
+| Submodule | Modality | Sensors | Backend |
+|-----------|----------|---------|---------|
+| `eo/` | Electro-Optical (VIS/NIR) | _(scaffold — planned: Landsat OLI, Sentinel-2, HLS)_ | rasterio, glymur |
+| `ir/` | Thermal / Infrared | ASTER (L1T, GDEM) | rasterio |
+| `multispectral/` | Multispectral / Hyperspectral | VIIRS (VNP46A1, VNP13A1) | h5py |
+
+### ASTERReader (`ir/aster.py`)
+
+**Format Background:**
+- ASTER = Advanced Spaceborne Thermal Emission and Reflection Radiometer (Terra satellite)
+- L1T products: Registered Radiance at Sensor, GeoTIFF format
+- ASTGTM products: Global Digital Elevation Model v3, GeoTIFF format
+- TIR subsystem (bands 10-14, 90 m) is the only active subsystem
+- SWIR detector failed April 2008; VNIR still operational
+
+**Implementation:**
+- Wraps `rasterio` directly for pixel reads (same as GeoTIFFReader)
+- Extracts ASTER-specific metadata from GeoTIFF tags and companion XML
+- Detects product type (L1T vs GDEM) from filename patterns
+- Detects band availability (VNIR/SWIR/TIR) from filename
+- Populates `ASTERMetadata` dataclass with acquisition, orbital, solar geometry fields
+
+### VIIRSReader (`multispectral/viirs.py`)
+
+**Format Background:**
+- VIIRS = Visible Infrared Imaging Radiometer Suite (Suomi NPP, NOAA-20, NOAA-21)
+- 22 bands from visible (412 nm) through thermal (12 µm)
+- HDF5 format with rich file-level and dataset-level attributes
+- Products: VNP46A1 (nighttime lights), VNP13A1 (vegetation index), surface reflectance
+
+**Implementation:**
+- Wraps `h5py` directly for pixel reads (same as HDF5Reader)
+- Extracts VIIRS-specific metadata from HDF5 file-level attrs (satellite, product, temporal)
+- Extracts dataset-level calibration attrs (scale_factor, add_offset, fill_value)
+- Auto-detects first suitable 2D+ numeric dataset or accepts explicit path
+- Populates `VIIRSMetadata` dataclass with satellite, temporal, spatial, and calibration fields
+
 ## Memory Management
 
 ### Lazy Loading Strategy
@@ -446,26 +576,37 @@ full = reader.read_full()  # Could be GB - use with caution
 
 ### Chunked Processing Pattern
 
-For images that don't fit in memory:
+For images that don't fit in memory, use `ChipExtractor` from `grdl.data_prep` to plan chip regions instead of hand-rolling index arithmetic. `ChipExtractor` handles boundary snapping and uniform chip sizing:
 
 ```python
+from grdl.data_prep import ChipExtractor
+
 def process_large_image(reader, chunk_size=1024):
     rows, cols = reader.get_shape()
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
 
-    for r in range(0, rows, chunk_size):
-        for c in range(0, cols, chunk_size):
-            r_end = min(r + chunk_size, rows)
-            c_end = min(c + chunk_size, cols)
+    for region in extractor.chip_positions(row_width=chunk_size,
+                                           col_width=chunk_size):
+        chip = reader.read_chip(region.row_start, region.row_end,
+                                region.col_start, region.col_end)
+        result = process(chip)
+        writer.write_chip(result, region.row_start, region.col_start)
+```
 
-            chip = reader.read_chip(r, r_end, c, c_end)
-            # Process chip (e.g., filter, detect, classify)
-            result = process(chip)
-            # Write result
-            writer.write_chip(result, r, c)
+For overlapping tiles (e.g., ML inference with context padding), use `Tiler`:
+
+```python
+from grdl.data_prep import Tiler
+
+tiler = Tiler(nrows=rows, ncols=cols, tile_size=256, stride=128)
+for region in tiler.tile_positions():
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
 ```
 
 This pattern is enabled by:
-- `read_chip()` - spatial subsetting
+- `ChipExtractor` / `Tiler` - index-only chip planning with boundary snapping
+- `read_chip()` - spatial subsetting driven by `ChipRegion` bounds
 - `write_chip()` - incremental writes
 - Standardized indexing across all readers
 
@@ -546,7 +687,7 @@ def read_chip(
 **Conventions:**
 - `Union[str, Path]` for file paths (accept both)
 - `Optional[X]` for nullable parameters
-- `Dict[str, Any]` for heterogeneous metadata
+- Typed dataclasses for metadata (`ImageMetadata`, `SICDMetadata`, etc.) with ~60 nested types in `grdl.IO.models`
 - `np.ndarray` without shape hints (too complex, varies by reader)
 
 ## Testing Strategy

@@ -96,6 +96,25 @@ Roadmap and planned features for the IO module.
   - [x] `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - [x] Ground truth data (`ground_truth/`)
   - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
+- [x] Typed metadata (`models/` package)
+  - [x] `ImageMetadata` base dataclass with dict-like backward compatibility
+  - [x] Common primitive types (`XYZ`, `LatLon`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`)
+  - [x] `SICDMetadata` — all 17 SICD sections with ~35 nested dataclasses
+  - [x] `SIDDMetadata` — all 13 SIDD sections with ~25 nested dataclasses
+  - [x] `BIOMASSMetadata` — flat typed fields for mission-specific annotation
+  - [x] Full metadata extraction in SICD reader (sarkit + sarpy backends)
+  - [x] Full metadata extraction in SIDD reader (sarkit backend)
+  - [x] BIOMASS reader migrated from extras dict to typed `BIOMASSMetadata`
+  - [x] Metadata model tests (`test_io_models.py`)
+- [x] EO/IR/Multispectral submodules
+  - [x] `eo/` scaffold with `open_eo()` and `_backend.py`
+  - [x] `ir/` submodule with `ASTERReader` (L1T thermal, GDEM elevation)
+  - [x] `multispectral/` submodule with `VIIRSReader` (VNP46A1, VNP13A1)
+  - [x] `VIIRSMetadata` — flat typed fields for VIIRS HDF5 products
+  - [x] `ASTERMetadata` — flat typed fields for ASTER GeoTIFF + XML
+  - [x] `_backend.py` for each submodule (rasterio, h5py, glymur, xarray, spectral)
+  - [x] `open_ir()` and `open_multispectral()` auto-detection functions
+  - [x] IO-level exports updated
 - [x] Testing
   - [x] Test suite structure (`tests/`)
   - [x] BIOMASS L1 reader tests
@@ -412,7 +431,7 @@ Track here for next major version:
 
 - [ ] **Standardize band indexing**: All 0-based (currently GRD converts internally)
 - [ ] **Geolocation format**: Unified dict structure across all readers
-- [ ] **Metadata standardization**: Common keys across formats (e.g., 'acquisition_time')
+- [x] **Metadata standardization**: Typed metadata subclasses with `ImageMetadata` base providing common fields (`format`, `rows`, `cols`, `dtype`, `bands`, `crs`) and format-specific subclasses for SICD, SIDD, BIOMASS
 - [x] **Error handling**: Custom exception hierarchy (`grdl.exceptions`) -- implemented
 
 ### API Additions (Non-Breaking)
@@ -426,10 +445,10 @@ Can add in minor versions:
 
 ## Questions / Decisions Needed
 
-- [ ] **Metadata format**: Dict vs. custom classes vs. dataclasses?
-  - Dict: Flexible but no type safety
-  - Custom classes: Type safe but rigid
-  - Dataclasses: Middle ground, good for Python 3.7+
+- [x] **Metadata format**: ~~Dict vs. custom classes vs. dataclasses?~~ **Resolved — dataclasses.**
+  - `ImageMetadata` base dataclass with dict-like backward compatibility
+  - `SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata` subclasses with nested typed fields
+  - ~60 dataclasses in `grdl/IO/models/` package (common primitives, SICD 17 sections, SIDD 13 sections, BIOMASS flat)
 
 - [ ] **Geolocation standard**: Always convert to WGS84 lat/lon or preserve native?
   - WGS84: Simple, consistent
@@ -490,6 +509,9 @@ Track user-requested features here:
 - [x] IO restructure into modality-based submodules (sar/)
 - [x] sarkit/sarpy dual backend for SICD and CPHD
 - [x] IO import, GeoTIFF, NITF, SAR backend, and SAR reader tests
+- [x] Typed metadata subclasses (`models/` package) with complete SICD/SIDD/BIOMASS extraction
+- [x] EO/IR/Multispectral modality submodules (`eo/`, `ir/`, `multispectral/`)
+- [x] VIIRSReader and ASTERReader with typed metadata
 - [ ] SLCReader for Single Look Complex GeoTIFFs
 - [ ] Concrete ImageDetector implementations
 - [ ] Test coverage >80%

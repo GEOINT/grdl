@@ -132,6 +132,12 @@ from grdl.IO.models.sidd import (
 # BIOMASS
 from grdl.IO.models.biomass import BIOMASSMetadata
 
+# VIIRS
+from grdl.IO.models.viirs import VIIRSMetadata
+
+# ASTER
+from grdl.IO.models.aster import ASTERMetadata
+
 __all__ = [
     # Base
     'ImageMetadata',
@@ -228,4 +234,8 @@ __all__ = [
     'SIDDAnnotations',
     # BIOMASS
     'BIOMASSMetadata',
+    # VIIRS
+    'VIIRSMetadata',
+    # ASTER
+    'ASTERMetadata',
 ]

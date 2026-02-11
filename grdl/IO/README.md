@@ -4,7 +4,9 @@ Input/Output operations for geospatial imagery and vector data.
 
 ## Overview
 
-The IO module provides a unified interface for reading and writing various geospatial data formats, with a focus on remote sensing imagery. All readers inherit from abstract base classes defined in `base.py`, ensuring consistent APIs across different formats.
+The IO module provides a unified interface for reading geospatial imagery across SAR, IR, multispectral, and EO formats. **Always use an IO reader to load imagery** -- don't call `rasterio.open()` or `h5py.File()` directly. The readers handle lazy loading, band indexing, resource cleanup, and typed metadata extraction.
+
+All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consistent API across formats. Readers are organized into modality-based submodules (`sar/`, `ir/`, `multispectral/`, `eo/`) mirroring how sensors are used in practice. Metadata is returned as typed dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) with nested attribute access, IDE autocomplete, and backward-compatible dict-like `[]` access.
 
 ## Supported Formats
 
@@ -26,6 +28,32 @@ The IO module provides a unified interface for reading and writing various geosp
 | SIDD | `SIDDReader` | sarkit | ✅ Implemented |
 | BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
 | SLC | - | - | 🔄 Planned |
+
+### IR (Infrared / Thermal) — `ir/` submodule
+
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| ASTER L1T | `ASTERReader` | rasterio | ✅ Implemented |
+| ASTER GDEM | `ASTERReader` | rasterio | ✅ Implemented |
+| ECOSTRESS | - | - | 🔄 Planned |
+| Landsat TIRS | - | - | 🔄 Planned |
+
+### Multispectral / Hyperspectral — `multispectral/` submodule
+
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| VIIRS HDF5 | `VIIRSReader` | h5py | ✅ Implemented |
+| MODIS | - | - | 🔄 Planned |
+| EMIT | - | - | 🔄 Planned |
+| PRISMA | - | - | 🔄 Planned |
+
+### EO (Electro-Optical) — `eo/` submodule
+
+| Format | Reader Class | Backend | Status |
+|--------|-------------|---------|--------|
+| Landsat OLI | - | - | 🔄 Planned |
+| Sentinel-2 | - | - | 🔄 Planned |
+| WorldView | - | - | 🔄 Planned |
 
 ### Geospatial Vector
 
@@ -72,7 +100,8 @@ from grdl.IO import open_sar
 
 # Automatically detect and open SAR file
 with open_sar('image.nitf') as reader:
-    print(f"Format: {reader.metadata['format']}")
+    meta = reader.metadata
+    print(f"Format: {meta.format}")
     print(f"Shape: {reader.get_shape()}")
 
     # Read a spatial chip
@@ -87,24 +116,29 @@ from grdl.IO import SICDReader
 import numpy as np
 
 with SICDReader('sicd_image.nitf') as reader:
-    # Access metadata
-    print(f"Collector: {reader.metadata['collector_name']}")
-    print(f"Center Freq: {reader.metadata['center_frequency']} Hz")
-    print(f"Bandwidth: {reader.metadata['bandwidth']} Hz")
+    meta = reader.metadata  # SICDMetadata with typed nested access
+
+    # Collection info (nested dataclass)
+    ci = meta.collection_info
+    if ci:
+        print(f"Collector: {ci.collector_name}")
+        print(f"Classification: {ci.classification}")
+
+    # Image formation parameters
+    if meta.radar_collection and meta.radar_collection.tx_frequency:
+        tx = meta.radar_collection.tx_frequency
+        print(f"Tx Freq: {tx.min} - {tx.max} Hz")
 
     # Read complex data
     chip = reader.read_chip(1000, 2000, 1000, 2000)
 
-    # Convert to magnitude image
-    magnitude = np.abs(chip)
+    # Convert to magnitude in dB
+    magnitude_db = 20 * np.log10(np.abs(chip) + 1e-10)
 
-    # Convert to dB
-    magnitude_db = 20 * np.log10(magnitude + 1e-10)
-
-    # Scene center from metadata
-    scp = reader.metadata.get('scp_llh')
-    if scp:
-        print(f"Scene Center: {scp}")  # [lat, lon, height]
+    # Scene center (nested: geo_data → scp → llh → lat/lon/hae)
+    if meta.geo_data and meta.geo_data.scp:
+        scp = meta.geo_data.scp.llh
+        print(f"Scene Center: {scp.lat:.4f}, {scp.lon:.4f}, {scp.hae:.1f} m")
 ```
 
 #### CPHD - Phase History Data
@@ -113,14 +147,9 @@ with SICDReader('sicd_image.nitf') as reader:
 from grdl.IO import CPHDReader
 
 with CPHDReader('cphd_data.cphd') as reader:
-    print(f"Channels: {reader.metadata['num_channels']}")
-    print(f"Collector: {reader.metadata['collector_name']}")
-
-    # Access channel information
-    for channel_id, info in reader.metadata['channels'].items():
-        print(f"Channel {channel_id}:")
-        print(f"  Vectors: {info['num_vectors']}")
-        print(f"  Samples: {info['num_samples']}")
+    meta = reader.metadata
+    print(f"Channels: {meta.bands}")
+    print(f"Format: {meta.format}")
 
     # Read phase history data
     ph_data = reader.read_full(bands=[0])  # First channel
@@ -154,21 +183,20 @@ from grdl.IO import GeoTIFFReader, open_image
 
 # Auto-detect any supported raster format
 with open_image('scene.tif') as reader:
-    print(f"Format: {reader.metadata['format']}")
+    print(f"Format: {reader.metadata.format}")
     chip = reader.read_chip(0, 1024, 0, 1024)
 
 # Or use the GeoTIFFReader directly
 with GeoTIFFReader('sentinel1_grd.tif') as reader:
-    # Access geolocation from metadata
-    print(f"CRS: {reader.metadata['crs']}")
-    print(f"Bounds: {reader.metadata['bounds']}")
-    print(f"Resolution: {reader.metadata['resolution']}")
+    meta = reader.metadata  # ImageMetadata
+    print(f"CRS: {meta.crs}")
+    print(f"Dimensions: {meta.rows} x {meta.cols}")
 
     # Read data (real-valued, not complex)
     chip = reader.read_chip(0, 1000, 0, 1000)
 
     # Multi-band support
-    if reader.metadata['bands'] > 1:
+    if meta.bands > 1:
         # Read specific bands (0-based indexing)
         vv_vh = reader.read_chip(0, 1000, 0, 1000, bands=[0, 1])
 ```
@@ -179,7 +207,7 @@ with GeoTIFFReader('sentinel1_grd.tif') as reader:
 from grdl.IO import CRSDReader
 
 with CRSDReader('data.crsd') as reader:
-    print(f"Channels: {reader.metadata['num_channels']}")
+    print(f"Channels: {reader.metadata.bands}")
     shape = reader.get_shape()
     signal = reader.read_chip(0, 100, 0, 200)
 ```
@@ -190,7 +218,9 @@ with CRSDReader('data.crsd') as reader:
 from grdl.IO import SIDDReader
 
 with SIDDReader('derived.nitf', image_index=0) as reader:
-    print(f"Num images: {reader.metadata['num_images']}")
+    meta = reader.metadata  # SIDDMetadata
+    print(f"Num images: {meta.num_images}")
+    print(f"Pixel type: {meta.display.pixel_type if meta.display else '?'}")
     chip = reader.read_chip(0, 512, 0, 512)
 ```
 
@@ -204,11 +234,13 @@ import numpy as np
 
 # Auto-detect and open BIOMASS product
 with open_biomass('BIO_S1_SCS__1S_...') as reader:
-    print(f"Mission: {reader.metadata['mission']}")
-    print(f"Swath: {reader.metadata['swath']}")
-    print(f"Polarizations: {reader.metadata['polarizations']}")  # [HH, HV, VH, VV]
-    print(f"Orbit: {reader.metadata['orbit_number']} ({reader.metadata['orbit_pass']})")
-    print(f"Dimensions: {reader.metadata['rows']} x {reader.metadata['cols']}")
+    meta = reader.metadata  # BIOMASSMetadata with typed fields
+
+    print(f"Mission: {meta.mission}")
+    print(f"Swath: {meta.swath}")
+    print(f"Polarizations: {meta.polarizations}")  # [HH, HV, VH, VV]
+    print(f"Orbit: {meta.orbit_number} ({meta.orbit_pass})")
+    print(f"Dimensions: {meta.rows} x {meta.cols}")
 
     # Read HH polarization chip (band 0)
     hh_chip = reader.read_chip(0, 1024, 0, 1024, bands=[0])
@@ -223,11 +255,66 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
         mag = np.abs(all_pols[i])
         print(f"{pol}: magnitude range [{mag.min():.2f}, {mag.max():.2f}]")
 
-    # Geolocation info from metadata (slant range geometry)
-    print(f"Projection: {reader.metadata['projection']}")  # Slant Range
-    print(f"Range spacing: {reader.metadata['range_pixel_spacing']:.2f} m")
-    print(f"Azimuth spacing: {reader.metadata['azimuth_pixel_spacing']:.2f} m")
+    # Geolocation info (slant range geometry)
+    print(f"Projection: {meta.projection}")  # Slant Range
+    print(f"Range spacing: {meta.range_pixel_spacing:.2f} m")
+    print(f"Azimuth spacing: {meta.azimuth_pixel_spacing:.2f} m")
 ```
+
+### IR / Thermal Imagery
+
+#### ASTER - Thermal Infrared and DEM Products
+
+```python
+from grdl.IO import ASTERReader, open_ir
+
+# Auto-detect ASTER product type
+with open_ir('AST_L1T_00305042006.tif') as reader:
+    meta = reader.metadata  # ASTERMetadata with typed fields
+    print(f"Product: {meta.processing_level}")  # "L1T"
+    print(f"Date: {meta.acquisition_date}")
+    print(f"Cloud: {meta.cloud_cover}%")
+    chip = reader.read_chip(0, 512, 0, 512)
+
+# Or use the reader directly
+with ASTERReader('ASTGTM_N34W119_dem.tif') as reader:
+    meta = reader.metadata
+    print(f"Product: {meta.processing_level}")  # "GDEM"
+    print(f"CRS: {meta.crs}")
+    print(f"TIR available: {meta.tir_available}")
+    elevation = reader.read_full()
+```
+
+### Multispectral Imagery
+
+#### VIIRS - Nighttime Lights, Vegetation Index, and More
+
+```python
+from grdl.IO import VIIRSReader, open_multispectral
+
+# Auto-detect VIIRS product
+with open_multispectral('VNP46A1.A2024001.h09v05.002.h5') as reader:
+    meta = reader.metadata  # VIIRSMetadata with typed fields
+    print(f"Satellite: {meta.satellite_name}")   # "Suomi NPP"
+    print(f"Product: {meta.product_short_name}")  # "VNP46A1"
+    print(f"Day/Night: {meta.day_night_flag}")
+    chip = reader.read_chip(0, 256, 0, 256)
+
+# Browse datasets and select one
+datasets = VIIRSReader.list_datasets('VNP13A1.h5')
+for path, shape, dtype in datasets:
+    print(f"{path}: {shape} ({dtype})")
+
+# Open with explicit dataset path
+with VIIRSReader('VNP13A1.h5', dataset_path='/HDFEOS/GRIDS/NDVI') as reader:
+    meta = reader.metadata
+    print(f"Scale: {meta.scale_factor}")
+    print(f"Fill: {meta.fill_value}")
+    print(f"Units: {meta.dataset_units}")
+    ndvi = reader.read_full()
+```
+
+### BIOMASS ESA Satellite Data
 
 #### BIOMASS Data Catalog & Download
 
@@ -300,12 +387,46 @@ All readers inherit from abstract base classes in `base.py`:
   - `get_metadata_summary()` - Batch metadata extraction
   - `find_overlapping()` - Spatial overlap queries
 
+### Typed Metadata
+
+All readers populate `self.metadata` with a typed dataclass. Format-specific readers return specialized subclasses with nested attribute access:
+
+| Reader | Metadata Class | Key Nested Types |
+|--------|---------------|-----------------|
+| `GeoTIFFReader` | `ImageMetadata` | (flat fields) |
+| `HDF5Reader` | `ImageMetadata` | (flat fields) |
+| `NITFReader` | `ImageMetadata` | (flat fields) |
+| `SICDReader` | `SICDMetadata` | 17 sections: `collection_info`, `image_data`, `geo_data`, `grid`, `timeline`, `position`, `radar_collection`, `image_formation`, `scpcoa`, `radiometric`, `antenna`, `error_statistics`, `match_info`, `rg_az_comp`, `pfa`, `rma` |
+| `SIDDReader` | `SIDDMetadata` | `product_creation`, `display`, `geo_data`, `measurement`, `exploitation_features`, `downstream_reprocessing`, `compression`, `digital_elevation_data`, `product_processing`, `annotations` |
+| `BIOMASSL1Reader` | `BIOMASSMetadata` | `mission`, `swath`, `polarizations`, `orbit_number`, `range_pixel_spacing`, `azimuth_pixel_spacing`, `prf`, `corner_coords`, `gcps` |
+| `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
+| `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
+
+```python
+from grdl.IO.models import SICDMetadata, LatLonHAE, XYZ
+
+# Typed nested access with IDE autocomplete
+meta: SICDMetadata = reader.metadata
+meta.geo_data.scp.llh.lat          # float — Scene Center Point latitude
+meta.grid.row.ss                   # float — row sample spacing
+meta.scpcoa.graze_ang              # float — grazing angle
+meta.collection_info.radar_mode.mode_type  # str — 3 levels deep
+
+# Backward-compatible dict-like access still works
+meta['format']                     # str
+meta['rows']                       # int
+'scpcoa' in meta                   # True
+list(meta.keys())                  # all field names
+```
+
+The `models/` package provides ~60 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `biomass.py`, `viirs.py`, and `aster.py`.
+
 ### Design Principles
 
 1. **Lazy Loading** - Data only loaded when explicitly requested
 2. **Consistent API** - All readers share common interface
 3. **Context Managers** - Automatic resource cleanup with `with` statements
-4. **Type Safety** - Full type hints for all public APIs
+4. **Type Safety** - Full type hints for all public APIs; typed metadata dataclasses with nested attribute access
 5. **Format Agnostic** - Abstract interfaces hide format-specific details
 6. **Graceful Degradation** - Works with subset of dependencies installed
 
@@ -313,25 +434,29 @@ All readers inherit from abstract base classes in `base.py`:
 
 ### Large Images
 
-For large SAR or EO images that don't fit in memory:
+For large SAR or EO images that don't fit in memory, use `ChipExtractor` or `Tiler` from `grdl.data_prep` to plan chip regions. **Do not write your own chunking loops** -- `ChipExtractor` handles boundary snapping and uniform chip sizing:
 
 ```python
+from grdl.data_prep import ChipExtractor
+
 # BAD - Loads entire image into memory
 with SICDReader('large_image.nitf') as reader:
     full_image = reader.read_full()  # May cause OOM
 
-# GOOD - Process in chunks
+# BAD - Hand-rolled chunking (misses boundary edge cases)
+for r in range(0, rows, chip_size):
+    for c in range(0, cols, chip_size):
+        chip = reader.read_chip(r, min(r + chip_size, rows), ...)
+
+# GOOD - Use ChipExtractor for chip planning
 with SICDReader('large_image.nitf') as reader:
     rows, cols = reader.get_shape()
-    chip_size = 1024
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
 
-    for r in range(0, rows, chip_size):
-        for c in range(0, cols, chip_size):
-            chip = reader.read_chip(
-                r, min(r + chip_size, rows),
-                c, min(c + chip_size, cols)
-            )
-            # Process chip...
+    for region in extractor.chip_positions(row_width=1024, col_width=1024):
+        chip = reader.read_chip(region.row_start, region.row_end,
+                                region.col_start, region.col_end)
+        # Process chip...
 ```
 
 ### Complex vs. Magnitude
@@ -383,6 +508,7 @@ See `grdl/example/` for working workflows:
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
 - `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
+- `image_processing/sar/sublook_compare.py` - **Full GRDL integration**: IO + data_prep + image_processing
 
 ## ImageJ/Fiji Algorithm Ports
 
@@ -422,21 +548,29 @@ Each ported component carries `__imagej_source__`, `__imagej_version__`, `__gpu_
 
 ## Data Preparation
 
-The `grdl.data_prep` module provides chip/tile index computation and normalization utilities:
+The `grdl.data_prep` module provides index-only chip/tile planning and normalization. `ChipExtractor` and `Tiler` compute `ChipRegion` bounds -- they never touch pixel data. **Use them with IO readers instead of writing ad-hoc chunking loops:**
 
 ```python
+from grdl.IO import GeoTIFFReader
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Compute chip region centered at a point (snaps to stay inside image)
-extractor = ChipExtractor(nrows=rows, ncols=cols)
-region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
-chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
+with GeoTIFFReader('scene.tif') as reader:
+    rows, cols = reader.get_shape()
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
 
-# Partition image into uniform chip regions
-regions = extractor.chip_positions(row_width=256, col_width=256)
+    # Point-centered chip (boundary-snapped)
+    region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
 
-# Compute overlapping tile positions with stride
-tiler = Tiler(nrows=rows, ncols=cols, tile_size=256, stride=128)
+    # Whole-image partitioning
+    for region in extractor.chip_positions(row_width=256, col_width=256):
+        chip = reader.read_chip(region.row_start, region.row_end,
+                                region.col_start, region.col_end)
+        # Process each chip...
+
+# Overlapping tiles with stride
+tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
 tile_regions = tiler.tile_positions()
 
 # Normalize intensity values

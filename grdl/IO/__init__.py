@@ -4,7 +4,8 @@ IO Module - Input/Output Operations for Geospatial Imagery.
 
 Handles reading and writing various geospatial data formats. Base data
 format readers (GeoTIFF, NITF, HDF5) live at this level.  Modality-specific
-readers are organized into submodules (``sar/``).
+readers are organized into submodules (``sar/``, ``eo/``, ``ir/``,
+``multispectral/``).
 
 Dependencies
 ------------
@@ -39,7 +40,10 @@ from typing import Union
 
 # Base classes and models
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
-from grdl.IO.models import ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata
+from grdl.IO.models import (
+    ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata,
+    VIIRSMetadata, ASTERMetadata,
+)
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
@@ -59,6 +63,15 @@ from grdl.IO.sar import (
     open_biomass,
     load_credentials,
 )
+
+# EO submodule
+from grdl.IO.eo import open_eo
+
+# IR submodule
+from grdl.IO.ir import ASTERReader, open_ir
+
+# Multispectral submodule
+from grdl.IO.multispectral import VIIRSReader, open_multispectral
 
 
 def open_image(filepath: Union[str, Path]) -> ImageReader:
@@ -142,6 +155,8 @@ __all__ = [
     'SICDMetadata',
     'SIDDMetadata',
     'BIOMASSMetadata',
+    'VIIRSMetadata',
+    'ASTERMetadata',
     # Base format readers
     'GeoTIFFReader',
     'HDF5Reader',
@@ -155,9 +170,16 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # IR readers
+    'ASTERReader',
+    # Multispectral readers
+    'VIIRSReader',
     # Convenience functions
     'open_image',
     'open_sar',
     'open_biomass',
+    'open_eo',
+    'open_ir',
+    'open_multispectral',
     'load_credentials',
 ]

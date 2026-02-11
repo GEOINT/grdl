@@ -16,15 +16,59 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 - **Sensor-agnostic** -- Built around 2D correlated data as the common abstraction. The same tools work whether the source is a SAR sensor, an EO camera, a multispectral imager, or a terrestrial scanner.
 - **Not a framework** -- GRDL is a library, not an application. It doesn't impose structure on your project.
 
+### Use the Right Module
+
+GRDL modules are purpose-built. Each one owns a specific responsibility. **Use them for that purpose instead of writing ad-hoc code:**
+
+| Task | Module | Not this |
+|------|--------|----------|
+| Load imagery from any format | `grdl.IO` (`SICDReader`, `VIIRSReader`, `ASTERReader`, ...) | Raw `rasterio.open()` / `h5py.File()` calls |
+| Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
+| Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
+| Transform pixel to lat/lon | `grdl.geolocation` (`GCPGeolocation`, etc.) | Manual interpolation of GCPs |
+| Apply spatial filters or enhance contrast | `grdl.imagej` (`CLAHE`, `RankFilters`, ...) | Re-implementing median filters from scratch |
+| Decompose polarimetric SAR | `grdl.image_processing` (`PauliDecomposition`) | Manual `(shh + svv) / sqrt(2)` arithmetic |
+| Align two images | `grdl.coregistration` (`AffineCoRegistration`, ...) | Custom OpenCV `findHomography` wrappers |
+
+This matters because the library modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code typically misses. Compose them at the application level:
+
+```python
+from grdl.IO import SICDReader
+from grdl.data_prep import ChipExtractor
+from grdl.image_processing.sar import SublookDecomposition
+
+# IO: load the image and metadata
+with SICDReader('image.nitf') as reader:
+    rows, cols = reader.get_shape()
+
+    # data_prep: plan a center chip (handles boundary snapping)
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
+    region = extractor.chip_at_point(rows // 2, cols // 2,
+                                     row_width=2048, col_width=2048)
+
+    # IO: read only the planned region
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
+
+    # image_processing: decompose into sub-aperture looks
+    sublook = SublookDecomposition(reader.metadata, num_looks=3)
+    looks = sublook.decompose(chip)
+```
+
 ## Module Areas
 
 | Domain | Description | Status |
 |--------|-------------|--------|
-| **I/O** | Readers and writers for geospatial imagery formats (SICD, CPHD, CRSD, SIDD, GeoTIFF, NITF, BIOMASS) | Implemented |
+| **I/O** | Readers and writers for geospatial imagery formats | Implemented |
+| | Base formats: GeoTIFF, HDF5, NITF, JPEG2000 | |
+| | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS | |
+| | IR: ASTER (L1T, GDEM) | |
+| | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
+| | EO: scaffold (Landsat, Sentinel-2, WorldView planned) | |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
-| **Image Processing** | Orthorectification, polarimetric decomposition, detection models, processor versioning | Implemented |
+| **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning | Implemented |
 | **ImageJ/Fiji Ports** | 12 classic image processing algorithms ported from ImageJ/Fiji for remote sensing | Implemented |
-| **Data Preparation** | Tiling, chip extraction, normalization for ML/AI pipelines | Implemented |
+| **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
@@ -39,15 +83,33 @@ GRDL/
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
 │   │   ├── geotiff.py               #   GeoTIFFReader (rasterio), open_image()
+│   │   ├── hdf5.py                  #   HDF5Reader (h5py)
+│   │   ├── jpeg2000.py              #   JP2Reader (glymur)
 │   │   ├── nitf.py                  #   NITFReader (rasterio/GDAL)
-│   │   └── sar/                     #   SAR-specific formats
-│   │       ├── _backend.py          #     sarkit/sarpy availability detection
-│   │       ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
-│   │       ├── cphd.py              #     CPHDReader (sarkit primary, sarpy fallback)
-│   │       ├── crsd.py              #     CRSDReader (sarkit only)
-│   │       ├── sidd.py              #     SIDDReader (sarkit only)
-│   │       ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
-│   │       └── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
+│   │   ├── models/                  #   Typed metadata dataclasses
+│   │   │   ├── base.py              #     ImageMetadata base class
+│   │   │   ├── common.py            #     Shared primitives (XYZ, LatLonHAE, Poly2D, ...)
+│   │   │   ├── sicd.py              #     SICDMetadata (~35 nested dataclasses)
+│   │   │   ├── sidd.py              #     SIDDMetadata (~25 nested dataclasses)
+│   │   │   ├── biomass.py           #     BIOMASSMetadata (flat typed fields)
+│   │   │   ├── viirs.py             #     VIIRSMetadata (flat typed fields)
+│   │   │   └── aster.py             #     ASTERMetadata (flat typed fields)
+│   │   ├── sar/                     #   SAR-specific formats
+│   │   │   ├── _backend.py          #     sarkit/sarpy availability detection
+│   │   │   ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
+│   │   │   ├── cphd.py              #     CPHDReader (sarkit primary, sarpy fallback)
+│   │   │   ├── crsd.py              #     CRSDReader (sarkit only)
+│   │   │   ├── sidd.py              #     SIDDReader (sarkit only)
+│   │   │   ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
+│   │   │   └── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
+│   │   ├── ir/                      #   IR/thermal readers
+│   │   │   ├── _backend.py          #     rasterio/h5py availability detection
+│   │   │   └── aster.py             #     ASTERReader (L1T, GDEM)
+│   │   ├── multispectral/           #   Multispectral/hyperspectral readers
+│   │   │   ├── _backend.py          #     h5py/xarray/spectral availability detection
+│   │   │   └── viirs.py             #     VIIRSReader (nightlights, vegetation, reflectance)
+│   │   └── eo/                      #   EO readers (scaffold)
+│   │       └── _backend.py          #     rasterio/glymur availability detection
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
@@ -63,9 +125,11 @@ GRDL/
 │   │   ├── decomposition/
 │   │   │   ├── base.py              #   PolarimetricDecomposition ABC
 │   │   │   └── pauli.py             #   PauliDecomposition (quad-pol)
-│   │   └── detection/
-│   │       ├── base.py              #   ImageDetector ABC
-│   │       └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
+│   │   ├── detection/
+│   │   │   ├── base.py              #   ImageDetector ABC
+│   │   │   └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
+│   │   └── sar/                     #   SAR-specific transforms (metadata-dependent)
+│   │       └── sublook.py           #   SublookDecomposition (sub-aperture splitting)
 │   ├── imagej/                      # ImageJ/Fiji algorithm ports (organized by ImageJ menu)
 │   │   ├── __init__.py              #   Barrel re-exports all 12 components
 │   │   ├── _taxonomy.py             #   Category constants shared with GRDK
@@ -110,19 +174,29 @@ GRDL/
 │       │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
 │       ├── ortho/
 │       │   └── ortho_biomass.py         #   Orthorectification with Pauli RGB
-│       └── sar/
-│           └── view_sicd.py             #   SICD magnitude viewer (linear)
+│       ├── sar/
+│       │   └── view_sicd.py             #   SICD magnitude viewer (linear)
+│       └── image_processing/
+│           └── sar/
+│               └── sublook_compare.py   #   Full GRDL integration: IO + data_prep + image_processing
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite
 │   ├── conftest.py                              #   Shared pytest fixtures (synthetic images)
+│   ├── test_io_imports.py                       #   IO module import verification
 │   ├── test_io_biomass.py                       #   BIOMASS reader tests
+│   ├── test_io_geotiff.py                       #   GeoTIFF reader tests
+│   ├── test_io_hdf5.py                          #   HDF5 reader tests
+│   ├── test_io_ir_readers.py                    #   ASTER reader tests
+│   ├── test_io_multispectral_readers.py         #   VIIRS reader tests
+│   ├── test_io_models.py                        #   Metadata model tests
 │   ├── test_geolocation_biomass.py              #   Geolocation tests with interactive markers
 │   ├── test_image_processing_ortho.py           #   Orthorectification tests
 │   ├── test_image_processing_decomposition.py   #   Pauli decomposition tests
 │   ├── test_image_processing_detection.py       #   Detection models & geo-registration tests
 │   ├── test_image_processing_versioning.py      #   Processor versioning tests
 │   ├── test_image_processing_tunable.py         #   Tunable parameter tests
+│   ├── test_image_processing_sar_sublook.py     #   SAR sublook decomposition tests
 │   ├── test_imagej.py                           #   ImageJ/Fiji ports (12 components)
 │   ├── test_coregistration.py                   #   Coregistration tests
 │   └── test_benchmarks.py                       #   Performance benchmarks (pytest-benchmark)
@@ -224,6 +298,34 @@ volume = components['volume']              # (S_HV + S_VH) / sqrt(2)
 # Convert to display representations
 db = pauli.to_db(components)          # Dict of dB arrays
 rgb = pauli.to_rgb(components)        # (rows, cols, 3) float32 [0, 1]
+```
+
+### Sub-Aperture (Sublook) Decomposition
+
+Split a complex SAR image into sub-aperture looks for coherent change detection, speckle analysis, or interferometry. Handles oversampled imagery and supports configurable overlap between sub-bands. Accepts numpy arrays or PyTorch tensors (GPU); always returns numpy.
+
+```python
+from grdl.IO.sar import SICDReader
+from grdl.image_processing import SublookDecomposition
+
+with SICDReader('image.nitf') as reader:
+    image = reader.read_full()                        # complex64
+
+    # 3 azimuth sub-looks, 10% overlap, deweight original apodization
+    sublook = SublookDecomposition(
+        reader.metadata, num_looks=3, overlap=0.1, deweight=True,
+    )
+    looks = sublook.decompose(image)                  # (3, rows, cols) complex
+
+    # Convert to display representations
+    mag = sublook.to_magnitude(looks)                 # |z|
+    db = sublook.to_db(looks)                         # 20*log10(|z|)
+    pwr = sublook.to_power(looks)                     # |z|^2
+
+    # GPU-accelerated path (optional, requires torch)
+    import torch
+    image_gpu = torch.from_numpy(image).cuda()
+    looks_gpu = sublook.decompose(image_gpu)          # returns numpy
 ```
 
 ### Orthorectification
@@ -350,24 +452,39 @@ result = pipe.apply(image, progress_callback=lambda f: print(f"{f:.0%}"))
 
 ### Data Preparation
 
-Chip/tile index computation and normalization for ML/AI pipelines:
+Chip/tile index computation and normalization for ML/AI pipelines. `ChipExtractor` and `Tiler` compute index bounds only -- they never touch pixel data. Pair them with an IO reader for the actual read:
 
 ```python
+from grdl.IO import GeoTIFFReader
 from grdl.data_prep import Tiler, ChipExtractor, Normalizer
 
-# Compute chip region centered at a point
-extractor = ChipExtractor(nrows=1000, ncols=2000)
-region = extractor.chip_at_point(500, 1000, row_width=64, col_width=64)
-chip = image[region.row_start:region.row_end, region.col_start:region.col_end]
+# -- Point-centered chip extraction with IO reader --
+with GeoTIFFReader('scene.tif') as reader:
+    rows, cols = reader.get_shape()
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
 
-# Partition an image into non-overlapping chip regions
-regions = extractor.chip_positions(row_width=256, col_width=256)
+    # Plan a 256x256 chip around a target (boundary-snapped)
+    region = extractor.chip_at_point(500, 1000, row_width=256, col_width=256)
 
-# Compute overlapping tile positions with stride
+    # Read only the planned region from disk
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
+
+# -- Whole-image tiling for batch processing --
+with GeoTIFFReader('large_scene.tif') as reader:
+    rows, cols = reader.get_shape()
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
+
+    for region in extractor.chip_positions(row_width=512, col_width=512):
+        chip = reader.read_chip(region.row_start, region.row_end,
+                                region.col_start, region.col_end)
+        # Process each chip...
+
+# -- Stride-based overlapping tiles --
 tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
 tile_regions = tiler.tile_positions()
 
-# Normalize to [0, 1] range
+# -- Normalize to [0, 1] range --
 norm = Normalizer(method='minmax')
 normalized = norm.normalize(image)
 ```
