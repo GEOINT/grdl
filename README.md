@@ -65,7 +65,7 @@ with SICDReader('image.nitf') as reader:
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
 | | EO: scaffold (Landsat, Sentinel-2, WorldView planned) | |
 | **Geolocation** | Pixel-to-geographic coordinate transforms (GCP interpolation, affine, SICD) | Implemented |
-| **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning | Implemented |
+| **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning & metadata | Implemented |
 | **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
@@ -116,7 +116,8 @@ GRDL/
 │   │   └── eo/                      #   EO geolocation (planned)
 │   ├── image_processing/            # Image transforms module
 │   │   ├── base.py                  #   ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
-│   │   ├── versioning.py            #   @processor_version, @processor_tags, TunableParameterSpec
+│   │   ├── params.py                #   Range, Options, Desc, ParamSpec (Annotated constraint markers)
+│   │   ├── versioning.py            #   @processor_version, @processor_tags, DetectionInputSpec
 │   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
 │   │   │   └── ortho.py             #   Orthorectifier, OutputGrid
@@ -336,33 +337,76 @@ results.append(det)
 geojson = results.to_geojson()
 ```
 
-### Processor Versioning & Tunable Parameters
+### Processor Metadata: Versioning, Tags & Tunable Parameters
+
+Every `ImageProcessor` subclass should declare its metadata. This is optional but **highly recommended** -- it enables downstream systems (grdl-runtime catalog discovery, grdk GUI controls) to introspect, filter, and configure processors automatically.
+
+#### Version & Tags (decorators)
 
 ```python
-from grdl.image_processing import processor_version, TunableParameterSpec
-from grdl.image_processing import ImageDetector, DetectionSet, OutputSchema
+from grdl.image_processing import (
+    ImageTransform, processor_version, processor_tags,
+    ImageModality, ProcessorCategory,
+)
 
 @processor_version('1.0.0')
-class MyDetector(ImageDetector):
-    """Versioned detector with tunable parameters."""
-
-    @property
-    def tunable_parameter_specs(self):
-        return [
-            TunableParameterSpec('threshold', float, default=0.5,
-                                 min_value=0.0, max_value=1.0,
-                                 description='Detection confidence threshold'),
-        ]
-
-    @property
-    def output_schema(self):
-        return OutputSchema([...])
-
-    def detect(self, source, geolocation=None, **kwargs):
-        self._validate_tunable_parameters(kwargs)
-        threshold = self._get_tunable_parameter('threshold', kwargs)
-        ...
+@processor_tags(
+    modalities=[ImageModality.SAR, ImageModality.PAN],
+    category=ProcessorCategory.FILTERS,
+    description='Adaptive edge-preserving smoothing filter',
+)
+class MyFilter(ImageTransform):
+    ...
 ```
+
+- `@processor_version` stamps `__processor_version__` on the class. A runtime warning is issued at first instantiation if missing.
+- `@processor_tags` stamps `__processor_tags__` with modality, category, and description metadata for catalog and UI filtering.
+
+#### Tunable Parameters (Annotated constraints)
+
+Declare tunable parameters as class-body annotations using `typing.Annotated` with constraint markers from `grdl.image_processing.params`:
+
+```python
+from typing import Annotated
+from grdl.image_processing import (
+    ImageTransform, processor_version, processor_tags,
+    Range, Options, Desc,
+    ImageModality, ProcessorCategory,
+)
+
+@processor_version('1.0.0')
+@processor_tags(modalities=[ImageModality.PAN], category=ProcessorCategory.FILTERS)
+class AdaptiveFilter(ImageTransform):
+    """Edge-preserving smoothing with tunable parameters."""
+
+    sigma: Annotated[float, Range(min=0.1, max=100.0),
+                     Desc('Gaussian kernel sigma')] = 2.0
+    method: Annotated[str, Options('bilateral', 'guided'),
+                      Desc('Filter algorithm')] = 'bilateral'
+    iterations: Annotated[int, Range(min=1, max=20),
+                          Desc('Number of filter passes')] = 1
+
+    def apply(self, source, **kwargs):
+        params = self._resolve_params(kwargs)
+        sigma = params['sigma']
+        method = params['method']
+        iterations = params['iterations']
+        # ... implementation
+```
+
+**How it works:**
+
+| Marker | Purpose |
+|--------|---------|
+| `Range(min=, max=)` | Inclusive numeric bounds -- validated at init and runtime |
+| `Options('a', 'b')` | Discrete allowed values -- validated at init and runtime |
+| `Desc('...')` | Human-readable label for GUIs and docs |
+
+- Parameters are collected into `cls.__param_specs__` at class definition time.
+- An `__init__` is auto-generated (keyword-only args with defaults) unless the class defines its own.
+- `_resolve_params(kwargs)` merges instance defaults with runtime overrides and validates all values.
+- `Range` and `Options` are mutually exclusive on the same parameter.
+- grdk reads `__param_specs__` to build dynamic parameter controls in its widget UI.
 
 ### Data Preparation
 
@@ -403,18 +447,26 @@ norm = Normalizer(method='minmax')
 normalized = norm.normalize(image)
 ```
 
-### Processor Tags & GPU Compatibility
+### Querying Processor Metadata at Runtime
 
-Processors declare their capabilities for downstream discovery and dispatch:
+Downstream tools (grdl-runtime, grdk) read the metadata stamps directly:
 
 ```python
-from grdl.image_processing import processor_tags
+from grdl.image_processing import PauliDecomposition, SublookDecomposition
 
-# Query processor capabilities
-print(PauliDecomposition.__processor_tags__)
-# {'modalities': ('SAR',), 'category': 'decomposition', ...}
+# Version
+print(PauliDecomposition.__processor_version__)   # '0.1.0'
 
-print(PauliDecomposition.__gpu_compatible__)
+# Tags (modalities, category, description)
+print(SublookDecomposition.__processor_tags__)
+# {'modalities': (<ImageModality.SAR>,), 'category': None, ...}
+
+# Tunable parameters (ParamSpec introspection)
+for spec in SublookDecomposition.__param_specs__:
+    print(f"  {spec.name}: {spec.param_type.__name__}, default={spec.default}")
+
+# GPU compatibility flag
+print(SublookDecomposition.__gpu_compatible__)     # False
 ```
 
 ### Custom Exceptions
@@ -486,6 +538,7 @@ GRDL grows one well-built module at a time. When adding a new module:
 4. Include example usage.
 5. List module-specific dependencies.
 6. Add sample data to `example_images/` if needed for demos.
+7. **For ImageProcessor subclasses**: add `@processor_version`, `@processor_tags`, and `Annotated` parameter declarations. This metadata is what makes your processor discoverable and configurable in grdl-runtime and grdk.
 
 See [CLAUDE.md](CLAUDE.md) for full development standards, file header format, and coding conventions.
 
