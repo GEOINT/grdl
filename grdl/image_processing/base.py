@@ -101,6 +101,20 @@ class ImageProcessor(ABC):
     #: Whether this processor class has any global-pass callbacks.
     __has_global_pass__: bool = False
 
+    @property
+    def has_global_pass(self) -> bool:
+        """Whether this processor requires a global pass before transforms.
+
+        Returns ``True`` when at least one method is decorated with
+        ``@globalprocessor``, meaning the executor must stream the full
+        image through the global callbacks before running ``apply()``.
+
+        Returns
+        -------
+        bool
+        """
+        return type(self).__has_global_pass__
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls.__param_specs__ = collect_param_specs(cls)

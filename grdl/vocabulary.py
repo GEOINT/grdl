@@ -112,6 +112,26 @@ class ExecutionPhase(Enum):
     FINALIZATION = "finalization"
 
 
+class GpuCapability(Enum):
+    """GPU capability declaration for processor tagging.
+
+    Declares a processor's relationship with GPU hardware.  Set via
+    ``@processor_tags(gpu_capability=GpuCapability.PREFERRED)`` and read
+    by the execution resolver to plan hardware-aware execution paths.
+
+    Intended to replace the legacy ``__gpu_compatible__`` class attribute.
+    """
+
+    REQUIRED = "required"
+    """Processor cannot run without a GPU (e.g., a PyTorch model)."""
+
+    PREFERRED = "preferred"
+    """Processor benefits from GPU but has a CPU fallback path."""
+
+    CPU_ONLY = "cpu_only"
+    """Processor uses CPU-only libraries (e.g., scipy) and cannot use GPU."""
+
+
 class OutputFormat(Enum):
     """Supported output file formats for write configuration.
 

@@ -47,6 +47,7 @@ from grdl.vocabulary import (
     DetectionType,
     SegmentationType,
     ExecutionPhase,
+    GpuCapability,
     OutputFormat,
 )
 
@@ -84,6 +85,7 @@ __all__ = [
     'DetectionType',
     'SegmentationType',
     'ExecutionPhase',
+    'GpuCapability',
     'OutputFormat',
     *_COREG_EXPORTS,
 ]
