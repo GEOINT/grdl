@@ -105,6 +105,7 @@ def processor_tags(
     segmentation_types: Optional[Sequence[SegmentationType]] = None,
     phases: Optional[Sequence[ExecutionPhase]] = None,
     gpu_capability: Optional[GpuCapability] = None,
+    required_bands: Optional[int] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -139,6 +140,12 @@ def processor_tags(
         ``CPU_ONLY`` means GPU will not help.
         When ``None``, the execution resolver falls back to reading
         the legacy ``__gpu_compatible__`` class attribute.
+    required_bands : int, optional
+        Number of spectral bands the processor requires.  When set,
+        grdl-runtime's executor can automatically adapt the input
+        array to match (e.g., repeat a 1-band image to 3 bands).
+        Must be a positive integer.  ``None`` (default) means the
+        processor accepts any band count.
 
     Raises
     ------
@@ -147,6 +154,8 @@ def processor_tags(
         *category* is not a ``ProcessorCategory``, or any element of
         *detection_types*/*segmentation_types*/*phases* is not the
         correct enum type.
+    ValueError
+        If *required_bands* is not a positive integer.
 
     Examples
     --------
@@ -194,6 +203,12 @@ def processor_tags(
             f"gpu_capability must be a GpuCapability member, "
             f"got {gpu_capability!r}"
         )
+    if required_bands is not None:
+        if not isinstance(required_bands, int) or required_bands < 1:
+            raise ValueError(
+                f"required_bands must be a positive integer, "
+                f"got {required_bands!r}"
+            )
 
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
@@ -208,6 +223,7 @@ def processor_tags(
             ),
             'phases': tuple(phases) if phases else (),
             'gpu_capability': gpu_capability,
+            'required_bands': required_bands,
         }
         return cls
     return decorator

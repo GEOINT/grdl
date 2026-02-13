@@ -39,6 +39,7 @@ from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.detection.models import DetectionSet
 
 if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
     from grdl.geolocation.base import Geolocation
 
 
@@ -71,6 +72,34 @@ class ImageDetector(ImageProcessor):
     >>> detections.output_fields
     ('sar.change_magnitude', 'identity.label')
     """
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Execute the detector, returning DetectionSet and unchanged metadata.
+
+        Sets ``self._metadata`` so subclasses can access ``self.metadata``
+        inside ``detect()``, then delegates to ``detect()``.  Metadata is
+        returned unchanged because the output is a ``DetectionSet``, not a
+        transformed image.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Input image array.
+
+        Returns
+        -------
+        tuple[DetectionSet, ImageMetadata]
+        """
+        self._metadata = metadata
+        result = self.detect(source, **kwargs)
+        return result, metadata
 
     @abstractmethod
     def detect(

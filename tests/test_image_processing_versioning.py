@@ -435,3 +435,45 @@ class TestProcessorTagsDecorator:
             modalities=[ImageModality.SAR],
         )(_Original)
         assert decorated is _Original
+
+    def test_required_bands_stored(self):
+        """required_bands=3 is stored in __processor_tags__."""
+        @processor_tags(required_bands=3)
+        @processor_version('1.0.0')
+        class _Banded(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        assert _Banded.__processor_tags__['required_bands'] == 3
+
+    def test_required_bands_none_default(self):
+        """Omitted required_bands defaults to None."""
+        @processor_tags()
+        @processor_version('1.0.0')
+        class _NoBands(ImageTransform):
+            def apply(self, source, **kwargs):
+                return source
+
+        assert _NoBands.__processor_tags__['required_bands'] is None
+
+    def test_required_bands_validates_positive(self):
+        """required_bands=0 or negative raises ValueError."""
+        with pytest.raises(ValueError, match="positive integer"):
+            @processor_tags(required_bands=0)
+            class _Zero(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source
+
+        with pytest.raises(ValueError, match="positive integer"):
+            @processor_tags(required_bands=-1)
+            class _Neg(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source
+
+    def test_required_bands_rejects_non_int(self):
+        """required_bands with a non-int value raises ValueError."""
+        with pytest.raises(ValueError, match="positive integer"):
+            @processor_tags(required_bands=3.5)
+            class _Float(ImageTransform):
+                def apply(self, source, **kwargs):
+                    return source

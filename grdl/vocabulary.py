@@ -132,6 +132,48 @@ class GpuCapability(Enum):
     """Processor uses CPU-only libraries (e.g., scipy) and cannot use GPU."""
 
 
+class BandExpansion(Enum):
+    """Strategy for expanding fewer input bands to match a processor's requirement.
+
+    Used by grdl-runtime's band adaptation system when the incoming image
+    has fewer bands than a processor declares via
+    ``@processor_tags(required_bands=N)``.
+    """
+
+    REPEAT = "repeat"
+    """Tile available bands cyclically (e.g., 1-band → [B, B, B])."""
+
+    ZERO_PAD = "zero_pad"
+    """Fill missing bands with zeros."""
+
+
+class BandReduction(Enum):
+    """Strategy for reducing excess input bands to match a processor's requirement.
+
+    Used by grdl-runtime's band adaptation system when the incoming image
+    has more bands than a processor declares via
+    ``@processor_tags(required_bands=N)``.
+    """
+
+    FIRST_N = "first_n"
+    """Take the first N bands."""
+
+    MEAN = "mean"
+    """Average across all bands."""
+
+    MEDIAN = "median"
+    """Median across all bands."""
+
+    MAX = "max"
+    """Maximum across all bands."""
+
+    MIN = "min"
+    """Minimum across all bands."""
+
+    LUMINANCE = "luminance"
+    """Weighted luminance: 0.2126*R + 0.7152*G + 0.0722*B (3→1 only)."""
+
+
 class OutputFormat(Enum):
     """Supported output file formats for write configuration.
 

@@ -37,7 +37,8 @@ Modified
 """
 
 # Standard library
-from typing import Annotated, Optional, Tuple, Union
+import dataclasses
+from typing import Annotated, Any, Optional, Tuple, TYPE_CHECKING, Union
 
 # Third-party
 import numpy as np
@@ -54,6 +55,9 @@ from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality
 from grdl.IO.models import SICDMetadata
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
 
 
 # ===================================================================
@@ -384,6 +388,37 @@ class SublookDecomposition(ImageProcessor):
         np.maximum(interp_wgt, floor, out=interp_wgt)
 
         return 1.0 / interp_wgt
+
+    # ------------------------------------------------------------------
+    # execute() protocol
+    # ------------------------------------------------------------------
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Execute sub-look decomposition via the universal protocol.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Complex 2-D SAR image.
+
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+            ``(sub_look_stack, updated_metadata)`` where the stack has
+            shape ``(num_looks, rows, cols)`` and metadata reflects the
+            new band count.
+        """
+        self._metadata = metadata
+        result = self.decompose(source)
+        updated = dataclasses.replace(metadata, bands=result.shape[0])
+        return result, updated
 
     # ------------------------------------------------------------------
     # Core decomposition

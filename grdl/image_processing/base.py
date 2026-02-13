@@ -34,6 +34,7 @@ Modified
 import logging
 import warnings
 from abc import ABC, abstractmethod
+import dataclasses
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 from grdl.image_processing.params import ParamSpec, collect_param_specs, _make_init
 
 if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
     from grdl.image_processing.versioning import DetectionInputSpec
     from grdl.image_processing.detection.models import DetectionSet
 
@@ -289,6 +291,87 @@ class ImageProcessor(ABC):
         if cb is not None:
             cb(float(fraction))
 
+    # -----------------------------------------------------------------
+    # Metadata property + execute() protocol
+    # -----------------------------------------------------------------
+
+    #: Current image metadata, set by execute() before domain method dispatch.
+    #: Not annotated as a class-level type hint to avoid breaking
+    #: get_type_hints() / collect_param_specs() with the forward reference.
+    _metadata = None
+
+    @property
+    def metadata(self) -> Optional['ImageMetadata']:
+        """Image metadata for the current execution context.
+
+        Set automatically by ``execute()`` before calling the domain-specific
+        method (``apply()``, ``detect()``, ``decompose()``).  Subclasses can
+        reference ``self.metadata`` inside their domain method to access band
+        count, CRS, sensor info, etc. without signature changes.
+
+        Returns ``None`` if the processor was called directly (not via
+        ``execute()``).
+
+        Returns
+        -------
+        ImageMetadata or None
+        """
+        return self._metadata
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Universal execution entry point for grdl-runtime.
+
+        Stores *metadata* on the instance (accessible via ``self.metadata``),
+        then delegates to the domain-specific method and returns updated
+        metadata.
+
+        Each ABC subclass (``ImageTransform``, ``ImageDetector``,
+        ``PolarimetricDecomposition``) overrides this to delegate to its
+        domain method and compute appropriate metadata updates.  Concrete
+        implementations should NOT override this — implement the domain
+        method instead.
+
+        The default implementation probes for ``apply``, ``detect``, or
+        ``decompose`` as a fallback for third-party processors that don't
+        inherit from a GRDL ABC.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Metadata describing the input source data.
+        source : np.ndarray
+            Input data array.
+        **kwargs
+            Additional arguments forwarded to the domain method.
+
+        Returns
+        -------
+        tuple[Any, ImageMetadata]
+            ``(result, updated_metadata)`` where *result* is the domain
+            method's return value and *updated_metadata* reflects any
+            changes the processor made (shape, dtype, bands, etc.).
+
+        Raises
+        ------
+        NotImplementedError
+            If no known domain method is found.
+        """
+        self._metadata = metadata
+        for method_name in ('apply', 'detect', 'decompose'):
+            method = getattr(self, method_name, None)
+            if method is not None and callable(method):
+                result = method(source, **kwargs)
+                return result, metadata
+        raise NotImplementedError(
+            f"{type(self).__name__} has no execute(), apply(), detect(), "
+            f"or decompose() method"
+        )
+
 
 class ImageTransform(ImageProcessor):
     """
@@ -303,6 +386,62 @@ class ImageTransform(ImageProcessor):
     Detection inputs from upstream detectors can be passed through
     ``**kwargs`` -- see ``detection_input_specs`` on ``ImageProcessor``.
     """
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Execute the transform, returning result and updated metadata.
+
+        Sets ``self._metadata`` so subclasses can access ``self.metadata``
+        inside ``apply()``, then delegates to ``apply()`` and returns
+        metadata updated to reflect the output array's shape and dtype.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Input image array.
+
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+        """
+        self._metadata = metadata
+        result = self.apply(source, **kwargs)
+        updated = self._update_metadata_for_result(metadata, result)
+        return result, updated
+
+    @staticmethod
+    def _update_metadata_for_result(
+        metadata: 'ImageMetadata', result: np.ndarray,
+    ) -> 'ImageMetadata':
+        """Return metadata reflecting the transform's output shape/dtype.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Original input metadata.
+        result : np.ndarray
+            Output array from ``apply()``.
+
+        Returns
+        -------
+        ImageMetadata
+            Copy of *metadata* with rows, cols, bands, dtype updated.
+        """
+        updates: Dict[str, Any] = {'dtype': str(result.dtype)}
+        if result.ndim >= 2:
+            updates['rows'] = result.shape[0]
+            updates['cols'] = result.shape[1]
+        if result.ndim == 3:
+            updates['bands'] = result.shape[2]
+        elif result.ndim == 2:
+            updates['bands'] = 1
+        return dataclasses.replace(metadata, **updates)
 
     @abstractmethod
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:

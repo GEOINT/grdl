@@ -32,14 +32,18 @@ Modified
 """
 
 # Standard library
+import dataclasses
 from abc import abstractmethod
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
 
 
 class PolarimetricDecomposition(ImageProcessor):
@@ -72,6 +76,44 @@ class PolarimetricDecomposition(ImageProcessor):
     >>> db = pauli.to_db(components)
     >>> rgb = pauli.to_rgb(components)
     """
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Execute the decomposition via the universal protocol.
+
+        Quad-pol scattering matrix channels can be provided as keyword
+        arguments (``shh``, ``shv``, ``svh``, ``svv``) or extracted from
+        a 4-band source array (last axis).
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Input array — either a 2-D single-channel or 3-D with 4+
+            bands containing the quad-pol channels.
+
+        Returns
+        -------
+        tuple[Dict[str, np.ndarray], ImageMetadata]
+        """
+        self._metadata = metadata
+        shh = kwargs.pop('shh', None)
+        shv = kwargs.pop('shv', None)
+        svh = kwargs.pop('svh', None)
+        svv = kwargs.pop('svv', None)
+        if shh is None and source.ndim == 3 and source.shape[-1] >= 4:
+            shh = source[..., 0]
+            shv = source[..., 1]
+            svh = source[..., 2]
+            svv = source[..., 3]
+        components = self.decompose(shh, shv, svh, svv)
+        updated = dataclasses.replace(metadata, bands=len(components))
+        return components, updated
 
     @abstractmethod
     def decompose(
