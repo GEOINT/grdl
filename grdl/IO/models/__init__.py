@@ -141,6 +141,18 @@ from grdl.IO.models.aster import ASTERMetadata
 # Sentinel-2
 from grdl.IO.models.sentinel2 import Sentinel2Metadata
 
+# CPHD
+from grdl.IO.models.cphd import (
+    CPHDMetadata,
+    CPHDChannel,
+    CPHDPVP,
+    CPHDGlobal,
+    CPHDCollectionInfo,
+    CPHDTxWaveform,
+    CPHDRcvParameters,
+    create_subaperture_metadata,
+)
+
 __all__ = [
     # Base
     'ImageMetadata',
@@ -243,4 +255,13 @@ __all__ = [
     'ASTERMetadata',
     # Sentinel-2
     'Sentinel2Metadata',
+    # CPHD
+    'CPHDMetadata',
+    'CPHDChannel',
+    'CPHDPVP',
+    'CPHDGlobal',
+    'CPHDCollectionInfo',
+    'CPHDTxWaveform',
+    'CPHDRcvParameters',
+    'create_subaperture_metadata',
 ]

@@ -36,8 +36,9 @@ Modified
 from pathlib import Path
 from typing import Union
 
-# SAR readers
+# SAR readers and writers
 from grdl.IO.sar.sicd import SICDReader
+from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
@@ -131,6 +132,7 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
 __all__ = [
     # NGA SAR formats
     'SICDReader',
+    'SICDWriter',
     'CPHDReader',
     'CRSDReader',
     'SIDDReader',

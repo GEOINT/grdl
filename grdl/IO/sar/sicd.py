@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-11
 """
 
 # Standard library
@@ -1378,6 +1378,32 @@ class SICDReader(ImageReader):
         self.backend = require_sar_backend('SICD')
         super().__init__(filepath)
 
+    @staticmethod
+    def _to_complex(data: np.ndarray) -> np.ndarray:
+        """Convert structured I/Q array to native complex, if needed.
+
+        Sarkit returns structured arrays with ``('real', '>i2')`` and
+        ``('imag', '>i2')`` fields for integer pixel types like
+        ``RE16I_IM16I``. This method converts them to ``complex64``.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Raw pixel data — either already complex or a structured array
+            with ``'real'`` and ``'imag'`` fields.
+
+        Returns
+        -------
+        np.ndarray
+            Complex-valued array (``complex64``).
+        """
+        if np.iscomplexobj(data):
+            return data
+        if data.dtype.names and 'real' in data.dtype.names:
+            return (data['real'].astype(np.float32)
+                    + 1j * data['imag'].astype(np.float32))
+        return data
+
     def _load_metadata(self) -> None:
         """Load SICD metadata using the active backend."""
         if self.backend == 'sarkit':
@@ -1503,7 +1529,7 @@ class SICDReader(ImageReader):
             data, _ = self._reader.read_sub_image(
                 row_start, col_start, row_end, col_end,
             )
-            return data
+            return self._to_complex(data)
         else:
             return self._reader[row_start:row_end, col_start:col_end]
 
@@ -1526,7 +1552,7 @@ class SICDReader(ImageReader):
         instead.
         """
         if self.backend == 'sarkit':
-            return self._reader.read_image()
+            return self._to_complex(self._reader.read_image())
         else:
             return self._reader[:, :]
 

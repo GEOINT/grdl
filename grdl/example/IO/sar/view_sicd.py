@@ -34,7 +34,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-11
 """
 
 # Standard library
@@ -69,7 +69,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "filepath",
+        nargs='?',
         type=Path,
+        default=Path('default/path/to/file'),
         help="Path to the SICD file (NITF or other SICD container).",
     )
     parser.add_argument(
@@ -140,6 +142,39 @@ def view_sicd(filepath: Path, cmap: str = "gray",
         if scp_llh is not None:
             print(f"  SCP:            ({scp_llh.lat:.6f}, {scp_llh.lon:.6f}, "
                   f"{scp_llh.hae:.1f} m)")
+
+        # Print SCPCOA (Scene Center Point Center of Aperture)
+        scpcoa = meta.scpcoa
+        if scpcoa is not None:
+            print(f"  Side of track:  {scpcoa.side_of_track or '?'}")
+            print(f"  SCP COA time:   {scpcoa.scp_time:.6f} s" if scpcoa.scp_time is not None else "  SCP COA time:   ?")
+            if scpcoa.slant_range is not None:
+                print(f"  Slant range:    {scpcoa.slant_range:,.1f} m")
+            if scpcoa.ground_range is not None:
+                print(f"  Ground range:   {scpcoa.ground_range:,.1f} m")
+            if scpcoa.graze_ang is not None:
+                print(f"  Graze angle:    {scpcoa.graze_ang:.4f} deg")
+            if scpcoa.incidence_ang is not None:
+                print(f"  Incidence angle:{scpcoa.incidence_ang:.4f} deg")
+            if scpcoa.doppler_cone_ang is not None:
+                print(f"  Doppler cone:   {scpcoa.doppler_cone_ang:.4f} deg")
+            if scpcoa.twist_ang is not None:
+                print(f"  Twist angle:    {scpcoa.twist_ang:.4f} deg")
+            if scpcoa.slope_ang is not None:
+                print(f"  Slope angle:    {scpcoa.slope_ang:.4f} deg")
+            if scpcoa.azim_ang is not None:
+                print(f"  Azimuth angle:  {scpcoa.azim_ang:.4f} deg")
+            if scpcoa.layover_ang is not None:
+                print(f"  Layover angle:  {scpcoa.layover_ang:.4f} deg")
+            if scpcoa.arp_pos is not None:
+                p = scpcoa.arp_pos
+                print(f"  ARP position:   ({p.x:,.1f}, {p.y:,.1f}, {p.z:,.1f}) m ECF")
+            if scpcoa.arp_vel is not None:
+                v = scpcoa.arp_vel
+                print(f"  ARP velocity:   ({v.x:.1f}, {v.y:.1f}, {v.z:.1f}) m/s")
+            if scpcoa.arp_acc is not None:
+                a = scpcoa.arp_acc
+                print(f"  ARP accel:      ({a.x:.4f}, {a.y:.4f}, {a.z:.4f}) m/s^2")
 
         # Get SCP pixel location for annotation
         scp_pixel = None

@@ -49,11 +49,27 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-12
 """
 
 from grdl.image_processing.sar.sublook import SublookDecomposition
+from grdl.image_processing.sar.image_formation import (
+    ImageFormationAlgorithm,
+    CollectionGeometry,
+    PolarGrid,
+    PolarFormatAlgorithm,
+    SubaperturePartitioner,
+    StripmapPFA,
+    RangeDopplerAlgorithm,
+)
 
 __all__ = [
     'SublookDecomposition',
+    'ImageFormationAlgorithm',
+    'CollectionGeometry',
+    'PolarGrid',
+    'PolarFormatAlgorithm',
+    'SubaperturePartitioner',
+    'StripmapPFA',
+    'RangeDopplerAlgorithm',
 ]

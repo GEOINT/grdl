@@ -118,6 +118,17 @@ from grdl.image_processing.detection import (
 )
 from grdl.image_processing.sar import SublookDecomposition
 from grdl.image_processing.intensity import ToDecibels, PercentileStretch
+from grdl.image_processing.filters import (
+    MeanFilter,
+    GaussianFilter,
+    MedianFilter,
+    MinFilter,
+    MaxFilter,
+    StdDevFilter,
+    LeeFilter,
+    ComplexLeeFilter,
+    PhaseGradientFilter,
+)
 from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
     processor_version,
@@ -155,6 +166,15 @@ __all__ = [
     'SublookDecomposition',
     'ToDecibels',
     'PercentileStretch',
+    'MeanFilter',
+    'GaussianFilter',
+    'MedianFilter',
+    'MinFilter',
+    'MaxFilter',
+    'StdDevFilter',
+    'LeeFilter',
+    'ComplexLeeFilter',
+    'PhaseGradientFilter',
     'Pipeline',
     'processor_version',
     'processor_tags',
