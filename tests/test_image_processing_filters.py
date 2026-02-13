@@ -361,7 +361,7 @@ class TestLeeFilter:
 
     def test_constant_image_unchanged(self, flat_image):
         """Constant image is a fixed point of Lee filtering."""
-        f = LeeFilter(kernel_size=7, noise_variance=1.0)
+        f = LeeFilter(kernel_size=7, enl=4.0)
         result = f.apply(flat_image)
         np.testing.assert_allclose(result, flat_image, atol=1e-10)
 
@@ -376,7 +376,7 @@ class TestLeeFilter:
 
     def test_preserves_edges(self, step_edge_image):
         """Lee filter preserves the step edge contrast."""
-        f = LeeFilter(kernel_size=5, noise_variance=1.0)
+        f = LeeFilter(kernel_size=5, enl=4.0)
         result = f.apply(step_edge_image)
         # Well inside each region, values should be close to original
         left_mean = np.mean(result[10:30, 5:15])
@@ -384,11 +384,11 @@ class TestLeeFilter:
         # Edge contrast should be mostly preserved
         assert abs(right_mean - left_mean) > 150.0
 
-    def test_auto_noise_estimation(self):
-        """Auto noise estimation (noise_variance=0) works."""
+    def test_auto_enl_estimation(self):
+        """Auto ENL estimation (enl=0) works."""
         rng = np.random.RandomState(42)
         noisy = np.full((50, 50), 100.0) + rng.randn(50, 50) * 10.0
-        f = LeeFilter(kernel_size=7, noise_variance=0.0)
+        f = LeeFilter(kernel_size=7, enl=0.0)
         result = f.apply(noisy)
         assert result.shape == noisy.shape
         assert np.var(result) < np.var(noisy)
@@ -432,7 +432,7 @@ class TestComplexLeeFilter:
     def test_constant_complex_unchanged(self):
         """Constant complex image is a fixed point."""
         z = np.full((30, 30), 3.0 + 4.0j)
-        f = ComplexLeeFilter(kernel_size=7, noise_variance=1.0)
+        f = ComplexLeeFilter(kernel_size=7, enl=4.0)
         result = f.apply(z)
         np.testing.assert_allclose(result, z, atol=1e-10)
 
@@ -467,9 +467,9 @@ class TestComplexLeeFilter:
         rows, cols = 40, 40
         phase = np.linspace(0, 2 * np.pi, rows * cols).reshape(rows, cols)
         z = 10.0 * np.exp(1j * phase)
-        f = ComplexLeeFilter(kernel_size=5, noise_variance=1.0)
+        f = ComplexLeeFilter(kernel_size=5, enl=4.0)
         result = f.apply(z)
-        # With constant amplitude, local_var_I ≈ 0 → weight ≈ 0 → output = local_mean
+        # With constant amplitude, Ci² ≈ 0 → weight ≈ 0 → output = local_mean
         # Phase should still be close in interior
         np.testing.assert_allclose(
             np.angle(result[10:-10, 10:-10]),
@@ -485,11 +485,11 @@ class TestComplexLeeFilter:
         assert result.shape == (3, 20, 20)
         assert np.iscomplexobj(result)
 
-    def test_auto_noise_estimation(self):
-        """Auto noise estimation (noise_variance=0) works."""
+    def test_auto_enl_estimation(self):
+        """Auto ENL estimation (enl=0) works."""
         rng = np.random.RandomState(42)
         z = rng.randn(50, 50) + 1j * rng.randn(50, 50)
-        f = ComplexLeeFilter(kernel_size=7, noise_variance=0.0)
+        f = ComplexLeeFilter(kernel_size=7, enl=0.0)
         result = f.apply(z)
         assert result.shape == z.shape
         assert np.iscomplexobj(result)
