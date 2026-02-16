@@ -61,6 +61,7 @@ from grdl.image_processing.sar.image_formation import (
     SubaperturePartitioner,
     StripmapPFA,
     RangeDopplerAlgorithm,
+    FastBackProjection,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     'SubaperturePartitioner',
     'StripmapPFA',
     'RangeDopplerAlgorithm',
+    'FastBackProjection',
 ]

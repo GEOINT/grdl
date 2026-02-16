@@ -168,7 +168,7 @@ class StripmapPFA(ImageFormationAlgorithm):
         The CPHD signal model phase is ``SGN * fx * ΔTOA`` (in cycles).
         The rephase factor to move from ``R_old`` to ``R_new`` is:
 
-            ``exp(-j * SGN * 4π * fx * (R_new - R_old) / c)``
+            ``exp(+j * SGN * 4π * fx * (R_new - R_old) / c)``
 
         Parameters
         ----------
@@ -208,7 +208,7 @@ class StripmapPFA(ImageFormationAlgorithm):
 
         freq = sample_idx * scss + sc0  # (npulses, nsamples)
         phase = np.exp(
-            -1j * phase_sgn * 4.0 * np.pi * freq
+            1j * phase_sgn * 4.0 * np.pi * freq
             * delta_r[:, np.newaxis] / _C
         )
         result *= phase
@@ -312,6 +312,7 @@ class StripmapPFA(ImageFormationAlgorithm):
                 grid=sub_grid,
                 interpolator=self._interpolator,
                 weighting=self._weighting,
+                phase_sgn=phase_sgn,
             )
             sub_image = pfa.form_image(sub_signal, sub_geo)
             sub_images.append(sub_image)

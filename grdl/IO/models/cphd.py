@@ -31,9 +31,14 @@ Modified
 2026-02-13
 """
 
+# NOTE: Fields added 2026-02-13:
+#   CPHDPVP: amp_sf, toa1, toa2
+#   CPHDAntennaPattern, CPHDSceneCoordinates, CPHDReferenceGeometry,
+#   CPHDDwellPolynomial — all optional on CPHDMetadata
+
 # Standard library
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 # Third-party
 import numpy as np
@@ -113,6 +118,13 @@ class CPHDPVP:
         Frequency rate of return 1 per pulse, shape ``(N,)``.
     a_frr2 : np.ndarray, optional
         Frequency rate of return 2 per pulse, shape ``(N,)``.
+    amp_sf : np.ndarray, optional
+        Amplitude scale factor per pulse, shape ``(N,)``.
+        Multiply signal by this to normalize power across pulses.
+    toa1 : np.ndarray, optional
+        TOA start per pulse (seconds), shape ``(N,)``.
+    toa2 : np.ndarray, optional
+        TOA end per pulse (seconds), shape ``(N,)``.
     """
 
     tx_time: Optional[np.ndarray] = None
@@ -130,6 +142,9 @@ class CPHDPVP:
     a_fdop: Optional[np.ndarray] = None
     a_frr1: Optional[np.ndarray] = None
     a_frr2: Optional[np.ndarray] = None
+    amp_sf: Optional[np.ndarray] = None
+    toa1: Optional[np.ndarray] = None
+    toa2: Optional[np.ndarray] = None
 
     @property
     def num_vectors(self) -> int:
@@ -177,6 +192,7 @@ class CPHDPVP:
         fields_1d = [
             'tx_time', 'rcv_time', 'fx1', 'fx2', 'sc0', 'scss',
             'signal', 'a_fdop', 'a_frr1', 'a_frr2',
+            'amp_sf', 'toa1', 'toa2',
         ]
         fields_2d = ['tx_pos', 'tx_vel', 'rcv_pos', 'rcv_vel', 'srp_pos']
 
@@ -227,6 +243,7 @@ class CPHDPVP:
         fields_1d = [
             'tx_time', 'rcv_time', 'fx1', 'fx2', 'sc0', 'scss',
             'signal', 'a_fdop', 'a_frr1', 'a_frr2',
+            'amp_sf', 'toa1', 'toa2',
         ]
         fields_2d = ['tx_pos', 'tx_vel', 'rcv_pos', 'rcv_vel', 'srp_pos']
 
@@ -372,6 +389,143 @@ class CPHDCollectionInfo:
 
 
 # ===================================================================
+# Antenna pattern
+# ===================================================================
+
+@dataclass
+class CPHDAntennaPattern:
+    """Antenna gain/phase pattern from the CPHD Antenna section.
+
+    The gain polynomial models 2D directional cosine variation::
+
+        G(dcx, dcy) = GainZero + sum_ij GainPoly[i,j] * dcx^i * dcy^j
+
+    Parameters
+    ----------
+    freq_zero : float, optional
+        Reference frequency for the pattern (Hz).
+    gain_zero : float, optional
+        Boresight gain at freq_zero (dB).
+    gain_poly : np.ndarray, optional
+        2D gain polynomial coefficients, shape ``(M, N)``.
+        Evaluated in directional cosine coordinates (dcx, dcy).
+    eb_dcx_poly : np.ndarray, optional
+        Electrical boresight DCX polynomial coefficients.
+    eb_dcy_poly : np.ndarray, optional
+        Electrical boresight DCY polynomial coefficients.
+    acf_x_poly : np.ndarray, optional
+        Antenna Coordinate Frame X-axis polynomial (ECF, order K x 3).
+    acf_y_poly : np.ndarray, optional
+        Antenna Coordinate Frame Y-axis polynomial (ECF, order K x 3).
+    apc_offset : np.ndarray, optional
+        Antenna Phase Center offset in ACF (3,).
+    """
+
+    freq_zero: Optional[float] = None
+    gain_zero: Optional[float] = None
+    gain_poly: Optional[np.ndarray] = None
+    eb_dcx_poly: Optional[np.ndarray] = None
+    eb_dcy_poly: Optional[np.ndarray] = None
+    acf_x_poly: Optional[np.ndarray] = None
+    acf_y_poly: Optional[np.ndarray] = None
+    apc_offset: Optional[np.ndarray] = None
+
+
+# ===================================================================
+# Scene coordinates
+# ===================================================================
+
+@dataclass
+class CPHDSceneCoordinates:
+    """Scene coordinate information from the SceneCoordinates section.
+
+    Parameters
+    ----------
+    earth_model : str, optional
+        Earth model (e.g., ``'WGS_84'``).
+    iarp_ecf : np.ndarray, optional
+        Image Area Reference Point in ECF meters, shape ``(3,)``.
+    iarp_llh : np.ndarray, optional
+        Image Area Reference Point as ``[lat_deg, lon_deg, hae_m]``.
+    image_area_x : tuple, optional
+        Image area X extent in meters: ``(x_min, x_max)``.
+    image_area_y : tuple, optional
+        Image area Y extent in meters: ``(y_min, y_max)``.
+    corner_points : np.ndarray, optional
+        Image area corner coordinates, shape ``(4, 2)`` as
+        ``[[lat, lon], ...]``.
+    """
+
+    earth_model: Optional[str] = None
+    iarp_ecf: Optional[np.ndarray] = None
+    iarp_llh: Optional[np.ndarray] = None
+    image_area_x: Optional[tuple] = None
+    image_area_y: Optional[tuple] = None
+    corner_points: Optional[np.ndarray] = None
+
+
+# ===================================================================
+# Reference geometry
+# ===================================================================
+
+@dataclass
+class CPHDReferenceGeometry:
+    """Reference geometry at center of dwell from the CPHD file.
+
+    Parameters
+    ----------
+    ref_time : float, optional
+        Reference time in seconds from collection start.
+    srp_ecf : np.ndarray, optional
+        SRP position in ECF meters at reference time, shape ``(3,)``.
+    srp_llh : np.ndarray, optional
+        SRP lat/lon/HAE at reference time, shape ``(3,)``.
+    side_of_track : str, optional
+        ``'L'`` (left-looking) or ``'R'`` (right-looking).
+    graze_angle_deg : float, optional
+        Grazing angle at reference time (degrees).
+    azimuth_angle_deg : float, optional
+        Azimuth angle at reference time (degrees).
+    twist_angle_deg : float, optional
+        Twist angle at reference time (degrees).
+    slope_angle_deg : float, optional
+        Slope angle at reference time (degrees).
+    layover_angle_deg : float, optional
+        Layover angle at reference time (degrees).
+    """
+
+    ref_time: Optional[float] = None
+    srp_ecf: Optional[np.ndarray] = None
+    srp_llh: Optional[np.ndarray] = None
+    side_of_track: Optional[str] = None
+    graze_angle_deg: Optional[float] = None
+    azimuth_angle_deg: Optional[float] = None
+    twist_angle_deg: Optional[float] = None
+    slope_angle_deg: Optional[float] = None
+    layover_angle_deg: Optional[float] = None
+
+
+# ===================================================================
+# Dwell polynomial
+# ===================================================================
+
+@dataclass
+class CPHDDwellPolynomial:
+    """Dwell time polynomial from the CPHD Dwell section.
+
+    Parameters
+    ----------
+    cod_time_poly : np.ndarray, optional
+        Center of Dwell time polynomial coefficients.
+    dwell_time_poly : np.ndarray, optional
+        Dwell time polynomial coefficients.
+    """
+
+    cod_time_poly: Optional[np.ndarray] = None
+    dwell_time_poly: Optional[np.ndarray] = None
+
+
+# ===================================================================
 # Top-level CPHDMetadata
 # ===================================================================
 
@@ -400,6 +554,14 @@ class CPHDMetadata(ImageMetadata):
         Transmit waveform parameters.
     rcv_parameters : CPHDRcvParameters, optional
         Receive parameters.
+    antenna_pattern : CPHDAntennaPattern, optional
+        Antenna gain/phase pattern data.
+    scene_coordinates : CPHDSceneCoordinates, optional
+        Scene coordinate information (IARP, image area bounds).
+    reference_geometry : CPHDReferenceGeometry, optional
+        Reference geometry at center of dwell.
+    dwell : CPHDDwellPolynomial, optional
+        Dwell time polynomials.
     num_channels : int
         Number of CPHD channels.
 
@@ -419,6 +581,10 @@ class CPHDMetadata(ImageMetadata):
     collection_info: Optional[CPHDCollectionInfo] = None
     tx_waveform: Optional[CPHDTxWaveform] = None
     rcv_parameters: Optional[CPHDRcvParameters] = None
+    antenna_pattern: Optional[CPHDAntennaPattern] = None
+    scene_coordinates: Optional[CPHDSceneCoordinates] = None
+    reference_geometry: Optional[CPHDReferenceGeometry] = None
+    dwell: Optional[CPHDDwellPolynomial] = None
     num_channels: int = 0
 
 
@@ -478,6 +644,10 @@ def create_subaperture_metadata(
         collection_info=metadata.collection_info,
         tx_waveform=metadata.tx_waveform,
         rcv_parameters=metadata.rcv_parameters,
+        antenna_pattern=metadata.antenna_pattern,
+        scene_coordinates=metadata.scene_coordinates,
+        reference_geometry=metadata.reference_geometry,
+        dwell=metadata.dwell,
         num_channels=metadata.num_channels,
         extras=metadata.extras,
     )

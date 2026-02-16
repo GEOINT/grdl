@@ -150,6 +150,10 @@ from grdl.IO.models.cphd import (
     CPHDCollectionInfo,
     CPHDTxWaveform,
     CPHDRcvParameters,
+    CPHDAntennaPattern,
+    CPHDSceneCoordinates,
+    CPHDReferenceGeometry,
+    CPHDDwellPolynomial,
     create_subaperture_metadata,
 )
 
@@ -263,5 +267,9 @@ __all__ = [
     'CPHDCollectionInfo',
     'CPHDTxWaveform',
     'CPHDRcvParameters',
+    'CPHDAntennaPattern',
+    'CPHDSceneCoordinates',
+    'CPHDReferenceGeometry',
+    'CPHDDwellPolynomial',
     'create_subaperture_metadata',
 ]

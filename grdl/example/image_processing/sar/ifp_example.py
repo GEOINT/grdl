@@ -325,9 +325,14 @@ def run_ifp(
     print(f"  Grid time: {t_grid - t_geo:.2f}s")
 
     # ── Stage 3: PFA ─────────────────────────────────────────────
+    gp = meta.global_params
+    phase_sgn = gp.phase_sgn if gp is not None else -1
+    print(f"  PhaseSGN: {phase_sgn:+d}")
+
     pfa = PolarFormatAlgorithm(
         grid=grid,
         interpolator=PolyphaseInterpolator( kernel_length=64, num_phases=256, prototype='kaiser' ),
+        phase_sgn=phase_sgn,
     )
 
     # ── Diagnostics: check kv ranges ──
@@ -357,7 +362,8 @@ def run_ifp(
     print(f"  [DIAG] az_interp max|val|: {np.max(np.abs(az_interp)):.6f}")
     print(f"  [DIAG] az_interp nonzero: {np.count_nonzero(az_interp)} / {az_interp.size}")
 
-    print("Compressing (2D IFFT)...")
+    xform = "FFT2" if phase_sgn >= 0 else "IFFT2"
+    print(f"Compressing (2D {xform})...")
     image = pfa.compress(az_interp)
     t_compress = time.perf_counter()
     print(f"  Image shape: {image.shape}, dtype: {image.dtype}")

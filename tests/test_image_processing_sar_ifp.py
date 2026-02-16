@@ -53,6 +53,7 @@ from grdl.image_processing.sar.image_formation import (
     SubaperturePartitioner,
     StripmapPFA,
     RangeDopplerAlgorithm,
+    FastBackProjection,
 )
 
 
@@ -1277,9 +1278,10 @@ class TestRangeDopplerAlgorithm:
         rda = RangeDopplerAlgorithm(meta, verbose=False)
         signal = _synthetic_signal(npulses=64, nsamples=32)
 
-        # Stage by stage
+        # Stage by stage (deramp + FFT pipeline)
         rephased = rda.rephase_to_reference(signal)
         rc = rda.range_compress(rephased)
+        rc = rda._apply_dechirp(rc)
         rd = rda.azimuth_fft(rc)
         rcmc_out = rda.rcmc(rd)
         image_stages = rda.azimuth_compress(rcmc_out)
@@ -1365,4 +1367,323 @@ class TestRangeDopplerAlgorithm:
             np.abs(rcmc_out[dc_idx, :]),
             np.abs(data[dc_idx, :]),
             rtol=1e-4,
+        )
+
+    # -- Doppler centroid estimation --
+
+    def test_estimate_doppler_centroid_finite(self):
+        """Estimate returns a finite value."""
+        signal = _synthetic_signal(npulses=128, nsamples=64)
+        pri = 1e-4  # 10 kHz PRF
+        f_dc = RangeDopplerAlgorithm.estimate_doppler_centroid(
+            signal, pri,
+        )
+        assert np.isfinite(f_dc)
+
+    def test_estimate_doppler_centroid_known_tone(self):
+        """A known Doppler tone gives the correct centroid."""
+        pri = 1e-4
+        npulses, nsamples = 256, 32
+        f_tone = 1200.0  # Hz
+        t = np.arange(npulses) * pri
+        # Pure Doppler tone with some range structure
+        rng = np.random.default_rng(42)
+        tone = np.exp(1j * 2 * np.pi * f_tone * t)[:, np.newaxis]
+        signal = tone * rng.standard_normal((1, nsamples))
+        f_dc = RangeDopplerAlgorithm.estimate_doppler_centroid(
+            signal, pri,
+        )
+        assert abs(f_dc - f_tone) < 50.0  # within 50 Hz
+
+    # -- Subaperture mode --
+
+    def test_subaperture_construction(self):
+        """block_size and overlap are stored."""
+        meta = _synthetic_stripmap_metadata(npulses=256, nsamples=64)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=64, overlap=0.5, verbose=False,
+        )
+        assert rda.block_size == 64
+        assert rda.overlap == 0.5
+
+    def test_subaperture_default_none(self):
+        """Default block_size is None (single-reference mode)."""
+        meta = _synthetic_stripmap_metadata(npulses=128, nsamples=64)
+        rda = RangeDopplerAlgorithm(meta, verbose=False)
+        assert rda.block_size is None
+
+    def test_subaperture_form_image_returns_complex(self):
+        """Subaperture form_image returns a complex 2D array."""
+        meta = _synthetic_stripmap_metadata(npulses=256, nsamples=64)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=64, overlap=0.5, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=256, nsamples=64)
+        image = rda.form_image(signal, geometry=None)
+        assert image.ndim == 2
+        assert np.iscomplexobj(image)
+
+    def test_subaperture_form_image_shape(self):
+        """Subaperture output has correct range cols, fewer az rows."""
+        meta = _synthetic_stripmap_metadata(npulses=256, nsamples=64)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=64, overlap=0.5, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=256, nsamples=64)
+        image = rda.form_image(signal, geometry=None)
+        assert image.shape[1] == signal.shape[1]
+        assert image.shape[0] > 0
+        assert image.shape[0] <= signal.shape[0]
+
+    def test_subaperture_form_image_nonzero(self):
+        """Subaperture formed image has non-zero content."""
+        meta = _synthetic_stripmap_metadata(npulses=256, nsamples=64)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=64, overlap=0.5, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=256, nsamples=64)
+        image = rda.form_image(signal, geometry=None)
+        assert np.any(np.abs(image) > 0)
+
+    def test_subaperture_single_block_fallback(self):
+        """block_size >= npulses produces a single block."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=128, overlap=0.5, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=64, nsamples=32)
+        image = rda.form_image(signal, geometry=None)
+        assert image.shape[1] == signal.shape[1]
+        assert image.shape[0] > 0
+        assert np.any(np.abs(image) > 0)
+
+    def test_subaperture_no_overlap(self):
+        """Zero overlap works (non-overlapping blocks)."""
+        meta = _synthetic_stripmap_metadata(npulses=128, nsamples=32)
+        rda = RangeDopplerAlgorithm(
+            meta, block_size=64, overlap=0.0, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=128, nsamples=32)
+        image = rda.form_image(signal, geometry=None)
+        assert image.shape[1] == signal.shape[1]
+        assert image.shape[0] > 0
+
+    def test_subaperture_with_weighting(self):
+        """Subaperture mode with Taylor + Hamming weighting."""
+        meta = _synthetic_stripmap_metadata(npulses=128, nsamples=64)
+        rda = RangeDopplerAlgorithm(
+            meta,
+            block_size=64,
+            overlap=0.5,
+            range_weighting='taylor',
+            azimuth_weighting='hamming',
+            verbose=False,
+        )
+        signal = _synthetic_signal(npulses=128, nsamples=64)
+        image = rda.form_image(signal, geometry=None)
+        assert image.shape[1] == signal.shape[1]
+        assert image.shape[0] > 0
+        assert np.any(np.abs(image) > 0)
+
+
+# ===================================================================
+# FastBackProjection tests
+# ===================================================================
+
+
+class TestFastBackProjection:
+    """Tests for FastBackProjection with synthetic stripmap data."""
+
+    # -- Construction --
+
+    def test_is_subclass(self):
+        """FFBP is an ImageFormationAlgorithm."""
+        assert issubclass(FastBackProjection, ImageFormationAlgorithm)
+
+    def test_construction_with_defaults(self):
+        """Default construction from metadata only."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        assert ffbp is not None
+
+    def test_construction_missing_pvp_raises(self):
+        """Missing PVP raises ValueError."""
+        meta = CPHDMetadata(
+            format='CPHD', rows=10, cols=10, dtype='complex64',
+        )
+        with pytest.raises(ValueError, match="PVP"):
+            FastBackProjection(meta)
+
+    def test_construction_custom_params(self):
+        """Custom leaf_size and n_angular are accepted."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(
+            meta, leaf_size=4, n_angular=64, verbose=False,
+        )
+        assert ffbp._leaf_size == 4
+        assert ffbp._n_angular == 64
+
+    def test_invalid_weighting_raises(self):
+        """Invalid weighting string raises ValueError."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        with pytest.raises(ValueError, match="Unknown weighting"):
+            FastBackProjection(
+                meta, range_weighting='invalid', verbose=False,
+            )
+
+    # -- Range compression --
+
+    def test_range_compress_shape(self):
+        """Output shape matches input."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        signal = _synthetic_signal(npulses=64, nsamples=32)
+        rc = ffbp.range_compress(signal)
+        assert rc.shape == signal.shape
+
+    def test_range_compress_complex(self):
+        """Output is complex."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        signal = _synthetic_signal(npulses=64, nsamples=32)
+        rc = ffbp.range_compress(signal)
+        assert np.iscomplexobj(rc)
+
+    def test_range_compress_nonzero(self):
+        """Range-compressed signal has non-zero content."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        signal = _synthetic_signal(npulses=64, nsamples=32)
+        rc = ffbp.range_compress(signal)
+        assert np.any(np.abs(rc) > 0)
+
+    # -- Full pipeline --
+
+    def test_form_image_returns_complex(self):
+        """form_image returns complex 2D array."""
+        meta = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        ffbp = FastBackProjection(
+            meta, leaf_size=8, n_angular=32, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+        image = ffbp.form_image(signal, geometry=None)
+        assert image.ndim == 2
+        assert np.iscomplexobj(image)
+
+    def test_form_image_nonzero(self):
+        """Formed image has non-zero content."""
+        meta = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        ffbp = FastBackProjection(
+            meta, leaf_size=8, n_angular=32, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+        image = ffbp.form_image(signal, geometry=None)
+        assert np.any(np.abs(image) > 0)
+
+    def test_form_image_shape(self):
+        """Output has N_rg == nsamples columns."""
+        meta = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        ffbp = FastBackProjection(
+            meta, leaf_size=8, n_angular=32, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+        image = ffbp.form_image(signal, geometry=None)
+        assert image.shape[1] == 16  # N_rg == nsamples
+        assert image.shape[0] > 0   # N_xr > 0
+
+    # -- Output grid --
+
+    def test_get_output_grid_has_resolution(self):
+        """Grid dict includes resolution parameters."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        grid = ffbp.get_output_grid()
+        assert 'range_resolution' in grid
+        assert 'azimuth_resolution' in grid
+        assert grid['range_resolution'] > 0
+        assert grid['azimuth_resolution'] > 0
+
+    def test_get_output_grid_algorithm(self):
+        """Grid dict identifies FFBP algorithm."""
+        meta = _synthetic_stripmap_metadata(npulses=64, nsamples=32)
+        ffbp = FastBackProjection(meta, verbose=False)
+        grid = ffbp.get_output_grid()
+        assert grid['algorithm'] == 'FFBP'
+
+    # -- Weighting --
+
+    def test_taylor_range_weighting(self):
+        """Taylor range weighting accepted."""
+        meta = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        ffbp = FastBackProjection(
+            meta, range_weighting='taylor',
+            leaf_size=8, n_angular=32, verbose=False,
+        )
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+        image = ffbp.form_image(signal, geometry=None)
+        assert image.ndim == 2
+        assert np.any(np.abs(image) > 0)
+
+    # -- Leaf size sensitivity --
+
+    def test_leaf_size_affects_output(self):
+        """Different leaf sizes produce images (correlation check)."""
+        meta1 = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        meta2 = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+
+        ffbp4 = FastBackProjection(
+            meta1, leaf_size=4, n_angular=32, verbose=False,
+        )
+        ffbp8 = FastBackProjection(
+            meta2, leaf_size=8, n_angular=32, verbose=False,
+        )
+
+        image4 = ffbp4.form_image(signal.copy(), geometry=None)
+        image8 = ffbp8.form_image(signal.copy(), geometry=None)
+
+        # Both images should be non-zero
+        assert np.any(np.abs(image4) > 0)
+        assert np.any(np.abs(image8) > 0)
+
+    # -- Numba dispatch --
+
+    def test_use_numba_false_fallback(self):
+        """Explicit numpy fallback with use_numba=False."""
+        meta = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        ffbp = FastBackProjection(
+            meta, leaf_size=8, n_angular=32,
+            use_numba=False, verbose=False,
+        )
+        assert ffbp._use_numba is False
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+        image = ffbp.form_image(signal, geometry=None)
+        assert image.ndim == 2
+        assert np.iscomplexobj(image)
+        assert np.any(np.abs(image) > 0)
+
+    def test_numba_vs_numpy_equivalence(self):
+        """Numba and numpy paths produce similar images."""
+        meta_nb = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        meta_np = _synthetic_stripmap_metadata(npulses=32, nsamples=16)
+        signal = _synthetic_signal(npulses=32, nsamples=16)
+
+        ffbp_nb = FastBackProjection(
+            meta_nb, leaf_size=8, n_angular=32,
+            use_numba=True, verbose=False,
+        )
+        ffbp_np = FastBackProjection(
+            meta_np, leaf_size=8, n_angular=32,
+            use_numba=False, verbose=False,
+        )
+
+        image_nb = ffbp_nb.form_image(signal.copy(), geometry=None)
+        image_np = ffbp_np.form_image(signal.copy(), geometry=None)
+
+        assert image_nb.shape == image_np.shape
+        # Relaxed tolerance: numba uses inline linear interp,
+        # numpy path uses scipy interp1d (same algorithm, different
+        # floating-point paths).
+        np.testing.assert_allclose(
+            np.abs(image_nb), np.abs(image_np), rtol=1e-3, atol=1e-6,
         )

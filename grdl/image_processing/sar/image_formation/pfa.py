@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Polar Format Algorithm - SAR image formation via polar-to-rectangular
-interpolation and 2D IFFT.
+interpolation and 2D Fourier transform.
 
 Implements the three-stage PFA pipeline:
 
@@ -9,8 +9,8 @@ Implements the three-stage PFA pipeline:
    uniform kv grid (keystone formatting).
 2. **Azimuth interpolation** — resample each range bin from
    ``kv * tan(phi)`` to uniform ku grid.
-3. **Compress** — 2D IFFT to transform from spatial frequency to
-   image domain.
+3. **Compress** — 2D Fourier transform from spatial frequency to
+   image domain (``fft2`` for SGN=+1, ``ifft2`` for SGN=-1).
 
 Uses ``scipy.interpolate.interp1d`` as the default interpolation
 backend. The interpolator is injectable via constructor for future
@@ -113,7 +113,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         ``(x_old, y_old, x_new) -> y_new``.
         Defaults to ``scipy.interpolate.interp1d`` (linear).
     weighting : str or callable, optional
-        Window function applied to k-space data before the IFFT.
+        Window function applied to k-space data before the transform.
         Tapers the edges to reduce sidelobe artifacts (Gibbs
         phenomenon). Built-in options:
 
@@ -123,6 +123,10 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         - ``'hanning'`` — Hanning window (-31 dB first sidelobe)
 
         Pass a callable ``f(n) -> ndarray`` for custom windows.
+    phase_sgn : int
+        CPHD PhaseSGN convention (``+1`` or ``-1``).  Controls
+        whether ``compress()`` uses ``fft2`` (SGN = +1) or
+        ``ifft2`` (SGN = -1).  Default ``-1``.
 
     Examples
     --------
@@ -157,11 +161,13 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         grid: PolarGrid,
         interpolator: Optional[Callable] = None,
         weighting: Union[str, Callable, None] = None,
+        phase_sgn: int = -1,
     ) -> None:
         self.grid = grid
         self._interp = interpolator or _scipy_interp1d
         self._weight_func = self._resolve_weighting(weighting)
         self._pad_factor = 1.0
+        self._phase_sgn = phase_sgn
 
     @staticmethod
     def _resolve_weighting(
@@ -296,7 +302,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         return result
 
     # ------------------------------------------------------------------
-    # Stage 3: Compress (2D IFFT)
+    # Stage 3: Compress (2D Fourier transform)
     # ------------------------------------------------------------------
 
     def compress(
@@ -304,12 +310,16 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         interpolated: np.ndarray,
         pad_factor: float = 1.25,
     ) -> np.ndarray:
-        """Transform from spatial frequency to image domain via 2D IFFT.
+        """Transform from spatial frequency to image domain.
 
         Applies optional weighting (apodization), zero-pads to avoid
-        circular aliasing (fold-over), then
-        ``ifftshift → ifft2 → fftshift`` to convert the rectangular
-        k-space data into a complex SAR image.
+        circular aliasing (fold-over), then a 2D Fourier transform to
+        convert the rectangular k-space data into a complex SAR image.
+
+        The transform direction depends on the CPHD PhaseSGN:
+
+        - ``SGN = -1``: k-space has ``exp(-j k R)`` → ``ifft2`` focuses
+        - ``SGN = +1``: k-space has ``exp(+j k R)`` → ``fft2`` focuses
 
         The DFT is inherently circular: without zero-padding the image
         PSF wraps from one edge to the other.  Padding by at least 2x
@@ -321,8 +331,8 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             Rectangular k-space data, shape
             ``(rec_n_pulses, rec_n_samples)``.
         pad_factor : float
-            Zero-pad multiplier for each dimension.  The IFFT size is
-            ``ceil(dim * pad_factor)``.  Values > 1.0 oversample the
+            Zero-pad multiplier for each dimension.  The transform size
+            is ``ceil(dim * pad_factor)``.  Values > 1.0 oversample the
             output image (finer pixel spacing, same scene extent).
             Set to 1.0 to disable padding.
 
@@ -356,7 +366,10 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             data = padded
 
         shifted = np.fft.ifftshift(data)
-        image = np.fft.fftshift(fft.ifft2(shifted))
+        if self._phase_sgn >= 0:
+            image = np.fft.fftshift(fft.fft2(shifted))
+        else:
+            image = np.fft.fftshift(fft.ifft2(shifted))
 
         # Output: rows = azimuth, cols = range
         # Transpose to SICD (rows = range, cols = azimuth) at write time

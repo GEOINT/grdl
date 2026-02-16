@@ -1,30 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-RDA Stripmap Example - Form a SAR image using the Range-Doppler Algorithm.
+FFBP Stripmap Example - Form a SAR image using Fast Factorized Back-Projection.
 
-End-to-end demonstration of the GRDL Range-Doppler Algorithm pipeline.
-Reads a stripmap CPHD file and forms a complex SAR image via the
-subaperture RDA: overlapping azimuth blocks with local rephasing,
-per-block Doppler centroid estimation, baseband demodulation,
-windowing, and Hann-weighted mosaicking.
+End-to-end demonstration of the GRDL Fast Factorized Back-Projection
+pipeline.  Reads a stripmap CPHD file and forms a complex SAR image
+via hierarchical back-projection: leaf formation, binary-tree merge,
+and polar-to-rectangular conversion.
 
-Demonstrates full GRDL integration and CPHD metadata utilization:
+Demonstrates full GRDL integration and CPHD metadata utilisation:
   - ``grdl.IO.sar.CPHDReader`` for metadata + signal access
-  - ``grdl.image_processing.sar.RangeDopplerAlgorithm`` for IFP
-  - AmpSF normalization and invalid pulse trimming
-  - Physics-driven subaperture auto-sizing (``--block-size auto``)
-  - Antenna pattern compensation (``--antenna-compensation``)
-  - Per-block Doppler centroid demodulation
-  - Reference geometry and scene coordinates in output grid
+  - ``grdl.image_processing.sar.FastBackProjection`` for IFP
+  - AmpSF normalisation and invalid pulse trimming
+  - Configurable leaf size and angular sampling
 
 Usage:
-  python rda_stripmap_example.py <cphd_file>
-  python rda_stripmap_example.py <cphd_file> --block-size auto
-  python rda_stripmap_example.py <cphd_file> --block-size 8000
-  python rda_stripmap_example.py <cphd_file> --output output.nitf
-  python rda_stripmap_example.py <cphd_file> --range-weighting taylor
-  python rda_stripmap_example.py <cphd_file> --antenna-compensation
-  python rda_stripmap_example.py --help
+  python ffbp_stripmap_example.py <cphd_file>
+  python ffbp_stripmap_example.py <cphd_file> --leaf-size 8
+  python ffbp_stripmap_example.py <cphd_file> --n-angular 256
+  python ffbp_stripmap_example.py <cphd_file> --range-weighting taylor
+  python ffbp_stripmap_example.py --help
 
 Dependencies
 ------------
@@ -44,11 +38,11 @@ See LICENSE file for full text.
 
 Created
 -------
-2026-02-13
+2026-02-16
 
 Modified
 --------
-2026-02-15
+2026-02-16
 """
 
 # Standard library
@@ -65,7 +59,7 @@ from numpy.linalg import norm
 # GRDL
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from grdl.IO.sar import CPHDReader
-from grdl.image_processing.sar import RangeDopplerAlgorithm
+from grdl.image_processing.sar import FastBackProjection
 
 
 # -- CLI ------------------------------------------------------------
@@ -81,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Form a complex SAR image from stripmap CPHD data "
-                    "using the Range-Doppler Algorithm.",
+                    "using Fast Factorized Back-Projection.",
     )
     parser.add_argument(
         "filepath",
@@ -94,12 +88,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to the CPHD file (default: Capella C02 stripmap).",
     )
     parser.add_argument(
-        "--output", "-o",
-        type=Path,
-        default=None,
-        help="Output SICD NITF path. If omitted, displays only.",
-    )
-    parser.add_argument(
         "--range-weighting",
         type=str,
         default=None,
@@ -107,31 +95,23 @@ def parse_args() -> argparse.Namespace:
         help="Range weighting window (default: none).",
     )
     parser.add_argument(
-        "--azimuth-weighting",
-        type=str,
-        default=None,
-        choices=["uniform", "taylor", "hamming", "hanning"],
-        help="Azimuth weighting window (default: none).",
+        "--leaf-size",
+        type=int,
+        default=8,
+        help="Number of pulses per leaf subaperture (default: 8).",
     )
     parser.add_argument(
-        "--block-size",
-        type=str,
-        default="0",
-        help="Subaperture block size in pulses. "
-             "Use 'auto' for physics-driven sizing (default), "
-             "an integer, or '0' for single-reference mode.",
+        "--n-angular",
+        type=int,
+        default=128,
+        help="Angular samples per tree node (default: 128).",
     )
     parser.add_argument(
-        "--overlap",
+        "--cross-range-spacing",
         type=float,
-        default=0.5,
-        help="Overlap fraction between blocks (default: 0.5).",
-    )
-    parser.add_argument(
-        "--antenna-compensation",
-        action="store_true",
-        default=False,
-        help="Apply antenna pattern compensation.",
+        default=None,
+        help="Output cross-range pixel spacing in metres. "
+             "If omitted, derived from Nyquist sampling.",
     )
     parser.add_argument(
         "--no-amp-sf",
@@ -174,7 +154,7 @@ def display_image(
     except ImportError:
         pass
     import matplotlib.pyplot as plt
-    
+
     mag = np.abs(image)
     mag[mag == 0] = np.finfo(mag.dtype).tiny
     db = 20.0 * np.log10(mag)
@@ -187,9 +167,9 @@ def display_image(
         interpolation="nearest",
         vmin=vmin, vmax=vmax,
     )
-    ax.set_title(title or "RDA Stripmap Image", fontsize=13)
+    ax.set_title(title or "FFBP Stripmap Image", fontsize=13)
     ax.set_xlabel("Range (samples)")
-    ax.set_ylabel("Azimuth (samples)")
+    ax.set_ylabel("Cross-range (samples)")
     fig.colorbar(im, ax=ax, label="dB", shrink=0.8)
     plt.tight_layout()
     plt.show()
@@ -237,7 +217,6 @@ def print_metadata_summary(meta) -> None:
     print(f"  PRF: {1.0 / dt:.1f} Hz")
     print(f"  Time span: {mid_times[-1] - mid_times[0]:.3f} s")
 
-    # New metadata fields
     if pvp.amp_sf is not None:
         print(f"  AmpSF: min={pvp.amp_sf.min():.4f}, "
               f"max={pvp.amp_sf.max():.4f}, "
@@ -247,68 +226,33 @@ def print_metadata_summary(meta) -> None:
         n_valid = int(np.sum(pvp.signal > 0))
         print(f"  Valid pulses: {n_valid}/{pvp.num_vectors}")
 
-    tx = meta.tx_waveform
-    if tx is not None:
-        if tx.lfm_rate:
-            print(f"  LFM rate: {tx.lfm_rate:.3e} Hz/s")
-        if tx.pulse_length:
-            print(f"  Pulse length: {tx.pulse_length * 1e6:.2f} us")
-
-    if meta.antenna_pattern is not None:
-        ant = meta.antenna_pattern
-        if ant.gain_zero is not None:
-            print(f"  Antenna gain: {ant.gain_zero:.1f} dB")
-        if ant.gain_poly is not None:
-            print(f"  Gain polynomial: "
-                  f"{ant.gain_poly.shape[0]}x"
-                  f"{ant.gain_poly.shape[1]}")
-
-    rg = meta.reference_geometry
-    if rg is not None:
-        if rg.graze_angle_deg is not None:
-            print(f"  Graze angle: {rg.graze_angle_deg:.2f} deg")
-        if rg.side_of_track is not None:
-            print(f"  Side of track: {rg.side_of_track}")
-
-    sc = meta.scene_coordinates
-    if sc is not None and sc.iarp_llh is not None:
-        llh = sc.iarp_llh
-        print(f"  IARP: {llh[0]:.4f}N, {llh[1]:.4f}E, "
-              f"{llh[2]:.1f}m")
-
 
 # -- Main pipeline --------------------------------------------------
 
 
-def run_rda(
+def run_ffbp(
     filepath: Path,
-    output: Optional[Path] = None,
     range_weighting: Optional[str] = None,
-    azimuth_weighting: Optional[str] = None,
-    block_size: str = "auto",
-    overlap: float = 0.5,
-    antenna_compensation: bool = False,
+    leaf_size: int = 8,
+    n_angular: int = 128,
+    cross_range_spacing: Optional[float] = None,
     apply_amp_sf: bool = True,
     trim_invalid: bool = True,
 ) -> np.ndarray:
-    """Run the Range-Doppler Algorithm pipeline.
+    """Run the Fast Factorized Back-Projection pipeline.
 
     Parameters
     ----------
     filepath : Path
         Path to the CPHD file.
-    output : Path, optional
-        If provided, write the formed image as SICD NITF.
     range_weighting : str, optional
         Range weighting window.
-    azimuth_weighting : str, optional
-        Azimuth weighting window.
-    block_size : str
-        Subaperture block size: 'auto', an integer string, or '0'.
-    overlap : float
-        Overlap fraction between subaperture blocks.
-    antenna_compensation : bool
-        Apply antenna pattern compensation.
+    leaf_size : int
+        Number of pulses per leaf subaperture.
+    n_angular : int
+        Angular samples per tree node.
+    cross_range_spacing : float, optional
+        Output cross-range pixel spacing in metres.
     apply_amp_sf : bool
         Apply per-pulse AmpSF normalization.
     trim_invalid : bool
@@ -336,36 +280,27 @@ def run_rda(
     t_read = time.perf_counter()
     print(f"  Read time: {t_read - t0:.2f}s")
 
-    # -- Resolve block_size --
-    if block_size == "auto":
-        resolved_block_size = "auto"
-    elif block_size == "0":
-        resolved_block_size = None
-    else:
-        resolved_block_size = int(block_size)
-
-    # -- RDA --
-    print("\nConfiguring RangeDopplerAlgorithm...")
+    # -- FFBP --
+    print("\nConfiguring FastBackProjection...")
     from grdl.interpolation import PolyphaseInterpolator
     interpolator = PolyphaseInterpolator(
         kernel_length=8, num_phases=128, prototype='kaiser',
     )
 
-    rda = RangeDopplerAlgorithm(
+    ffbp = FastBackProjection(
         metadata=meta,
         interpolator=interpolator,
         range_weighting=range_weighting,
-        azimuth_weighting=azimuth_weighting,
-        block_size=resolved_block_size,
-        overlap=overlap,
+        leaf_size=leaf_size,
+        n_angular=n_angular,
+        cross_range_spacing=cross_range_spacing,
         apply_amp_sf=apply_amp_sf,
         trim_invalid=trim_invalid,
-        antenna_compensation=antenna_compensation,
         verbose=True,
     )
 
     # Print output grid metadata
-    grid = rda.get_output_grid()
+    grid = ffbp.get_output_grid()
     print(f"\nOutput grid:")
     print(f"  Range resolution: {grid['range_resolution']:.3f} m")
     print(f"  Azimuth resolution: {grid['azimuth_resolution']:.3f} m")
@@ -381,26 +316,18 @@ def run_rda(
     # Form image
     print("\nForming image...")
     t_form = time.perf_counter()
-    image = rda.form_image(signal, geometry=None)
+    image = ffbp.form_image(signal, geometry=None)
     t_done = time.perf_counter()
 
     print(f"\nImage formed: {image.shape}, dtype: {image.dtype}")
     print(f"  Formation time: {t_done - t_form:.2f}s")
     print(f"  Total time: {t_done - t0:.2f}s")
 
-    # -- Optional: Save SICD --
-    if output is not None:
-        print(f"\nWriting SICD to: {output}")
-        from grdl.IO.sar import SICDWriter
-        writer = SICDWriter(output)
-        writer.write(image)
-        print("  Done.")
-
     # -- Display --
     title = filepath.name
     ci = meta.collection_info
     if ci and ci.collector_name:
-        title += f"  |  {ci.collector_name}  |  RDA"
+        title += f"  |  {ci.collector_name}  |  FFBP"
     display_image(image, title=title)
 
     return image
@@ -408,14 +335,12 @@ def run_rda(
 
 if __name__ == "__main__":
     args = parse_args()
-    run_rda(
+    run_ffbp(
         args.filepath,
-        output=args.output,
         range_weighting=args.range_weighting,
-        azimuth_weighting=args.azimuth_weighting,
-        block_size=args.block_size,
-        overlap=args.overlap,
-        antenna_compensation=args.antenna_compensation,
+        leaf_size=args.leaf_size,
+        n_angular=args.n_angular,
+        cross_range_spacing=args.cross_range_spacing,
         apply_amp_sf=not args.no_amp_sf,
         trim_invalid=not args.no_trim,
     )

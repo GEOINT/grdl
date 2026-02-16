@@ -57,6 +57,9 @@ from grdl.image_processing.sar.image_formation.stripmap_pfa import (
 from grdl.image_processing.sar.image_formation.rda import (
     RangeDopplerAlgorithm,
 )
+from grdl.image_processing.sar.image_formation.ffbp import (
+    FastBackProjection,
+)
 __all__ = [
     'ImageFormationAlgorithm',
     'CollectionGeometry',
@@ -65,4 +68,5 @@ __all__ = [
     'SubaperturePartitioner',
     'StripmapPFA',
     'RangeDopplerAlgorithm',
+    'FastBackProjection',
 ]

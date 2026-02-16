@@ -33,7 +33,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-02-16
 """
 
 from grdl.image_processing.detection.base import ImageDetector
@@ -49,6 +49,13 @@ from grdl.image_processing.detection.fields import (
     list_fields,
     lookup_field,
 )
+from grdl.image_processing.detection.cfar import (
+    CFARDetector,
+    CACFARDetector,
+    GOCFARDetector,
+    SOCFARDetector,
+    OSCFARDetector,
+)
 
 __all__ = [
     'ImageDetector',
@@ -60,4 +67,10 @@ __all__ = [
     'lookup_field',
     'is_dictionary_field',
     'list_fields',
+    # CFAR detectors
+    'CFARDetector',
+    'CACFARDetector',
+    'GOCFARDetector',
+    'SOCFARDetector',
+    'OSCFARDetector',
 ]
