@@ -51,7 +51,7 @@ except ImportError:
 try:
     import glymur
     _HAS_GLYMUR = True
-except ImportError:
+except (ImportError, AttributeError):
     _HAS_GLYMUR = False
 
 # GRDL internal
