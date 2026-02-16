@@ -141,6 +141,21 @@ from grdl.IO.models.aster import ASTERMetadata
 # Sentinel-2
 from grdl.IO.models.sentinel2 import Sentinel2Metadata
 
+# Sentinel-1 SLC
+from grdl.IO.models.sentinel1_slc import (
+    Sentinel1SLCMetadata,
+    S1SLCProductInfo,
+    S1SLCSwathInfo,
+    S1SLCBurst,
+    S1SLCOrbitStateVector,
+    S1SLCGeoGridPoint,
+    S1SLCDopplerCentroid,
+    S1SLCDopplerFmRate,
+    S1SLCCalibrationVector,
+    S1SLCNoiseRangeVector,
+    S1SLCNoiseAzimuthVector,
+)
+
 # CPHD
 from grdl.IO.models.cphd import (
     CPHDMetadata,
@@ -259,6 +274,18 @@ __all__ = [
     'ASTERMetadata',
     # Sentinel-2
     'Sentinel2Metadata',
+    # Sentinel-1 SLC
+    'Sentinel1SLCMetadata',
+    'S1SLCProductInfo',
+    'S1SLCSwathInfo',
+    'S1SLCBurst',
+    'S1SLCOrbitStateVector',
+    'S1SLCGeoGridPoint',
+    'S1SLCDopplerCentroid',
+    'S1SLCDopplerFmRate',
+    'S1SLCCalibrationVector',
+    'S1SLCNoiseRangeVector',
+    'S1SLCNoiseAzimuthVector',
     # CPHD
     'CPHDMetadata',
     'CPHDChannel',

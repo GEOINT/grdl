@@ -3,14 +3,14 @@
 SAR Readers - Synthetic Aperture Radar format readers.
 
 Provides readers for NGA SAR standards (SICD, CPHD, CRSD, SIDD), ESA
-BIOMASS products, and a convenience ``open_sar()`` auto-detection
-function.  Uses sarkit as the primary backend for NGA formats with
-sarpy as fallback for SICD and CPHD.
+BIOMASS products, Sentinel-1 IW SLC, and a convenience ``open_sar()``
+auto-detection function.  Uses sarkit as the primary backend for NGA
+formats with sarpy as fallback for SICD and CPHD.
 
 Dependencies
 ------------
 sarkit (primary) or sarpy (fallback)
-rasterio (for BIOMASS and GeoTIFF fallback)
+rasterio (for BIOMASS, Sentinel-1, and GeoTIFF fallback)
 
 Author
 ------
@@ -43,12 +43,17 @@ from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
 
+# Sentinel-1
+from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
+
 # BIOMASS
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 
 # Metadata models
-from grdl.IO.models import SICDMetadata, SIDDMetadata, BIOMASSMetadata
+from grdl.IO.models import (
+    SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
+)
 
 # Base class (for return type)
 from grdl.IO.base import ImageReader
@@ -113,6 +118,16 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
+    # Try Sentinel-1 SAFE
+    if filepath.is_dir() and (
+        filepath.suffix.upper() == '.SAFE'
+        or (filepath / 'manifest.safe').exists()
+    ):
+        try:
+            return Sentinel1SLCReader(filepath)
+        except (ValueError, ImportError, Exception):
+            pass
+
     # Try GeoTIFF fallback (SAR GRD products)
     if filepath.suffix.lower() in ('.tif', '.tiff'):
         try:
@@ -123,9 +138,9 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
 
     raise ValueError(
         f"Could not determine SAR format for {filepath}. "
-        "Ensure file is valid SICD, CPHD, CRSD, SIDD, or GeoTIFF "
-        "format and required libraries (sarkit, sarpy, rasterio) "
-        "are installed."
+        "Ensure file is valid SICD, CPHD, CRSD, SIDD, Sentinel-1 SAFE, "
+        "or GeoTIFF format and required libraries (sarkit, sarpy, "
+        "rasterio) are installed."
     )
 
 
@@ -136,6 +151,8 @@ __all__ = [
     'CPHDReader',
     'CRSDReader',
     'SIDDReader',
+    # Sentinel-1
+    'Sentinel1SLCReader',
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
@@ -143,6 +160,7 @@ __all__ = [
     'SICDMetadata',
     'SIDDMetadata',
     'BIOMASSMetadata',
+    'Sentinel1SLCMetadata',
     # Convenience functions
     'open_sar',
     'open_biomass',

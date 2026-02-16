@@ -68,6 +68,7 @@ Modified
 from grdl.geolocation.base import Geolocation, NoGeolocation
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 from grdl.geolocation.eo.affine import AffineGeolocation
 from grdl.geolocation.elevation.base import ElevationModel
 from grdl.geolocation.elevation.constant import ConstantElevation
@@ -77,6 +78,7 @@ __all__ = [
     'NoGeolocation',
     'GCPGeolocation',
     'SICDGeolocation',
+    'Sentinel1SLCGeolocation',
     'AffineGeolocation',
     'ElevationModel',
     'ConstantElevation',

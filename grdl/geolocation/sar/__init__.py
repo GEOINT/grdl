@@ -27,8 +27,10 @@ Modified
 
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 
 __all__ = [
     'GCPGeolocation',
     'SICDGeolocation',
+    'Sentinel1SLCGeolocation',
 ]
