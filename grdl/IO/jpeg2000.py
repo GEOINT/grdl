@@ -48,11 +48,30 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # Try glymur as fallback (better JP2 support, especially for Sentinel-2)
+# Capture stderr during import: glymur can trigger a GDAL/NumPy ABI
+# mismatch traceback when the system GDAL was compiled against NumPy 1.x
+# but NumPy 2.x is installed.  The exception is caught below, but NumPy
+# prints a noisy traceback to sys.stderr before raising.  We capture to a
+# buffer and re-emit anything that isn't the known NumPy ABI noise.
+import sys as _sys
+_stderr_buf = type('_Buf', (), {
+    '__init__': lambda self: setattr(self, '_parts', []),
+    'write': lambda self, s: self._parts.append(s),
+    'flush': lambda self: None,
+    'getvalue': lambda self: ''.join(self._parts),
+})()
+_saved_stderr = _sys.stderr
+_sys.stderr = _stderr_buf
 try:
     import glymur
     _HAS_GLYMUR = True
 except (ImportError, AttributeError):
     _HAS_GLYMUR = False
+finally:
+    _sys.stderr = _saved_stderr
+    _captured = _stderr_buf.getvalue()
+    if _captured and "_ARRAY_API not found" not in _captured:
+        _sys.stderr.write(_captured)
 
 # GRDL internal
 from grdl.IO.base import ImageReader
