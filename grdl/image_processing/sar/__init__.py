@@ -53,6 +53,7 @@ Modified
 """
 
 from grdl.image_processing.sar.sublook import SublookDecomposition
+from grdl.image_processing.sar.multilook import MultilookDecomposition
 from grdl.image_processing.sar.image_formation import (
     ImageFormationAlgorithm,
     CollectionGeometry,
@@ -66,6 +67,7 @@ from grdl.image_processing.sar.image_formation import (
 
 __all__ = [
     'SublookDecomposition',
+    'MultilookDecomposition',
     'ImageFormationAlgorithm',
     'CollectionGeometry',
     'PolarGrid',
