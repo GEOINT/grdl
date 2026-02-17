@@ -33,8 +33,10 @@ Modified
 
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
+from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
 
 __all__ = [
     'PolarimetricDecomposition',
     'PauliDecomposition',
+    'DualPolHAlpha',
 ]

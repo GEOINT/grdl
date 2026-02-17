@@ -107,6 +107,7 @@ from grdl.image_processing.ortho import Orthorectifier, OutputGrid
 from grdl.image_processing.decomposition import (
     PolarimetricDecomposition,
     PauliDecomposition,
+    DualPolHAlpha,
 )
 from grdl.image_processing.detection import (
     ImageDetector,
@@ -157,6 +158,7 @@ __all__ = [
     'OutputGrid',
     'PolarimetricDecomposition',
     'PauliDecomposition',
+    'DualPolHAlpha',
     'ImageDetector',
     'Detection',
     'DetectionSet',
