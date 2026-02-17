@@ -14,6 +14,7 @@ PyTorch tensors (GPU-accelerated FFTs); always returns numpy arrays.
 Key Classes
 -----------
 - SublookDecomposition: Split complex SAR image into N sub-aperture looks
+- CSIProcessor: Coherent Shape Index (color sub-aperture) RGB composite
 
 Usage
 -----
@@ -54,6 +55,7 @@ Modified
 
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.image_processing.sar.multilook import MultilookDecomposition
+from grdl.image_processing.sar.csi import CSIProcessor
 from grdl.image_processing.sar.image_formation import (
     ImageFormationAlgorithm,
     CollectionGeometry,
@@ -68,6 +70,7 @@ from grdl.image_processing.sar.image_formation import (
 __all__ = [
     'SublookDecomposition',
     'MultilookDecomposition',
+    'CSIProcessor',
     'ImageFormationAlgorithm',
     'CollectionGeometry',
     'PolarGrid',

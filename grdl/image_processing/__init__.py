@@ -117,7 +117,7 @@ from grdl.image_processing.detection import (
     Fields,
     DATA_DICTIONARY,
 )
-from grdl.image_processing.sar import SublookDecomposition, MultilookDecomposition
+from grdl.image_processing.sar import SublookDecomposition, MultilookDecomposition, CSIProcessor
 from grdl.image_processing.intensity import ToDecibels, PercentileStretch
 from grdl.image_processing.filters import (
     MeanFilter,
@@ -167,6 +167,7 @@ __all__ = [
     'DATA_DICTIONARY',
     'SublookDecomposition',
     'MultilookDecomposition',
+    'CSIProcessor',
     'ToDecibels',
     'PercentileStretch',
     'MeanFilter',
