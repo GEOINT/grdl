@@ -7,14 +7,38 @@ vector detections (points, bounding boxes, polygons) and the data models
 for representing detection output.  Geometry is represented using
 ``shapely.geometry`` objects directly on ``Detection``.
 
+Includes the ``cfar/`` sub-package with four CFAR detector variants that
+share a common template-method base (``CFARDetector``).
+
 Key Classes
 -----------
-- ImageDetector: ABC for sparse vector detectors
-- Detection: Single geo-registered detection with shapely geometry
-- DetectionSet: Collection of detections from a detector run
-- FieldDefinition: Definition of a data dictionary field
-- Fields: Accessor class for standard field name constants
-- DATA_DICTIONARY: Registry of standardized field definitions
+Base and data models:
+    ``ImageDetector`` (ABC), ``Detection``, ``DetectionSet``,
+    ``FieldDefinition``, ``Fields``, ``DATA_DICTIONARY``
+
+CFAR detectors:
+    ``CFARDetector`` (template-method ABC),
+    ``CACFARDetector`` (cell-averaging),
+    ``GOCFARDetector`` (greatest-of),
+    ``SOCFARDetector`` (smallest-of),
+    ``OSCFARDetector`` (ordered-statistics)
+
+When to Use What
+----------------
+- **Homogeneous clutter:** ``CACFARDetector`` — mean of all training
+  cells. Optimal false-alarm control in uniform backgrounds.
+
+- **Clutter edges:** ``GOCFARDetector`` — max of quadrant means.
+  Suppresses false alarms at clutter boundaries at the cost of
+  reduced sensitivity.
+
+- **Weak targets near edges:** ``SOCFARDetector`` — min of quadrant
+  means.  More sensitive than GO-CFAR but higher false-alarm rate
+  at transitions.
+
+- **Interfering targets in guard region:** ``OSCFARDetector`` — order
+  statistic (e.g. median). Robust when nearby strong targets
+  contaminate the training window.
 
 Author
 ------
@@ -33,7 +57,7 @@ Created
 
 Modified
 --------
-2026-02-16
+2026-02-17
 """
 
 from grdl.image_processing.detection.base import ImageDetector

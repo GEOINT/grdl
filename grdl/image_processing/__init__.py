@@ -1,44 +1,72 @@
 # -*- coding: utf-8 -*-
 """
-Image Processing Module - Geometric, radiometric, and SAR-specific transforms.
+Image Processing Module - Transforms, detectors, and decompositions.
 
-Provides interfaces and implementations for image processors including
+Provides interfaces and implementations for image processors spanning
 dense raster transforms (orthorectification, filtering, enhancement),
-polarimetric decompositions, SAR sub-aperture decomposition, and sparse
-vector detectors. All processor types inherit from ``ImageProcessor``
-which provides version checking, detection input flow, and tunable
-parameter validation.
+polarimetric decompositions, SAR sub-aperture decomposition, CFAR
+target detection, and composable pipelines. All processor types inherit
+from ``ImageProcessor`` which provides version checking, tunable
+parameter validation, and metadata management.
 
 Sub-modules
 -----------
+filters/
+    Spatial image filters -- linear (mean, Gaussian), rank (median, min,
+    max), statistical (std-dev), adaptive SAR speckle (Lee, complex Lee),
+    and phase gradient. All auto-handle 3D band stacks via
+    ``BandwiseTransformMixin``.
+intensity.py
+    Radiometric transforms -- ``ToDecibels``, ``PercentileStretch``.
 ortho/
     Orthorectification from native acquisition geometry to geographic grids.
 decomposition/
-    Polarimetric decomposition of quad-pol SAR scattering matrices.
+    Polarimetric decompositions -- quad-pol Pauli, dual-pol H/Alpha.
 detection/
-    Sparse geo-registered vector detections (points, bounding boxes).
+    Sparse geo-registered vector detections and CFAR detector family
+    (CA, GO, SO, OS).
 sar/
-    SAR-specific transforms requiring sensor metadata (sublook, etc.).
+    SAR-specific transforms requiring ``SICDMetadata`` -- 1D sublook,
+    2D multilook, and image formation algorithms (PFA, RDA, FFBP).
+pipeline.py
+    Sequential composition of ``ImageTransform`` steps.
+versioning.py
+    ``@processor_version`` and ``@processor_tags`` decorators.
+params.py
+    ``Range``, ``Options``, ``Desc`` constraint markers for tunable
+    parameters via ``Annotated`` type hints.
 
 Key Classes
 -----------
-- ImageProcessor: Common base class for all processor types
-- ImageTransform: ABC for dense raster transforms (ndarray -> ndarray)
-- BandwiseTransformMixin: Auto-apply 2D transforms across 3D band stacks
-- ImageDetector: ABC for sparse vector detectors (ndarray -> DetectionSet)
-- Orthorectifier: Orthorectify imagery from native geometry to geographic grid
-- OutputGrid: Specification for an orthorectified output grid
-- PolarimetricDecomposition: ABC for polarimetric decomposition methods
-- PauliDecomposition: Quad-pol Pauli basis decomposition
-- SublookDecomposition: Sub-aperture spectral splitting of complex SAR imagery
-- Detection, DetectionSet: Detection output data models
-- FieldDefinition, Fields, DATA_DICTIONARY: Standardized data dictionary
-- Pipeline: Sequential composition of ImageTransform steps
-- processor_version: Version decorator for all processor types
-- processor_tags: Capability metadata decorator (modalities, category)
-- DetectionInputSpec: Declaration of detection inputs a processor accepts
-- Range, Options, Desc: Annotated constraint markers for tunable parameters
-- ParamSpec: Introspection data class for tunable parameters
+Base infrastructure:
+    ``ImageProcessor``, ``ImageTransform``, ``BandwiseTransformMixin``,
+    ``Pipeline``, ``processor_version``, ``processor_tags``,
+    ``Range``, ``Options``, ``Desc``, ``ParamSpec``
+
+Filters:
+    ``MeanFilter``, ``GaussianFilter``, ``MedianFilter``, ``MinFilter``,
+    ``MaxFilter``, ``StdDevFilter``, ``LeeFilter``, ``ComplexLeeFilter``,
+    ``PhaseGradientFilter``
+
+Intensity:
+    ``ToDecibels``, ``PercentileStretch``
+
+Ortho:
+    ``Orthorectifier``, ``OutputGrid``
+
+Decomposition:
+    ``PolarimetricDecomposition`` (ABC), ``PauliDecomposition``,
+    ``DualPolHAlpha``
+
+Detection:
+    ``ImageDetector`` (ABC), ``Detection``, ``DetectionSet``,
+    ``CFARDetector`` (ABC), ``CACFARDetector``, ``GOCFARDetector``,
+    ``SOCFARDetector``, ``OSCFARDetector``
+
+SAR:
+    ``SublookDecomposition``, ``MultilookDecomposition``,
+    ``ImageFormationAlgorithm`` (ABC), ``PolarFormatAlgorithm``,
+    ``StripmapPFA``, ``RangeDopplerAlgorithm``, ``FastBackProjection``
 
 Usage
 -----
@@ -65,7 +93,7 @@ Pauli decomposition of quad-pol SAR data:
     >>> components = pauli.decompose(shh, shv, svh, svv)
     >>> rgb = pauli.to_rgb(components)
 
-Sub-aperture (sublook) decomposition of complex SAR imagery:
+Sub-aperture decomposition of complex SAR imagery:
 
     >>> from grdl.IO.sar import SICDReader
     >>> from grdl.image_processing import SublookDecomposition
@@ -75,7 +103,27 @@ Sub-aperture (sublook) decomposition of complex SAR imagery:
     ...     sublook = SublookDecomposition(reader.metadata, num_looks=3,
     ...                                    overlap=0.1)
     ...     looks = sublook.decompose(image)   # (3, rows, cols) complex
-    ...     db = sublook.to_db(looks)          # (3, rows, cols) float
+
+2D multi-look decomposition into M x N sub-aperture grid:
+
+    >>> from grdl.image_processing import MultilookDecomposition
+    >>>
+    >>> with SICDReader('image.nitf') as reader:
+    ...     image = reader.read_full()
+    ...     ml = MultilookDecomposition(reader.metadata,
+    ...                                looks_rg=3, looks_az=3)
+    ...     grid = ml.decompose(image)     # (3, 3, rows, cols) complex
+    ...     flat = ml.to_flat_stack(grid)  # (9, rows, cols) complex
+
+CFAR target detection:
+
+    >>> from grdl.image_processing.detection import CACFARDetector
+    >>>
+    >>> detector = CACFARDetector(guard_cells=4, training_cells=16, pfa=1e-6)
+    >>> detections = detector.detect(intensity_image, geolocation=geo)
+
+See ``architecture.md`` in this directory for the full class hierarchy
+and design rationale.
 
 Dependencies
 ------------
@@ -99,7 +147,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-17
 """
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
