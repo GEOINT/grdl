@@ -1,0 +1,16 @@
+input:
+  sicd_path: /Volumes/PRO-G40/SAR_DATA/SICD/ships/2025-01-29-06-43-29_UMBRA-08_SICD.nitf
+  chip_size: 10000
+
+sublook:
+  num_looks: 7
+  dimension: azimuth
+
+detection:
+  smooth_win: 7
+  dom_window: 3
+  sigma: 3
+  morph_size: 3
+
+display:
+  vmax_percentile: 98
