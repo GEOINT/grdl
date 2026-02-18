@@ -28,12 +28,13 @@ Created
 
 Modified
 --------
+2026-02-17  height param broadened to Union[float, np.ndarray] for DEM support.
 2026-02-11  Fixed from_reader() to prefer sarpy for projection even when
             reader used sarkit backend.
 """
 
 # Standard library
-from typing import Any, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Tuple, Union, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -221,7 +222,7 @@ class SICDGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic coordinate arrays to pixel coordinate arrays.
 
@@ -234,8 +235,10 @@ class SICDGeolocation(Geolocation):
             Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters). Scalar applies a
+            constant height to all points. An array of shape ``(N,)``
+            provides per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -300,7 +303,7 @@ class SICDGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Project ground coordinates to image via sarpy.
 
@@ -310,8 +313,9 @@ class SICDGeolocation(Geolocation):
             Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters). Scalar broadcasts
+            to all points; array provides per-point heights.
 
         Returns
         -------
@@ -320,7 +324,10 @@ class SICDGeolocation(Geolocation):
         """
         from sarpy.geometry.point_projection import ground_to_image_geo
 
-        heights_arr = np.full_like(lats, height)
+        if np.ndim(height) > 0:
+            heights_arr = np.asarray(height, dtype=np.float64)
+        else:
+            heights_arr = np.full_like(lats, height)
         coords = np.column_stack([lats, lons, heights_arr])
 
         # Returns tuple: (image_points Nx2, delta_gpn, iterations)
@@ -383,7 +390,7 @@ class SICDGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Project ground coordinates to image via sarkit.
 
@@ -393,7 +400,7 @@ class SICDGeolocation(Geolocation):
             Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
-        height : float, default=0.0
+        height : float or np.ndarray, default=0.0
             Height above WGS84 ellipsoid (meters).
 
         Raises

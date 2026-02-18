@@ -216,7 +216,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic arrays to pixel arrays.
 
@@ -226,8 +226,8 @@ class Sentinel1SLCGeolocation(Geolocation):
             Latitudes in degrees, 1D float64.
         lons : np.ndarray
             Longitudes in degrees, 1D float64.
-        height : float
-            Not used.
+        height : float or np.ndarray
+            Not used (included for ABC compatibility).
 
         Returns
         -------

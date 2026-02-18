@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-01-30
+2026-02-17
 """
 
 import sys
@@ -420,6 +420,84 @@ class TestOrthorectifier:
         repr_str = repr(ortho)
         assert 'Orthorectifier' in repr_str
         assert 'bilinear' in repr_str
+
+
+# ---------------------------------------------------------------------------
+# DEM elevation integration tests
+# ---------------------------------------------------------------------------
+
+class TestOrthorectifierDEM:
+    """Tests for Orthorectifier with DEM elevation support."""
+
+    def test_constant_elevation_accepted(self, affine_geo, source_image):
+        """Orthorectifier should accept ConstantElevation without error."""
+        from grdl.geolocation.elevation.constant import ConstantElevation
+
+        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        elev = ConstantElevation(height=100.0)
+        ortho = Orthorectifier(
+            affine_geo, grid, interpolation='nearest', elevation=elev
+        )
+        result = ortho.apply(source_image)
+        assert result.shape == (grid.rows, grid.cols)
+
+    def test_elevation_none_default(self, affine_geo, source_image):
+        """Without elevation, Orthorectifier should work as before."""
+        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
+        assert ortho.elevation is None
+        result = ortho.apply(source_image)
+        assert result.shape == (grid.rows, grid.cols)
+
+    def test_dem_height_array_passed_to_geolocation(self):
+        """Verify that DEM heights flow through to latlon_to_image."""
+        from grdl.geolocation.elevation.constant import ConstantElevation
+
+        received_heights = {}
+
+        class HeightCapturingGeo(AffineGeolocation):
+            """Captures the height argument for assertion."""
+            def _latlon_to_image_array(self, lats, lons, height=0.0):
+                received_heights['height'] = height
+                return super()._latlon_to_image_array(lats, lons, height)
+
+        geo = HeightCapturingGeo(
+            shape=(50, 50),
+            origin_lat=0.0, origin_lon=0.0,
+            pixel_size_lat=0.01, pixel_size_lon=0.01,
+        )
+        grid = OutputGrid.from_geolocation(geo, 0.01, 0.01)
+        elev = ConstantElevation(height=500.0)
+        ortho = Orthorectifier(
+            geo, grid, interpolation='nearest', elevation=elev,
+        )
+        ortho.compute_mapping()
+
+        h = received_heights['height']
+        # Should be an array (not scalar 0.0) with all values ~ 500.0
+        assert isinstance(h, np.ndarray)
+        assert np.allclose(h, 500.0)
+
+    def test_zero_elevation_matches_no_elevation(
+        self, affine_geo, source_image,
+    ):
+        """ConstantElevation(0.0) should match no-DEM result."""
+        from grdl.geolocation.elevation.constant import ConstantElevation
+
+        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+
+        ortho_no_dem = Orthorectifier(
+            affine_geo, grid, interpolation='nearest',
+        )
+        result_no_dem = ortho_no_dem.apply(source_image)
+
+        ortho_dem = Orthorectifier(
+            affine_geo, grid, interpolation='nearest',
+            elevation=ConstantElevation(0.0),
+        )
+        result_dem = ortho_dem.apply(source_image)
+
+        np.testing.assert_array_equal(result_no_dem, result_dem)
 
 
 # ---------------------------------------------------------------------------

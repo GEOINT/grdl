@@ -20,6 +20,9 @@ intensity.py
     Radiometric transforms -- ``ToDecibels``, ``PercentileStretch``.
 ortho/
     Orthorectification from native acquisition geometry to geographic grids.
+    ``OrthoPipeline`` builder with ROI, tiled processing, auto-resolution,
+    and DEM terrain correction. ``compute_output_resolution`` dispatches
+    on metadata type (SICD, BIOMASS).
 decomposition/
     Polarimetric decompositions -- quad-pol Pauli, dual-pol H/Alpha.
 detection/
@@ -52,7 +55,8 @@ Intensity:
     ``ToDecibels``, ``PercentileStretch``
 
 Ortho:
-    ``Orthorectifier``, ``OutputGrid``
+    ``OrthoPipeline`` (recommended), ``OrthoResult``, ``Orthorectifier``,
+    ``OutputGrid``, ``compute_output_resolution``
 
 Decomposition:
     ``PolarimetricDecomposition`` (ABC), ``PauliDecomposition``,
@@ -70,21 +74,36 @@ SAR:
 
 Usage
 -----
-Orthorectify a BIOMASS SAR image to a regular geographic grid:
+Orthorectify a SICD image via OrthoPipeline (recommended):
 
-    >>> from grdl.IO import BIOMASSL1Reader
-    >>> from grdl.geolocation.sar.gcp import GCPGeolocation
-    >>> from grdl.image_processing import Orthorectifier, OutputGrid
+    >>> from grdl.IO.sar import SICDReader
+    >>> from grdl.geolocation.sar.sicd import SICDGeolocation
+    >>> from grdl.image_processing import OrthoPipeline
     >>>
-    >>> with BIOMASSL1Reader('path/to/product') as reader:
-    ...     geo = GCPGeolocation(
-    ...         reader.metadata['gcps'],
-    ...         (reader.metadata['rows'], reader.metadata['cols']),
+    >>> with SICDReader('image.nitf') as reader:
+    ...     geo = SICDGeolocation.from_reader(reader)
+    ...     result = (
+    ...         OrthoPipeline()
+    ...         .with_reader(reader)
+    ...         .with_geolocation(geo)
+    ...         .with_metadata(reader.metadata)       # auto-resolution
+    ...         .with_interpolation('nearest')
+    ...         .run()
     ...     )
-    ...     grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
-    ...                                        pixel_size_lon=0.001)
-    ...     ortho = Orthorectifier(geo, grid)
-    ...     result = ortho.apply_from_reader(reader, bands=[0])
+    ...     # result.data, result.output_grid
+
+Ortho with ROI (geographic sub-region) and tiling (memory-efficient):
+
+    >>> result = (
+    ...     OrthoPipeline()
+    ...     .with_source_array(mag)
+    ...     .with_geolocation(geo)
+    ...     .with_resolution(0.001, 0.001)
+    ...     .with_roi(36.0, 36.1, -75.8, -75.7)    # geographic subset
+    ...     .with_tile_size(2048)                    # bounded mapping memory
+    ...     .with_elevation(dem)                     # DEM terrain correction
+    ...     .run()
+    ... )
 
 Pauli decomposition of quad-pol SAR data:
 
@@ -147,11 +166,14 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-02-18
 """
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
-from grdl.image_processing.ortho import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho import (
+    Orthorectifier, OutputGrid, OrthoPipeline, OrthoResult,
+    compute_output_resolution,
+)
 from grdl.image_processing.decomposition import (
     PolarimetricDecomposition,
     PauliDecomposition,
@@ -204,6 +226,9 @@ __all__ = [
     'BandwiseTransformMixin',
     'Orthorectifier',
     'OutputGrid',
+    'OrthoPipeline',
+    'OrthoResult',
+    'compute_output_resolution',
     'PolarimetricDecomposition',
     'PauliDecomposition',
     'DualPolHAlpha',

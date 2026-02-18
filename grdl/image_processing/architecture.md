@@ -28,8 +28,10 @@ image_processing/
 │   ├── speckle.py           #   LeeFilter, ComplexLeeFilter
 │   └── phase.py             #   PhaseGradientFilter
 │
-├── ortho/                   # Geometric correction
-│   └── ortho.py             #   Orthorectifier, OutputGrid
+├── ortho/                   # Geometric correction / orthorectification
+│   ├── ortho.py             #   Orthorectifier, OutputGrid
+│   ├── ortho_pipeline.py    #   OrthoPipeline, OrthoResult (builder + ROI + tiling)
+│   └── resolution.py        #   compute_output_resolution (SICD, BIOMASS dispatch)
 │
 ├── decomposition/           # Polarimetric decompositions
 │   ├── base.py              #   PolarimetricDecomposition (ABC)
@@ -84,6 +86,9 @@ ImageProcessor (ABC)
 │   ├── Orthorectifier          [GEOM_CORRECT]
 │   └── Pipeline                (sequential composition)
 │
+├── OrthoPipeline ── builder orchestrator (ROI, tiling, auto-resolution)
+│   └── OrthoResult ── output container (data, grid, geo metadata)
+│
 ├── ImageDetector (ABC) ── raster → DetectionSet
 │   └── CFARDetector (ABC, template method)
 │       ├── CACFARDetector      [FIND_MAXIMA, SAR]
@@ -97,8 +102,9 @@ ImageProcessor (ABC)
 ├── DualPolHAlpha               (dual-pol H/Alpha eigendecomposition)
 │
 ├── SublookDecomposition        [STACKS, SAR] ── 1D sub-aperture
+├── MultilookDecomposition      [STACKS, SAR] ── 2D sub-aperture
 │
-└── MultilookDecomposition      [STACKS, SAR] ── 2D sub-aperture
+└── CSIProcessor                [STACKS, SAR] ── coherent shape index
 
 ImageFormationAlgorithm (ABC) ── phase history → complex image
 ├── PolarFormatAlgorithm        (spotlight PFA)
@@ -171,11 +177,40 @@ generic utilities at the application level.
 | Stripmap SAR (CPHD) | `StripmapPFA` or `RangeDopplerAlgorithm` |
 | General backprojection | `FastBackProjection` |
 
-### Geometric Correction
+### Geometric Correction / Orthorectification
 
 | Need | Use |
 |------|-----|
-| Reproject to lat/lon grid | `Orthorectifier` + `OutputGrid` |
+| Full ortho (recommended) | `OrthoPipeline` — builder API, auto-resolution, DEM |
+| Ortho a geographic sub-region | `OrthoPipeline` + `.with_roi(min_lat, max_lat, min_lon, max_lon)` |
+| Memory-efficient large output | `OrthoPipeline` + `.with_tile_size(2048)` |
+| ROI + tiling (composable) | `.with_roi(...)` + `.with_tile_size(...)` |
+| Low-level mapping + resample | `Orthorectifier` + `OutputGrid` (compute_mapping / apply) |
+| Auto-compute output resolution | `compute_output_resolution(metadata)` |
+
+**OrthoPipeline** is the recommended entry point. It handles resolution
+computation, output grid construction, DEM integration, ROI restriction,
+and tiled processing via a fluent builder API:
+
+```python
+result = (
+    OrthoPipeline()
+    .with_reader(reader)
+    .with_geolocation(geo)
+    .with_metadata(reader.metadata)        # auto-resolution from SICD/BIOMASS
+    .with_roi(36.0, 36.1, -75.8, -75.7)   # geographic sub-region
+    .with_tile_size(2048)                  # memory-efficient tiling
+    .with_interpolation('nearest')
+    .with_elevation(dem)                   # DEM terrain correction
+    .run()
+)
+# result.data, result.output_grid, result.geolocation_metadata
+```
+
+**Tiling** partitions the output grid using `grdl.data_prep.Tiler`,
+processes each tile independently (bounded mapping memory), and
+assembles into the full output array. Each tile's `OutputGrid` is
+extracted via `OutputGrid.sub_grid()`.
 
 ### Composition
 
@@ -288,7 +323,9 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `PhaseGradientFilter` | 1.0.0 | FILTERS | SAR | kernel_size, direction |
 | `ToDecibels` | 1.0.0 | ENHANCE | all | floor_db |
 | `PercentileStretch` | 1.0.0 | ENHANCE | all | plow, phigh |
-| `Orthorectifier` | 1.0.0 | GEOM_CORRECT | all | interpolation |
+| `Orthorectifier` | 0.1.0 | GEOM_CORRECT | all | interpolation |
+| `OrthoPipeline` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, elevation, nodata |
+| `OutputGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` |
 | `PauliDecomposition` | 0.1.0 | — | SAR | — |
 | `DualPolHAlpha` | 1.0.0 | — | SAR | window_size |
 | `CACFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
@@ -297,6 +334,7 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `OSCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
 | `SublookDecomposition` | 0.1.0 | STACKS | SAR | num_looks, overlap, deweight |
 | `MultilookDecomposition` | 0.1.0 | STACKS | SAR | looks_rg, looks_az, overlap, deweight |
+| `CSIProcessor` | 0.1.0 | STACKS | SAR | num_looks, overlap, deweight |
 
 ---
 

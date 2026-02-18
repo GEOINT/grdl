@@ -30,7 +30,7 @@ Modified
 2026-02-11
 """
 
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Union, Any
 
 import numpy as np
 
@@ -197,7 +197,7 @@ class GCPGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Transform geographic coordinate arrays to pixel coordinate arrays.
@@ -210,7 +210,7 @@ class GCPGeolocation(Geolocation):
             Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
-        height : float, default=0.0
+        height : float or np.ndarray, default=0.0
             Height parameter (not used in 2D interpolation).
 
         Returns

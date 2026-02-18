@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-02-17
 """
 
 from abc import ABC, abstractmethod
@@ -142,7 +142,7 @@ class Geolocation(ABC):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Transform geographic coordinate arrays to pixel coordinate arrays.
@@ -156,8 +156,10 @@ class Geolocation(ABC):
             Latitudes in degrees North (1D array, float64).
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters). Scalar applies a
+            constant height to all points. An array of shape ``(N,)``
+            provides per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -272,7 +274,7 @@ class Geolocation(ABC):
         self,
         lat_or_points: Union[float, list, np.ndarray],
         lon: Optional[Union[float, list, np.ndarray]] = None,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0
     ) -> Union[Tuple[float, float], Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """
         Transform geographic coordinates to image coordinates.
@@ -293,8 +295,10 @@ class Geolocation(ABC):
         lon : float, list, or np.ndarray, optional
             Longitude(s). Omit to pass a ``(2, N)`` stacked array as
             the first argument.
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters). Scalar applies a
+            constant height to all points. An array of shape ``(N,)``
+            provides per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -481,7 +485,7 @@ class NoGeolocation(Geolocation):
         self,
         lats: np.ndarray,
         lons: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Raise NotImplementedError - no geolocation available."""
         raise NotImplementedError(

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-02-17
 """
 
 from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
@@ -48,6 +48,7 @@ from grdl.image_processing.base import ImageTransform
 
 if TYPE_CHECKING:
     from grdl.geolocation.base import Geolocation
+    from grdl.geolocation.elevation.base import ElevationModel
     from grdl.IO.base import ImageReader
 
 
@@ -257,6 +258,77 @@ class OutputGrid:
         col = (lon - self.min_lon) / self.pixel_size_lon
         return row, col
 
+    def sub_grid(
+        self,
+        row_start: int,
+        col_start: int,
+        row_end: int,
+        col_end: int,
+    ) -> 'OutputGrid':
+        """Extract a sub-grid covering a rectangular tile of this grid.
+
+        Creates a new ``OutputGrid`` whose geographic bounds correspond to
+        the pixel region ``[row_start:row_end, col_start:col_end]`` of this
+        grid.  Pixel sizes are preserved.
+
+        Parameters
+        ----------
+        row_start : int
+            First row (inclusive).
+        col_start : int
+            First column (inclusive).
+        row_end : int
+            Last row (exclusive).
+        col_end : int
+            Last column (exclusive).
+
+        Returns
+        -------
+        OutputGrid
+            Sub-grid with geographic bounds matching the tile region.
+
+        Raises
+        ------
+        ValueError
+            If indices are out of range or produce an empty region.
+        """
+        if row_start < 0 or col_start < 0:
+            raise ValueError(
+                f"Indices must be non-negative, got "
+                f"row_start={row_start}, col_start={col_start}"
+            )
+        if row_end > self.rows or col_end > self.cols:
+            raise ValueError(
+                f"Indices exceed grid dimensions ({self.rows}x{self.cols}), "
+                f"got row_end={row_end}, col_end={col_end}"
+            )
+        if row_end <= row_start or col_end <= col_start:
+            raise ValueError(
+                f"Empty region: row [{row_start}, {row_end}), "
+                f"col [{col_start}, {col_end})"
+            )
+
+        tile_rows = row_end - row_start
+        tile_cols = col_end - col_start
+
+        # Compute bounds from the anchor corner and exact tile dimensions
+        # to avoid floating-point drift from independent multiplications.
+        tile_max_lat = self.max_lat - row_start * self.pixel_size_lat
+        tile_min_lat = tile_max_lat - tile_rows * self.pixel_size_lat
+        tile_min_lon = self.min_lon + col_start * self.pixel_size_lon
+        tile_max_lon = tile_min_lon + tile_cols * self.pixel_size_lon
+
+        sub = OutputGrid(
+            tile_min_lat, tile_max_lat,
+            tile_min_lon, tile_max_lon,
+            self.pixel_size_lat, self.pixel_size_lon,
+        )
+        # Force exact tile dimensions — ceil() in the constructor can
+        # drift by ±1 from floating-point arithmetic on the bounds.
+        sub.rows = tile_rows
+        sub.cols = tile_cols
+        return sub
+
     def __repr__(self) -> str:
         return (
             f"OutputGrid(lat=[{self.min_lat:.4f}, {self.max_lat:.4f}], "
@@ -320,7 +392,8 @@ class Orthorectifier(ImageTransform):
         self,
         geolocation: 'Geolocation',
         output_grid: OutputGrid,
-        interpolation: str = 'bilinear'
+        interpolation: str = 'bilinear',
+        elevation: Optional['ElevationModel'] = None,
     ) -> None:
         """
         Initialize orthorectifier.
@@ -334,6 +407,11 @@ class Orthorectifier(ImageTransform):
             Output grid specification defining bounds and resolution.
         interpolation : str, default='bilinear'
             Resampling method. One of 'nearest', 'bilinear', 'bicubic'.
+        elevation : ElevationModel, optional
+            Terrain elevation model for DEM-corrected projection. When
+            provided, ``compute_mapping()`` looks up terrain heights at
+            each output grid point and passes them to the inverse
+            geolocation for terrain-corrected pixel mapping.
 
         Raises
         ------
@@ -357,6 +435,7 @@ class Orthorectifier(ImageTransform):
         self.geolocation = geolocation
         self.output_grid = output_grid
         self.interpolation = interpolation
+        self.elevation = elevation
         self._order = _INTERPOLATION_ORDERS[interpolation]
 
         # Cached mapping (computed lazily)
@@ -399,9 +478,23 @@ class Orthorectifier(ImageTransform):
         lats_flat = lat_grid.ravel()
         lons_flat = lon_grid.ravel()
 
-        # Inverse geolocation: output lat/lon -> source pixel (row, col)
+        # DEM height lookup for terrain-corrected projection.
+        # When an elevation model is configured, terrain heights are
+        # looked up at each output grid point and passed to the inverse
+        # geolocation. A single lookup pass is accurate for moderate
+        # terrain; extreme relief may benefit from iterative refinement.
+        if self.elevation is not None:
+            heights_flat = self.elevation.get_elevation(lats_flat, lons_flat)
+            # Replace NaN (outside DEM coverage) with 0.0
+            heights_flat = np.where(
+                np.isfinite(heights_flat), heights_flat, 0.0
+            )
+        else:
+            heights_flat = 0.0  # scalar, broadcast by geolocation
+
+        # Inverse geolocation: output lat/lon/height -> source pixel (row, col)
         src_rows_flat, src_cols_flat = self.geolocation.latlon_to_image(
-            lats_flat, lons_flat
+            lats_flat, lons_flat, height=heights_flat
         )
 
         # Reshape to output grid dimensions
