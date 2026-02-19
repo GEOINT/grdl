@@ -267,34 +267,38 @@ def main():
     # ---------- Benchmarking ----------
     store = JSONBenchmarkStore()
 
+    bench_cfg = cfg["benchmark"]
+    bench_iterations = bench_cfg["iterations"]
+    bench_warmup = bench_cfg["warmup"]
+
     chip_runner = ActiveBenchmarkRunner(
         chip_wf,
         BenchmarkSource.from_file(SICD_PATH),
-        iterations=3,
-        warmup=1,
+        iterations=bench_iterations,
+        warmup=bench_warmup,
         store=store,
         tags={"workflow": "Chip"},
     )
     det_runner = ActiveBenchmarkRunner(
         det_wf,
         BenchmarkSource.from_array(chip),
-        iterations=5,
-        warmup=1,
+        iterations=bench_iterations,
+        warmup=bench_warmup,
         store=store,
         tags={"workflow": "Detection"},
     )
     csi_runner = ActiveBenchmarkRunner(
         csi_wf,
         BenchmarkSource.from_array(chip),
-        iterations=5,
-        warmup=1,
+        iterations=bench_iterations,
+        warmup=bench_warmup,
         store=store,
         tags={"workflow": "CSI"},
     )
 
     chip_rec = chip_runner.run()
-    det_rec = det_runner.run()
-    csi_rec = csi_runner.run()
+    det_rec = det_runner.run(metadata=chip_metadata)
+    csi_rec = csi_runner.run(metadata=chip_metadata)
 
     print_report([chip_rec, det_rec, csi_rec])
 
