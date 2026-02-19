@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Ava Workflow — SICD ship scene exploration.
+Detect and CSI Workflow — SICD ship scene exploration.
 
 Opens an UMBRA SICD NITF and extracts a center chip for analysis.
 Demonstrates how to build a grdl-runtime Workflow with deferred
@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-18
+2026-02-19
 """
 
 # Standard library
@@ -56,12 +56,12 @@ import matplotlib.pyplot as plt
 
 # grdl-runtime
 from grdl_rt import Workflow
+from grdl_rt.execution.dag_executor import DAGExecutor  # noqa: F401
 
 # GRDL-TE benchmarking
 from grdl_te.benchmarking import (
     ActiveBenchmarkRunner,
     BenchmarkSource,
-    ComponentBenchmark,
     JSONBenchmarkStore,
     print_report,
 )
@@ -220,12 +220,21 @@ def main():
     SICD_PATH = Path(cfg["input"]["sicd_path"])
     CHIP_SIZE = cfg["input"]["chip_size"]
 
+    # ---------- Shared data ----------
+    chip_wf = (
+        Workflow("Chip", version="1.0.0", modalities=["SAR"])
+        .reader(SICDReader)
+        .chip("center", size=CHIP_SIZE)
+    )
+    with SICDReader(SICD_PATH) as rdr:
+        chip_metadata = rdr.metadata
+    chip_wf_result = chip_wf.execute(SICD_PATH)
+    chip = chip_wf_result.result
+
     # ---------- Detection workflow ----------
     # reader → chip → SublookDecomposition → DominanceDetection
     det_wf = (
-        Workflow("AvaDetection", version="1.0.0", modalities=["SAR"])
-        .reader(SICDReader)
-        .chip("center", size=CHIP_SIZE)
+        Workflow("Detection", version="1.0.0", modalities=["SAR"])
         .step(SublookDecomposition,
               num_looks=cfg["sublook"]["num_looks"],
               dimension=cfg["sublook"]["dimension"])
@@ -235,33 +244,60 @@ def main():
               dom_sigma=cfg["detection"]["sigma"],
               morph_size=cfg["detection"]["morph_size"])
     )
-    det_result = det_wf.execute(SICD_PATH)
+    det_result = det_wf.execute(chip, metadata=chip_metadata)
     dominance, labeled = det_result.result
     n_detections = labeled.max()
     print(f"Detections: {n_detections}")
 
-    # ---------- CSI workflow (parallel — operates on original chip) ----------
+    # ---------- CSI workflow ----------
     # reader → chip → CSIProcessor
     csi_wf = (
-        Workflow("AvaCSI", version="1.0.0", modalities=["SAR"])
-        .reader(SICDReader)
-        .chip("center", size=CHIP_SIZE)
+        Workflow("CSI", version="1.0.0", modalities=["SAR"])
         .step(CSIProcessor,
               dimension=cfg["sublook"]["dimension"],
               normalization='log')
     )
-    csi_result = csi_wf.execute(SICD_PATH)
+    csi_result = csi_wf.execute(chip, metadata=chip_metadata)
     csi_rgb = csi_result.result
 
     # ---------- Plot ----------
     # Load raw chip for amplitude overlay (no-step workflow returns source)
-    # chip_wf = (
-    #     Workflow("ChipLoader")
-    #     .reader(SICDReader)
-    #     .chip("center", size=CHIP_SIZE)
-    # )
-    # chip = chip_wf.execute(SICD_PATH).result
     # plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
+
+    # ---------- Benchmarking ----------
+    store = JSONBenchmarkStore()
+
+    chip_runner = ActiveBenchmarkRunner(
+        chip_wf,
+        BenchmarkSource.from_file(SICD_PATH),
+        iterations=3,
+        warmup=1,
+        store=store,
+        tags={"workflow": "Chip"},
+    )
+    det_runner = ActiveBenchmarkRunner(
+        det_wf,
+        BenchmarkSource.from_array(chip),
+        iterations=5,
+        warmup=1,
+        store=store,
+        tags={"workflow": "Detection"},
+    )
+    csi_runner = ActiveBenchmarkRunner(
+        csi_wf,
+        BenchmarkSource.from_array(chip),
+        iterations=5,
+        warmup=1,
+        store=store,
+        tags={"workflow": "CSI"},
+    )
+
+    chip_rec = chip_runner.run()
+    det_rec = det_runner.run()
+    csi_rec = csi_runner.run()
+
+    print_report([chip_rec, det_rec, csi_rec])
+
 
 if __name__ == "__main__":
     main()
