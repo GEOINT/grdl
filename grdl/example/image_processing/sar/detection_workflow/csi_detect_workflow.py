@@ -62,7 +62,6 @@ from grdl_rt.execution.dag_executor import DAGExecutor  # noqa: F401
 from grdl_te.benchmarking import (
     ActiveBenchmarkRunner,
     BenchmarkSource,
-    JSONBenchmarkStore,
     print_report,
 )
 
@@ -265,26 +264,31 @@ def main():
     # plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
 
     # ---------- Benchmarking ----------
-    store = JSONBenchmarkStore()
 
     bench_cfg = cfg["benchmark"]
     bench_iterations = bench_cfg["iterations"]
     bench_warmup = bench_cfg["warmup"]
 
+    if bench_cfg["source"] == "synthetic":
+        bench_source = BenchmarkSource.synthetic(
+            bench_cfg["synthetic_size"], dtype=np.complex64,
+        )
+        chip = bench_source.resolve()
+    else:
+        bench_source = BenchmarkSource.from_array(chip)
+
     det_runner = ActiveBenchmarkRunner(
         det_wf,
-        BenchmarkSource.from_array(chip),
+        bench_source,
         iterations=bench_iterations,
         warmup=bench_warmup,
-        store=store,
         tags={"workflow": "Detection"},
     )
     csi_runner = ActiveBenchmarkRunner(
         csi_wf,
-        BenchmarkSource.from_array(chip),
+        bench_source,
         iterations=bench_iterations,
         warmup=bench_warmup,
-        store=store,
         tags={"workflow": "CSI"},
     )
 

@@ -14,7 +14,7 @@ detection:
 
 benchmark:
   source: file            # "file" = use the loaded chip, "synthetic" = generate via BenchmarkSource
-  synthetic_size: medium  # size preset when source is "synthetic" (small / medium / large)
+  synthetic_size: small  # size preset when source is "synthetic" (small / medium / large)
   iterations: 3
   warmup: 1
 
