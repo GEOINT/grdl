@@ -27,7 +27,8 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | CRSD | `CRSDReader` | sarkit | ✅ Implemented |
 | SIDD | `SIDDReader` | sarkit | ✅ Implemented |
 | BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
-| SLC | - | - | 🔄 Planned |
+| Sentinel-1 SLC | `Sentinel1SLCReader` | rasterio | ✅ Implemented |
+| TerraSAR-X / TanDEM-X | `TerraSARReader` | numpy (SSC), rasterio (detected) | ✅ Implemented |
 
 ### IR (Infrared / Thermal) — `ir/` submodule
 
@@ -261,6 +262,53 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
     print(f"Azimuth spacing: {meta.azimuth_pixel_spacing:.2f} m")
 ```
 
+### TerraSAR-X / TanDEM-X
+
+#### SSC (Complex) and Detected Products
+
+```python
+from grdl.IO import TerraSARReader, open_terrasar
+import numpy as np
+
+# Open from product directory, XML file, or .cos data file
+with TerraSARReader('/path/to/TSX1_SAR__SSC.../', polarization='HH') as reader:
+    meta = reader.metadata  # TerraSARMetadata with typed fields
+
+    # Product info
+    pi = meta.product_info
+    print(f"Satellite: {pi.satellite}")       # "TSX-1" or "TDX-1"
+    print(f"Product: {pi.product_type}")       # "SSC", "MGD", "GEC", "EEC"
+    print(f"Mode: {pi.imaging_mode}")          # "SM", "HS", "SL", "SC", "ST"
+    print(f"Polarizations: {pi.polarization_list}")  # ["HH", "VV"]
+    print(f"Orbit: {pi.absolute_orbit} ({pi.orbit_direction})")
+
+    # Radar parameters
+    rp = meta.radar_params
+    print(f"Center freq: {rp.center_frequency/1e9:.2f} GHz")
+    print(f"PRF: {rp.prf:.1f} Hz")
+
+    # Scene geometry
+    si = meta.scene_info
+    print(f"Center: {si.center_lat:.4f}, {si.center_lon:.4f}")
+    print(f"Incidence: {si.incidence_angle_center:.1f} deg")
+
+    # Geolocation grid (from GEOREF.xml)
+    print(f"Geo grid points: {len(meta.geolocation_grid)}")
+
+    # Read complex SSC chip
+    chip = reader.read_chip(0, 1024, 0, 1024)  # complex64
+    magnitude_db = 20 * np.log10(np.abs(chip) + 1e-10)
+
+# Convenience factory function
+with open_terrasar('/path/to/product/', polarization='VV') as reader:
+    full = reader.read_full()
+
+# Auto-detect via open_sar (works with TSX1_/TDX1_ dirs or any dir with TSX annotation XML)
+from grdl.IO import open_sar
+with open_sar('/path/to/product/') as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+```
+
 ### IR / Thermal Imagery
 
 #### ASTER - Thermal Infrared and DEM Products
@@ -399,6 +447,8 @@ All readers populate `self.metadata` with a typed dataclass. Format-specific rea
 | `SICDReader` | `SICDMetadata` | 17 sections: `collection_info`, `image_data`, `geo_data`, `grid`, `timeline`, `position`, `radar_collection`, `image_formation`, `scpcoa`, `radiometric`, `antenna`, `error_statistics`, `match_info`, `rg_az_comp`, `pfa`, `rma` |
 | `SIDDReader` | `SIDDMetadata` | `product_creation`, `display`, `geo_data`, `measurement`, `exploitation_features`, `downstream_reprocessing`, `compression`, `digital_elevation_data`, `product_processing`, `annotations` |
 | `BIOMASSL1Reader` | `BIOMASSMetadata` | `mission`, `swath`, `polarizations`, `orbit_number`, `range_pixel_spacing`, `azimuth_pixel_spacing`, `prf`, `corner_coords`, `gcps` |
+| `Sentinel1SLCReader` | `Sentinel1SLCMetadata` | `product_info`, `swath_timing`, `bursts`, `orbit_state_vectors`, `geolocation_grid`, `doppler_centroid`, `calibration_vectors` |
+| `TerraSARReader` | `TerraSARMetadata` | `product_info`, `scene_info`, `image_info`, `radar_params`, `orbit_state_vectors`, `geolocation_grid`, `calibration`, `doppler_info`, `processing_info` |
 | `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
 | `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
 
@@ -419,7 +469,7 @@ meta['rows']                       # int
 list(meta.keys())                  # all field names
 ```
 
-The `models/` package provides ~60 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `biomass.py`, `viirs.py`, and `aster.py`.
+The `models/` package provides ~70 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `biomass.py`, `sentinel1_slc.py`, `terrasar.py`, `viirs.py`, and `aster.py`.
 
 ### Design Principles
 
