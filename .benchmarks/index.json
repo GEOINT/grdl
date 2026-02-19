@@ -14,5 +14,69 @@
     "workflow_version": "1.0.0",
     "iterations": 3,
     "created_at": "2026-02-19T16:37:30.894965+00:00"
+  },
+  {
+    "benchmark_id": "152f8f08-ed1f-4ed1-b9ba-c98d187851c3",
+    "benchmark_type": "active",
+    "workflow_name": "Chip",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T16:40:05.779662+00:00"
+  },
+  {
+    "benchmark_id": "4228dc30-0c95-498c-8da3-4fb93b03c7f0",
+    "benchmark_type": "active",
+    "workflow_name": "Chip",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T16:44:07.460226+00:00"
+  },
+  {
+    "benchmark_id": "da793447-0d5f-4eb2-859f-31962c28a191",
+    "benchmark_type": "active",
+    "workflow_name": "Chip",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T16:47:35.152836+00:00"
+  },
+  {
+    "benchmark_id": "4f1e2f90-2578-4046-9e28-89b13b355381",
+    "benchmark_type": "active",
+    "workflow_name": "Detection",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T16:50:12.123375+00:00"
+  },
+  {
+    "benchmark_id": "e6ccafd6-1450-46b9-b915-616cbfc28f72",
+    "benchmark_type": "active",
+    "workflow_name": "CSI",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T16:51:56.439417+00:00"
+  },
+  {
+    "benchmark_id": "b3badcb8-aea0-4a1e-9f43-672d0fd47b66",
+    "benchmark_type": "active",
+    "workflow_name": "Chip",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T17:11:39.128416+00:00"
+  },
+  {
+    "benchmark_id": "2d138458-343f-44e5-b8b7-8b024ab3c317",
+    "benchmark_type": "active",
+    "workflow_name": "Detection",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T17:14:17.819765+00:00"
+  },
+  {
+    "benchmark_id": "886aba9e-27b5-4865-8f8a-f12ca8b8eda1",
+    "benchmark_type": "active",
+    "workflow_name": "CSI",
+    "workflow_version": "1.0.0",
+    "iterations": 3,
+    "created_at": "2026-02-19T17:16:02.277336+00:00"
   }
 ]

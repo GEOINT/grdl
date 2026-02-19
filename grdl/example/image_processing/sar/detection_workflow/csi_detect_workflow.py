@@ -271,14 +271,6 @@ def main():
     bench_iterations = bench_cfg["iterations"]
     bench_warmup = bench_cfg["warmup"]
 
-    chip_runner = ActiveBenchmarkRunner(
-        chip_wf,
-        BenchmarkSource.from_file(SICD_PATH),
-        iterations=bench_iterations,
-        warmup=bench_warmup,
-        store=store,
-        tags={"workflow": "Chip"},
-    )
     det_runner = ActiveBenchmarkRunner(
         det_wf,
         BenchmarkSource.from_array(chip),
@@ -296,11 +288,10 @@ def main():
         tags={"workflow": "CSI"},
     )
 
-    chip_rec = chip_runner.run()
     det_rec = det_runner.run(metadata=chip_metadata)
     csi_rec = csi_runner.run(metadata=chip_metadata)
 
-    print_report([chip_rec, det_rec, csi_rec])
+    print_report([det_rec, csi_rec])
 
 
 if __name__ == "__main__":

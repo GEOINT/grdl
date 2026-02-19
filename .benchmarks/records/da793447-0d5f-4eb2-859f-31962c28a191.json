@@ -1,0 +1,121 @@
+{
+  "benchmark_id": "da793447-0d5f-4eb2-859f-31962c28a191",
+  "benchmark_type": "active",
+  "workflow_name": "Chip",
+  "workflow_version": "1.0.0",
+  "iterations": 3,
+  "hardware": {
+    "cpu_count": 32,
+    "total_memory_bytes": 540142198784,
+    "gpu_available": true,
+    "gpu_devices": [
+      {
+        "name": "NVIDIA A10",
+        "memory_bytes": 23686938624,
+        "device_index": 0
+      },
+      {
+        "name": "NVIDIA A10",
+        "memory_bytes": 23686938624,
+        "device_index": 1
+      }
+    ],
+    "gpu_memory_bytes": 47373877248,
+    "platform_info": "Linux-5.14.0-611.30.1.el9_7.x86_64-x86_64-with-glibc2.39",
+    "python_version": "3.12.3 (main, Nov  6 2025, 13:44:16) [GCC 13.3.0]",
+    "hostname": "067cbb665a91",
+    "captured_at": "2026-02-19T16:47:32.921999+00:00"
+  },
+  "total_wall_time": {
+    "count": 3,
+    "min": 1.8000006093643606e-05,
+    "max": 2.0572995708789676e-05,
+    "mean": 1.9039332983084023e-05,
+    "median": 1.8544997146818787e-05,
+    "stddev": 1.3558557552978927e-06,
+    "p95": 2.0370195852592587e-05,
+    "values": [
+      1.8544997146818787e-05,
+      1.8000006093643606e-05,
+      2.0572995708789676e-05
+    ]
+  },
+  "total_cpu_time": {
+    "count": 3,
+    "min": 1.6424999998321255e-05,
+    "max": 1.8803999992655918e-05,
+    "mean": 1.7391666664442102e-05,
+    "median": 1.6946000002349138e-05,
+    "stddev": 1.2505496085869188e-06,
+    "p95": 1.861819999362524e-05,
+    "values": [
+      1.6946000002349138e-05,
+      1.6424999998321255e-05,
+      1.8803999992655918e-05
+    ]
+  },
+  "total_peak_rss": {
+    "count": 3,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0,
+    "median": 0.0,
+    "stddev": 0.0,
+    "p95": 0.0,
+    "values": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "step_results": [],
+  "raw_metrics": [
+    {
+      "workflow_id": "Chip:1.0.0",
+      "run_id": "9546b6cc-7da3-4c6f-bbaa-1c03c62d871d",
+      "workflow_name": "Chip",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 1.8544997146818787e-05,
+      "total_cpu_time_s": 1.6946000002349138e-05,
+      "peak_rss_bytes": 0,
+      "step_metrics": [],
+      "started_at": "2026-02-19T16:47:34.096639+00:00",
+      "completed_at": "2026-02-19T16:47:34.096698+00:00",
+      "status": "success",
+      "error_message": null
+    },
+    {
+      "workflow_id": "Chip:1.0.0",
+      "run_id": "68155686-3dad-4d16-812d-d20f6ade5e23",
+      "workflow_name": "Chip",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 1.8000006093643606e-05,
+      "total_cpu_time_s": 1.6424999998321255e-05,
+      "peak_rss_bytes": 0,
+      "step_metrics": [],
+      "started_at": "2026-02-19T16:47:34.490204+00:00",
+      "completed_at": "2026-02-19T16:47:34.490258+00:00",
+      "status": "success",
+      "error_message": null
+    },
+    {
+      "workflow_id": "Chip:1.0.0",
+      "run_id": "94cb2997-3cc2-42bb-b182-59f5037244ef",
+      "workflow_name": "Chip",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 2.0572995708789676e-05,
+      "total_cpu_time_s": 1.8803999992655918e-05,
+      "peak_rss_bytes": 0,
+      "step_metrics": [],
+      "started_at": "2026-02-19T16:47:35.015224+00:00",
+      "completed_at": "2026-02-19T16:47:35.015283+00:00",
+      "status": "success",
+      "error_message": null
+    }
+  ],
+  "tags": {
+    "workflow": "Chip"
+  },
+  "created_at": "2026-02-19T16:47:35.152836+00:00",
+  "metadata": {}
+}

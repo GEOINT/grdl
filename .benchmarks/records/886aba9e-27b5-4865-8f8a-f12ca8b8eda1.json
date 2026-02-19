@@ -1,0 +1,203 @@
+{
+  "benchmark_id": "886aba9e-27b5-4865-8f8a-f12ca8b8eda1",
+  "benchmark_type": "active",
+  "workflow_name": "CSI",
+  "workflow_version": "1.0.0",
+  "iterations": 3,
+  "hardware": {
+    "cpu_count": 32,
+    "total_memory_bytes": 540142198784,
+    "gpu_available": true,
+    "gpu_devices": [
+      {
+        "name": "NVIDIA A10",
+        "memory_bytes": 23686938624,
+        "device_index": 0
+      },
+      {
+        "name": "NVIDIA A10",
+        "memory_bytes": 23686938624,
+        "device_index": 1
+      }
+    ],
+    "gpu_memory_bytes": 47373877248,
+    "platform_info": "Linux-5.14.0-611.30.1.el9_7.x86_64-x86_64-with-glibc2.39",
+    "python_version": "3.12.3 (main, Nov  6 2025, 13:44:16) [GCC 13.3.0]",
+    "hostname": "067cbb665a91",
+    "captured_at": "2026-02-19T17:14:18.029441+00:00"
+  },
+  "total_wall_time": {
+    "count": 3,
+    "min": 25.7780652789952,
+    "max": 25.927230847002647,
+    "mean": 25.876359762665135,
+    "median": 25.923783161997562,
+    "stddev": 0.08514297253988806,
+    "p95": 25.92688607850214,
+    "values": [
+      25.927230847002647,
+      25.923783161997562,
+      25.7780652789952
+    ]
+  },
+  "total_cpu_time": {
+    "count": 3,
+    "min": 25.691921037000043,
+    "max": 25.841744871999992,
+    "mean": 25.791522816000015,
+    "median": 25.840902539000012,
+    "stddev": 0.08625869907545745,
+    "p95": 25.841660638699995,
+    "values": [
+      25.841744871999992,
+      25.840902539000012,
+      25.691921037000043
+    ]
+  },
+  "total_peak_rss": {
+    "count": 3,
+    "min": 13200003546.0,
+    "max": 13200003726.0,
+    "mean": 13200003647.333334,
+    "median": 13200003670.0,
+    "stddev": 92.11586906355133,
+    "p95": 13200003720.4,
+    "values": [
+      13200003546.0,
+      13200003726.0,
+      13200003670.0
+    ]
+  },
+  "step_results": [
+    {
+      "step_index": 0,
+      "processor_name": "CSIProcessor",
+      "wall_time_s": {
+        "count": 3,
+        "min": 25.77668980800081,
+        "max": 25.92400625099981,
+        "mean": 25.874378979332203,
+        "median": 25.922440878995985,
+        "stddev": 0.08460492446623921,
+        "p95": 25.923849713799427,
+        "values": [
+          25.92400625099981,
+          25.922440878995985,
+          25.77668980800081
+        ]
+      },
+      "cpu_time_s": {
+        "count": 3,
+        "min": 25.690555363999977,
+        "max": 25.839569718999996,
+        "mean": 25.789557036,
+        "median": 25.838546025000028,
+        "stddev": 0.08573949079305053,
+        "p95": 25.8394673496,
+        "values": [
+          25.838546025000028,
+          25.839569718999996,
+          25.690555363999977
+        ]
+      },
+      "peak_rss_bytes": {
+        "count": 3,
+        "min": 13200003546.0,
+        "max": 13200003726.0,
+        "mean": 13200003647.333334,
+        "median": 13200003670.0,
+        "stddev": 92.11586906355133,
+        "p95": 13200003720.4,
+        "values": [
+          13200003546.0,
+          13200003726.0,
+          13200003670.0
+        ]
+      },
+      "gpu_used": false,
+      "sample_count": 3
+    }
+  ],
+  "raw_metrics": [
+    {
+      "workflow_id": "CSI:1.0.0",
+      "run_id": "0b1d7401-f97f-4d88-891c-7cc52243639a",
+      "workflow_name": "CSI",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 25.927230847002647,
+      "total_cpu_time_s": 25.841744871999992,
+      "peak_rss_bytes": 13200003546,
+      "step_metrics": [
+        {
+          "step_index": 0,
+          "processor_name": "CSIProcessor",
+          "wall_time_s": 25.92400625099981,
+          "cpu_time_s": 25.838546025000028,
+          "peak_rss_bytes": 13200003546,
+          "gpu_used": false,
+          "status": "success",
+          "error_message": null
+        }
+      ],
+      "started_at": "2026-02-19T17:14:44.233079+00:00",
+      "completed_at": "2026-02-19T17:15:10.160373+00:00",
+      "status": "success",
+      "error_message": null
+    },
+    {
+      "workflow_id": "CSI:1.0.0",
+      "run_id": "a5e6f366-2aab-4a3a-92c5-64bc96952ef0",
+      "workflow_name": "CSI",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 25.923783161997562,
+      "total_cpu_time_s": 25.840902539000012,
+      "peak_rss_bytes": 13200003726,
+      "step_metrics": [
+        {
+          "step_index": 0,
+          "processor_name": "CSIProcessor",
+          "wall_time_s": 25.922440878995985,
+          "cpu_time_s": 25.839569718999996,
+          "peak_rss_bytes": 13200003726,
+          "gpu_used": false,
+          "status": "success",
+          "error_message": null
+        }
+      ],
+      "started_at": "2026-02-19T17:15:10.160933+00:00",
+      "completed_at": "2026-02-19T17:15:36.084765+00:00",
+      "status": "success",
+      "error_message": null
+    },
+    {
+      "workflow_id": "CSI:1.0.0",
+      "run_id": "82fd355b-be61-4ce3-a3a4-503cbe12f687",
+      "workflow_name": "CSI",
+      "workflow_version": "1.0.0",
+      "total_wall_time_s": 25.7780652789952,
+      "total_cpu_time_s": 25.691921037000043,
+      "peak_rss_bytes": 13200003670,
+      "step_metrics": [
+        {
+          "step_index": 0,
+          "processor_name": "CSIProcessor",
+          "wall_time_s": 25.77668980800081,
+          "cpu_time_s": 25.690555363999977,
+          "peak_rss_bytes": 13200003670,
+          "gpu_used": false,
+          "status": "success",
+          "error_message": null
+        }
+      ],
+      "started_at": "2026-02-19T17:15:36.286974+00:00",
+      "completed_at": "2026-02-19T17:16:02.065107+00:00",
+      "status": "success",
+      "error_message": null
+    }
+  ],
+  "tags": {
+    "workflow": "CSI"
+  },
+  "created_at": "2026-02-19T17:16:02.277336+00:00",
+  "metadata": {}
+}
