@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-02-19
 """
 
 # Standard library
@@ -46,6 +46,9 @@ from grdl.IO.sar.sidd import SIDDReader
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
 
+# TerraSAR-X / TanDEM-X
+from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
+
 # BIOMASS
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
@@ -53,6 +56,7 @@ from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 # Metadata models
 from grdl.IO.models import (
     SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
+    TerraSARMetadata,
 )
 
 # Base class (for return type)
@@ -128,6 +132,23 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
+    # Try TerraSAR-X / TanDEM-X
+    # Check directory name prefix, or look for TSX1_SAR/TDX1_SAR XML inside
+    if filepath.is_dir():
+        name_upper = filepath.name.upper()
+        is_tsx = name_upper.startswith(('TSX1_', 'TDX1_'))
+        if not is_tsx:
+            is_tsx = any(
+                f.name.upper().startswith(('TSX1_SAR', 'TDX1_SAR'))
+                for f in filepath.iterdir()
+                if f.is_file() and f.suffix.lower() == '.xml'
+            )
+        if is_tsx:
+            try:
+                return TerraSARReader(filepath)
+            except (ValueError, ImportError, Exception):
+                pass
+
     # Try GeoTIFF fallback (SAR GRD products)
     if filepath.suffix.lower() in ('.tif', '.tiff'):
         try:
@@ -139,8 +160,8 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
     raise ValueError(
         f"Could not determine SAR format for {filepath}. "
         "Ensure file is valid SICD, CPHD, CRSD, SIDD, Sentinel-1 SAFE, "
-        "or GeoTIFF format and required libraries (sarkit, sarpy, "
-        "rasterio) are installed."
+        "TerraSAR-X/TanDEM-X, or GeoTIFF format and required libraries "
+        "(sarkit, sarpy, rasterio) are installed."
     )
 
 
@@ -153,6 +174,10 @@ __all__ = [
     'SIDDReader',
     # Sentinel-1
     'Sentinel1SLCReader',
+    # TerraSAR-X / TanDEM-X
+    'TerraSARReader',
+    'TerraSARMetadata',
+    'open_terrasar',
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',

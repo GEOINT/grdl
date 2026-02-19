@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-19
 """
 
 # Base
@@ -156,6 +156,20 @@ from grdl.IO.models.sentinel1_slc import (
     S1SLCNoiseAzimuthVector,
 )
 
+# TerraSAR-X / TanDEM-X
+from grdl.IO.models.terrasar import (
+    TerraSARMetadata,
+    TSXProductInfo,
+    TSXSceneInfo,
+    TSXImageInfo,
+    TSXRadarParams,
+    TSXOrbitStateVector,
+    TSXGeoGridPoint,
+    TSXCalibration,
+    TSXDopplerInfo,
+    TSXProcessingInfo,
+)
+
 # CPHD
 from grdl.IO.models.cphd import (
     CPHDMetadata,
@@ -286,6 +300,17 @@ __all__ = [
     'S1SLCCalibrationVector',
     'S1SLCNoiseRangeVector',
     'S1SLCNoiseAzimuthVector',
+    # TerraSAR-X / TanDEM-X
+    'TerraSARMetadata',
+    'TSXProductInfo',
+    'TSXSceneInfo',
+    'TSXImageInfo',
+    'TSXRadarParams',
+    'TSXOrbitStateVector',
+    'TSXGeoGridPoint',
+    'TSXCalibration',
+    'TSXDopplerInfo',
+    'TSXProcessingInfo',
     # CPHD
     'CPHDMetadata',
     'CPHDChannel',

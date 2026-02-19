@@ -31,7 +31,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-19
 """
 
 # Standard library
@@ -46,7 +46,7 @@ import numpy as np
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
 from grdl.IO.models import (
     ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata,
-    VIIRSMetadata, ASTERMetadata,
+    VIIRSMetadata, ASTERMetadata, TerraSARMetadata,
 )
 
 # Base format readers (IO level)
@@ -63,8 +63,10 @@ from grdl.IO.sar import (
     SIDDReader,
     BIOMASSL1Reader,
     BIOMASSCatalog,
+    TerraSARReader,
     open_sar,
     open_biomass,
+    open_terrasar,
     load_credentials,
 )
 
@@ -303,6 +305,10 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # TerraSAR-X / TanDEM-X
+    'TerraSARMetadata',
+    'TerraSARReader',
+    'open_terrasar',
     # IR readers
     'ASTERReader',
     # Multispectral readers
