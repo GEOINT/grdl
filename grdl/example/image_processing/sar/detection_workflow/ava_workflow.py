@@ -2,11 +2,15 @@
 """
 Ava Workflow — SICD ship scene exploration.
 
-Opens an UMBRA SICD NITF and extracts a 5k x 5k center chip for analysis.
+Opens an UMBRA SICD NITF and extracts a center chip for analysis.
+Demonstrates how to build a grdl-runtime Workflow with deferred
+processor construction and custom callable steps, then benchmark it
+using grdl-te's ActiveBenchmarkRunner and BenchmarkSource.
 
 Dependencies
 ------------
 sarkit (or sarpy)
+grdl-runtime
 
 Author
 ------
@@ -50,109 +54,123 @@ from skimage.measure import label
 
 import matplotlib.pyplot as plt
 
-def sublook_data(chip: np.ndarray, num_looks: int, dimension: str, metadata) -> np.ndarray:
-    sublook = SublookDecomposition(
-        metadata,
-        num_looks=num_looks,
-        dimension=dimension,
-    )
-    return sublook.decompose(chip)
+# grdl-runtime
+from grdl_rt import Workflow
+
+# GRDL-TE benchmarking
+from grdl_te.benchmarking import (
+    ActiveBenchmarkRunner,
+    BenchmarkSource,
+    ComponentBenchmark,
+    JSONBenchmarkStore,
+    print_report,
+)
 
 
-def dominance_detection(looks: np.ndarray, smooth_win: int, dom_window: int,
-                        dom_sigma: float, morph_size: int):
-    print(f"Sublook stack shape: {looks.shape}  dtype: {looks.dtype}")
+class DominanceDetection:
+    """Sliding-window aperture dominance detection.
 
-    eps = np.finfo(np.float64).tiny
-    num_looks = looks.shape[0]
+    Computes a dominance ratio from a sub-look power stack, thresholds
+    at mean + N*sigma, and returns morphologically cleaned labeled
+    regions.  Implements ``apply()`` so it can be used as a deferred
+    step in a grdl-runtime Workflow.
 
-    # Sliding window dominance: max contiguous block / total power
-    power = np.abs(looks) ** 2
-    smooth_power = np.stack([
-        uniform_filter(power[i], size=smooth_win) for i in range(num_looks)
-    ])
-    total_power = smooth_power.sum(axis=0) + eps
+    Parameters
+    ----------
+    smooth_win : int
+        Uniform filter window size for power smoothing.
+    dom_window : int
+        Contiguous block length for dominance ratio.
+    dom_sigma : float
+        Detection threshold in standard deviations above the mean.
+    morph_size : int
+        Morphological opening/closing kernel size.
+    """
 
-    n_windows = num_looks - dom_window + 1
-    window_sums = np.stack([
-        smooth_power[i:i + dom_window].sum(axis=0) for i in range(n_windows)
-    ])
-    dominance = window_sums.max(axis=0) / total_power
+    def __init__(self, smooth_win: int = 7, dom_window: int = 3,
+                 dom_sigma: float = 3.0, morph_size: int = 3):
+        self.smooth_win = smooth_win
+        self.dom_window = dom_window
+        self.dom_sigma = dom_sigma
+        self.morph_size = morph_size
 
-    # Threshold: mean + N*sigma
-    dom_mu = np.mean(dominance)
-    dom_std = np.std(dominance)
-    dom_thresh = dom_mu + dom_sigma * dom_std
-    det_mask = dominance > dom_thresh
-    print(f"Dominance threshold: {dom_thresh:.3f}  (mu={dom_mu:.3f}, std={dom_std:.4f}, {dom_sigma}σ)")
+    def apply(self, looks: np.ndarray) -> tuple:
+        """Apply dominance detection to a sub-look stack.
 
-    # Morphological cleanup + labeling
-    det_mask = opening(det_mask, footprint=footprint_rectangle((morph_size, morph_size)))
-    det_mask = closing(det_mask, footprint=footprint_rectangle((morph_size, morph_size)))
-    labeled = label(det_mask)
+        Parameters
+        ----------
+        looks : np.ndarray
+            Sub-look stack, shape ``(num_looks, rows, cols)``.
 
-    return dominance, labeled
-    
-    
-def main():
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            ``(dominance, labeled)`` — dominance map and labeled regions.
+        """
+        print(f"Sublook stack shape: {looks.shape}  dtype: {looks.dtype}")
 
-    # ---------- Configuration ----------
-    CONFIG_PATH = Path(__file__).parent / "config.yaml"
-    with open(CONFIG_PATH) as f:
-        cfg = yaml.safe_load(f)
+        eps = np.finfo(np.float64).tiny
+        num_looks = looks.shape[0]
 
-    SICD_PATH = Path(cfg["input"]["sicd_path"])
-    CHIP_SIZE = cfg["input"]["chip_size"]
+        # Sliding window dominance: max contiguous block / total power
+        power = np.abs(looks) ** 2
+        smooth_power = np.stack([
+            uniform_filter(power[i], size=self.smooth_win)
+            for i in range(num_looks)
+        ])
+        total_power = smooth_power.sum(axis=0) + eps
 
-    # ---------- Load and chip ----------
-    reader = SICDReader(SICD_PATH)
-    rows, cols = reader.get_shape()
-    print(f"Image shape: {rows} x {cols}  dtype: {reader.get_dtype()}")
+        n_windows = num_looks - self.dom_window + 1
+        window_sums = np.stack([
+            smooth_power[i:i + self.dom_window].sum(axis=0)
+            for i in range(n_windows)
+        ])
+        dominance = window_sums.max(axis=0) / total_power
 
-    ext = ChipExtractor(nrows=int(rows), ncols=int(cols))
-    region = ext.chip_at_point(
-        row=rows // 2,
-        col=cols // 2,
-        row_width=CHIP_SIZE,
-        col_width=CHIP_SIZE,
-    )
-    print(f"Chip region: rows [{region.row_start}:{region.row_end}], "
-        f"cols [{region.col_start}:{region.col_end}]")
+        # Threshold: mean + N*sigma
+        dom_mu = np.mean(dominance)
+        dom_std = np.std(dominance)
+        dom_thresh = dom_mu + self.dom_sigma * dom_std
+        det_mask = dominance > dom_thresh
+        print(f"Dominance threshold: {dom_thresh:.3f}  "
+              f"(mu={dom_mu:.3f}, std={dom_std:.4f}, {self.dom_sigma}σ)")
 
-    chip = reader.read_chip(
-        region.row_start,
-        region.row_end,
-        region.col_start,
-        region.col_end,
-    )
-    metadata = reader.metadata
-    reader.close()
+        # Morphological cleanup + labeling
+        det_mask = opening(
+            det_mask,
+            footprint=footprint_rectangle((self.morph_size, self.morph_size)),
+        )
+        det_mask = closing(
+            det_mask,
+            footprint=footprint_rectangle((self.morph_size, self.morph_size)),
+        )
+        labeled = label(det_mask)
 
-
-    # ===================== Algorithm =====================
-
-    ###function1
-    looks = sublook_data(chip, num_looks=cfg["sublook"]["num_looks"], dimension=cfg["sublook"]["dimension"], metadata=metadata)
-
-    ###function2
-    dominance, labeled = dominance_detection(
-        looks,
-        smooth_win=cfg["detection"]["smooth_win"],
-        dom_window=cfg["detection"]["dom_window"],
-        dom_sigma=cfg["detection"]["sigma"],
-        morph_size=cfg["detection"]["morph_size"],
-    )   
+        return dominance, labeled
 
 
-    n_detections = labeled.max()
-    print(f"Detections: {n_detections}")
+# ===================== Plotting =====================
 
-    ### CSI composite
-    csi = CSIProcessor(metadata, dimension=cfg["sublook"]["dimension"], normalization='log')
-    csi_rgb = csi.apply(chip)
+def plot_results(chip: np.ndarray, dominance: np.ndarray,
+                 labeled: np.ndarray, csi_rgb: np.ndarray,
+                 n_detections: int, cfg: dict):
+    """Display dominance map, CSI composite, and detection overlay.
 
-    # ===================== Plotting =====================
-
+    Parameters
+    ----------
+    chip : np.ndarray
+        Original complex SAR chip (used for amplitude background).
+    dominance : np.ndarray
+        Per-pixel dominance ratio.
+    labeled : np.ndarray
+        Integer-labeled detection regions.
+    csi_rgb : np.ndarray
+        RGB CSI composite image.
+    n_detections : int
+        Number of detected objects.
+    cfg : dict
+        Full config dict (uses ``sublook``, ``detection``, ``display``).
+    """
     num_looks = cfg["sublook"]["num_looks"]
     dom_window = cfg["detection"]["dom_window"]
     dom_sigma = cfg["detection"]["sigma"]
@@ -162,7 +180,8 @@ def main():
 
     # Dominance image
     fig_dom, ax_dom = plt.subplots(figsize=(10, 10))
-    im = ax_dom.imshow(dominance, cmap='inferno', aspect='auto', vmin=dom_floor, vmax=1)
+    im = ax_dom.imshow(dominance, cmap='inferno', aspect='auto',
+                       vmin=dom_floor, vmax=1)
     ax_dom.set_title(f"Aperture Dominance (win={dom_window}, {num_looks} looks)")
     ax_dom.set_xlabel("Column")
     ax_dom.set_ylabel("Row")
@@ -187,6 +206,62 @@ def main():
     fig.suptitle("Sub-aperture Dominance Detection", fontsize=14)
     plt.tight_layout()
     plt.show()
+
+
+# ===================== Main =====================
+
+def main():
+
+    # ---------- Configuration ----------
+    CONFIG_PATH = Path(__file__).parent / "config.yaml"
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+
+    SICD_PATH = Path(cfg["input"]["sicd_path"])
+    CHIP_SIZE = cfg["input"]["chip_size"]
+
+    # ---------- Detection workflow ----------
+    # reader → chip → SublookDecomposition → DominanceDetection
+    det_wf = (
+        Workflow("AvaDetection", version="1.0.0", modalities=["SAR"])
+        .reader(SICDReader)
+        .chip("center", size=CHIP_SIZE)
+        .step(SublookDecomposition,
+              num_looks=cfg["sublook"]["num_looks"],
+              dimension=cfg["sublook"]["dimension"])
+        .step(DominanceDetection,
+              smooth_win=cfg["detection"]["smooth_win"],
+              dom_window=cfg["detection"]["dom_window"],
+              dom_sigma=cfg["detection"]["sigma"],
+              morph_size=cfg["detection"]["morph_size"])
+    )
+    det_result = det_wf.execute(SICD_PATH)
+    dominance, labeled = det_result.result
+    n_detections = labeled.max()
+    print(f"Detections: {n_detections}")
+
+    # ---------- CSI workflow (parallel — operates on original chip) ----------
+    # reader → chip → CSIProcessor
+    csi_wf = (
+        Workflow("AvaCSI", version="1.0.0", modalities=["SAR"])
+        .reader(SICDReader)
+        .chip("center", size=CHIP_SIZE)
+        .step(CSIProcessor,
+              dimension=cfg["sublook"]["dimension"],
+              normalization='log')
+    )
+    csi_result = csi_wf.execute(SICD_PATH)
+    csi_rgb = csi_result.result
+
+    # ---------- Plot ----------
+    # Load raw chip for amplitude overlay (no-step workflow returns source)
+    # chip_wf = (
+    #     Workflow("ChipLoader")
+    #     .reader(SICDReader)
+    #     .chip("center", size=CHIP_SIZE)
+    # )
+    # chip = chip_wf.execute(SICD_PATH).result
+    # plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
 
 if __name__ == "__main__":
     main()

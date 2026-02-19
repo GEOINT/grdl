@@ -1,5 +1,5 @@
 input:
-  sicd_path: /Volumes/PRO-G40/SAR_DATA/SICD/ships/2025-01-29-06-43-29_UMBRA-08_SICD.nitf
+  sicd_path: /code/data/umbra_scenes/2026-01-13-14-11-30_UMBRA-07/2026-01-13-14-11-30_UMBRA-07_SICD.nitf
   chip_size: 10000
 
 sublook:
@@ -11,6 +11,12 @@ detection:
   dom_window: 3
   sigma: 3
   morph_size: 3
+
+benchmark:
+  source: file            # "file" = use the loaded chip, "synthetic" = generate via BenchmarkSource
+  synthetic_size: medium  # size preset when source is "synthetic" (small / medium / large)
+  iterations: 5
+  warmup: 1
 
 display:
   vmax_percentile: 98

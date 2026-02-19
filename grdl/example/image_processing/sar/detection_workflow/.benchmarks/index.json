@@ -1,0 +1,42 @@
+[
+  {
+    "benchmark_id": "f8bcab48-c158-4893-b8f0-8bc9e11883d0",
+    "benchmark_type": "component",
+    "workflow_name": "SublookDecomposition",
+    "workflow_version": "1.0.0",
+    "iterations": 5,
+    "created_at": "2026-02-18T23:00:06.039552+00:00"
+  },
+  {
+    "benchmark_id": "f223f50b-a71f-4183-be5a-a66b518e87a6",
+    "benchmark_type": "component",
+    "workflow_name": "DominanceDetection",
+    "workflow_version": "1.0.0",
+    "iterations": 5,
+    "created_at": "2026-02-18T23:02:13.770941+00:00"
+  },
+  {
+    "benchmark_id": "9517c92b-046c-4965-97e1-b20fc7a72a1c",
+    "benchmark_type": "component",
+    "workflow_name": "CSIProcessor",
+    "workflow_version": "1.0.0",
+    "iterations": 5,
+    "created_at": "2026-02-18T23:04:49.424448+00:00"
+  },
+  {
+    "benchmark_id": "9b259f05-b622-40ef-988c-7349223d6743",
+    "benchmark_type": "active",
+    "workflow_name": "AvaDetection",
+    "workflow_version": "1.0.0",
+    "iterations": 5,
+    "created_at": "2026-02-19T00:07:43.473160+00:00"
+  },
+  {
+    "benchmark_id": "2971da19-a92a-4c99-bf2c-f3b141cd2a95",
+    "benchmark_type": "component",
+    "workflow_name": "CSIProcessor",
+    "workflow_version": "1.0.0",
+    "iterations": 5,
+    "created_at": "2026-02-19T00:10:18.828162+00:00"
+  }
+]
