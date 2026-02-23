@@ -395,7 +395,7 @@ class TestConversions:
         c = pauli.decompose(*quad_pol_random)
         rgb = pauli.to_rgb(c)
         rows, cols = quad_pol_random[0].shape
-        assert rgb.shape == (rows, cols, 3)
+        assert rgb.shape == (3, rows, cols)
 
     def test_to_rgb_range(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
@@ -412,7 +412,7 @@ class TestConversions:
         c = pauli.decompose(*quad_pol_random)
         for rep in ('db', 'magnitude', 'power'):
             rgb = pauli.to_rgb(c, representation=rep)
-            assert rgb.shape[2] == 3
+            assert rgb.shape[0] == 3
             assert np.all(rgb >= 0.0)
             assert np.all(rgb <= 1.0)
 

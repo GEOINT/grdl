@@ -207,7 +207,7 @@ class PauliDecomposition(PolarimetricDecomposition):
         Returns
         -------
         np.ndarray
-            RGB image, shape (rows, cols, 3), dtype float32,
+            RGB image, shape (3, rows, cols), dtype float32,
             values in [0, 1].
 
         Raises
@@ -247,7 +247,7 @@ class PauliDecomposition(PolarimetricDecomposition):
             real_components['surface'], percentile_low, percentile_high
         )
 
-        return np.dstack([r, g, b])
+        return np.stack([r, g, b], axis=0)
 
     def __repr__(self) -> str:
         return "PauliDecomposition()"
