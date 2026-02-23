@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.1.0"
+version = "0.1.1"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}

@@ -187,10 +187,15 @@ class TestWriteMetadataPassthrough:
         """Metadata is written to the numpy sidecar JSON."""
         import json
         from grdl.IO import write
+        from grdl.IO.models import ImageMetadata
 
         data = np.zeros((8, 8), dtype=np.float32)
         path = tmp_path / "meta.npy"
-        write(data, path, metadata={'source': 'pipeline_v2'})
+        meta = ImageMetadata(
+            format='numpy', rows=8, cols=8, dtype='float32',
+            extras={'source': 'pipeline_v2'},
+        )
+        write(data, path, metadata=meta)
 
         sidecar = json.loads((tmp_path / "meta.npy.json").read_text())
         assert sidecar['source'] == 'pipeline_v2'

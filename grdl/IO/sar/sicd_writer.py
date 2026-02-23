@@ -29,6 +29,8 @@ Modified
 2026-02-12
 """
 
+from __future__ import annotations
+
 # Standard library
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union

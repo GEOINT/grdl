@@ -158,7 +158,10 @@ class TestDetectionPipeline:
                     output_fields=self.output_fields,
                 )
                 if geolocation is not None:
-                    self._geo_register_detections(ds, geolocation)
+                    for det in ds:
+                        x, y = det.pixel_geometry.x, det.pixel_geometry.y
+                        lat, lon, _ = geolocation.image_to_latlon(y, x)
+                        det.geo_geometry = Point(lon, lat)
                 return ds
 
         # Create synthetic image with known bright spots
@@ -198,7 +201,10 @@ class TestDetectionPipeline:
                     output_fields=self.output_fields,
                 )
                 if geolocation is not None:
-                    self._geo_register_detections(ds, geolocation)
+                    for det in ds:
+                        x, y = det.pixel_geometry.x, det.pixel_geometry.y
+                        lat, lon, _ = geolocation.image_to_latlon(y, x)
+                        det.geo_geometry = Point(lon, lat)
                 return ds
 
         class MockGeo:

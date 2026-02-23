@@ -144,15 +144,15 @@ class KernelInterpolator(Interpolator):
         idx = np.searchsorted(x_old, x_new)
 
         # Build neighbor index matrix: (M, kernel_length)
-        offsets = np.arange(-half + 1, half + 1)  # length = kernel_length
-        neighbor_idx = idx[:, np.newaxis] + offsets[np.newaxis, :]
-
-        # Clip to valid range
-        neighbor_idx_clipped = np.clip(neighbor_idx, 0, n - 1)
+        # Window-shift strategy (matches numba path): compute start index,
+        # clamp the entire window to valid bounds, then expand to indices.
+        starts = idx + (-half + 1)
+        starts = np.clip(starts, 0, max(n - kl, 0))
+        neighbor_idx = starts[:, np.newaxis] + np.arange(kl)[np.newaxis, :]
 
         # Gather neighbor coordinates and values: (M, kernel_length)
-        x_neighbors = x_old[neighbor_idx_clipped]
-        y_neighbors = y_old[neighbor_idx_clipped]
+        x_neighbors = x_old[neighbor_idx]
+        y_neighbors = y_old[neighbor_idx]
 
         # Per-output-point local spacing
         x_span = x_neighbors[:, -1] - x_neighbors[:, 0]

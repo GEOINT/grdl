@@ -42,7 +42,11 @@ from typing import Optional
 import numpy as np
 from numpy.linalg import norm
 
-from sarpy.geometry.geocoords import wgs_84_norm, ecf_to_geodetic
+try:
+    from sarpy.geometry.geocoords import wgs_84_norm, ecf_to_geodetic
+except ImportError:
+    wgs_84_norm = None  # type: ignore[assignment]
+    ecf_to_geodetic = None  # type: ignore[assignment]
 
 # GRDL internal
 from grdl.IO.models.cphd import CPHDMetadata, CPHDPVP
