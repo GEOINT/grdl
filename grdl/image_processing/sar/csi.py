@@ -331,6 +331,94 @@ class CSIProcessor(ImageProcessor):
     # Convenience accessors
     # ------------------------------------------------------------------
 
+    def to_rgb(
+        self,
+        looks: np.ndarray,
+        source: np.ndarray,
+        normalization: str = 'percentile',
+        percentile_low: float = 2.0,
+        percentile_high: float = 98.0,
+    ) -> np.ndarray:
+        """Create a display-ready CSI RGB composite from sub-aperture looks.
+
+        Takes pre-computed sub-aperture looks (from ``decompose_looks``) and
+        the original complex image, applies intensity preservation, platform
+        direction correction, and normalization to produce a display-ready
+        RGB composite.
+
+        Parameters
+        ----------
+        looks : np.ndarray
+            Complex sub-look stack from ``decompose_looks()``,
+            shape ``(3, rows, cols)``.
+        source : np.ndarray
+            Original 2D complex SAR image used for intensity preservation.
+        normalization : str
+            Normalization method: ``'none'`` (raw magnitude),
+            ``'log'`` (dB + percentile stretch), or ``'percentile'``
+            (direct percentile stretch). Default ``'percentile'``.
+        percentile_low : float
+            Lower percentile for contrast stretch. Default 2.0.
+        percentile_high : float
+            Upper percentile for contrast stretch. Default 98.0.
+
+        Returns
+        -------
+        np.ndarray
+            RGB image, shape ``(3, rows, cols)``, dtype float32,
+            values in [0, 1] when normalized, or float64 with raw
+            magnitude range when ``normalization='none'``.
+
+        Raises
+        ------
+        ValueError
+            If *looks* does not have shape ``(3, rows, cols)`` or
+            *normalization* is invalid.
+
+        Examples
+        --------
+        >>> csi = CSIProcessor(metadata)
+        >>> looks = csi.decompose_looks(image)
+        >>> rgb = csi.to_rgb(looks, image)  # (3, rows, cols) float32 [0, 1]
+        """
+        if looks.ndim != 3 or looks.shape[0] != _NUM_LOOKS:
+            raise ValueError(
+                f"looks must have shape (3, rows, cols), got {looks.shape}"
+            )
+        if normalization not in ('none', 'log', 'percentile'):
+            raise ValueError(
+                f"normalization must be 'none', 'log', or 'percentile', "
+                f"got {normalization!r}"
+            )
+
+        # 1. Detection -- magnitude of each sub-look
+        mag = np.abs(looks)  # (3, rows, cols)
+
+        # 2. Intensity preservation (sarpy approach)
+        original_mag = np.abs(source)
+        rgb_max = mag.max(axis=0)
+        np.maximum(rgb_max, np.finfo(np.float64).tiny, out=rgb_max)
+        scale = original_mag / rgb_max
+        mag *= scale
+
+        # 3. Composite -- (3, rows, cols) RGB
+        rgb = np.stack([mag[0], mag[1], mag[2]], axis=0)
+
+        # 4. Platform direction correction
+        if self._platform_direction == 'R':
+            rgb = rgb[::-1, :, :]
+
+        # 5. Normalization
+        if normalization == 'none':
+            return rgb
+
+        if normalization == 'log':
+            rgb = self._to_db.apply(rgb, floor_db=self.floor_db)
+
+        return self._stretch.apply(
+            rgb, plow=percentile_low, phigh=percentile_high,
+        )
+
     def decompose_looks(self, source: np.ndarray) -> np.ndarray:
         """Return the raw sub-aperture looks without compositing.
 
