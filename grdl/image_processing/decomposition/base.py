@@ -197,7 +197,7 @@ class PolarimetricDecomposition(ImageProcessor):
         Returns
         -------
         np.ndarray
-            RGB image, shape (rows, cols, 3), dtype float32,
+            RGB image, shape (3, rows, cols), dtype float32,
             values in [0, 1].
         """
         ...
