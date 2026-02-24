@@ -58,6 +58,9 @@ try:
         PositionType, XYZPolyType,
     )
     from sarpy.io.complex.sicd_elements.SCPCOA import SCPCOAType
+    from sarpy.io.complex.sicd_elements.RadarCollection import (
+        RadarCollectionType, TxFrequencyType, ChanParametersType,
+    )
     from sarpy.io.complex.sicd_elements.ImageFormation import (
         ImageFormationType, RcvChanProcType, TxFrequencyProcType,
         ProcessingType,
@@ -228,6 +231,32 @@ def _sicd_metadata_to_sarpy(meta: SICDMetadata) -> 'SICDType':
             sc.slope_ang,
             sc.azim_ang,
             sc.layover_ang,
+        )
+
+    # RadarCollection
+    rc = meta.radar_collection
+    if rc is not None:
+        tx_freq = None
+        if rc.tx_frequency is not None:
+            tx_freq = TxFrequencyType(
+                Min=rc.tx_frequency.min,
+                Max=rc.tx_frequency.max,
+            )
+        rcv_channels = None
+        if rc.rcv_channels:
+            rcv_channels = [
+                ChanParametersType(
+                    TxRcvPolarization=ch.tx_rcv_polarization,
+                    RcvAPCIndex=ch.rcv_ape_index,
+                    index=ch.index,
+                )
+                for ch in rc.rcv_channels
+            ]
+        sicd.RadarCollection = RadarCollectionType(
+            TxFrequency=tx_freq,
+            RefFreqIndex=rc.ref_freq_index,
+            TxPolarization=rc.tx_polarization,
+            RcvChannels=rcv_channels,
         )
 
     # ImageFormation
