@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-24
 """
 
 # Standard library
@@ -50,6 +50,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.hdf5 import HDF5Reader
 from grdl.IO.models import VIIRSMetadata
 
 
@@ -88,41 +89,12 @@ def _extract_h5_attr(
     return val
 
 
-def _find_datasets(
-    group: "h5py.Group",
-    min_ndim: int = 2,
-) -> List[Tuple[str, Tuple[int, ...], str]]:
-    """Walk an HDF5 group and collect numeric datasets.
-
-    Parameters
-    ----------
-    group : h5py.Group
-        Root group or subgroup to search.
-    min_ndim : int
-        Minimum number of dimensions to include. Default is 2.
-
-    Returns
-    -------
-    List[Tuple[str, Tuple[int, ...], str]]
-        List of ``(path, shape, dtype)`` for each matching dataset.
-    """
-    results: List[Tuple[str, Tuple[int, ...], str]] = []
-
-    def _visitor(name: str, obj: Any) -> None:
-        if isinstance(obj, h5py.Dataset):
-            if obj.ndim >= min_ndim and np.issubdtype(obj.dtype, np.number):
-                results.append((f"/{name}", obj.shape, str(obj.dtype)))
-
-    group.visititems(_visitor)
-    return results
-
-
 class VIIRSReader(ImageReader):
     """Read VIIRS HDF5 satellite products.
 
-    Wraps ``h5py`` for pixel access and extracts VIIRS-specific metadata
-    from HDF5 file-level and dataset-level attributes into a typed
-    ``VIIRSMetadata`` dataclass.
+    Wraps ``HDF5Reader`` for pixel access and extracts VIIRS-specific
+    metadata from HDF5 file-level and dataset-level attributes into a
+    typed ``VIIRSMetadata`` dataclass.
 
     Parameters
     ----------
@@ -138,6 +110,8 @@ class VIIRSReader(ImageReader):
         Path to the HDF5 file.
     metadata : VIIRSMetadata
         Typed VIIRS metadata with satellite, temporal, and calibration fields.
+    hdf5_reader : HDF5Reader
+        Wrapped HDF5Reader instance for pixel access.
     dataset_path : str
         Resolved internal path to the active dataset.
 
@@ -170,58 +144,32 @@ class VIIRSReader(ImageReader):
                 "Install with: pip install h5py"
             )
         self._requested_path = dataset_path
+        self.hdf5_reader: Optional[HDF5Reader] = None
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
-        """Open the HDF5 file and load VIIRS-specific metadata."""
+        """Open the HDF5 file via HDF5Reader and load VIIRS-specific metadata."""
+        # Delegate file opening and dataset resolution to HDF5Reader
         try:
-            self._file = h5py.File(str(self.filepath), "r")
+            self.hdf5_reader = HDF5Reader(
+                self.filepath, dataset_path=self._requested_path,
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to open VIIRS HDF5 file: {self.filepath}: {e}"
             ) from e
 
-        # Resolve dataset path
-        if self._requested_path is not None:
-            if self._requested_path not in self._file:
-                available = _find_datasets(self._file)
-                paths = [p for p, _, _ in available]
-                self._file.close()
-                raise ValueError(
-                    f"Dataset path '{self._requested_path}' not found in "
-                    f"{self.filepath}. Available datasets: {paths}"
-                )
-            obj = self._file[self._requested_path]
-            if not isinstance(obj, h5py.Dataset):
-                self._file.close()
-                raise ValueError(
-                    f"Path '{self._requested_path}' is a group, not a dataset."
-                )
-            self.dataset_path = self._requested_path
-        else:
-            candidates = _find_datasets(self._file, min_ndim=2)
-            if not candidates:
-                self._file.close()
-                raise ValueError(
-                    f"No 2D+ numeric datasets found in {self.filepath}. "
-                    "Provide an explicit dataset_path."
-                )
-            self.dataset_path = candidates[0][0]
+        # Borrow h5py handle for VIIRS-specific attribute extraction
+        self._file = self.hdf5_reader._file
+        self.dataset_path = self.hdf5_reader.dataset_path
+
+        # Get base dimensions from HDF5Reader metadata
+        base_meta = self.hdf5_reader.metadata
+        rows = base_meta['rows']
+        cols = base_meta['cols']
+        bands = base_meta['bands']
 
         ds = self._file[self.dataset_path]
-        ndim = ds.ndim
-
-        if ndim == 2:
-            rows, cols = ds.shape
-            bands = 1
-        elif ndim == 3:
-            bands, rows, cols = ds.shape
-        else:
-            self._file.close()
-            raise ValueError(
-                f"Dataset '{self.dataset_path}' has {ndim} dimensions. "
-                "Only 2D and 3D datasets are supported."
-            )
 
         # Extract file-level attributes
         f = self._file
@@ -375,7 +323,7 @@ class VIIRSReader(ImageReader):
     ) -> np.ndarray:
         """Read a spatial chip from the VIIRS dataset.
 
-        Uses HDF5 hyperslab selection for efficient partial reads.
+        Delegates to wrapped HDF5Reader for efficient partial reads.
 
         Parameters
         ----------
@@ -401,25 +349,9 @@ class VIIRSReader(ImageReader):
         ValueError
             If indices are out of bounds.
         """
-        if row_start < 0 or col_start < 0:
-            raise ValueError("Start indices must be non-negative")
-        if row_end > self.metadata.rows or col_end > self.metadata.cols:
-            raise ValueError("End indices exceed image dimensions")
-
-        ds = self._file[self.dataset_path]
-
-        if ds.ndim == 2:
-            return ds[row_start:row_end, col_start:col_end]
-
-        # 3D: shape is (bands, rows, cols)
-        if bands is None:
-            data = ds[:, row_start:row_end, col_start:col_end]
-        else:
-            data = ds[bands, row_start:row_end, col_start:col_end]
-
-        if data.shape[0] == 1:
-            return data[0]
-        return data
+        return self.hdf5_reader.read_chip(
+            row_start, row_end, col_start, col_end, bands=bands,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire VIIRS dataset.
@@ -434,19 +366,7 @@ class VIIRSReader(ImageReader):
         np.ndarray
             Full dataset.
         """
-        ds = self._file[self.dataset_path]
-
-        if ds.ndim == 2:
-            return ds[()]
-
-        if bands is None:
-            data = ds[()]
-        else:
-            data = ds[bands]
-
-        if data.shape[0] == 1:
-            return data[0]
-        return data
+        return self.hdf5_reader.read_full(bands=bands)
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
@@ -457,9 +377,7 @@ class VIIRSReader(ImageReader):
             ``(rows, cols)`` for single band or
             ``(rows, cols, bands)`` for multi-band.
         """
-        if self.metadata.bands == 1:
-            return (self.metadata.rows, self.metadata.cols)
-        return (self.metadata.rows, self.metadata.cols, self.metadata.bands)
+        return self.hdf5_reader.get_shape()
 
     def get_dtype(self) -> np.dtype:
         """Get the data type of the dataset.
@@ -468,13 +386,12 @@ class VIIRSReader(ImageReader):
         -------
         np.dtype
         """
-        return np.dtype(self.metadata.dtype)
+        return self.hdf5_reader.get_dtype()
 
     def close(self) -> None:
-        """Close the HDF5 file handle."""
-        if hasattr(self, '_file') and self._file is not None:
-            self._file.close()
-            self._file = None
+        """Close the wrapped HDF5Reader."""
+        if self.hdf5_reader is not None:
+            self.hdf5_reader.close()
 
     @staticmethod
     def list_datasets(
@@ -500,14 +417,4 @@ class VIIRSReader(ImageReader):
         ImportError
             If h5py is not installed.
         """
-        if not _HAS_H5PY:
-            raise ImportError(
-                "h5py is required for VIIRS reading. "
-                "Install with: pip install h5py"
-            )
-        filepath = Path(filepath)
-        if not filepath.exists():
-            raise FileNotFoundError(f"File not found: {filepath}")
-
-        with h5py.File(str(filepath), "r") as f:
-            return _find_datasets(f, min_ndim=min_ndim)
+        return HDF5Reader.list_datasets(filepath, min_ndim=min_ndim)

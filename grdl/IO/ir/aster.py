@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-02-24
 """
 
 # Standard library
@@ -46,13 +46,13 @@ import numpy as np
 
 try:
     import rasterio
-    from rasterio.windows import Window
     _HAS_RASTERIO = True
 except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.geotiff import GeoTIFFReader
 from grdl.IO.models import ASTERMetadata
 
 
@@ -283,8 +283,10 @@ class ASTERReader(ImageReader):
         Path to the image file.
     metadata : ASTERMetadata
         Typed ASTER metadata with acquisition, orbital, and sensor fields.
+    geotiff_reader : GeoTIFFReader
+        Wrapped GeoTIFFReader instance for pixel access.
     dataset : rasterio.DatasetReader
-        Rasterio dataset for direct access.
+        Rasterio dataset for direct access (via wrapped GeoTIFFReader).
 
     Raises
     ------
@@ -310,23 +312,31 @@ class ASTERReader(ImageReader):
                 "rasterio is required for ASTER reading. "
                 "Install with: pip install rasterio"
             )
+        self.geotiff_reader: Optional[GeoTIFFReader] = None
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
-        """Load ASTER metadata from GeoTIFF tags and companion XML."""
+        """Load ASTER metadata via GeoTIFFReader and companion XML."""
+        # Delegate file opening to GeoTIFFReader
         try:
-            self.dataset = rasterio.open(str(self.filepath))
+            self.geotiff_reader = GeoTIFFReader(self.filepath)
         except Exception as e:
             raise ValueError(
                 f"Failed to open ASTER GeoTIFF: {self.filepath}: {e}"
             ) from e
 
-        rows = self.dataset.height
-        cols = self.dataset.width
-        bands = self.dataset.count
-        dtype = str(self.dataset.dtypes[0])
-        crs_str = str(self.dataset.crs) if self.dataset.crs else None
-        nodata = self.dataset.nodata
+        # Expose rasterio dataset for backward compatibility and
+        # ASTER-specific metadata extraction
+        self.dataset = self.geotiff_reader.dataset
+
+        # Get base dimensions from GeoTIFFReader metadata
+        base_meta = self.geotiff_reader.metadata
+        rows = base_meta['rows']
+        cols = base_meta['cols']
+        bands = base_meta['bands']
+        dtype = base_meta['dtype']
+        crs_str = base_meta.get('crs')
+        nodata = base_meta.get('nodata')
 
         extras: Dict[str, Any] = {
             'transform': self.dataset.transform,
@@ -392,6 +402,8 @@ class ASTERReader(ImageReader):
     ) -> np.ndarray:
         """Read a spatial chip from the ASTER product.
 
+        Delegates to wrapped GeoTIFFReader for efficient windowed reading.
+
         Parameters
         ----------
         row_start : int
@@ -416,24 +428,9 @@ class ASTERReader(ImageReader):
         ValueError
             If indices are out of bounds.
         """
-        if row_start < 0 or col_start < 0:
-            raise ValueError("Start indices must be non-negative")
-        if row_end > self.metadata.rows or col_end > self.metadata.cols:
-            raise ValueError("End indices exceed image dimensions")
-
-        window = Window(
-            col_start, row_start,
-            col_end - col_start, row_end - row_start,
+        return self.geotiff_reader.read_chip(
+            row_start, row_end, col_start, col_end, bands=bands,
         )
-
-        if bands is None:
-            data = self.dataset.read(window=window)
-        else:
-            data = self.dataset.read([b + 1 for b in bands], window=window)
-
-        if data.shape[0] == 1:
-            return data[0]
-        return data
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire ASTER image.
@@ -448,14 +445,7 @@ class ASTERReader(ImageReader):
         np.ndarray
             Full image data.
         """
-        if bands is None:
-            data = self.dataset.read()
-        else:
-            data = self.dataset.read([b + 1 for b in bands])
-
-        if data.shape[0] == 1:
-            return data[0]
-        return data
+        return self.geotiff_reader.read_full(bands=bands)
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
@@ -466,9 +456,7 @@ class ASTERReader(ImageReader):
             ``(rows, cols)`` for single band or
             ``(rows, cols, bands)`` for multi-band.
         """
-        if self.metadata.bands == 1:
-            return (self.metadata.rows, self.metadata.cols)
-        return (self.metadata.rows, self.metadata.cols, self.metadata.bands)
+        return self.geotiff_reader.get_shape()
 
     def get_dtype(self) -> np.dtype:
         """Get the data type of the image.
@@ -477,9 +465,9 @@ class ASTERReader(ImageReader):
         -------
         np.dtype
         """
-        return np.dtype(self.metadata.dtype)
+        return self.geotiff_reader.get_dtype()
 
     def close(self) -> None:
-        """Close the rasterio dataset."""
-        if hasattr(self, 'dataset') and self.dataset is not None:
-            self.dataset.close()
+        """Close the wrapped GeoTIFFReader."""
+        if self.geotiff_reader is not None:
+            self.geotiff_reader.close()
