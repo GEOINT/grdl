@@ -210,6 +210,9 @@ def plot_results(chip: np.ndarray, dominance: np.ndarray,
 # ===================== Main =====================
 
 def main():
+    # -------- Editable Execution Steps --------
+    plotting = False
+    benchmarking = True
 
     # ---------- Configuration ----------
     CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -261,41 +264,41 @@ def main():
 
     # ---------- Plot ----------
     # Load raw chip for amplitude overlay (no-step workflow returns source)
-    # plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
+    if plotting: plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
 
     # ---------- Benchmarking ----------
+    if benchmarking:
+        bench_cfg = cfg["benchmark"]
+        bench_iterations = bench_cfg["iterations"]
+        bench_warmup = bench_cfg["warmup"]
 
-    bench_cfg = cfg["benchmark"]
-    bench_iterations = bench_cfg["iterations"]
-    bench_warmup = bench_cfg["warmup"]
+        if bench_cfg["source"] == "synthetic":
+            bench_source = BenchmarkSource.synthetic(
+                bench_cfg["synthetic_size"], dtype=np.complex64,
+            )
+            chip = bench_source.resolve()
+        else:
+            bench_source = BenchmarkSource.from_array(chip)
 
-    if bench_cfg["source"] == "synthetic":
-        bench_source = BenchmarkSource.synthetic(
-            bench_cfg["synthetic_size"], dtype=np.complex64,
+        det_runner = ActiveBenchmarkRunner(
+            det_wf,
+            bench_source,
+            iterations=bench_iterations,
+            warmup=bench_warmup,
+            tags={"workflow": "Detection"},
         )
-        chip = bench_source.resolve()
-    else:
-        bench_source = BenchmarkSource.from_array(chip)
+        csi_runner = ActiveBenchmarkRunner(
+            csi_wf,
+            bench_source,
+            iterations=bench_iterations,
+            warmup=bench_warmup,
+            tags={"workflow": "CSI"},
+        )
 
-    det_runner = ActiveBenchmarkRunner(
-        det_wf,
-        bench_source,
-        iterations=bench_iterations,
-        warmup=bench_warmup,
-        tags={"workflow": "Detection"},
-    )
-    csi_runner = ActiveBenchmarkRunner(
-        csi_wf,
-        bench_source,
-        iterations=bench_iterations,
-        warmup=bench_warmup,
-        tags={"workflow": "CSI"},
-    )
+        det_rec = det_runner.run(metadata=chip_metadata)
+        csi_rec = csi_runner.run(metadata=chip_metadata)
 
-    det_rec = det_runner.run(metadata=chip_metadata)
-    csi_rec = csi_runner.run(metadata=chip_metadata)
-
-    print_report([det_rec, csi_rec])
+        print_report([det_rec, csi_rec])
 
 
 if __name__ == "__main__":
