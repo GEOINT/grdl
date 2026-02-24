@@ -86,7 +86,7 @@ class DualPolHAlpha(ImageProcessor):
     >>> halpha = DualPolHAlpha(window_size=9)
     >>> components = halpha.decompose(s_vv, s_vh)
     >>> print(components['entropy'].shape)  # same as input
-    >>> rgb = halpha.to_rgb(components)     # (rows, cols, 3) float32
+    >>> rgb = halpha.to_rgb(components)     # (3, rows, cols) float32
     """
 
     window_size: Annotated[int, Range(min=3, max=31),
@@ -230,7 +230,7 @@ class DualPolHAlpha(ImageProcessor):
         Returns
         -------
         np.ndarray
-            RGB image, shape ``(rows, cols, 3)``, dtype float32,
+            RGB image, shape ``(3, rows, cols)``, dtype float32,
             values in [0, 1].
         """
         required = {'entropy', 'alpha', 'span'}
@@ -252,7 +252,7 @@ class DualPolHAlpha(ImageProcessor):
         # Blue: Alpha normalised to [0, 1] (0-90 degrees)
         b = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
 
-        return np.dstack([r, g, b])
+        return np.stack([r, g, b], axis=0)
 
     # ------------------------------------------------------------------
     # Internal helpers

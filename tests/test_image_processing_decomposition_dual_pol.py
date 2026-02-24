@@ -249,7 +249,7 @@ class TestToRgb:
         s_co, s_cross = copol_only
         result = halpha.decompose(s_co, s_cross)
         rgb = halpha.to_rgb(result)
-        assert rgb.shape == (s_co.shape[0], s_co.shape[1], 3)
+        assert rgb.shape == (3, s_co.shape[0], s_co.shape[1])
 
     def test_output_dtype(self, halpha, copol_only):
         s_co, s_cross = copol_only
