@@ -80,6 +80,26 @@ def compute_output_resolution(
     if isinstance(metadata, SICDMetadata):
         return _resolution_from_sicd(metadata, geolocation, scale_factor)
 
+    # Sentinel-1 SLC (typed dataclass, not dict-like)
+    try:
+        from grdl.IO.models.sentinel1_slc import Sentinel1SLCMetadata
+        if isinstance(metadata, Sentinel1SLCMetadata):
+            return _resolution_from_sentinel1_slc(
+                metadata, geolocation, scale_factor,
+            )
+    except ImportError:
+        pass
+
+    # NISAR (typed dataclass)
+    try:
+        from grdl.IO.models.nisar import NISARMetadata
+        if isinstance(metadata, NISARMetadata):
+            return _resolution_from_nisar(
+                metadata, geolocation, scale_factor,
+            )
+    except ImportError:
+        pass
+
     # Dict-like metadata (BIOMASS, GeoTIFF, etc.)
     if hasattr(metadata, 'get'):
         if metadata.get('range_pixel_spacing') is not None:
@@ -236,6 +256,117 @@ def _resolution_from_geotiff(
 
     ground_m = max(abs(resolution[0]), abs(resolution[1]))
     return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+
+def _resolution_from_sentinel1_slc(
+    metadata: 'ImageMetadata',
+    geolocation: Optional['Geolocation'],
+    scale_factor: float,
+) -> Tuple[float, float]:
+    """Compute resolution from Sentinel-1 SLC metadata.
+
+    Uses ``swath_info.range_pixel_spacing`` (slant range) and
+    ``swath_info.azimuth_pixel_spacing``.  Projects range to ground
+    using ``incidence_angle_mid``.
+
+    Parameters
+    ----------
+    metadata : Sentinel1SLCMetadata
+        Typed Sentinel-1 SLC metadata.
+    geolocation : Geolocation, optional
+        For scene-center latitude lookup.
+    scale_factor : float
+        Resolution multiplier.
+
+    Returns
+    -------
+    Tuple[float, float]
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+    """
+    si = getattr(metadata, 'swath_info', None)
+    if si is None:
+        raise ValueError(
+            "Sentinel-1 SLC metadata missing swath_info."
+        )
+    range_m = getattr(si, 'range_pixel_spacing', None)
+    azimuth_m = getattr(si, 'azimuth_pixel_spacing', None)
+    if range_m is None or azimuth_m is None:
+        raise ValueError(
+            "Sentinel-1 SLC metadata missing range_pixel_spacing or "
+            "azimuth_pixel_spacing in swath_info."
+        )
+
+    # Project slant range to ground range using mid-swath incidence angle
+    inc = getattr(si, 'incidence_angle_mid', None)
+    if inc is not None and inc > 0.1:
+        sin_inc = np.sin(np.radians(inc))
+        if sin_inc > 0.01:
+            range_m = range_m / sin_inc
+
+    ground_m = max(range_m, azimuth_m)
+    center_lat = _get_center_latitude(metadata, geolocation)
+    return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+
+def _resolution_from_nisar(
+    metadata: 'ImageMetadata',
+    geolocation: Optional['Geolocation'],
+    scale_factor: float,
+) -> Tuple[float, float]:
+    """Compute resolution from NISAR metadata.
+
+    For RSLC products, uses ``swath_parameters.scene_center_ground_range_spacing``
+    (already ground-projected) and ``scene_center_along_track_spacing``.
+
+    For GSLC products, uses ``grid_parameters.x_coordinate_spacing`` and
+    ``y_coordinate_spacing``.  If the CRS is geographic (EPSG:4326) the
+    spacings are already in degrees; otherwise they are in meters.
+
+    Parameters
+    ----------
+    metadata : NISARMetadata
+        Typed NISAR metadata.
+    geolocation : Geolocation, optional
+        For scene-center latitude lookup.
+    scale_factor : float
+        Resolution multiplier.
+
+    Returns
+    -------
+    Tuple[float, float]
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+    """
+    product_type = getattr(metadata, 'product_type', None)
+
+    # RSLC: scene-center ground spacings (meters)
+    sp = getattr(metadata, 'swath_parameters', None)
+    if product_type == 'RSLC' and sp is not None:
+        gr = getattr(sp, 'scene_center_ground_range_spacing', None)
+        az = getattr(sp, 'scene_center_along_track_spacing', None)
+        if gr is not None and az is not None and gr > 0 and az > 0:
+            ground_m = max(gr, az)
+            center_lat = _get_center_latitude(metadata, geolocation)
+            return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    # GSLC: coordinate spacings (may be meters or degrees)
+    gp = getattr(metadata, 'grid_parameters', None)
+    if gp is not None:
+        dx = getattr(gp, 'x_coordinate_spacing', None)
+        dy = getattr(gp, 'y_coordinate_spacing', None)
+        if dx is not None and dy is not None:
+            epsg = getattr(gp, 'epsg', None)
+            if epsg == 4326:
+                # Already in degrees
+                return (abs(dy) * scale_factor, abs(dx) * scale_factor)
+            # Projected CRS: spacings are in meters
+            ground_m = max(abs(dx), abs(dy))
+            center_lat = _get_center_latitude(metadata, geolocation)
+            return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    raise ValueError(
+        "NISAR metadata missing resolution parameters "
+        "(swath_parameters or grid_parameters)."
+    )
 
 
 # ------------------------------------------------------------------

@@ -573,6 +573,7 @@ class Sentinel1SLCReader(ImageReader):
 
         self._swath = swath.upper()
         self._polarization = polarization.upper()
+        self._apply_valid_mask: bool = False
 
         # Resolve SAFE directory
         self._safe_dir = _resolve_safe_dir(Path(filepath))
@@ -748,6 +749,115 @@ class Sentinel1SLCReader(ImageReader):
                 f"Failed to load Sentinel-1 SLC metadata: {e}"
             ) from e
 
+    def set_apply_valid_mask(self, enable: bool) -> None:
+        """Enable or disable burst valid-sample masking in ``read_chip``.
+
+        When enabled, ``read_chip`` zeros out samples that fall outside
+        the ``firstValidSample`` / ``lastValidSample`` ranges defined in
+        the annotation XML for each burst.  This removes the blank bands
+        visible at burst boundaries.
+
+        Parameters
+        ----------
+        enable : bool
+            ``True`` to apply masking, ``False`` to read raw data.
+        """
+        self._apply_valid_mask = enable
+
+    @staticmethod
+    def _apply_burst_mask(
+        data: np.ndarray,
+        fvs: np.ndarray,
+        lvs: np.ndarray,
+        line_offset: int = 0,
+        col_start: int = 0,
+        col_end: Optional[int] = None,
+    ) -> None:
+        """Zero invalid samples in *data* using per-line validity arrays.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            2-D array ``(rows, cols)`` to mask in-place.
+        fvs, lvs : np.ndarray
+            Per-burst-line first/last valid sample indices (int32),
+            in *full-image* column coordinates.
+            ``fvs[i] < 0`` means the entire line is invalid.
+        line_offset : int
+            Offset into *fvs*/*lvs* corresponding to the first row of
+            *data* within the burst.
+        col_start : int
+            Column offset of the chip within the full image.
+        col_end : int or None
+            Column end of the chip in full-image coordinates.
+        """
+        chip_cols = data.shape[1]
+        if col_end is None:
+            col_end = col_start + chip_cols
+        for i in range(data.shape[0]):
+            idx = line_offset + i
+            if idx >= len(fvs):
+                break
+            if fvs[idx] < 0:
+                data[i, :] = 0
+            else:
+                # Translate full-image fvs/lvs to chip-local columns
+                local_fvs = fvs[idx] - col_start
+                local_lvs = lvs[idx] - col_start
+                if local_fvs > 0:
+                    data[i, :min(local_fvs, chip_cols)] = 0
+                if local_lvs < chip_cols - 1:
+                    data[i, max(0, local_lvs + 1):] = 0
+
+    def _mask_invalid_samples(
+        self,
+        data: np.ndarray,
+        row_start: int,
+        row_end: int,
+        col_start: int = 0,
+        col_end: Optional[int] = None,
+    ) -> None:
+        """Apply burst valid-sample masking to a chip read from the TIFF.
+
+        Determines which bursts overlap ``[row_start, row_end)`` and zeros
+        out invalid samples using the per-line validity arrays.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Chip data ``(rows, cols)`` — modified in place.
+        row_start, row_end : int
+            Row range in full-image coordinates.
+        col_start : int
+            Column offset of the chip in full-image coordinates.
+        col_end : int or None
+            Column end in full-image coordinates.
+        """
+        if self.metadata.bursts is None:
+            return
+        if col_end is None:
+            col_end = col_start + data.shape[1]
+        for burst in self.metadata.bursts:
+            if burst.last_line <= row_start or burst.first_line >= row_end:
+                continue
+            fvs = burst.first_valid_sample
+            lvs = burst.last_valid_sample
+            if fvs is None or lvs is None:
+                continue
+            # Map burst lines to chip-local row indices
+            overlap_start = max(burst.first_line, row_start)
+            overlap_end = min(burst.last_line, row_end)
+            chip_row_start = overlap_start - row_start
+            chip_row_end = overlap_end - row_start
+            burst_line_offset = overlap_start - burst.first_line
+            self._apply_burst_mask(
+                data[chip_row_start:chip_row_end],
+                fvs, lvs,
+                line_offset=burst_line_offset,
+                col_start=col_start,
+                col_end=col_end,
+            )
+
     def read_chip(
         self,
         row_start: int,
@@ -795,7 +905,12 @@ class Sentinel1SLCReader(ImageReader):
             col_end - col_start, row_end - row_start,
         )
         raw = self._dataset.read(window=window)
-        return self._to_complex(raw)
+        data = self._to_complex(raw)
+        if self._apply_valid_mask:
+            self._mask_invalid_samples(
+                data, row_start, row_end, col_start, col_end,
+            )
+        return data
 
     def read_burst(
         self,
@@ -842,15 +957,7 @@ class Sentinel1SLCReader(ImageReader):
             fvs = burst.first_valid_sample
             lvs = burst.last_valid_sample
             if fvs is not None and lvs is not None:
-                for i in range(data.shape[0]):
-                    if fvs[i] < 0:
-                        # Entire line invalid
-                        data[i, :] = 0
-                    else:
-                        if fvs[i] > 0:
-                            data[i, :fvs[i]] = 0
-                        if lvs[i] < data.shape[1] - 1:
-                            data[i, lvs[i] + 1:] = 0
+                self._apply_burst_mask(data, fvs, lvs)
 
         return data
 

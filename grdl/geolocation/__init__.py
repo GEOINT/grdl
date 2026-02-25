@@ -67,6 +67,7 @@ Modified
 
 from grdl.geolocation.base import Geolocation, NoGeolocation
 from grdl.geolocation.sar.gcp import GCPGeolocation
+from grdl.geolocation.sar.nisar import NISARGeolocation
 from grdl.geolocation.sar.sicd import SICDGeolocation
 from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 from grdl.geolocation.eo.affine import AffineGeolocation
@@ -77,6 +78,7 @@ __all__ = [
     'Geolocation',
     'NoGeolocation',
     'GCPGeolocation',
+    'NISARGeolocation',
     'SICDGeolocation',
     'Sentinel1SLCGeolocation',
     'AffineGeolocation',

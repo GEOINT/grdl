@@ -46,7 +46,7 @@ import numpy as np
 from grdl.IO.base import ImageReader, ImageWriter, CatalogInterface
 from grdl.IO.models import (
     ImageMetadata, SICDMetadata, SIDDMetadata, BIOMASSMetadata,
-    VIIRSMetadata, ASTERMetadata, TerraSARMetadata,
+    VIIRSMetadata, ASTERMetadata, TerraSARMetadata, NISARMetadata,
 )
 
 # Base format readers (IO level)
@@ -64,9 +64,11 @@ from grdl.IO.sar import (
     BIOMASSL1Reader,
     BIOMASSCatalog,
     TerraSARReader,
+    NISARReader,
     open_sar,
     open_biomass,
     open_terrasar,
+    open_nisar,
     load_credentials,
 )
 
@@ -309,6 +311,10 @@ __all__ = [
     'TerraSARMetadata',
     'TerraSARReader',
     'open_terrasar',
+    # NISAR
+    'NISARReader',
+    'NISARMetadata',
+    'open_nisar',
     # IR readers
     'ASTERReader',
     # Multispectral readers

@@ -578,6 +578,7 @@ class SIDDReader(ImageReader):
     ) -> None:
         require_sarkit('SIDD')
         self.image_index = image_index
+        self._cached_image: Optional[np.ndarray] = None
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -679,14 +680,13 @@ class SIDDReader(ImageReader):
         if row_end > self.metadata['rows'] or col_end > self.metadata['cols']:
             raise ValueError("End indices exceed image dimensions")
 
-        data, _ = self._reader.read_image_sub_image(
-            self.image_index,
-            start_row=row_start,
-            start_col=col_start,
-            stop_row=row_end,
-            stop_col=col_end,
-        )
-        return data
+        # sarkit's SIDD NitfReader only supports read_image() (full
+        # image), not sub-image reads.  Cache the full image on first
+        # access and slice from it for chip requests.
+        if self._cached_image is None:
+            self._cached_image = self._reader.read_image(self.image_index)
+
+        return self._cached_image[row_start:row_end, col_start:col_end]
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the full SIDD product image.
@@ -701,7 +701,9 @@ class SIDDReader(ImageReader):
         np.ndarray
             Full product image data.
         """
-        return self._reader.read_image(self.image_index)
+        if self._cached_image is None:
+            self._cached_image = self._reader.read_image(self.image_index)
+        return self._cached_image
 
     def get_shape(self) -> Tuple[int, int]:
         """Get image dimensions.
@@ -725,7 +727,12 @@ class SIDDReader(ImageReader):
 
     def close(self) -> None:
         """Close the reader and release resources."""
-        if hasattr(self, '_reader') and self._reader is not None:
-            self._reader.done()
+        self._cached_image = None
+        if hasattr(self, '_file_handle') and self._file_handle is not None:
+            try:
+                self._file_handle.close()
+            except Exception:
+                pass
+            self._file_handle = None
         if hasattr(self, '_file_handle') and self._file_handle is not None:
             self._file_handle.close()

@@ -6,7 +6,7 @@ Input/Output operations for geospatial imagery and vector data.
 
 The IO module provides a unified interface for reading geospatial imagery across SAR, IR, multispectral, and EO formats. **Always use an IO reader to load imagery** -- don't call `rasterio.open()` or `h5py.File()` directly. The readers handle lazy loading, band indexing, resource cleanup, and typed metadata extraction.
 
-All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consistent API across formats. Readers are organized into modality-based submodules (`sar/`, `ir/`, `multispectral/`, `eo/`) mirroring how sensors are used in practice. Metadata is returned as typed dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) with nested attribute access, IDE autocomplete, and backward-compatible dict-like `[]` access.
+All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consistent API across formats. Readers are organized into modality-based submodules (`sar/`, `ir/`, `multispectral/`, `eo/`) mirroring how sensors are used in practice. Metadata is returned as typed dataclasses (`SICDMetadata`, `SIDDMetadata`, `CPHDMetadata`, `BIOMASSMetadata`, `NISARMetadata`, `Sentinel2Metadata`, `VIIRSMetadata`, `ASTERMetadata`, etc.) with nested attribute access, IDE autocomplete, and backward-compatible dict-like `[]` access.
 
 ## Supported Formats
 
@@ -17,6 +17,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | GeoTIFF/COG | `GeoTIFFReader` | rasterio | ✅ Implemented |
 | HDF5/HDF-EOS5 | `HDF5Reader` | h5py | ✅ Implemented |
 | NITF | `NITFReader` | rasterio/GDAL | ✅ Implemented |
+| JPEG2000 | `JP2Reader` | rasterio (primary), glymur (fallback) | ✅ Implemented |
 
 ### SAR (Synthetic Aperture Radar) — `sar/` submodule
 
@@ -29,6 +30,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
 | Sentinel-1 SLC | `Sentinel1SLCReader` | rasterio | ✅ Implemented |
 | TerraSAR-X / TanDEM-X | `TerraSARReader` | numpy (SSC), rasterio (detected) | ✅ Implemented |
+| NISAR RSLC/GSLC | `NISARReader` | h5py | ✅ Implemented |
 
 ### IR (Infrared / Thermal) — `ir/` submodule
 
@@ -52,9 +54,20 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 
 | Format | Reader Class | Backend | Status |
 |--------|-------------|---------|--------|
+| Sentinel-2 MSI | `Sentinel2Reader` | JP2Reader (rasterio/glymur) | ✅ Implemented |
 | Landsat OLI | - | - | 🔄 Planned |
-| Sentinel-2 | - | - | 🔄 Planned |
 | WorldView | - | - | 🔄 Planned |
+
+### Writers
+
+| Format | Writer Class | Backend | Status |
+|--------|-------------|---------|--------|
+| GeoTIFF | `GeoTIFFWriter` | rasterio | ✅ Implemented |
+| HDF5 | `HDF5Writer` | h5py | ✅ Implemented |
+| NITF | `NITFWriter` | rasterio/GDAL | ✅ Implemented |
+| NumPy (.npy/.npz) | `NumpyWriter` | numpy | ✅ Implemented |
+| PNG | `PngWriter` | Pillow | ✅ Implemented |
+| SICD (NITF) | `SICDWriter` | sarpy | ✅ Implemented |
 
 ### Geospatial Vector
 
@@ -309,6 +322,67 @@ with open_sar('/path/to/product/') as reader:
     chip = reader.read_chip(0, 512, 0, 512)
 ```
 
+### NISAR - NASA L-band/S-band SAR
+
+```python
+from grdl.IO import NISARReader, open_nisar
+import numpy as np
+
+# Auto-detect and open NISAR product (RSLC or GSLC)
+with open_nisar('/path/to/NISAR_L1_PR_RSLC_001.h5') as reader:
+    meta = reader.metadata  # NISARMetadata with typed fields
+
+    # Product identification
+    print(f"Product: {meta.product_type}")     # "RSLC" or "GSLC"
+    print(f"Radar band: {meta.radar_band}")    # "LSAR" or "SSAR"
+    print(f"Frequency: {meta.frequency}")      # "A" or "B"
+    print(f"Polarization: {meta.polarization}")  # "HH", "HV", etc.
+
+    # Available sub-bands and polarizations
+    print(f"Frequencies: {meta.available_frequencies}")    # ["A", "B"]
+    print(f"Polarizations: {meta.available_polarizations}")  # ["HH", "HV"]
+
+    # Read complex chip
+    chip = reader.read_chip(0, 1024, 0, 1024)  # complex64
+    magnitude_db = 20 * np.log10(np.abs(chip) + 1e-10)
+
+# Open specific frequency and polarization
+with NISARReader('/path/to/product.h5', frequency='A', polarization='HV') as reader:
+    full = reader.read_full()
+
+# GSLC products include a validity mask
+with NISARReader('/path/to/NISAR_GSLC.h5') as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+    mask = reader.read_mask(0, 512, 0, 512)  # uint8 validity mask
+
+# Auto-detect via open_sar (works with .h5/.hdf5 NISAR files)
+from grdl.IO import open_sar
+with open_sar('/path/to/NISAR_product.h5') as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+```
+
+### Sentinel-2 MSI - Multispectral Imagery
+
+```python
+from grdl.IO.eo import Sentinel2Reader, open_eo
+
+# Open a Sentinel-2 band (JP2 format)
+with Sentinel2Reader('T10SEG_20240101T183901_B04.jp2') as reader:
+    meta = reader.metadata  # Sentinel2Metadata with typed fields
+
+    print(f"Satellite: {meta.satellite}")        # "S2A", "S2B", "S2C"
+    print(f"Level: {meta.processing_level}")      # "L1C" or "L2A"
+    print(f"Band: {meta.band_id}")               # "B04"
+    print(f"MGRS tile: {meta.mgrs_tile_id}")     # "T10SEG"
+    print(f"Resolution: {meta.resolution_tier}m") # 10, 20, or 60
+
+    chip = reader.read_chip(0, 1024, 0, 1024)
+
+# Auto-detect via open_eo (detects Sentinel-2 from filename)
+with open_eo('T10SEG_20240101T183901_B02.jp2') as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+```
+
 ### IR / Thermal Imagery
 
 #### ASTER - Thermal Infrared and DEM Products
@@ -444,11 +518,16 @@ All readers populate `self.metadata` with a typed dataclass. Format-specific rea
 | `GeoTIFFReader` | `ImageMetadata` | (flat fields) |
 | `HDF5Reader` | `ImageMetadata` | (flat fields) |
 | `NITFReader` | `ImageMetadata` | (flat fields) |
+| `JP2Reader` | `ImageMetadata` | (flat fields) |
 | `SICDReader` | `SICDMetadata` | 17 sections: `collection_info`, `image_data`, `geo_data`, `grid`, `timeline`, `position`, `radar_collection`, `image_formation`, `scpcoa`, `radiometric`, `antenna`, `error_statistics`, `match_info`, `rg_az_comp`, `pfa`, `rma` |
+| `CPHDReader` | `CPHDMetadata` | `channels`, `pvp`, `global_params`, `collection_info`, `tx_waveform`, `rcv_parameters`, `antenna_pattern`, `scene_coordinates`, `reference_geometry`, `dwell_polynomial` |
+| `CRSDReader` | `ImageMetadata` | (flat fields + extras) |
 | `SIDDReader` | `SIDDMetadata` | `product_creation`, `display`, `geo_data`, `measurement`, `exploitation_features`, `downstream_reprocessing`, `compression`, `digital_elevation_data`, `product_processing`, `annotations` |
 | `BIOMASSL1Reader` | `BIOMASSMetadata` | `mission`, `swath`, `polarizations`, `orbit_number`, `range_pixel_spacing`, `azimuth_pixel_spacing`, `prf`, `corner_coords`, `gcps` |
 | `Sentinel1SLCReader` | `Sentinel1SLCMetadata` | `product_info`, `swath_timing`, `bursts`, `orbit_state_vectors`, `geolocation_grid`, `doppler_centroid`, `calibration_vectors` |
 | `TerraSARReader` | `TerraSARMetadata` | `product_info`, `scene_info`, `image_info`, `radar_params`, `orbit_state_vectors`, `geolocation_grid`, `calibration`, `doppler_info`, `processing_info` |
+| `NISARReader` | `NISARMetadata` | `identification`, `orbit`, `attitude`, `swath_parameters`, `grid_parameters`, `geolocation_grid`, `calibration`, `processing_info` |
+| `Sentinel2Reader` | `Sentinel2Metadata` | `satellite`, `processing_level`, `product_type`, `band_id`, `mgrs_tile_id`, `resolution_tier`, `sensing_datetime` |
 | `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
 | `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
 
@@ -469,7 +548,7 @@ meta['rows']                       # int
 list(meta.keys())                  # all field names
 ```
 
-The `models/` package provides ~70 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `biomass.py`, `sentinel1_slc.py`, `terrasar.py`, `viirs.py`, and `aster.py`.
+The `models/` package provides ~90 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `cphd.py`, `biomass.py`, `sentinel1_slc.py`, `terrasar.py`, `nisar.py`, `sentinel2.py`, `viirs.py`, and `aster.py`.
 
 ### Design Principles
 
