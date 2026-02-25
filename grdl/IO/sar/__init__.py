@@ -53,10 +53,13 @@ from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 
+# NISAR
+from grdl.IO.sar.nisar import NISARReader, open_nisar
+
 # Metadata models
 from grdl.IO.models import (
     SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
-    TerraSARMetadata,
+    TerraSARMetadata, NISARMetadata,
 )
 
 # Base class (for return type)
@@ -149,6 +152,13 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
             except (ValueError, ImportError, Exception):
                 pass
 
+    # Try NISAR HDF5
+    if filepath.suffix.lower() in ('.h5', '.hdf5'):
+        try:
+            return NISARReader(filepath)
+        except (ValueError, ImportError, Exception):
+            pass
+
     # Try GeoTIFF fallback (SAR GRD products)
     if filepath.suffix.lower() in ('.tif', '.tiff'):
         try:
@@ -160,8 +170,8 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
     raise ValueError(
         f"Could not determine SAR format for {filepath}. "
         "Ensure file is valid SICD, CPHD, CRSD, SIDD, Sentinel-1 SAFE, "
-        "TerraSAR-X/TanDEM-X, or GeoTIFF format and required libraries "
-        "(sarkit, sarpy, rasterio) are installed."
+        "TerraSAR-X/TanDEM-X, NISAR, or GeoTIFF format and required "
+        "libraries (sarkit, sarpy, rasterio, h5py) are installed."
     )
 
 
@@ -181,6 +191,9 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # NISAR
+    'NISARReader',
+    'NISARMetadata',
     # Metadata models
     'SICDMetadata',
     'SIDDMetadata',
@@ -189,5 +202,6 @@ __all__ = [
     # Convenience functions
     'open_sar',
     'open_biomass',
+    'open_nisar',
     'load_credentials',
 ]
