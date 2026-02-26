@@ -283,7 +283,7 @@ class CPHDReader(ImageReader):
             try:
                 arr = pvp_data[name]
                 return np.asarray(arr)
-            except (KeyError, IndexError):
+            except (KeyError, IndexError, ValueError):
                 return None
 
         return CPHDPVP(

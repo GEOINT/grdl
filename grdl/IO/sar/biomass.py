@@ -122,9 +122,15 @@ class BIOMASSL1Reader(ImageReader):
         """Load BIOMASS L1 metadata from XML annotation and TIFF files."""
         annot_dir = self.filepath / "annotation"
         if not annot_dir.exists():
-            raise ValueError(
-                f"No annotation directory found in {self.filepath}"
-            )
+            # SAFE-format: outer wrapper contains inner dir with same name
+            inner = self.filepath / self.filepath.name
+            if inner.is_dir() and (inner / "annotation").exists():
+                self.filepath = inner
+                annot_dir = self.filepath / "annotation"
+            else:
+                raise ValueError(
+                    f"No annotation directory found in {self.filepath}"
+                )
 
         annot_files = list(annot_dir.glob("*_annot.xml"))
         if not annot_files:
