@@ -7,9 +7,9 @@ sublook:
   dimension: azimuth
 
 detection:
-  smooth_win: 7
+  smooth_win: 3
   dom_window: 3
-  sigma: 3
+  sigma: 2.0
   morph_size: 3
 
 benchmark:
