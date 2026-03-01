@@ -10,7 +10,8 @@ using grdl-te's ActiveBenchmarkRunner and BenchmarkSource.
 Dependencies
 ------------
 sarkit (or sarpy)
-grdl-runtime
+grdl-runtime (optional — enables Workflow orchestration)
+grdl-te (optional — enables benchmarking)
 
 Author
 ------
@@ -29,7 +30,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-02-26
 """
 
 # Standard library
@@ -54,16 +55,23 @@ from skimage.measure import label
 
 import matplotlib.pyplot as plt
 
-# grdl-runtime
-from grdl_rt import Workflow
-from grdl_rt.execution.dag_executor import DAGExecutor  # noqa: F401
+# grdl-runtime (optional)
+try:
+    from grdl_rt import Workflow
+    HAS_GRDL_RT = True
+except ImportError:
+    HAS_GRDL_RT = False
 
-# GRDL-TE benchmarking
-from grdl_te.benchmarking import (
-    ActiveBenchmarkRunner,
-    BenchmarkSource,
-    print_report,
-)
+# GRDL-TE benchmarking (optional)
+try:
+    from grdl_te.benchmarking import (
+        ActiveBenchmarkRunner,
+        BenchmarkSource,
+        print_report,
+    )
+    HAS_GRDL_TE = True
+except ImportError:
+    HAS_GRDL_TE = False
 
 
 class DominanceDetection:
@@ -211,8 +219,8 @@ def plot_results(chip: np.ndarray, dominance: np.ndarray,
 
 def main():
     # -------- Editable Execution Steps --------
-    plotting = False
-    benchmarking = True
+    plotting = True
+    benchmarking = False
 
     # ---------- Configuration ----------
     CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -223,44 +231,80 @@ def main():
     CHIP_SIZE = cfg["input"]["chip_size"]
 
     # ---------- Shared data ----------
-    chip_wf = (
-        Workflow("Chip", version="1.0.0", modalities=["SAR"])
-        .reader(SICDReader)
-        .chip("center", size=CHIP_SIZE)
-    )
     with SICDReader(SICD_PATH) as rdr:
         chip_metadata = rdr.metadata
-    chip_wf_result = chip_wf.execute(SICD_PATH)
-    chip = chip_wf_result.result
+
+    if HAS_GRDL_RT:
+        chip_wf = (
+            Workflow("Chip", version="1.0.0", modalities=["SAR"])
+            .reader(SICDReader)
+            .chip("center", size=CHIP_SIZE)
+        )
+        chip = chip_wf.execute(SICD_PATH).result
+    else:
+        with SICDReader(SICD_PATH) as rdr:
+            full = rdr.read_full()
+        nrows, ncols = full.shape[:2]
+        extractor = ChipExtractor(nrows, ncols)
+        region = extractor.chip_at_point(
+            nrows // 2, ncols // 2, CHIP_SIZE, CHIP_SIZE,
+        )
+        chip = full[region.row_start:region.row_end,
+                     region.col_start:region.col_end]
 
     # ---------- Detection workflow ----------
     # reader → chip → SublookDecomposition → DominanceDetection
-    det_wf = (
-        Workflow("Detection", version="1.0.0", modalities=["SAR"])
-        .step(SublookDecomposition,
-              num_looks=cfg["sublook"]["num_looks"],
-              dimension=cfg["sublook"]["dimension"])
-        .step(DominanceDetection,
-              smooth_win=cfg["detection"]["smooth_win"],
-              dom_window=cfg["detection"]["dom_window"],
-              dom_sigma=cfg["detection"]["sigma"],
-              morph_size=cfg["detection"]["morph_size"])
+    det_cfg = cfg["detection"]
+    sublook = SublookDecomposition(
+        chip_metadata,
+        num_looks=cfg["sublook"]["num_looks"],
+        dimension=cfg["sublook"]["dimension"],
     )
-    det_result = det_wf.execute(chip, metadata=chip_metadata)
-    dominance, labeled = det_result.result
+    detector = DominanceDetection(
+        smooth_win=det_cfg["smooth_win"],
+        dom_window=det_cfg["dom_window"],
+        dom_sigma=det_cfg["sigma"],
+        morph_size=det_cfg["morph_size"],
+    )
+
+    if HAS_GRDL_RT:
+        det_wf = (
+            Workflow("Detection", version="1.0.0", modalities=["SAR"])
+            .step(SublookDecomposition,
+                  num_looks=cfg["sublook"]["num_looks"],
+                  dimension=cfg["sublook"]["dimension"])
+            .step(DominanceDetection,
+                  smooth_win=det_cfg["smooth_win"],
+                  dom_window=det_cfg["dom_window"],
+                  dom_sigma=det_cfg["sigma"],
+                  morph_size=det_cfg["morph_size"])
+        )
+        dominance, labeled = det_wf.execute(chip, metadata=chip_metadata).result
+    else:
+        looks = sublook.decompose(chip)
+        dominance, labeled = detector.apply(looks)
+
     n_detections = labeled.max()
     print(f"Detections: {n_detections}")
 
     # ---------- CSI workflow ----------
     # reader → chip → CSIProcessor
-    csi_wf = (
-        Workflow("CSI", version="1.0.0", modalities=["SAR"])
-        .step(CSIProcessor,
-              dimension=cfg["sublook"]["dimension"],
-              normalization='log')
+    csi_proc = CSIProcessor(
+        chip_metadata,
+        dimension=cfg["sublook"]["dimension"],
+        normalization='log',
     )
-    csi_result = csi_wf.execute(chip, metadata=chip_metadata)
-    csi_rgb = csi_result.result
+
+    if HAS_GRDL_RT:
+        csi_wf = (
+            Workflow("CSI", version="1.0.0", modalities=["SAR"])
+            .step(CSIProcessor,
+                  dimension=cfg["sublook"]["dimension"],
+                  normalization='log')
+        )
+        csi_rgb = csi_wf.execute(chip, metadata=chip_metadata).result
+    else:
+        csi_rgb = csi_proc.apply(chip)
 
     # ---------- Plot ----------
     # Load raw chip for amplitude overlay (no-step workflow returns source)
@@ -268,37 +312,40 @@ def main():
 
     # ---------- Benchmarking ----------
     if benchmarking:
-        bench_cfg = cfg["benchmark"]
-        bench_iterations = bench_cfg["iterations"]
-        bench_warmup = bench_cfg["warmup"]
-
-        if bench_cfg["source"] == "synthetic":
-            bench_source = BenchmarkSource.synthetic(
-                bench_cfg["synthetic_size"], dtype=np.complex64,
-            )
-            chip = bench_source.resolve()
+        if not (HAS_GRDL_RT and HAS_GRDL_TE):
+            print("Benchmarking requires grdl-runtime and grdl-te — skipping.")
         else:
-            bench_source = BenchmarkSource.from_array(chip)
+            bench_cfg = cfg["benchmark"]
+            bench_iterations = bench_cfg["iterations"]
+            bench_warmup = bench_cfg["warmup"]
 
-        det_runner = ActiveBenchmarkRunner(
-            det_wf,
-            bench_source,
-            iterations=bench_iterations,
-            warmup=bench_warmup,
-            tags={"workflow": "Detection"},
-        )
-        csi_runner = ActiveBenchmarkRunner(
-            csi_wf,
-            bench_source,
-            iterations=bench_iterations,
-            warmup=bench_warmup,
-            tags={"workflow": "CSI"},
-        )
+            if bench_cfg["source"] == "synthetic":
+                bench_source = BenchmarkSource.synthetic(
+                    bench_cfg["synthetic_size"], dtype=np.complex64,
+                )
+                chip = bench_source.resolve()
+            else:
+                bench_source = BenchmarkSource.from_array(chip)
 
-        det_rec = det_runner.run(metadata=chip_metadata)
-        csi_rec = csi_runner.run(metadata=chip_metadata)
+            det_runner = ActiveBenchmarkRunner(
+                det_wf,
+                bench_source,
+                iterations=bench_iterations,
+                warmup=bench_warmup,
+                tags={"workflow": "Detection"},
+            )
+            csi_runner = ActiveBenchmarkRunner(
+                csi_wf,
+                bench_source,
+                iterations=bench_iterations,
+                warmup=bench_warmup,
+                tags={"workflow": "CSI"},
+            )
 
-        print_report([det_rec, csi_rec])
+            det_rec = det_runner.run(metadata=chip_metadata)
+            csi_rec = csi_runner.run(metadata=chip_metadata)
+
+            print_report([det_rec, csi_rec])
 
 
 if __name__ == "__main__":

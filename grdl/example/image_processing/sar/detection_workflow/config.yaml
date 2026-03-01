@@ -1,5 +1,5 @@
 input:
-  sicd_path: /code/data/umbra_scenes/2026-01-13-14-11-30_UMBRA-07/2026-01-13-14-11-30_UMBRA-07_SICD.nitf
+  sicd_path: /Users/duanesmalley/SAR_DATA/SICD/2025-06-20-02-42-41_UMBRA-05_SICD.nitf
   chip_size: 10000
 
 sublook:
@@ -9,7 +9,7 @@ sublook:
 detection:
   smooth_win: 3
   dom_window: 3
-  sigma: 2.0
+  sigma: 3.0
   morph_size: 3
 
 benchmark:
