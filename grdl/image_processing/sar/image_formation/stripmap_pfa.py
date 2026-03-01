@@ -391,7 +391,20 @@ class StripmapPFA(ImageFormationAlgorithm):
         # Azimuth direction: along-track (approximate as SRP drift)
         if n_subs > 1:
             az_dir = centers[-1] - centers[0]
-            az_dir = az_dir / norm(az_dir)
+            az_norm = norm(az_dir)
+            if az_norm > 1e-10:
+                az_dir = az_dir / az_norm
+            else:
+                # Fallback: use mean platform velocity direction
+                pvp = self._metadata.pvp
+                v_mean = np.mean(
+                    0.5 * (pvp.tx_vel + pvp.rcv_vel), axis=0,
+                )
+                v_norm = norm(v_mean)
+                if v_norm > 0:
+                    az_dir = v_mean / v_norm
+                else:
+                    az_dir = np.array([0.0, 1.0, 0.0])
         else:
             az_dir = np.array([0.0, 1.0, 0.0])
 
