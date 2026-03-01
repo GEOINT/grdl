@@ -22,6 +22,12 @@ Sub-aperture Decomposition
     ``CSIProcessor`` — Coherent Shape Index (color sub-aperture) RGB
     composite. Man-made targets appear coloured; natural clutter greyscale.
 
+Sub-aperture Features
+    ``DominanceFeatures`` — ImageTransform producing dominance ratio
+    and Shannon entropy feature maps from complex SAR imagery.
+    Also exposes ``compute_dominance`` and ``compute_sublook_entropy``
+    as standalone pure functions.
+
 Image Formation (``image_formation/``)
     ``PolarFormatAlgorithm`` — Spotlight PFA (polar-to-rectangular
     resampling + 2D IFFT).
@@ -87,12 +93,17 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-02-26
 """
 
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.image_processing.sar.multilook import MultilookDecomposition
 from grdl.image_processing.sar.csi import CSIProcessor
+from grdl.image_processing.sar.dominance import (
+    DominanceFeatures,
+    compute_dominance,
+    compute_sublook_entropy,
+)
 from grdl.image_processing.sar.image_formation import (
     ImageFormationAlgorithm,
     CollectionGeometry,
@@ -108,6 +119,9 @@ __all__ = [
     'SublookDecomposition',
     'MultilookDecomposition',
     'CSIProcessor',
+    'DominanceFeatures',
+    'compute_dominance',
+    'compute_sublook_entropy',
     'ImageFormationAlgorithm',
     'CollectionGeometry',
     'PolarGrid',
