@@ -3,9 +3,22 @@
 Detect and CSI Workflow — SICD ship scene exploration.
 
 Opens an UMBRA SICD NITF and extracts a center chip for analysis.
-Demonstrates how to build a grdl-runtime Workflow with deferred
-processor construction and custom callable steps, then benchmark it
-using grdl-te's ActiveBenchmarkRunner and BenchmarkSource.
+Supports sequential and parallel execution modes, controlled by
+flags at the top of ``main()``.
+
+Sequential mode runs Detection and CSI as independent linear
+workflows one after the other.  Parallel mode uses grdl-runtime's
+``Workflow.branches()`` DAG API so both branches execute
+simultaneously — no manual concurrency code.
+
+DAG structure (parallel mode)::
+
+                  ┌─ SublookDecomposition → DominanceDetection
+    chip(center) ─┤
+                  └─ CSIProcessor
+
+Benchmarks compare per-branch times (sequential) against the
+unified parallel workflow to verify wall-clock improvement.
 
 Dependencies
 ------------
@@ -30,7 +43,7 @@ Created
 
 Modified
 --------
-2026-02-26
+2026-02-27
 """
 
 # Standard library
@@ -46,7 +59,6 @@ import yaml
 # GRDL
 sys.path.insert(0, str(Path.home() / "GRDL"))
 from grdl.IO.sar import SICDReader
-from grdl.data_prep import ChipExtractor
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.image_processing.sar.csi import CSIProcessor
 from scipy.ndimage import uniform_filter
@@ -62,12 +74,12 @@ try:
 except ImportError:
     HAS_GRDL_RT = False
 
-# GRDL-TE benchmarking (optional)
+# grdl-te benchmarking (optional)
 try:
     from grdl_te.benchmarking import (
         ActiveBenchmarkRunner,
         BenchmarkSource,
-        print_report,
+        save_report,
     )
     HAS_GRDL_TE = True
 except ImportError:
@@ -219,8 +231,10 @@ def plot_results(chip: np.ndarray, dominance: np.ndarray,
 
 def main():
     # -------- Editable Execution Steps --------
-    plotting = True
-    benchmarking = False
+    plotting = False
+    benchmarking = True
+    sequential = True
+    parallel = True
 
     # ---------- Configuration ----------
     CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -230,85 +244,86 @@ def main():
     SICD_PATH = Path(cfg["input"]["sicd_path"])
     CHIP_SIZE = cfg["input"]["chip_size"]
 
-    # ---------- Shared data ----------
+    # ---------- Chip Extraction ----------
+    chip_wf = (
+        Workflow("Chip", version="1.0.0", modalities=["SAR"])
+        .reader(SICDReader)
+        .chip("center", size=CHIP_SIZE)
+    )
+    chip_result = chip_wf.execute(SICD_PATH)
+    chip = chip_result.result
+
     with SICDReader(SICD_PATH) as rdr:
         chip_metadata = rdr.metadata
 
-    if HAS_GRDL_RT:
-        chip_wf = (
-            Workflow("Chip", version="1.0.0", modalities=["SAR"])
-            .reader(SICDReader)
-            .chip("center", size=CHIP_SIZE)
-        )
-        chip = chip_wf.execute(SICD_PATH).result
-    else:
-        with SICDReader(SICD_PATH) as rdr:
-            full = rdr.read_full()
-        nrows, ncols = full.shape[:2]
-        extractor = ChipExtractor(nrows, ncols)
-        region = extractor.chip_at_point(
-            nrows // 2, ncols // 2, CHIP_SIZE, CHIP_SIZE,
-        )
-        chip = full[region.row_start:region.row_end,
-                     region.col_start:region.col_end]
-
-    # ---------- Detection workflow ----------
-    # reader → chip → SublookDecomposition → DominanceDetection
-    det_cfg = cfg["detection"]
-    sublook = SublookDecomposition(
-        chip_metadata,
-        num_looks=cfg["sublook"]["num_looks"],
-        dimension=cfg["sublook"]["dimension"],
+    # ---------- Sequential Workflows ----------
+    det_wf = (
+        Workflow("Detection", version="1.0.0", modalities=["SAR"])
+        .step(SublookDecomposition,
+              num_looks=cfg["sublook"]["num_looks"],
+              dimension=cfg["sublook"]["dimension"])
+        .step(DominanceDetection,
+              smooth_win=cfg["detection"]["smooth_win"],
+              dom_window=cfg["detection"]["dom_window"],
+              dom_sigma=cfg["detection"]["sigma"],
+              morph_size=cfg["detection"]["morph_size"])
     )
-    detector = DominanceDetection(
-        smooth_win=det_cfg["smooth_win"],
-        dom_window=det_cfg["dom_window"],
-        dom_sigma=det_cfg["sigma"],
-        morph_size=det_cfg["morph_size"],
+    csi_wf = (
+        Workflow("CSI", version="1.0.0", modalities=["SAR"])
+        .step(CSIProcessor,
+              dimension=cfg["sublook"]["dimension"],
+              normalization='log')
     )
 
-    if HAS_GRDL_RT:
-        det_wf = (
-            Workflow("Detection", version="1.0.0", modalities=["SAR"])
-            .step(SublookDecomposition,
-                  num_looks=cfg["sublook"]["num_looks"],
-                  dimension=cfg["sublook"]["dimension"])
-            .step(DominanceDetection,
-                  smooth_win=det_cfg["smooth_win"],
-                  dom_window=det_cfg["dom_window"],
-                  dom_sigma=det_cfg["sigma"],
-                  morph_size=det_cfg["morph_size"])
+    # ---------- Parallel Workflow (DAG) ----------
+    # chip → ┬─ SublookDecomposition → DominanceDetection
+    #        └─———————————— CSIProcessor
+    parallel_wf = (
+        Workflow("CSI-Detection", version="2.0.0", modalities=["SAR"])
+        .branches(
+            Workflow.branch("detection")
+                .step(SublookDecomposition,
+                      id="sublook",
+                      num_looks=cfg["sublook"]["num_looks"],
+                      dimension=cfg["sublook"]["dimension"])
+                .step(DominanceDetection,
+                      id="dominance",
+                      smooth_win=cfg["detection"]["smooth_win"],
+                      dom_window=cfg["detection"]["dom_window"],
+                      dom_sigma=cfg["detection"]["sigma"],
+                      morph_size=cfg["detection"]["morph_size"]),
+            Workflow.branch("csi")
+                .step(CSIProcessor,
+                      id="csi_proc",
+                      dimension=cfg["sublook"]["dimension"],
+                      normalization='log'),
         )
-        dominance, labeled = det_wf.execute(chip, metadata=chip_metadata).result
-    else:
-        looks = sublook.decompose(chip)
-        dominance, labeled = detector.apply(looks)
-
-    n_detections = labeled.max()
-    print(f"Detections: {n_detections}")
-
-    # ---------- CSI workflow ----------
-    # reader → chip → CSIProcessor
-    csi_proc = CSIProcessor(
-        chip_metadata,
-        dimension=cfg["sublook"]["dimension"],
-        normalization='log',
     )
 
-    if HAS_GRDL_RT:
-        csi_wf = (
-            Workflow("CSI", version="1.0.0", modalities=["SAR"])
-            .step(CSIProcessor,
-                  dimension=cfg["sublook"]["dimension"],
-                  normalization='log')
-        )
-        csi_rgb = csi_wf.execute(chip, metadata=chip_metadata).result
-    else:
-        csi_rgb = csi_proc.apply(chip)
+    # ---------- Execute ----------
+    if sequential:
+        det_result = det_wf.execute(chip, metadata=chip_metadata)
+        dominance_seq, labeled_seq = det_result.result
+        csi_result = csi_wf.execute(chip, metadata=chip_metadata)
+        csi_rgb_seq = csi_result.result
+        n_detections_seq = labeled_seq.max()
+        print(f"Sequential Detections: {n_detections_seq}")
+
+    if parallel:
+        result = parallel_wf.execute(chip, metadata=chip_metadata)
+        dominance, labeled = result.step_results["dominance"]
+        csi_rgb = result.step_results["csi_proc"]
+        n_detections = labeled.max()
+        print(f"Parallel Detections: {n_detections}")
 
     # ---------- Plot ----------
-    # Load raw chip for amplitude overlay (no-step workflow returns source)
-    if plotting: plot_results(chip, dominance, labeled, csi_rgb, n_detections, cfg)
+    if plotting:
+        if parallel:
+            plot_results(chip, dominance, labeled, csi_rgb,
+                         n_detections, cfg)
+        elif sequential:
+            plot_results(chip, dominance_seq, labeled_seq, csi_rgb_seq,
+                         n_detections_seq, cfg)
 
     # ---------- Benchmarking ----------
     if benchmarking:
@@ -319,33 +334,44 @@ def main():
             bench_iterations = bench_cfg["iterations"]
             bench_warmup = bench_cfg["warmup"]
 
-            if bench_cfg["source"] == "synthetic":
-                bench_source = BenchmarkSource.synthetic(
-                    bench_cfg["synthetic_size"], dtype=np.complex64,
-                )
-                chip = bench_source.resolve()
-            else:
-                bench_source = BenchmarkSource.from_array(chip)
+        if bench_cfg["source"] == "synthetic":
+            bench_source = BenchmarkSource.synthetic(
+                bench_cfg["synthetic_size"], dtype=np.complex64,
+            )
+        else:
+            bench_source = BenchmarkSource.from_array(chip)
 
+        if sequential:
             det_runner = ActiveBenchmarkRunner(
-                det_wf,
-                bench_source,
-                iterations=bench_iterations,
-                warmup=bench_warmup,
+                det_wf, bench_source,
+                iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "Detection"},
             )
             csi_runner = ActiveBenchmarkRunner(
-                csi_wf,
-                bench_source,
-                iterations=bench_iterations,
-                warmup=bench_warmup,
+                csi_wf, bench_source,
+                iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "CSI"},
             )
-
             det_rec = det_runner.run(metadata=chip_metadata)
             csi_rec = csi_runner.run(metadata=chip_metadata)
+            save_report(
+                [det_rec, csi_rec],
+                f"{Path.cwd()}/../benchmark_reports/"
+                "csi_detect_workflow_sequential_new.txt",
+            )
 
-            print_report([det_rec, csi_rec])
+        if parallel:
+            unified_runner = ActiveBenchmarkRunner(
+                parallel_wf, bench_source,
+                iterations=bench_iterations, warmup=bench_warmup,
+                tags={"workflow": "CSI-Detection (parallel)"},
+            )
+            unified_rec = unified_runner.run(metadata=chip_metadata)
+            save_report(
+                [unified_rec],
+                f"{Path.cwd()}/../benchmark_reports/"
+                "csi_detect_workflow_parallel_new.txt",
+            )
 
 
 if __name__ == "__main__":
