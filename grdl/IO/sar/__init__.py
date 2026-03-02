@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-02
 """
 
 # Standard library
@@ -45,6 +45,14 @@ from grdl.IO.sar.sidd import SIDDReader
 
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
+from grdl.IO.sar.sentinel1_l0 import Sentinel1L0Reader
+
+# CRSD Writer
+from grdl.IO.sar.crsd_writer import CRSDWriter
+
+# Conversion pipelines
+from grdl.IO.sar.sentinel1_l0_to_crsd import Sentinel1L0ToCRSD
+from grdl.IO.sar.crsd_to_cphd import CRSDToCPHD
 
 # TerraSAR-X / TanDEM-X
 from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
@@ -59,7 +67,7 @@ from grdl.IO.sar.nisar import NISARReader, open_nisar
 # Metadata models
 from grdl.IO.models import (
     SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
-    TerraSARMetadata, NISARMetadata,
+    TerraSARMetadata, NISARMetadata, Sentinel1L0Metadata,
 )
 
 # Base class (for return type)
@@ -125,11 +133,17 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
-    # Try Sentinel-1 SAFE
+    # Try Sentinel-1 SAFE (L0 first, then SLC)
     if filepath.is_dir() and (
         filepath.suffix.upper() == '.SAFE'
         or (filepath / 'manifest.safe').exists()
     ):
+        # Detect L0 RAW products by directory name convention
+        if '_RAW_' in filepath.name.upper():
+            try:
+                return Sentinel1L0Reader(filepath)
+            except (ValueError, ImportError, Exception):
+                pass
         try:
             return Sentinel1SLCReader(filepath)
         except (ValueError, ImportError, Exception):
@@ -184,6 +198,13 @@ __all__ = [
     'SIDDReader',
     # Sentinel-1
     'Sentinel1SLCReader',
+    'Sentinel1L0Reader',
+    'Sentinel1L0Metadata',
+    # CRSD Writer
+    'CRSDWriter',
+    # Conversion pipelines
+    'Sentinel1L0ToCRSD',
+    'CRSDToCPHD',
     # TerraSAR-X / TanDEM-X
     'TerraSARReader',
     'TerraSARMetadata',

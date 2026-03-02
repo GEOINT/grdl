@@ -37,6 +37,7 @@ dependencies = [
 sar = [
     "sarpy>=1.3.0",
     "sarkit>=1.3.0",
+    "sentinel1decoder>=2.0.0",
 ]
 eo = [
     "rasterio>=1.2.0",
@@ -71,6 +72,7 @@ examples = [
 all = [
     "sarpy>=1.3.0",
     "sarkit>=1.3.0",
+    "sentinel1decoder>=2.0.0",
     "rasterio>=1.2.0",
     "glymur>=0.9.0",
     "h5py>=3.0.0",
