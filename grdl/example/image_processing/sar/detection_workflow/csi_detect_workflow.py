@@ -357,7 +357,7 @@ def main():
             save_report(
                 [det_rec, csi_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
-                "csi_detect_workflow_sequential_new.txt",
+                "csi_detect_workflow_sequential.txt",
             )
 
         if parallel:
@@ -370,7 +370,7 @@ def main():
             save_report(
                 [unified_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
-                "csi_detect_workflow_parallel_new.txt",
+                "csi_detect_workflow_parallel.txt",
             )
 
 
