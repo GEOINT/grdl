@@ -153,6 +153,8 @@ class CSIProcessor(ImageProcessor):
     ...     rgb = csi.apply(image)  # (rows, cols, 3) float64
     """
 
+    __gpu_compatible__ = True
+
     # -- Annotated scalar fields for GUI introspection (__param_specs__) --
     dimension: Annotated[str, Options('azimuth', 'range'), Desc('Frequency axis to split')] = 'azimuth'
     overlap: Annotated[float, Range(min=0.0, max=0.99), Desc('Fractional overlap between sub-bands')] = 0.5

@@ -235,6 +235,7 @@ def main():
     benchmarking = True
     sequential = True
     parallel = True
+    gpu = False
 
     # ---------- Configuration ----------
     CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -301,29 +302,30 @@ def main():
     )
 
     # ---------- Execute ----------
-    if sequential:
-        det_result = det_wf.execute(chip, metadata=chip_metadata)
-        dominance_seq, labeled_seq = det_result.result
-        csi_result = csi_wf.execute(chip, metadata=chip_metadata)
-        csi_rgb_seq = csi_result.result
-        n_detections_seq = labeled_seq.max()
-        print(f"Sequential Detections: {n_detections_seq}")
+    if not benchmarking:
+        if sequential:
+            det_result = det_wf.execute(chip, metadata=chip_metadata, prefer_gpu=gpu)
+            dominance_seq, labeled_seq = det_result.result
+            csi_result = csi_wf.execute(chip, metadata=chip_metadata, prefer_gpu=gpu)
+            csi_rgb_seq = csi_result.result
+            n_detections_seq = labeled_seq.max()
+            print(f"Sequential Detections: {n_detections_seq}")
 
-    if parallel:
-        result = parallel_wf.execute(chip, metadata=chip_metadata)
-        dominance, labeled = result.step_results["dominance"]
-        csi_rgb = result.step_results["csi_proc"]
-        n_detections = labeled.max()
-        print(f"Parallel Detections: {n_detections}")
-
-    # ---------- Plot ----------
-    if plotting:
         if parallel:
-            plot_results(chip, dominance, labeled, csi_rgb,
-                         n_detections, cfg)
-        elif sequential:
-            plot_results(chip, dominance_seq, labeled_seq, csi_rgb_seq,
-                         n_detections_seq, cfg)
+            result = parallel_wf.execute(chip, metadata=chip_metadata, prefer_gpu=gpu)
+            dominance, labeled = result.step_results["dominance"]
+            csi_rgb = result.step_results["csi_proc"]
+            n_detections = labeled.max()
+            print(f"Parallel Detections: {n_detections}")
+
+        # ---------- Plot ----------
+        if plotting:
+            if parallel:
+                plot_results(chip, dominance, labeled, csi_rgb,
+                            n_detections, cfg)
+            elif sequential:
+                plot_results(chip, dominance_seq, labeled_seq, csi_rgb_seq,
+                            n_detections_seq, cfg)
 
     # ---------- Benchmarking ----------
     if benchmarking:
@@ -352,8 +354,8 @@ def main():
                 iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "CSI"},
             )
-            det_rec = det_runner.run(metadata=chip_metadata)
-            csi_rec = csi_runner.run(metadata=chip_metadata)
+            det_rec = det_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
+            csi_rec = csi_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
             save_report(
                 [det_rec, csi_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
@@ -366,7 +368,7 @@ def main():
                 iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "CSI-Detection (parallel)"},
             )
-            unified_rec = unified_runner.run(metadata=chip_metadata)
+            unified_rec = unified_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
             save_report(
                 [unified_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
