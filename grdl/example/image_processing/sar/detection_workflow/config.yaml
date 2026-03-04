@@ -1,6 +1,6 @@
 input:
-  sicd_path: /Users/duanesmalley/SAR_DATA/SICD/2025-06-20-02-42-41_UMBRA-05_SICD.nitf
-  chip_size: 10000
+  sicd_path: /code/data/2025-05-01-04-56-28_UMBRA-07_SICD.nitf
+  chip_size: 5000
 
 sublook:
   num_looks: 7

@@ -31,6 +31,12 @@ from typing import Annotated, Any
 # Third-party
 import numpy as np
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.params import Desc, Range
@@ -145,8 +151,9 @@ class PercentileStretch(ImageTransform):
         plow = params['plow']
         phigh = params['phigh']
 
-        vmin = np.percentile(source, plow)
-        vmax = np.percentile(source, phigh)
+        xp = cp if (_HAS_CUPY and isinstance(source, cp.ndarray)) else np
+        vmin = float(xp.percentile(source, plow))
+        vmax = float(xp.percentile(source, phigh))
         if vmax - vmin < np.finfo(np.float32).eps:
             return np.zeros_like(source, dtype=np.float32)
         out = (source - vmin) / (vmax - vmin)

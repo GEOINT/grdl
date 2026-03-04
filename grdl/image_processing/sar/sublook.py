@@ -9,8 +9,10 @@ configurable overlap between adjacent sub-bands. Optionally removes the
 original apodization window before splitting so sub-looks are not shaped
 by the collection window.
 
-Accepts both numpy arrays and PyTorch tensors as input. Always returns
-numpy arrays. The torch path enables GPU-accelerated FFTs for large images.
+Accepts numpy arrays, CuPy arrays, and PyTorch tensors as input. Returns
+the same array type as the input for numpy and CuPy; the PyTorch path
+always returns a numpy array. Both the CuPy and torch paths support
+GPU-accelerated FFTs for large images.
 
 Dependencies
 ------------
@@ -49,6 +51,12 @@ try:
 except ImportError:
     _HAS_TORCH = False
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.params import Desc, Options, Range
@@ -65,25 +73,28 @@ if TYPE_CHECKING:
 # ===================================================================
 
 def _validate_complex_2d(image: np.ndarray) -> None:
-    """Validate that *image* is a 2D complex numpy array.
+    """Validate that *image* is a 2D complex numpy or cupy array.
 
     Parameters
     ----------
     image : np.ndarray
-        Array to validate.
+        Array to validate.  Also accepts ``cupy.ndarray`` when CuPy is
+        installed.
 
     Raises
     ------
     TypeError
-        If *image* is not a numpy array or not complex-valued.
+        If *image* is not a numpy/cupy array or not complex-valued.
     ValueError
         If *image* is not 2D.
     """
-    if not isinstance(image, np.ndarray):
+    is_cupy = _HAS_CUPY and isinstance(image, cp.ndarray)
+    if not isinstance(image, np.ndarray) and not is_cupy:
         raise TypeError(
-            f"image must be a numpy ndarray, got {type(image).__name__}"
+            f"image must be a numpy or cupy ndarray, got {type(image).__name__}"
         )
-    if not np.iscomplexobj(image):
+    xp = cp if is_cupy else np
+    if not xp.iscomplexobj(image):
         raise TypeError(
             f"image must be complex-valued (complex64 or complex128), "
             f"got {image.dtype}. Pass the complex image from the SAR reader."
@@ -429,18 +440,23 @@ class SublookDecomposition(ImageProcessor):
     ) -> np.ndarray:
         """Decompose a complex SAR image into sub-aperture looks.
 
+        Dispatches to the appropriate backend based on input type:
+
+        - ``torch.Tensor`` → ``_decompose_torch`` (PyTorch CUDA / CPU)
+        - ``cupy.ndarray`` → ``_decompose_numpy`` with ``xp = cupy``
+        - ``numpy.ndarray`` → ``_decompose_numpy`` with ``xp = numpy``
+
         Parameters
         ----------
-        image : np.ndarray or torch.Tensor
-            2D complex array, shape ``(rows, cols)``. If a torch tensor
-            is provided, the FFT is computed on the tensor's device
-            (CPU or CUDA) and the result is returned as a numpy array.
+        image : np.ndarray, cupy.ndarray, or torch.Tensor
+            2D complex array, shape ``(rows, cols)``.
 
         Returns
         -------
-        np.ndarray
+        np.ndarray or cupy.ndarray
             Complex sub-look stack, shape ``(num_looks, rows, cols)``.
-            Always a numpy array regardless of input type.
+            Returns ``np.ndarray`` for numpy or torch input;
+            ``cupy.ndarray`` for CuPy input.
 
         Raises
         ------
@@ -455,18 +471,27 @@ class SublookDecomposition(ImageProcessor):
         return self._decompose_numpy(image)
 
     def _decompose_numpy(self, image: np.ndarray) -> np.ndarray:
-        """Numpy FFT path.
+        """Numpy / CuPy FFT path.
+
+        Uses the xp pattern so the same implementation runs on either
+        backend: ``xp = cupy`` when *image* is a ``cupy.ndarray``,
+        otherwise ``xp = numpy``.  Helper methods (``_compute_subband_bins``
+        and ``_build_deweight_array``) always run on CPU and return numpy
+        arrays; the deweight array is uploaded to the GPU via
+        ``xp.asarray()`` when needed.
 
         Parameters
         ----------
-        image : np.ndarray
+        image : np.ndarray or cupy.ndarray
             2D complex array.
 
         Returns
         -------
-        np.ndarray
+        np.ndarray or cupy.ndarray
             Complex sub-look stack, shape ``(num_looks, rows, cols)``.
+            Same array type as *image*.
         """
+        xp = cp if (_HAS_CUPY and isinstance(image, cp.ndarray)) else np
         _validate_complex_2d(image)
         axis = self._axis
         n_samples = image.shape[axis]
@@ -474,7 +499,7 @@ class SublookDecomposition(ImageProcessor):
         starts, stops, osr = self._compute_subband_bins(n_samples)
 
         # FFT along decomposition axis, then shift DC to center
-        spectrum = np.fft.fftshift(np.fft.fft(image, axis=axis), axes=axis)
+        spectrum = xp.fft.fftshift(xp.fft.fft(image, axis=axis), axes=axis)
 
         # Deweight within signal support
         support_start = starts[0]
@@ -482,29 +507,29 @@ class SublookDecomposition(ImageProcessor):
         n_support_bins = support_stop - support_start
         deweight_arr = self._build_deweight_array(n_support_bins)
         if deweight_arr is not None:
-            # Build broadcastable shape
+            # Build broadcastable shape; upload numpy deweight to device if needed
             shape = [1, 1]
             shape[axis] = n_support_bins
-            dw = deweight_arr.reshape(shape)
+            dw = xp.asarray(deweight_arr.reshape(shape))
             slices = [slice(None), slice(None)]
             slices[axis] = slice(support_start, support_stop)
             spectrum[tuple(slices)] = spectrum[tuple(slices)] * dw
 
         # Extract sub-looks
         rows, cols = image.shape
-        result = np.zeros(
+        result = xp.zeros(
             (self._num_looks, rows, cols), dtype=image.dtype
         )
 
         for i in range(self._num_looks):
-            sub_spectrum = np.zeros_like(spectrum)
+            sub_spectrum = xp.zeros_like(spectrum)
             slices = [slice(None), slice(None)]
             slices[axis] = slice(starts[i], stops[i])
             sub_spectrum[tuple(slices)] = spectrum[tuple(slices)]
 
             # Shift back and inverse FFT
-            result[i] = np.fft.ifft(
-                np.fft.ifftshift(sub_spectrum, axes=axis), axis=axis
+            result[i] = xp.fft.ifft(
+                xp.fft.ifftshift(sub_spectrum, axes=axis), axis=axis
             )
 
         return result
