@@ -54,6 +54,7 @@ from grdl.IO.models.sentinel1_l0 import (
     S1L0ProductInfo,
     S1L0RadarParams,
     S1L0ChannelInfo,
+    S1L0SwathInfo,
     S1L0FootprintCoord,
 )
 
@@ -247,6 +248,9 @@ class Sentinel1L0Reader(ImageReader):
         self._channel_decoders: Dict[str, sentinel1decoder.Level0Decoder] = {}
         self._channel_metadata: Dict[str, pd.DataFrame] = {}
         self._channel_echo_metadata: Dict[str, pd.DataFrame] = {}
+        # Mapping from raw ISP swath number to logical 1-based index
+        self._swath_raw_to_logical: Dict[int, int] = {}
+        self._swath_logical_to_raw: Dict[int, int] = {}
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -344,6 +348,23 @@ class Sentinel1L0Reader(ImageReader):
                 f"No valid polarization channels found in {safe_dir}"
             )
 
+        # Build raw → logical swath number mapping.
+        # Raw ISP header values (e.g. 10, 11, 12 for IW) get mapped
+        # to 1-based logical indices (1, 2, 3).
+        all_raw_swaths: set = set()
+        for ch_info in channels.values():
+            all_raw_swaths.update(ch_info.swath_numbers)
+        for idx, raw_sn in enumerate(sorted(all_raw_swaths), start=1):
+            self._swath_raw_to_logical[int(raw_sn)] = idx
+            self._swath_logical_to_raw[idx] = int(raw_sn)
+
+        # Replace raw swath_numbers with logical ones in channel info
+        for ch_info in channels.values():
+            ch_info.swath_numbers = [
+                self._swath_raw_to_logical[int(sn)]
+                for sn in ch_info.swath_numbers
+            ]
+
         # Derive radar parameters from first echo packet of first channel
         first_ch = next(iter(channels.values()))
         first_echo = self._channel_echo_metadata[first_ch.polarization]
@@ -391,7 +412,7 @@ class Sentinel1L0Reader(ImageReader):
         )
 
     def get_channel_echo_metadata(
-        self, polarization: str,
+        self, polarization: str, swath: Optional[int] = None,
     ) -> pd.DataFrame:
         """Get parsed ISP metadata for echo packets in a channel.
 
@@ -399,6 +420,9 @@ class Sentinel1L0Reader(ImageReader):
         ----------
         polarization : str
             Channel label (``'VV'``, ``'VH'``, ``'HH'``, ``'HV'``).
+        swath : int, optional
+            If provided, filter to only this logical sub-swath number
+            (1, 2, or 3 for IW mode).
 
         Returns
         -------
@@ -410,7 +434,23 @@ class Sentinel1L0Reader(ImageReader):
                 f"Channel '{polarization}' not found. "
                 f"Available: {list(self._channel_echo_metadata.keys())}"
             )
-        return self._channel_echo_metadata[polarization]
+        echo_df = self._channel_echo_metadata[polarization]
+        if swath is not None:
+            raw_sn = self._swath_logical_to_raw.get(swath)
+            if raw_sn is None:
+                avail = sorted(self._swath_logical_to_raw.keys())
+                raise ValueError(
+                    f"Logical swath {swath} not found. "
+                    f"Available swaths: {avail}"
+                )
+            echo_df = echo_df[echo_df['Swath Number'] == raw_sn]
+            if len(echo_df) == 0:
+                avail = sorted(self._swath_logical_to_raw.keys())
+                raise ValueError(
+                    f"No packets for swath {swath} (raw={raw_sn}) in "
+                    f"channel '{polarization}'. Available swaths: {avail}"
+                )
+        return echo_df
 
     def get_channel_all_metadata(
         self, polarization: str,
@@ -434,12 +474,49 @@ class Sentinel1L0Reader(ImageReader):
             )
         return self._channel_metadata[polarization]
 
+    def get_swath_info(
+        self, polarization: str,
+    ) -> Dict[int, S1L0SwathInfo]:
+        """Get per-swath metadata for a polarization channel.
+
+        Parameters
+        ----------
+        polarization : str
+            Channel label (``'VV'``, ``'VH'``, ``'HH'``, ``'HV'``).
+
+        Returns
+        -------
+        Dict[int, S1L0SwathInfo]
+            Mapping from logical swath number (1-based) to swath metadata.
+        """
+        echo_df = self.get_channel_echo_metadata(polarization)
+        ch_info = self.metadata.channels[polarization]
+        swath_info: Dict[int, S1L0SwathInfo] = {}
+        for raw_sn in sorted(echo_df['Swath Number'].unique()):
+            raw_sn_int = int(raw_sn)
+            logical_sn = self._swath_raw_to_logical.get(raw_sn_int)
+            if logical_sn is None:
+                continue
+            swath_df = echo_df[echo_df['Swath Number'] == raw_sn]
+            swath_info[logical_sn] = S1L0SwathInfo(
+                swath_number=logical_sn,
+                raw_swath_number=raw_sn_int,
+                polarization=polarization,
+                tx_pol=ch_info.tx_pol,
+                rx_pol=ch_info.rx_pol,
+                num_echo_packets=len(swath_df),
+                max_num_quads=int(swath_df['Number of Quads'].max()),
+                channel_key=f"IW{logical_sn}_{polarization}",
+            )
+        return swath_info
+
     def decode_channel(
         self,
         polarization: str,
         max_packets: Optional[int] = None,
+        swath: Optional[int] = None,
     ) -> np.ndarray:
-        """Decompress all echo packets for a channel.
+        """Decompress echo packets for a channel.
 
         Parameters
         ----------
@@ -447,6 +524,10 @@ class Sentinel1L0Reader(ImageReader):
             Channel label (``'VV'``, ``'VH'``, ``'HH'``, ``'HV'``).
         max_packets : int, optional
             If set, only decode the first N echo packets.
+        swath : int, optional
+            If provided, decode only packets from this sub-swath.
+            The output width is determined by the max quad count for
+            this swath only (no cross-swath zero-padding).
 
         Returns
         -------
@@ -454,15 +535,18 @@ class Sentinel1L0Reader(ImageReader):
             Complex signal data, shape ``(num_vectors, num_samples)``,
             dtype ``complex64``. Zero-padded to uniform sample count.
         """
-        echo_df = self.get_channel_echo_metadata(polarization)
+        echo_df = self.get_channel_echo_metadata(polarization, swath=swath)
         decoder = self._channel_decoders[polarization]
-        ch_info = self.metadata.channels[polarization]
 
         if max_packets is not None:
             echo_df = echo_df.head(max_packets)
 
         num_vectors = len(echo_df)
-        num_samples_max = 2 * ch_info.max_num_quads
+        if swath is not None:
+            num_samples_max = 2 * int(echo_df['Number of Quads'].max())
+        else:
+            ch_info = self.metadata.channels[polarization]
+            num_samples_max = 2 * ch_info.max_num_quads
 
         # IW mode has multiple swaths with different num_quads.
         # sentinel1decoder requires uniform num_quads per batch,

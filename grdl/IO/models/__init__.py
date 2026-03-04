@@ -192,6 +192,7 @@ from grdl.IO.models.sentinel1_l0 import (
     S1L0ProductInfo,
     S1L0RadarParams,
     S1L0ChannelInfo,
+    S1L0SwathInfo,
     S1L0FootprintCoord,
 )
 
@@ -351,6 +352,7 @@ __all__ = [
     'S1L0ProductInfo',
     'S1L0RadarParams',
     'S1L0ChannelInfo',
+    'S1L0SwathInfo',
     'S1L0FootprintCoord',
     # NISAR
     'NISARMetadata',

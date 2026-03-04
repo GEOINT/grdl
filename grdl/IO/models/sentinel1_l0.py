@@ -132,6 +132,40 @@ class S1L0ChannelInfo:
 
 
 @dataclass
+class S1L0SwathInfo:
+    """Information about one sub-swath within a polarization channel.
+
+    Parameters
+    ----------
+    swath_number : int
+        Logical sub-swath index (1, 2, or 3 for IW mode).
+    raw_swath_number : int
+        Raw ISP header swath number (e.g. 10, 11, 12 for IW mode).
+    polarization : str
+        Polarization label (``'VV'``, ``'VH'``, ``'HH'``, ``'HV'``).
+    tx_pol : str
+        Transmit polarization (``'V'`` or ``'H'``).
+    rx_pol : str
+        Receive polarization (``'V'`` or ``'H'``).
+    num_echo_packets : int
+        Number of echo packets belonging to this swath.
+    max_num_quads : int
+        Maximum number of quads across echo packets in this swath.
+    channel_key : str
+        Combined key for CRSD channel identification, e.g. ``'IW1_VV'``.
+    """
+
+    swath_number: int = 0
+    raw_swath_number: int = 0
+    polarization: str = ""
+    tx_pol: str = ""
+    rx_pol: str = ""
+    num_echo_packets: int = 0
+    max_num_quads: int = 0
+    channel_key: str = ""
+
+
+@dataclass
 class S1L0FootprintCoord:
     """A single lat/lon coordinate in the scene footprint."""
 

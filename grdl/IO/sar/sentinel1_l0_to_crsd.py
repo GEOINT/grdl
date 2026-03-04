@@ -28,17 +28,19 @@ Created
 
 Modified
 --------
-2026-03-02
+2026-03-03
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 from lxml import etree
 from scipy.interpolate import CubicSpline
 
@@ -265,11 +267,34 @@ def _compute_antenna_frame(
 
 
 # ===================================================================
+# Internal: per-swath-pol channel descriptor
+# ===================================================================
+
+@dataclass
+class _SwathChannel:
+    """Metadata for one swath+polarization combination during conversion."""
+
+    key: str                    # e.g. "IW1_VV"
+    swath_number: int           # 1, 2, or 3
+    polarization: str           # "VV", "VH", etc.
+    tx_pol: str
+    rx_pol: str
+    num_vectors: int            # echo packets in this swath
+    num_samples: int            # 2 * max_num_quads for this swath
+    echo_df: pd.DataFrame       # filtered to this swath
+    global_indices: np.ndarray  # row indices into full echo_df → TxPulseIndex
+
+
+# ===================================================================
 # Conversion pipeline
 # ===================================================================
 
 class Sentinel1L0ToCRSD:
     """Convert Sentinel-1 Level-0 IW SAFE to NGA CRSD format.
+
+    Each IW sub-swath + polarization combination becomes a distinct
+    CRSD receive channel (e.g. ``IW1_VV``, ``IW2_VH``), so that each
+    channel has uniform signal dimensions (no cross-swath zero-padding).
 
     Parameters
     ----------
@@ -281,9 +306,11 @@ class Sentinel1L0ToCRSD:
         Path to an ESA precise orbit file (EOF XML). If not provided,
         orbit is extracted from ISP sub-commutated telemetry.
     channel : str, optional
-        Polarization channel to convert (e.g. ``"VV"``, ``"VH"``).
-        If *None* (default), all channels present in the SAFE product
-        are written to the CRSD file.
+        Polarization to convert (e.g. ``"VV"``, ``"VH"``).
+        If *None* (default), all polarizations are included.
+    swath : int, optional
+        Sub-swath number to convert (1, 2, or 3 for IW mode).
+        If *None* (default), all sub-swaths are included.
 
     Examples
     --------
@@ -293,11 +320,12 @@ class Sentinel1L0ToCRSD:
     ... )
     >>> converter.convert()
 
-    >>> # Single channel only
+    >>> # Single swath + polarization
     >>> Sentinel1L0ToCRSD(
     ...     safe_path='S1C_IW_RAW__0SDV_....SAFE',
-    ...     output_path='output_vv.crsd',
+    ...     output_path='output.IW1_VV.crsd',
     ...     channel='VV',
+    ...     swath=1,
     ... ).convert()
     """
 
@@ -307,11 +335,13 @@ class Sentinel1L0ToCRSD:
         output_path: Union[str, Path],
         orbit_file: Optional[Union[str, Path]] = None,
         channel: Optional[str] = None,
+        swath: Optional[int] = None,
     ) -> None:
         self.safe_path = Path(safe_path)
         self.output_path = Path(output_path)
         self.orbit_file = Path(orbit_file) if orbit_file else None
         self.channel = channel
+        self.swath = swath
 
     def convert(self) -> Path:
         """Run the full conversion pipeline.
@@ -330,51 +360,95 @@ class Sentinel1L0ToCRSD:
         radar = meta.radar_params
         product = meta.product_info
 
-        # Filter to requested channel (default: all)
+        # Filter to requested polarization (default: all)
         if self.channel is not None:
             if self.channel not in all_channels:
                 avail = list(all_channels.keys())
                 raise ValueError(
                     f"Channel '{self.channel}' not found. Available: {avail}"
                 )
-            channels = {self.channel: all_channels[self.channel]}
+            pol_channels = {self.channel: all_channels[self.channel]}
         else:
-            channels = all_channels
+            pol_channels = all_channels
 
         logger.info(
-            "Product: %s %s, channels: %s",
+            "Product: %s %s, polarizations: %s",
             product.mission, product.mode,
-            list(channels.keys()),
+            list(pol_channels.keys()),
         )
 
         # Step 2: Build orbit interpolator
-        orbit = self._build_orbit_interpolator(channels)
+        orbit = self._build_orbit_interpolator(pol_channels)
 
         # Step 3: Compute scene geometry
         iarp_llh, iarp_ecf = self._compute_iarp(meta.footprint)
         ref_time_s1, collection_ref_dt = self._compute_ref_time(reader)
 
-        # Step 4: Collect echo metadata per channel
-        channel_echo_meta = {}
-        for pol in channels:
-            channel_echo_meta[pol] = reader.get_channel_echo_metadata(pol)
+        # Step 4: Build swath channel descriptors
+        # Get full echo metadata per polarization (all swaths)
+        full_echo_meta = {}
+        for pol in pol_channels:
+            full_echo_meta[pol] = reader.get_channel_echo_metadata(pol)
+
+        # Build per-swath+pol channel descriptors
+        swath_channels = {}  # key -> _SwathChannel
+        for pol, ch_info in pol_channels.items():
+            swath_info = reader.get_swath_info(pol)
+            full_df = full_echo_meta[pol]
+
+            for sn in sorted(swath_info.keys()):
+                if self.swath is not None and sn != self.swath:
+                    continue
+                si = swath_info[sn]
+                key = si.channel_key  # e.g. "IW1_VV"
+
+                # Filter echo_df using raw ISP swath number
+                raw_sn = si.raw_swath_number
+                mask = full_df["Swath Number"].values == raw_sn
+                swath_df = full_df[mask].reset_index(drop=True)
+                global_indices = np.where(mask)[0]
+
+                swath_channels[key] = _SwathChannel(
+                    key=key,
+                    swath_number=sn,
+                    polarization=pol,
+                    tx_pol=ch_info.tx_pol,
+                    rx_pol=ch_info.rx_pol,
+                    num_vectors=len(swath_df),
+                    num_samples=2 * si.max_num_quads,
+                    echo_df=swath_df,
+                    global_indices=global_indices,
+                )
+
+        if not swath_channels:
+            all_swaths = set()
+            for si_dict in (reader.get_swath_info(p) for p in pol_channels):
+                all_swaths.update(si_dict.keys())
+            raise ValueError(
+                f"No swath channels to convert. "
+                f"Requested swath={self.swath}, "
+                f"available logical swaths: {sorted(all_swaths)}"
+            )
+
+        logger.info(
+            "Swath channels: %s", list(swath_channels.keys()),
+        )
 
         # Step 5: Derive timing bounds
         timing = self._compute_timing_bounds(
-            channel_echo_meta, ref_time_s1, radar,
+            swath_channels, full_echo_meta, ref_time_s1, radar,
         )
 
         # Step 6: Build CRSD XML
         xmltree = self._build_crsd_xml(
-            meta, channels, radar, orbit, iarp_llh, iarp_ecf,
-            collection_ref_dt, ref_time_s1, timing,
-            channel_echo_meta,
+            meta, swath_channels, full_echo_meta, radar, orbit,
+            iarp_llh, iarp_ecf, collection_ref_dt, ref_time_s1, timing,
         )
 
         # Step 7-11: Build arrays and write CRSD
         self._write_crsd(
-            xmltree, reader, channels, radar, orbit,
-            ref_time_s1, channel_echo_meta,
+            xmltree, reader, swath_channels, full_echo_meta,
+            radar, orbit, ref_time_s1,
         )
 
         reader.close()
@@ -516,16 +590,18 @@ class Sentinel1L0ToCRSD:
 
     def _compute_timing_bounds(
         self,
-        channel_echo_meta: Dict,
+        swath_channels: Dict[str, _SwathChannel],
+        full_echo_meta: Dict[str, pd.DataFrame],
         ref_time: float,
         radar,
-    ) -> Dict[str, float]:
-        """Compute global timing and frequency bounds."""
+    ) -> Dict:
+        """Compute global and per-channel timing and frequency bounds."""
+        # Global TX timing from full (all-swaths) echo metadata
         all_coarse = []
         all_fine = []
         all_swst = []
 
-        for pol, echo_df in channel_echo_meta.items():
+        for pol, echo_df in full_echo_meta.items():
             all_coarse.append(echo_df["Coarse Time"].values.astype(np.float64))
             all_fine.append(echo_df["Fine Time"].values.astype(np.float64))
             all_swst.append(echo_df["SWST"].values.astype(np.float64))
@@ -538,6 +614,18 @@ class Sentinel1L0ToCRSD:
         bw = radar.tx_bandwidth
         f0 = radar.center_frequency
 
+        # Per-channel receive timing
+        per_channel = {}
+        for key, sc in swath_channels.items():
+            ch_coarse = sc.echo_df["Coarse Time"].values.astype(np.float64)
+            ch_fine = sc.echo_df["Fine Time"].values.astype(np.float64)
+            ch_swst = sc.echo_df["SWST"].values.astype(np.float64)
+            ch_sensing = ch_coarse + ch_fine
+            per_channel[key] = {
+                "rcv_start_time1": float((ch_sensing + ch_swst).min() - ref_time),
+                "rcv_start_time2": float((ch_sensing + ch_swst).max() - ref_time),
+            }
+
         return {
             "tx_time1": float(sensing.min() - ref_time),
             "tx_time2": float(sensing.max() - ref_time),
@@ -547,6 +635,7 @@ class Sentinel1L0ToCRSD:
             "rcv_start_time2": float((sensing + swst).max() - ref_time),
             "frcv_min": f0 - bw / 2,
             "frcv_max": f0 + bw / 2,
+            "per_channel": per_channel,
         }
 
     # ---------------------------------------------------------------
@@ -554,16 +643,16 @@ class Sentinel1L0ToCRSD:
     # ---------------------------------------------------------------
 
     def _build_crsd_xml(
-        self, meta, channels, radar, orbit, iarp_llh, iarp_ecf,
-        collection_ref_dt, ref_time, timing, channel_echo_meta,
+        self, meta, swath_channels, full_echo_meta, radar, orbit,
+        iarp_llh, iarp_ecf, collection_ref_dt, ref_time, timing,
     ) -> etree.ElementTree:
         """Build the complete CRSDsar XML tree."""
         product = meta.product_info
         root = etree.Element(f"{{{CRSD_NS}}}CRSDsar", nsmap=NSMAP)
 
-        # Determine TX polarization from channels
-        first_ch = next(iter(channels.values()))
-        tx_pol = first_ch.tx_pol  # 'V' or 'H'
+        # Determine TX polarization from first swath channel
+        first_sc = next(iter(swath_channels.values()))
+        tx_pol = first_sc.tx_pol  # 'V' or 'H'
 
         # --- ProductInfo ---
         pi = _sub(root, "ProductInfo")
@@ -619,10 +708,9 @@ class Sentinel1L0ToCRSD:
         _sub_xyz(planar, "uIAX", u_east[0], u_east[1], u_east[2])
         _sub_xyz(planar, "uIAY", u_north[0], u_north[1], u_north[2])
 
-        # ImageArea (required)
-        first_ch_info = next(iter(channels.values()))
-        num_lines = first_ch_info.num_echo_packets
-        num_samples = 2 * first_ch_info.max_num_quads
+        # ImageArea (required) — use largest swath channel
+        num_lines = max(sch.num_vectors for sch in swath_channels.values())
+        num_samples = max(sch.num_samples for sch in swath_channels.values())
         ia = _sub(sc, "ImageArea")
         _sub_xy(ia, "X1Y1", 0.0, 0.0)
         _sub_xy(ia, "X2Y2", float(num_lines - 1), float(num_samples - 1))
@@ -648,13 +736,13 @@ class Sentinel1L0ToCRSD:
                 cp.set("index", str(idx))
 
         # --- Data ---
-        self._build_data_section(root, channels, radar)
+        self._build_data_section(root, swath_channels, full_echo_meta, radar)
 
         # --- TxSequence ---
         self._build_tx_sequence(root, radar, timing, tx_pol, iarp_ecf)
 
         # --- Channel ---
-        self._build_channel_section(root, channels, radar, timing, iarp_ecf)
+        self._build_channel_section(root, swath_channels, radar, timing, iarp_ecf)
 
         # --- ReferenceGeometry (placeholder, computed after PVP/PPP) ---
         rg = _sub(root, "ReferenceGeometry")
@@ -673,19 +761,16 @@ class Sentinel1L0ToCRSD:
         self._build_pvp_section(root)
 
         # --- Antenna ---
-        self._build_antenna_section(root, channels, tx_pol)
+        self._build_antenna_section(root, swath_channels, tx_pol)
 
         tree = etree.ElementTree(root)
         return tree
 
-    def _build_data_section(self, root, channels, radar):
+    def _build_data_section(self, root, swath_channels, full_echo_meta, radar):
         """Build the Data section (binary data parameters)."""
         data = _sub(root, "Data")
 
         # Support arrays: GP1 (GainPhase), FXR1 (FxResponse), DTA1 (DwellTime)
-        # GP1: 1 row x 1 col, Gain=F4;Phase=F4; = 8 bytes/element
-        # FXR1: 2 rows x 1 col, Amp=F4;Phase=F4; = 8 bytes/element
-        # DTA1: 1 row x 1 col, COD=F4;DT=F4; = 8 bytes/element
         support = _sub(data, "Support")
         _sub(support, "NumSupportArrays", "3")
 
@@ -710,34 +795,34 @@ class Sentinel1L0ToCRSD:
         _sub(sa3, "BytesPerElement", "8")
         _sub(sa3, "ArrayByteOffset", "24")
 
-        # Transmit
+        # Transmit — NumPulses = total echo packets for first pol (all swaths)
+        first_pol = next(iter(full_echo_meta.keys()))
+        total_pulses = len(full_echo_meta[first_pol])
+
         tx = _sub(data, "Transmit")
         _sub(tx, "NumBytesPPP", str(self._ppp_num_bytes()))
         _sub(tx, "NumTxSequences", "1")
         txs = _sub(tx, "TxSequence")
         _sub(txs, "TxId", "TX1")
-        first_ch = next(iter(channels.values()))
-        _sub(txs, "NumPulses", str(first_ch.num_echo_packets))
+        _sub(txs, "NumPulses", str(total_pulses))
         _sub(txs, "PPPArrayByteOffset", "0")
 
-        # Receive
+        # Receive — one channel per swath+pol
         rcv = _sub(data, "Receive")
         _sub(rcv, "SignalArrayFormat", "CF8")
         _sub(rcv, "NumBytesPVP", str(self._pvp_num_bytes()))
-        _sub(rcv, "NumCRSDChannels", str(len(channels)))
+        _sub(rcv, "NumCRSDChannels", str(len(swath_channels)))
         sig_offset = 0
         pvp_offset = 0
-        for pol, ch_info in channels.items():
+        for key, sc in swath_channels.items():
             ch_elem = _sub(rcv, "Channel")
-            _sub(ch_elem, "ChId", pol)
-            num_vec = ch_info.num_echo_packets
-            num_samp = 2 * ch_info.max_num_quads
-            _sub(ch_elem, "NumVectors", str(num_vec))
-            _sub(ch_elem, "NumSamples", str(num_samp))
+            _sub(ch_elem, "ChId", key)
+            _sub(ch_elem, "NumVectors", str(sc.num_vectors))
+            _sub(ch_elem, "NumSamples", str(sc.num_samples))
             _sub(ch_elem, "SignalArrayByteOffset", str(sig_offset))
             _sub(ch_elem, "PVPArrayByteOffset", str(pvp_offset))
-            sig_offset += num_vec * num_samp * 8  # CF8 = 8 bytes
-            pvp_offset += num_vec * self._pvp_num_bytes()
+            sig_offset += sc.num_vectors * sc.num_samples * 8  # CF8 = 8 bytes
+            pvp_offset += sc.num_vectors * self._pvp_num_bytes()
 
     def _build_tx_sequence(self, root, radar, timing, tx_pol, iarp_ecf):
         """Build the TxSequence section."""
@@ -773,15 +858,19 @@ class Sentinel1L0ToCRSD:
         _sub(params, "TxRadIntErrorStdDev", "0.0")
         _sub(params, "TxRefLAtm", "0.0")
 
-    def _build_channel_section(self, root, channels, radar, timing, iarp_ecf):
+    def _build_channel_section(self, root, swath_channels, radar, timing, iarp_ecf):
         """Build the Channel section (receive channel parameters)."""
         ch_root = _sub(root, "Channel")
-        first_pol = next(iter(channels.keys()))
-        _sub(ch_root, "RefChId", first_pol)
+        first_key = next(iter(swath_channels.keys()))
+        _sub(ch_root, "RefChId", first_key)
 
-        for pol, ch_info in channels.items():
+        per_ch_timing = timing.get("per_channel", {})
+
+        for key, sc in swath_channels.items():
+            ch_timing = per_ch_timing.get(key, timing)
+
             params = _sub(ch_root, "Parameters")
-            _sub(params, "Identifier", pol)
+            _sub(params, "Identifier", key)
             _sub(params, "RefVectorIndex", "0")
             _sub(params, "RefFreqFixed", "true")
             _sub(params, "FrcvFixed", "true")
@@ -789,21 +878,21 @@ class Sentinel1L0ToCRSD:
             _sub(params, "F0Ref", f"{radar.center_frequency:.12g}")
             _sub(params, "Fs", f"{radar.sampling_rate:.12g}")
             _sub(params, "BWInst", f"{radar.tx_bandwidth:.12g}")
-            _sub(params, "RcvStartTime1", f"{timing['rcv_start_time1']:.12g}")
-            _sub(params, "RcvStartTime2", f"{timing['rcv_start_time2']:.12g}")
+            _sub(params, "RcvStartTime1", f"{ch_timing['rcv_start_time1']:.12g}")
+            _sub(params, "RcvStartTime2", f"{ch_timing['rcv_start_time2']:.12g}")
             _sub(params, "FrcvMin", f"{timing['frcv_min']:.12g}")
             _sub(params, "FrcvMax", f"{timing['frcv_max']:.12g}")
             _sub(params, "RcvAPCId", "APC_RX")
-            _sub(params, "RcvAPATId", f"APAT_RX_{pol}")
+            _sub(params, "RcvAPATId", f"APAT_RX_{key}")
 
             rp = _sub(params, "RcvRefPoint")
             _sub_xyz(rp, "ECF", iarp_ecf[0], iarp_ecf[1], iarp_ecf[2])
             _sub_xy(rp, "IAC", 0.0, 0.0)
 
             rpol = _sub(params, "RcvPolarization")
-            _sub(rpol, "PolarizationID", ch_info.rx_pol)
-            _sub(rpol, "AmpH", "0" if ch_info.rx_pol == "V" else "1")
-            _sub(rpol, "AmpV", "1" if ch_info.rx_pol == "V" else "0")
+            _sub(rpol, "PolarizationID", sc.rx_pol)
+            _sub(rpol, "AmpH", "0" if sc.rx_pol == "V" else "1")
+            _sub(rpol, "AmpV", "1" if sc.rx_pol == "V" else "0")
             _sub(rpol, "PhaseH", "0")
             _sub(rpol, "PhaseV", "0")
 
@@ -819,9 +908,9 @@ class Sentinel1L0ToCRSD:
             _sub(sar_img, "RefVectorPulseIndex", "0")
 
             sar_tx_pol = _sub(sar_img, "TxPolarization")
-            _sub(sar_tx_pol, "PolarizationID", ch_info.tx_pol)
-            _sub(sar_tx_pol, "AmpH", "0" if ch_info.tx_pol == "V" else "1")
-            _sub(sar_tx_pol, "AmpV", "1" if ch_info.tx_pol == "V" else "0")
+            _sub(sar_tx_pol, "PolarizationID", sc.tx_pol)
+            _sub(sar_tx_pol, "AmpH", "0" if sc.tx_pol == "V" else "1")
+            _sub(sar_tx_pol, "AmpV", "1" if sc.tx_pol == "V" else "0")
             _sub(sar_tx_pol, "PhaseH", "0")
             _sub(sar_tx_pol, "PhaseV", "0")
 
@@ -914,14 +1003,14 @@ class Sentinel1L0ToCRSD:
         off = _sub_pxp_i8(pvp, "TxPulseIndex", off)
         # Total: 2+3+3+1+1+2+1+1+1+3+3+2+1+1+1+1 = 27 doubles
 
-    def _build_antenna_section(self, root, channels, tx_pol):
+    def _build_antenna_section(self, root, swath_channels, tx_pol):
         """Build Antenna section with placeholder patterns."""
         ant = _sub(root, "Antenna")
 
         # Coordinate frame
         _sub(ant, "NumACFs", "1")
         _sub(ant, "NumAPCs", "2")
-        num_apats = 1 + len(channels)
+        num_apats = 1 + len(swath_channels)
         _sub(ant, "NumAPATs", str(num_apats))
 
         acf = _sub(ant, "AntCoordFrame")
@@ -963,8 +1052,8 @@ class Sentinel1L0ToCRSD:
             _sub(apr, "PhaseY", "0.0")
 
         _add_pattern("APAT_TX", "GP1")
-        for pol in channels:
-            _add_pattern(f"APAT_RX_{pol}", "GP1")
+        for key in swath_channels:
+            _add_pattern(f"APAT_RX_{key}", "GP1")
 
     # ---------------------------------------------------------------
     # PPP/PVP byte size helpers
@@ -985,21 +1074,25 @@ class Sentinel1L0ToCRSD:
     # ---------------------------------------------------------------
 
     def _write_crsd(
-        self, xmltree, reader, channels, radar, orbit,
-        ref_time, channel_echo_meta,
+        self, xmltree, reader, swath_channels, full_echo_meta,
+        radar, orbit, ref_time,
     ):
         """Build all binary arrays and write CRSD file."""
         import sarkit.crsd
 
+        # PPP from full echo_df of first polarization (all swaths)
+        first_pol = next(iter(full_echo_meta.keys()))
+        full_df = full_echo_meta[first_pol]
+
         # Try to compute reference geometry
         try:
-            first_pol = next(iter(channels.keys()))
-            echo_df = channel_echo_meta[first_pol]
+            first_sc = next(iter(swath_channels.values()))
             ppp_array = self._build_ppp_array(
-                xmltree, echo_df, orbit, ref_time, radar,
+                xmltree, full_df, orbit, ref_time, radar,
             )
             pvp_array = self._build_pvp_array(
-                xmltree, echo_df, orbit, ref_time, radar,
+                xmltree, first_sc.echo_df, orbit, ref_time, radar,
+                global_indices=first_sc.global_indices,
             )
 
             rg_elem = sarkit.crsd.compute_reference_geometry(
@@ -1025,51 +1118,47 @@ class Sentinel1L0ToCRSD:
 
         try:
             # Write support arrays
-            # GP1: Gain=F4;Phase=F4; — 1 row x 1 col, each element = (gain, phase)
             gp_dtype = np.dtype([("Gain", "<f4"), ("Phase", "<f4")])
             gp_data = np.array([(1.0, 0.0)], dtype=gp_dtype).reshape(1, 1)
             writer.write_support_array("GP1", gp_data)
 
-            # FXR1: Amp=F4;Phase=F4; — 2 rows x 1 col
             fxr_dtype = np.dtype([("Amp", "<f4"), ("Phase", "<f4")])
             fxr_data = np.array([(1.0, 0.0), (1.0, 0.0)], dtype=fxr_dtype).reshape(2, 1)
             writer.write_support_array("FXR1", fxr_data)
 
-            # DTA1: COD=F4;DT=F4; — 1 row x 1 col
             dta_dtype = np.dtype([("COD", "<f4"), ("DT", "<f4")])
             dta_data = np.array([(0.0, 0.0)], dtype=dta_dtype).reshape(1, 1)
             writer.write_support_array("DTA1", dta_data)
 
-            # Write PPP for TX sequence (use first channel's echo timing)
-            first_pol = next(iter(channels.keys()))
-            echo_df = channel_echo_meta[first_pol]
+            # Write PPP once (all swaths, first polarization)
             ppp = self._build_ppp_array(
-                xmltree, echo_df, orbit, ref_time, radar,
+                xmltree, full_df, orbit, ref_time, radar,
             )
             writer.write_ppp("TX1", ppp)
 
-            # Write signal + PVP per channel
-            for pol, ch_info in channels.items():
-                echo_meta = channel_echo_meta[pol]
-
+            # Write signal + PVP per swath channel
+            for key, sc in swath_channels.items():
                 logger.info(
-                    "Decompressing %d echo packets for %s...",
-                    ch_info.num_echo_packets, pol,
+                    "Decompressing %d echo packets for %s (swath %d, %s)...",
+                    sc.num_vectors, key, sc.swath_number, sc.polarization,
                 )
-                signal = reader.decode_channel(pol)
+                signal = reader.decode_channel(
+                    sc.polarization, swath=sc.swath_number,
+                )
                 logger.info(
                     "Signal shape: %s, writing to CRSD...",
                     signal.shape,
                 )
 
                 pvp = self._build_pvp_array(
-                    xmltree, echo_meta, orbit, ref_time, radar,
+                    xmltree, sc.echo_df, orbit, ref_time, radar,
+                    global_indices=sc.global_indices,
                 )
 
-                writer.write_signal(pol, signal)
-                writer.write_pvp(pol, pvp)
+                writer.write_signal(key, signal)
+                writer.write_pvp(key, pvp)
 
-                logger.info("Channel %s written.", pol)
+                logger.info("Channel %s written.", key)
 
             writer.done()
         finally:
@@ -1142,8 +1231,18 @@ class Sentinel1L0ToCRSD:
 
     def _build_pvp_array(
         self, xmltree, echo_df, orbit, ref_time, radar,
+        global_indices=None,
     ) -> np.ndarray:
-        """Build Per-Vector Parameter array."""
+        """Build Per-Vector Parameter array.
+
+        Parameters
+        ----------
+        global_indices : ndarray, optional
+            Row indices into the full (all-swath) echo DataFrame, used
+            as ``TxPulseIndex`` to map each receive vector to the
+            correct PPP transmit pulse.  When *None*, sequential
+            indices ``[0, 1, ..., n-1]`` are used (legacy behaviour).
+        """
         pvp_dtype = sarkit.crsd.get_pvp_dtype(xmltree)
         n = len(echo_df)
         pvp = np.zeros(n, dtype=pvp_dtype)
@@ -1187,7 +1286,11 @@ class Sentinel1L0ToCRSD:
         rx_gain_db = echo_df["Rx Gain"].values.astype(np.float64)
         pvp["DGRGC"] = np.power(10.0, rx_gain_db / 20.0)
 
-        pvp["TxPulseIndex"] = np.arange(n, dtype=np.int64)
+        # TxPulseIndex maps receive vectors to PPP transmit pulses
+        if global_indices is not None:
+            pvp["TxPulseIndex"] = global_indices.astype(np.int64)
+        else:
+            pvp["TxPulseIndex"] = np.arange(n, dtype=np.int64)
 
         return pvp
 
