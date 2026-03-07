@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-07
 """
 
 # Standard library
@@ -42,6 +42,7 @@ from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
+from grdl.IO.sar.sidd_writer import SIDDWriter
 
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
@@ -119,7 +120,8 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
-        # Try SIDD
+    # Try SIDD (sarkit preferred, sarpy fallback)
+    if _HAS_SARKIT or _HAS_SARPY:
         try:
             return SIDDReader(filepath)
         except (ValueError, ImportError, Exception):
@@ -182,6 +184,7 @@ __all__ = [
     'CPHDReader',
     'CRSDReader',
     'SIDDReader',
+    'SIDDWriter',
     # Sentinel-1
     'Sentinel1SLCReader',
     # TerraSAR-X / TanDEM-X

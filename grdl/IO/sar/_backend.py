@@ -74,7 +74,7 @@ def require_sarkit(format_name: str) -> None:
     """Require sarkit specifically (no sarpy fallback).
 
     Used for formats where sarpy does not provide adequate support
-    (CRSD, SIDD).
+    (CRSD).
 
     Parameters
     ----------

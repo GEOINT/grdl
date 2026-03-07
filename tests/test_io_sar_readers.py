@@ -79,14 +79,15 @@ class TestCRSDReader:
 class TestSIDDReader:
     """Tests for SIDDReader error handling."""
 
-    def test_requires_sarkit(self):
-        """SIDDReader raises ImportError when sarkit is missing."""
+    def test_requires_backend(self):
+        """SIDDReader raises ImportError when no backend is available."""
         from grdl.IO.sar.sidd import SIDDReader
         from grdl.IO.sar import _backend
 
         with mock.patch.object(_backend, '_HAS_SARKIT', False):
-            with pytest.raises(ImportError, match='sarkit'):
-                SIDDReader('/some/file.nitf')
+            with mock.patch.object(_backend, '_HAS_SARPY', False):
+                with pytest.raises(ImportError, match='sarkit'):
+                    SIDDReader('/some/file.nitf')
 
 
 # -- open_sar tests ---------------------------------------------------------
