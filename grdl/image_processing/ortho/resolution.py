@@ -4,8 +4,8 @@ Output Resolution Computation - Estimate ortho grid pixel size from metadata.
 
 Computes appropriate output grid pixel spacing in degrees from the native
 pixel spacing of source imagery.  Dispatches by metadata type to handle
-SICD, BIOMASS, GeoTIFF, and other formats.  Used by ``OrthoPipeline`` for
-automatic resolution selection.
+SICD, BIOMASS, Sentinel-1 SLC, NISAR, GeoTIFF, and other formats.  Used
+by ``OrthoPipeline`` for automatic resolution selection.
 
 Author
 ------
@@ -24,7 +24,7 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-08
 """
 
 # Standard library

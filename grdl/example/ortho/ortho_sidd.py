@@ -1,39 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-SICD Orthorectification Example — Accelerated Center Chip.
+SIDD Orthorectification Example — Accelerated Center Chip.
 
-Loads a SICD complex SAR image, extracts a center chip using
-``data_prep.ChipExtractor``, computes linear magnitude in slant range,
-then orthorectifies to a regular WGS84 geographic grid using the
-accelerated ``OrthoPipeline``.  Also demonstrates ENU output mode.
+Loads a SIDD (Sensor Independent Derived Data) image, extracts a center
+chip using ``data_prep.ChipExtractor``, then orthorectifies to WGS-84
+and optionally ENU grids via the accelerated ``OrthoPipeline``.
 
-Key processing choices:
-  - Center chip extracted via ``ChipExtractor`` (default 4096x4096).
-  - Magnitude computed in slant range *before* orthorectification
-    (resampling complex data causes phase cancellation).
-  - Geolocation wrapper offsets chip-local pixel coords to full-image
-    coords so the existing ``SICDGeolocation`` works unmodified.
-  - Accelerated multi-backend resampling (torch/numba/scipy).
+SIDD products are already detected/projected imagery (not complex SAR),
+so no magnitude computation is needed — the pixel data is used directly.
 
 Shows three panels:
-  1. Original magnitude in slant range geometry (chip)
-  2. Orthorectified magnitude on a WGS-84 geographic grid
-  3. Orthorectified magnitude on an ENU grid (meters)
+  1. Original pixel data (chip, native geometry)
+  2. Orthorectified on a WGS-84 geographic grid
+  3. Orthorectified on an ENU grid (meters)  [if --enu given]
 
 Usage:
-  python ortho_sicd.py <sicd_file>
-  python ortho_sicd.py <sicd_file> --chip 2048
-  python ortho_sicd.py <sicd_file> --dem /path/to/fabdem
-  python ortho_sicd.py <sicd_file> --save [path]
-  python ortho_sicd.py <sicd_file> --res 0.00005
-  python ortho_sicd.py <sicd_file> --interp nearest
-  python ortho_sicd.py --help
+  python ortho_sidd.py <sidd_file>
+  python ortho_sidd.py <sidd_file> --chip 2048
+  python ortho_sidd.py <sidd_file> --dem /path/to/fabdem
+  python ortho_sidd.py <sidd_file> --enu 1.0
+  python ortho_sidd.py --help
 
 Dependencies
 ------------
 matplotlib
 scipy
-sarpy (or sarkit for I/O, sarpy for projection)
+sarkit (or sarpy)
 
 Author
 ------
@@ -48,7 +40,7 @@ See LICENSE file for full text.
 
 Created
 -------
-2026-02-17
+2026-03-08
 
 Modified
 --------
@@ -72,9 +64,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 # GRDL
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from grdl.IO.sar import SICDReader
+from grdl.IO.sar import SIDDReader
 from grdl.data_prep import ChipExtractor
-from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.sar.sidd import SIDDGeolocation
 from grdl.image_processing.ortho import OrthoPipeline, detect_backend
 
 
@@ -83,28 +75,11 @@ from grdl.image_processing.ortho import OrthoPipeline, detect_backend
 # ---------------------------------------------------------------------------
 
 class _ChipGeolocationWrapper:
-    """Offset chip-local coords to full-image coords for geolocation.
-
-    Wraps a real ``Geolocation`` so that pixel (0, 0) in the chip maps
-    to (row_offset, col_offset) in the original image.
-
-    Parameters
-    ----------
-    geo : SICDGeolocation
-        Full-image geolocation.
-    row_offset : int
-        Row offset of chip origin in the full image.
-    col_offset : int
-        Column offset of chip origin in the full image.
-    chip_rows : int
-        Number of rows in the chip.
-    chip_cols : int
-        Number of columns in the chip.
-    """
+    """Offset chip-local coords to full-image coords for geolocation."""
 
     def __init__(
         self,
-        geo: SICDGeolocation,
+        geo: SIDDGeolocation,
         row_offset: int,
         col_offset: int,
         chip_rows: int,
@@ -154,23 +129,17 @@ class _ChipGeolocationWrapper:
 def _find_fabdem_tile(
     lat: float, lon: float, fabdem_root: str,
 ) -> Optional[str]:
-    """Find the FABDEM GeoTIFF tile covering the given lat/lon.
-
-    FABDEM tiles are stored as 1-deg GeoTIFFs in 10-deg block
-    directories.  Returns the tile path, or None if not found.
-    """
+    """Find the FABDEM GeoTIFF tile covering the given lat/lon."""
     fabdem = Path(fabdem_root)
     if not fabdem.exists():
         return None
 
-    # Tile naming: N36W076_FABDEM_V1-2.tif  (lower-left corner)
     lat_floor = int(np.floor(lat))
     lon_floor = int(np.floor(lon))
     ns = 'N' if lat_floor >= 0 else 'S'
     ew = 'E' if lon_floor >= 0 else 'W'
     tile_name = f"{ns}{abs(lat_floor):02d}{ew}{abs(lon_floor):03d}"
 
-    # Search recursively for a matching tile
     for tif in fabdem.rglob(f"{tile_name}*.tif"):
         return str(tif)
     return None
@@ -180,30 +149,29 @@ def _find_fabdem_tile(
 # Main
 # ---------------------------------------------------------------------------
 
-def ortho_sicd(
+def ortho_sidd(
     filepath: Path,
     chip_size: int = 4096,
     save_path: Path = None,
     resolution: float = None,
-    interpolation: str = 'nearest',
+    interpolation: str = 'bilinear',
     dem_path: str = None,
     tile_size: int = None,
     enu_pixel_m: float = None,
 ) -> None:
-    """Orthorectify a SICD center chip and display results.
+    """Orthorectify a SIDD center chip and display results.
 
     Parameters
     ----------
     filepath : Path
-        Path to SICD NITF file.
+        Path to SIDD NITF file.
     chip_size : int
         Center chip size in pixels (default 4096).
     save_path : Path, optional
         If provided, save figure to this path.
     resolution : float, optional
-        Output pixel size in degrees.  If None, auto-computed from SICD
-        grid metadata (sample spacing + graze angle correction).
-    interpolation : str, default='nearest'
+        Output pixel size in degrees.
+    interpolation : str, default='bilinear'
         Resampling method: 'nearest', 'bilinear', or 'bicubic'.
     dem_path : str, optional
         Path to FABDEM directory for terrain-corrected projection.
@@ -221,25 +189,24 @@ def ortho_sicd(
     # Open and extract metadata
     # ------------------------------------------------------------------
     t0 = time.perf_counter()
-    with SICDReader(filepath) as reader:
+    with SIDDReader(filepath) as reader:
         meta = reader.metadata
         rows, cols = meta.rows, meta.cols
 
-        mode = 'unknown'
-        if meta.collection_info and meta.collection_info.radar_mode:
-            mode = meta.collection_info.radar_mode.mode_type or 'unknown'
-
         print(f"  Full size:  {rows} x {cols}")
-        print(f"  Mode:       {mode}")
+        print(f"  Format:     {meta.format}")
+        print(f"  Dtype:      {meta.dtype}")
         print(f"  Backend:    {meta.backend}")
-        if meta.grid:
-            print(f"  Row ss:     {meta.grid.row.ss:.4f} m")
-            print(f"  Col ss:     {meta.grid.col.ss:.4f} m")
-        if meta.scpcoa:
-            print(f"  Graze:      {meta.scpcoa.graze_ang:.2f} deg")
-        if meta.geo_data and meta.geo_data.scp and meta.geo_data.scp.llh:
-            scp = meta.geo_data.scp.llh
-            print(f"  SCP:        ({scp.lat:.4f}, {scp.lon:.4f})")
+
+        if meta.geo_data:
+            gd = meta.geo_data
+            if hasattr(gd, 'scp') and gd.scp is not None:
+                llh = gd.scp.llh if hasattr(gd.scp, 'llh') else None
+                if llh is not None:
+                    print(f"  SCP:        ({llh.lat:.4f}, {llh.lon:.4f})")
+
+        if meta.measurement:
+            print(f"  Projection: {meta.measurement.projection_type}")
         print()
 
         # --------------------------------------------------------------
@@ -259,7 +226,7 @@ def ortho_sicd(
         # --------------------------------------------------------------
         # Create geolocation (full image), then wrap for chip
         # --------------------------------------------------------------
-        geo_full = SICDGeolocation.from_reader(reader)
+        geo_full = SIDDGeolocation.from_reader(reader)
         geo = _ChipGeolocationWrapper(
             geo_full, region.row_start, region.col_start,
             chip_rows, chip_cols,
@@ -270,28 +237,24 @@ def ortho_sicd(
         # --------------------------------------------------------------
         print("Reading center chip...")
         t_read0 = time.perf_counter()
-        complex_chip = reader.read_chip(
+        chip_data = reader.read_chip(
             region.row_start, region.row_end,
             region.col_start, region.col_end,
         )
         timings['read'] = time.perf_counter() - t_read0
-        print(f"  Read in {timings['read']:.2f} s ({complex_chip.dtype})")
+        print(f"  Read in {timings['read']:.2f} s ({chip_data.dtype})")
 
-    # Compute linear magnitude in slant range
-    print("Computing magnitude...")
-    t_mag0 = time.perf_counter()
-    mag = np.abs(complex_chip).astype(np.float32)
-    del complex_chip
-    timings['magnitude'] = time.perf_counter() - t_mag0
+    # SIDD data is real-valued (detected product) — use as-is
+    source = chip_data.astype(np.float32)
+    del chip_data
 
     # ------------------------------------------------------------------
-    # Auto-discover FABDEM tile if dem_path is a directory
+    # DEM setup
     # ------------------------------------------------------------------
     elev = None
     if dem_path is not None:
         dem_file = dem_path
         if Path(dem_path).is_dir():
-            # Get scene center lat/lon
             clat, clon, _ = geo.image_to_latlon(
                 chip_rows / 2.0, chip_cols / 2.0,
             )
@@ -313,8 +276,7 @@ def ortho_sicd(
     # ------------------------------------------------------------------
     pipeline = (
         OrthoPipeline()
-        .with_source_array(mag)
-        .with_metadata(meta)
+        .with_source_array(source)
         .with_geolocation(geo)
         .with_interpolation(interpolation)
         .with_nodata(np.nan)
@@ -327,7 +289,15 @@ def ortho_sicd(
         pipeline = pipeline.with_resolution(resolution, resolution)
         print(f"  Resolution: {resolution:.6f} deg (user)")
     else:
-        print("  Resolution: auto (from SICD grid metadata)")
+        # SIDD doesn't have SICD-style grid metadata for auto-resolution,
+        # so we compute from the geolocation footprint / chip size
+        min_lon, min_lat, max_lon, max_lat = geo.get_bounds()
+        lat_span = max_lat - min_lat
+        lon_span = max_lon - min_lon
+        auto_lat = lat_span / chip_rows
+        auto_lon = lon_span / chip_cols
+        pipeline = pipeline.with_resolution(auto_lat, auto_lon)
+        print(f"  Resolution: {auto_lat:.6f} x {auto_lon:.6f} deg (auto)")
 
     if tile_size is not None:
         pipeline = pipeline.with_tile_size(tile_size)
@@ -344,8 +314,6 @@ def ortho_sicd(
     print(f"  Grid:       {grid.rows} x {grid.cols}")
     print(f"  Lat:        [{grid.min_lat:.4f}, {grid.max_lat:.4f}]")
     print(f"  Lon:        [{grid.min_lon:.4f}, {grid.max_lon:.4f}]")
-    print(f"  Pixel:      {grid.pixel_size_lat:.6f} x "
-          f"{grid.pixel_size_lon:.6f} deg")
 
     n_valid = np.sum(np.isfinite(result.data))
     n_total = grid.rows * grid.cols
@@ -361,8 +329,7 @@ def ortho_sicd(
         print(f"Running ENU ortho pipeline ({enu_pixel_m:.1f} m)...")
         enu_pipeline = (
             OrthoPipeline()
-            .with_source_array(mag)
-            .with_metadata(meta)
+            .with_source_array(source)
             .with_geolocation(geo)
             .with_interpolation(interpolation)
             .with_nodata(np.nan)
@@ -398,32 +365,32 @@ def ortho_sicd(
     n_panels = 3 if result_enu is not None else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 8))
     if n_panels == 2:
-        ax_slant, ax_ortho = axes
+        ax_src, ax_ortho = axes
         ax_enu = None
     else:
-        ax_slant, ax_ortho, ax_enu = axes
+        ax_src, ax_ortho, ax_enu = axes
 
     # Percentile stretch
-    slant_vmin = np.nanpercentile(mag, 2)
-    slant_vmax = np.nanpercentile(mag, 98)
+    src_vmin = np.nanpercentile(source, 2)
+    src_vmax = np.nanpercentile(source, 98)
     valid_mask = np.isfinite(result.data)
     if np.any(valid_mask):
         ortho_vmin = np.nanpercentile(result.data[valid_mask], 2)
         ortho_vmax = np.nanpercentile(result.data[valid_mask], 98)
     else:
-        ortho_vmin, ortho_vmax = slant_vmin, slant_vmax
+        ortho_vmin, ortho_vmax = src_vmin, src_vmax
 
-    # Panel 1: Slant range chip
-    ax_slant.imshow(
-        mag, cmap='gray', vmin=slant_vmin, vmax=slant_vmax,
+    # Panel 1: Source chip
+    ax_src.imshow(
+        source, cmap='gray', vmin=src_vmin, vmax=src_vmax,
         aspect='auto', interpolation='nearest',
     )
-    ax_slant.set_title(
-        f"Slant Range (chip {chip_rows}x{chip_cols})\nMagnitude",
+    ax_src.set_title(
+        f"SIDD Source (chip {chip_rows}x{chip_cols})\n{meta.dtype}",
         fontsize=10,
     )
-    ax_slant.set_xlabel("Column (range)")
-    ax_slant.set_ylabel("Row (azimuth)")
+    ax_src.set_xlabel("Column")
+    ax_src.set_ylabel("Row")
 
     # Panel 2: WGS-84 ortho
     extent = [grid.min_lon, grid.max_lon, grid.min_lat, grid.max_lat]
@@ -431,7 +398,7 @@ def ortho_sicd(
         result.data, cmap='gray', vmin=ortho_vmin, vmax=ortho_vmax,
         aspect='auto', interpolation='nearest', extent=extent,
     )
-    ax_ortho.set_title("Orthorectified (WGS-84)\nMagnitude", fontsize=10)
+    ax_ortho.set_title("Orthorectified (WGS-84)", fontsize=10)
     ax_ortho.set_xlabel("Longitude (deg)")
     ax_ortho.set_ylabel("Latitude (deg)")
 
@@ -452,17 +419,15 @@ def ortho_sicd(
             aspect='auto', interpolation='nearest', extent=enu_extent,
         )
         ax_enu.set_title(
-            f"Orthorectified (ENU {enu_pixel_m:.1f} m)\nMagnitude",
-            fontsize=10,
+            f"Orthorectified (ENU {enu_pixel_m:.1f} m)", fontsize=10,
         )
         ax_enu.set_xlabel("East (m)")
         ax_enu.set_ylabel("North (m)")
 
     title = (
-        f"SICD Ortho  |  {filepath.name}  |  {mode}\n"
+        f"SIDD Ortho  |  {filepath.name}\n"
         f"Chip {chip_rows}x{chip_cols}  |  "
-        f"Grid {grid.rows}x{grid.cols} @ "
-        f"{grid.pixel_size_lat:.6f}\u00b0  |  "
+        f"Grid {grid.rows}x{grid.cols}  |  "
         f"{interpolation}  |  {detect_backend()}"
     )
     if dem_path:
@@ -488,7 +453,7 @@ def _parse_args():
     chip_size = 4096
     save_path = None
     resolution = None
-    interpolation = 'nearest'
+    interpolation = 'bilinear'
     dem_path = None
     tile_size = None
     enu_pixel_m = None
@@ -496,23 +461,22 @@ def _parse_args():
     i = 0
     while i < len(args):
         if args[i] == "--help":
-            print("SICD Orthorectification — Accelerated Center Chip")
+            print("SIDD Orthorectification — Accelerated Center Chip")
             print()
             print("Usage:")
-            print("  python ortho_sicd.py <sicd_file>")
-            print("  python ortho_sicd.py <sicd_file> --chip 2048")
-            print("  python ortho_sicd.py <sicd_file> --dem /path/to/fabdem")
-            print("  python ortho_sicd.py <sicd_file> --save [path]")
-            print("  python ortho_sicd.py <sicd_file> --enu 1.0")
+            print("  python ortho_sidd.py <sidd_file>")
+            print("  python ortho_sidd.py <sidd_file> --chip 2048")
+            print("  python ortho_sidd.py <sidd_file> --dem /path/to/fabdem")
+            print("  python ortho_sidd.py <sidd_file> --enu 1.0")
             print()
             print("Options:")
             print("  --chip <N>      Center chip size (default: 4096)")
-            print("  --save [path]   Save figure (default: sicd_ortho.png)")
+            print("  --save [path]   Save figure (default: sidd_ortho.png)")
             print("  --res <deg>     Output resolution in degrees")
             print("  --interp <m>    Interpolation: nearest, bilinear, bicubic")
             print("  --dem <path>    FABDEM directory for terrain correction")
             print("  --tile <N>      Process output in NxN tiles")
-            print("  --enu <m>       Also produce ENU output at this pixel size (meters)")
+            print("  --enu <m>       Also produce ENU output (meters)")
             sys.exit(0)
         elif args[i] == "--chip":
             chip_size = int(args[i + 1])
@@ -522,7 +486,7 @@ def _parse_args():
                 save_path = Path(args[i + 1])
                 i += 2
             else:
-                save_path = Path("sicd_ortho.png")
+                save_path = Path("sidd_ortho.png")
                 i += 1
         elif args[i] == "--res":
             resolution = float(args[i + 1])
@@ -552,11 +516,11 @@ if __name__ == "__main__":
      dem, tile, enu) = _parse_args()
 
     if fp is None:
-        print("Error: SICD file path required.")
-        print("Usage: python ortho_sicd.py <sicd_file> [--chip N] [--dem path]")
+        print("Error: SIDD file path required.")
+        print("Usage: python ortho_sidd.py <sidd_file> [--chip N] [--dem path]")
         sys.exit(1)
 
-    ortho_sicd(
+    ortho_sidd(
         fp, chip_size=cs, save_path=sv, resolution=res,
         interpolation=interp, dem_path=dem, tile_size=tile,
         enu_pixel_m=enu,

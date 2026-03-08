@@ -6,9 +6,19 @@ Orchestrates reader, geolocation, resolution computation, output grid
 construction, terrain-corrected orthorectification, and optional GeoTIFF
 output.  Works with any ``ImageReader`` and ``Geolocation`` subclass.
 
+Supports both WGS-84 geographic grids (``OutputGrid``) and local ENU
+(East-North-Up) grids in meters (``ENUGrid``) via ``with_enu_grid()``.
+Tiled processing is available via ``with_tile_size()`` for memory-
+efficient handling of large output grids.
+
+Resampling uses the accelerated multi-backend dispatch chain from
+``grdl.image_processing.ortho.accelerated``.
+
 Dependencies
 ------------
 scipy
+numba (optional — JIT parallel acceleration)
+torch (optional — GPU/CPU acceleration)
 
 Author
 ------
@@ -27,7 +37,7 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-08
 """
 
 # Standard library
@@ -82,6 +92,42 @@ class OrthoResult:
     def shape(self) -> tuple:
         """Shape of the orthorectified data."""
         return self.data.shape
+
+    @property
+    def is_enu(self) -> bool:
+        """Whether the output is in ENU coordinates."""
+        from grdl.image_processing.ortho.enu_grid import ENUGrid
+        return isinstance(self.output_grid, ENUGrid)
+
+    @property
+    def enu_reference_point(
+        self,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Reference point (lat, lon, alt) if ENU, else None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.ref_lat, g.ref_lon, g.ref_alt)
+        return None
+
+    @property
+    def pixel_size_meters(
+        self,
+    ) -> Optional[Tuple[float, float]]:
+        """Pixel size (east_m, north_m) if ENU, else None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.pixel_size_east, g.pixel_size_north)
+        return None
+
+    @property
+    def bounds_meters(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """ENU bounds (min_east, min_north, max_east, max_north) or None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.min_east, g.min_north, g.max_east, g.max_north)
+        return None
 
     def save_geotiff(self, filepath: Union[str, Path]) -> None:
         """Save result as a georeferenced GeoTIFF.
@@ -182,6 +228,7 @@ class OrthoPipeline:
         self._source_array: Optional[np.ndarray] = None
         self._roi_bounds: Optional[Tuple[float, float, float, float]] = None
         self._tile_size: Optional[Union[int, Tuple[int, int]]] = None
+        self._enu_params: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -452,6 +499,48 @@ class OrthoPipeline:
         self._tile_size = tile_size
         return self
 
+    def with_enu_grid(
+        self,
+        pixel_size_m: float,
+        ref_lat: Optional[float] = None,
+        ref_lon: Optional[float] = None,
+        ref_alt: float = 0.0,
+        margin_m: float = 0.0,
+    ) -> 'OrthoPipeline':
+        """Configure ENU (East-North-Up) output in meters.
+
+        When set, the output grid is defined in local ENU meters
+        centered on a reference point, instead of geographic lat/lon.
+        If ``ref_lat`` / ``ref_lon`` are not provided, the image center
+        is used.
+
+        Parameters
+        ----------
+        pixel_size_m : float
+            Pixel spacing in meters (east and north).
+        ref_lat : float, optional
+            Reference latitude (degrees). Defaults to image center.
+        ref_lon : float, optional
+            Reference longitude (degrees). Defaults to image center.
+        ref_alt : float
+            Reference altitude (meters HAE).
+        margin_m : float
+            Margin around footprint bounds in meters.
+
+        Returns
+        -------
+        OrthoPipeline
+            Self for chaining.
+        """
+        self._enu_params = {
+            'pixel_size_m': pixel_size_m,
+            'ref_lat': ref_lat,
+            'ref_lon': ref_lon,
+            'ref_alt': ref_alt,
+            'margin_m': margin_m,
+        }
+        return self
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
@@ -531,6 +620,12 @@ class OrthoPipeline:
         """
         if self._output_grid is not None:
             return self._output_grid
+
+        if self._enu_params is not None:
+            from grdl.image_processing.ortho.enu_grid import ENUGrid
+            return ENUGrid.from_geolocation(
+                self._geolocation, **self._enu_params,
+            )
 
         if (self._pixel_size_lat is not None
                 and self._pixel_size_lon is not None):

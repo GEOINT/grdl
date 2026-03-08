@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-08
 """
 
 # Standard library
@@ -201,9 +201,19 @@ class GeoTIFFDEM(ElevationModel):
         valid_rows = row_idx[valid]
         valid_cols = col_idx[valid]
 
-        # Read elevation values from the first band
-        data = self._dataset.read(1)
-        sampled = data[valid_rows, valid_cols].astype(np.float64)
+        # Windowed read: only fetch the bounding box of needed pixels
+        from rasterio.windows import Window
+
+        r_min, r_max = int(valid_rows.min()), int(valid_rows.max())
+        c_min, c_max = int(valid_cols.min()), int(valid_cols.max())
+        window = Window(
+            col_off=c_min, row_off=r_min,
+            width=c_max - c_min + 1, height=r_max - r_min + 1,
+        )
+        data = self._dataset.read(1, window=window)
+        sampled = data[
+            valid_rows - r_min, valid_cols - c_min
+        ].astype(np.float64)
 
         # Mask nodata values
         if self._nodata is not None:
