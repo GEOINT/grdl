@@ -62,13 +62,14 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-07
 """
 
 from grdl.geolocation.base import Geolocation, NoGeolocation
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.geolocation.sar.nisar import NISARGeolocation
 from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.geolocation.sar.sidd import SIDDGeolocation
 from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 from grdl.geolocation.eo.affine import AffineGeolocation
 from grdl.geolocation.elevation.base import ElevationModel
@@ -80,6 +81,7 @@ __all__ = [
     'GCPGeolocation',
     'NISARGeolocation',
     'SICDGeolocation',
+    'SIDDGeolocation',
     'Sentinel1SLCGeolocation',
     'AffineGeolocation',
     'ElevationModel',

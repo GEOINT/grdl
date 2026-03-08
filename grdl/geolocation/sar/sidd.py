@@ -1,0 +1,725 @@
+# -*- coding: utf-8 -*-
+"""
+SIDD Geolocation - Coordinate transforms for SIDD derived SAR products.
+
+Implements the SIDD Volume 1 (NGA.STND.0025-1) pixel-to-geographic and
+geographic-to-pixel projection equations for all three grid types:
+
+- **PGD** (Planar Gridded Display / PlaneProjection): Pixel grid sampled
+  on a plane in ECEF with constant sample spacing.  Forward and inverse
+  are exact linear transforms.
+- **GGD** (Geodetic Gridded Display / GeographicProjection): Pixel grid
+  sampled in latitude/longitude with constant angular spacing.
+- **CGD** (Cylindrical Gridded Display / CylindricalProjection): Pixel
+  grid sampled on a cylindrical surface aligned with the stripmap
+  direction.
+
+All transforms follow the standard's sensor-model-grid convention::
+
+    r' = r - r0       (translate to sensor model coordinates)
+    c' = c - c0
+    dr = Δr * r'      (physical distance / angular measure)
+    dc = Δc * c'
+
+Dependencies
+------------
+(none beyond numpy and scipy, which are core GRDL deps)
+
+Author
+------
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-03-07
+
+Modified
+--------
+2026-03-07
+"""
+
+# Standard library
+from typing import Optional, Tuple, Union, TYPE_CHECKING
+
+# Third-party
+import numpy as np
+
+# GRDL internal
+from grdl.geolocation.base import Geolocation
+
+if TYPE_CHECKING:
+    from grdl.IO.models.sidd import SIDDMetadata
+
+
+# ===================================================================
+# WGS-84 constants (NGA.STND.0025-1 Section 3.6)
+# ===================================================================
+
+_WGS84_A = 6378137.0                  # semi-major axis (m)
+_WGS84_B = 6356752.314245179          # semi-minor axis (m)
+_WGS84_F = 1.0 / 298.257223563        # flattening
+_WGS84_E1_SQ = 2 * _WGS84_F - _WGS84_F ** 2  # first eccentricity squared
+_WGS84_E2_SQ = (_WGS84_A ** 2 - _WGS84_B ** 2) / _WGS84_B ** 2  # second ecc sq
+
+
+def _geodetic_to_ecef(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    heights: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert geodetic (lat, lon, height) to ECEF (X, Y, Z).
+
+    Implements Section 3.6 of the SIDD standard.
+
+    Parameters
+    ----------
+    lats : np.ndarray
+        Latitudes in degrees.
+    lons : np.ndarray
+        Longitudes in degrees.
+    heights : np.ndarray
+        Heights above WGS-84 ellipsoid in meters.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        (X, Y, Z) ECEF coordinates in meters.
+    """
+    lat_rad = np.radians(lats)
+    lon_rad = np.radians(lons)
+    sin_lat = np.sin(lat_rad)
+    cos_lat = np.cos(lat_rad)
+    sin_lon = np.sin(lon_rad)
+    cos_lon = np.cos(lon_rad)
+
+    # Radius of curvature in the prime vertical
+    rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
+
+    x = (rc + heights) * cos_lat * cos_lon
+    y = (rc + heights) * cos_lat * sin_lon
+    z = ((_WGS84_B ** 2 / _WGS84_A ** 2) * rc + heights) * sin_lat
+
+    return x, y, z
+
+
+def _ecef_to_geodetic(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    max_iter: int = 10,
+    tol: float = 1e-12,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert ECEF (X, Y, Z) to geodetic (lat, lon, height).
+
+    Implements Section 3.7 of the SIDD standard (iterative method).
+
+    Parameters
+    ----------
+    x, y, z : np.ndarray
+        ECEF coordinates in meters.
+    max_iter : int
+        Maximum iterations for latitude convergence.
+    tol : float
+        Convergence tolerance on tan(latitude).
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        (lats, lons, heights) in degrees and meters.
+    """
+    lon = np.arctan2(y, x)
+
+    dxy = np.sqrt(x ** 2 + y ** 2)
+    theta = np.arctan2(_WGS84_A * z, _WGS84_B * dxy)
+
+    # Initial latitude estimate (Bowring's formula)
+    tan_lat = (
+        (z + _WGS84_E2_SQ * _WGS84_B * np.sin(theta) ** 3)
+        / (dxy - _WGS84_E1_SQ * _WGS84_A * np.cos(theta) ** 3)
+    )
+
+    # Iterative refinement (Section 3.7)
+    for _ in range(max_iter):
+        tan_lat_prev = tan_lat
+        # Reduced latitude step
+        tan_lat_reduced = (1.0 - _WGS84_F) * tan_lat
+        lat_reduced = np.arctan(tan_lat_reduced)
+        # Compute geocentric latitude for next iteration
+        sin_reduced = np.sin(lat_reduced)
+        cos_reduced = np.cos(lat_reduced)
+        theta_new = np.arctan2(
+            _WGS84_A * z, _WGS84_B * dxy
+        )
+        tan_lat = (
+            (z + _WGS84_E2_SQ * _WGS84_B * np.sin(theta_new) ** 3)
+            / (dxy - _WGS84_E1_SQ * _WGS84_A * np.cos(theta_new) ** 3)
+        )
+        if np.all(np.abs(tan_lat - tan_lat_prev) < tol):
+            break
+
+    lat = np.arctan(tan_lat)
+
+    # Height above ellipsoid
+    sin_lat = np.sin(lat)
+    cos_lat = np.cos(lat)
+    rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
+
+    # Avoid division by zero near poles
+    with np.errstate(invalid='ignore', divide='ignore'):
+        h_equatorial = dxy / cos_lat - rc
+        h_polar = np.abs(z) / np.where(
+            np.abs(sin_lat) > 0, np.abs(sin_lat), 1.0
+        ) - (_WGS84_B ** 2 / _WGS84_A ** 2) * rc
+    height = np.where(np.abs(cos_lat) > 1e-10, h_equatorial, h_polar)
+
+    return np.degrees(lat), np.degrees(lon), height
+
+
+# ===================================================================
+# SIDDGeolocation
+# ===================================================================
+
+class SIDDGeolocation(Geolocation):
+    """Geolocation for SIDD (Sensor Independent Derived Data) imagery.
+
+    Implements the SIDD Volume 1 (NGA.STND.0025-1) projection equations
+    for converting between image pixel coordinates and geographic
+    coordinates.  Supports PlaneProjection (PGD), GeographicProjection
+    (GGD), and CylindricalProjection (CGD) grid types.
+
+    The most common case is **PlaneProjection**, where the image is
+    sampled on a plane in ECEF space.  Forward and inverse transforms
+    are exact (no iteration required for the pixel ↔ ECEF step).
+
+    Parameters
+    ----------
+    metadata : SIDDMetadata
+        Typed SIDD metadata.  Must have ``measurement`` with a
+        supported projection type.
+
+    Attributes
+    ----------
+    metadata : SIDDMetadata
+        The SIDD metadata.
+    projection_type : str
+        Active projection type (``'PlaneProjection'``,
+        ``'GeographicProjection'``, ``'CylindricalProjection'``).
+
+    Raises
+    ------
+    ValueError
+        If the metadata does not contain a supported projection.
+
+    Examples
+    --------
+    >>> from grdl.IO.sar import SIDDReader
+    >>> from grdl.geolocation.sar.sidd import SIDDGeolocation
+    >>> with SIDDReader('product.nitf') as reader:
+    ...     geo = SIDDGeolocation.from_reader(reader)
+    ...     lat, lon, h = geo.image_to_latlon(6000, 6000)
+    ...     row, col = geo.latlon_to_image(lat, lon, h)
+    """
+
+    def __init__(
+        self,
+        metadata: 'SIDDMetadata',
+        dem_path: Optional[str] = None,
+        geoid_path: Optional[str] = None,
+    ) -> None:
+        self.metadata = metadata
+
+        meas = metadata.measurement
+        if meas is None:
+            raise ValueError(
+                "SIDDMetadata.measurement is required for geolocation"
+            )
+
+        self.projection_type = meas.projection_type or ''
+
+        if self.projection_type == 'PlaneProjection':
+            self._init_plane(meas)
+        elif self.projection_type == 'GeographicProjection':
+            self._init_geographic(meas)
+        elif self.projection_type == 'CylindricalProjection':
+            self._init_cylindrical(meas)
+        else:
+            raise ValueError(
+                f"Unsupported SIDD projection type: "
+                f"{self.projection_type!r}.  Supported: "
+                f"PlaneProjection, GeographicProjection, "
+                f"CylindricalProjection."
+            )
+
+        shape = (metadata.rows, metadata.cols)
+        super().__init__(
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
+        )
+
+    # ------------------------------------------------------------------
+    # Initializers per projection type
+    # ------------------------------------------------------------------
+
+    def _init_plane(self, meas: object) -> None:
+        """Extract PGD (PlaneProjection) parameters.
+
+        Parameters
+        ----------
+        meas : SIDDMeasurement
+            Measurement section with plane_projection populated.
+        """
+        pp = meas.plane_projection
+        if pp is None:
+            raise ValueError(
+                "PlaneProjection declared but plane_projection is None"
+            )
+        rp = pp.reference_point
+        if rp is None or rp.ecef is None or rp.point is None:
+            raise ValueError(
+                "PlaneProjection requires reference_point with ecef and "
+                "pixel coordinates"
+            )
+        if pp.sample_spacing is None:
+            raise ValueError(
+                "PlaneProjection requires sample_spacing"
+            )
+        plane = pp.product_plane
+        if plane is None or plane.row_unit_vector is None or plane.col_unit_vector is None:
+            raise ValueError(
+                "PlaneProjection requires product_plane with "
+                "row_unit_vector and col_unit_vector"
+            )
+
+        # Reference point in ECEF (meters)
+        self._srp = np.array(
+            [rp.ecef.x, rp.ecef.y, rp.ecef.z], dtype=np.float64
+        )
+        # Reference point pixel coordinates
+        self._r0 = float(rp.point.row)
+        self._c0 = float(rp.point.col)
+        # Sample spacing (meters/pixel)
+        self._dr = float(pp.sample_spacing.row)
+        self._dc = float(pp.sample_spacing.col)
+        # Unit vectors in ECEF
+        self._row_vec = np.array(
+            [plane.row_unit_vector.x,
+             plane.row_unit_vector.y,
+             plane.row_unit_vector.z],
+            dtype=np.float64,
+        )
+        self._col_vec = np.array(
+            [plane.col_unit_vector.x,
+             plane.col_unit_vector.y,
+             plane.col_unit_vector.z],
+            dtype=np.float64,
+        )
+
+    def _init_geographic(self, meas: object) -> None:
+        """Extract GGD (GeographicProjection) parameters.
+
+        Uses the reference point's geodetic coordinates and sample
+        spacing in arc-seconds to build the simple angular mapping.
+
+        Parameters
+        ----------
+        meas : SIDDMeasurement
+            Measurement section.
+        """
+        # GeographicProjection uses the same reference_point +
+        # sample_spacing convention; stored on plane_projection or
+        # directly on the measurement object.  Try plane_projection
+        # first (sarpy/sarkit populate it there), then fall back.
+        pp = meas.plane_projection
+        if pp is None:
+            raise ValueError(
+                "GeographicProjection requires projection parameters"
+            )
+        rp = pp.reference_point
+        if rp is None or rp.ecef is None or rp.point is None:
+            raise ValueError(
+                "GeographicProjection requires reference_point"
+            )
+        if pp.sample_spacing is None:
+            raise ValueError(
+                "GeographicProjection requires sample_spacing"
+            )
+
+        # Convert ECEF reference point to geodetic
+        ecef = np.array([rp.ecef.x, rp.ecef.y, rp.ecef.z])
+        lat0, lon0, h0 = _ecef_to_geodetic(
+            np.array([ecef[0]]),
+            np.array([ecef[1]]),
+            np.array([ecef[2]]),
+        )
+        self._lat0 = float(lat0[0])
+        self._lon0 = float(lon0[0])
+        self._h0 = float(h0[0])
+        self._r0 = float(rp.point.row)
+        self._c0 = float(rp.point.col)
+        # Sample spacing in arc-seconds
+        self._dr = float(pp.sample_spacing.row)
+        self._dc = float(pp.sample_spacing.col)
+
+    def _init_cylindrical(self, meas: object) -> None:
+        """Extract CGD (CylindricalProjection) parameters.
+
+        Parameters
+        ----------
+        meas : SIDDMeasurement
+            Measurement section.
+        """
+        pp = meas.plane_projection
+        if pp is None:
+            raise ValueError(
+                "CylindricalProjection requires projection parameters"
+            )
+        rp = pp.reference_point
+        if rp is None or rp.ecef is None or rp.point is None:
+            raise ValueError(
+                "CylindricalProjection requires reference_point"
+            )
+        if pp.sample_spacing is None:
+            raise ValueError(
+                "CylindricalProjection requires sample_spacing"
+            )
+        plane = pp.product_plane
+        if plane is None or plane.row_unit_vector is None or plane.col_unit_vector is None:
+            raise ValueError(
+                "CylindricalProjection requires product_plane "
+                "with row_unit_vector and col_unit_vector"
+            )
+
+        self._srp = np.array(
+            [rp.ecef.x, rp.ecef.y, rp.ecef.z], dtype=np.float64
+        )
+        self._r0 = float(rp.point.row)
+        self._c0 = float(rp.point.col)
+        self._dr = float(pp.sample_spacing.row)
+        self._dc = float(pp.sample_spacing.col)
+        self._row_vec = np.array(
+            [plane.row_unit_vector.x,
+             plane.row_unit_vector.y,
+             plane.row_unit_vector.z],
+            dtype=np.float64,
+        )
+        self._col_vec = np.array(
+            [plane.col_unit_vector.x,
+             plane.col_unit_vector.y,
+             plane.col_unit_vector.z],
+            dtype=np.float64,
+        )
+
+        # Compute cylinder radius Rs.  If not supplied in metadata,
+        # compute from inflated WGS-84 ellipsoid at reference point.
+        # (Section 2.8: "If a cylinder radius is not supplied, then a
+        #  radius is computed by an inflated ellipsoid.")
+        lat0, _, h0 = _ecef_to_geodetic(
+            np.array([self._srp[0]]),
+            np.array([self._srp[1]]),
+            np.array([self._srp[2]]),
+        )
+        sin_lat = np.sin(np.radians(lat0[0]))
+        rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
+        self._rs = rc + float(h0[0])
+
+        # U' = Z_PGD = row_vec × col_vec (normal to the plane)
+        self._u_prime = np.cross(self._row_vec, self._col_vec)
+        norm = np.linalg.norm(self._u_prime)
+        if norm > 0:
+            self._u_prime /= norm
+
+    # ------------------------------------------------------------------
+    # Forward: pixel → lat/lon  (array interface for base class)
+    # ------------------------------------------------------------------
+
+    def _image_to_latlon_array(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        height: float = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Transform pixel coordinates to geographic coordinates.
+
+        Dispatches to the appropriate projection-specific method.
+
+        Parameters
+        ----------
+        rows : np.ndarray
+            Row pixel coordinates (1D array, float64).
+        cols : np.ndarray
+            Column pixel coordinates (1D array, float64).
+        height : float, default=0.0
+            Height above WGS-84 ellipsoid (meters).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            (lats, lons, heights) in WGS-84 coordinates.
+        """
+        if self.projection_type == 'PlaneProjection':
+            return self._plane_to_latlon(rows, cols)
+        elif self.projection_type == 'GeographicProjection':
+            return self._geographic_to_latlon(rows, cols)
+        elif self.projection_type == 'CylindricalProjection':
+            return self._cylindrical_to_latlon(rows, cols)
+        raise NotImplementedError(
+            f"Forward projection not implemented for "
+            f"{self.projection_type!r}"
+        )
+
+    def _latlon_to_image_array(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Transform geographic coordinates to pixel coordinates.
+
+        Dispatches to the appropriate projection-specific method.
+
+        Parameters
+        ----------
+        lats : np.ndarray
+            Latitudes in degrees (1D array, float64).
+        lons : np.ndarray
+            Longitudes in degrees (1D array, float64).
+        height : float or np.ndarray, default=0.0
+            Height above WGS-84 ellipsoid (meters).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        if self.projection_type == 'PlaneProjection':
+            return self._latlon_to_plane(lats, lons, height)
+        elif self.projection_type == 'GeographicProjection':
+            return self._latlon_to_geographic(lats, lons)
+        elif self.projection_type == 'CylindricalProjection':
+            return self._latlon_to_cylindrical(lats, lons, height)
+        raise NotImplementedError(
+            f"Inverse projection not implemented for "
+            f"{self.projection_type!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # PGD (PlaneProjection)  — Section 3.2 / 3.3
+    # ------------------------------------------------------------------
+
+    def _plane_to_latlon(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """PGD forward: pixel → ECEF → geodetic.
+
+        Section 3.2:
+            P_ECEF = P_PGD + dr * R_PGD + dc * C_PGD
+        where dr = Δr * (r - r0), dc = Δc * (c - c0).
+        """
+        # Sensor model distances (meters)
+        dr = self._dr * (rows - self._r0)  # (N,)
+        dc = self._dc * (cols - self._c0)  # (N,)
+
+        # ECEF position for each pixel  (N, 3)
+        x = self._srp[0] + dr * self._row_vec[0] + dc * self._col_vec[0]
+        y = self._srp[1] + dr * self._row_vec[1] + dc * self._col_vec[1]
+        z = self._srp[2] + dr * self._row_vec[2] + dc * self._col_vec[2]
+
+        return _ecef_to_geodetic(x, y, z)
+
+    def _latlon_to_plane(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """PGD inverse: geodetic → ECEF → pixel.
+
+        Section 3.3:
+            r = r0 + ((P_ECEF - P_PGD) · R_PGD) / Δr
+            c = c0 + ((P_ECEF - P_PGD) · C_PGD) / Δc
+        """
+        if np.ndim(height) == 0:
+            h = np.full_like(lats, float(height))
+        else:
+            h = np.asarray(height, dtype=np.float64)
+
+        x, y, z = _geodetic_to_ecef(lats, lons, h)
+
+        # Offset from reference point
+        dx = x - self._srp[0]
+        dy = y - self._srp[1]
+        dz = z - self._srp[2]
+
+        # Dot products with unit vectors
+        dot_row = dx * self._row_vec[0] + dy * self._row_vec[1] + dz * self._row_vec[2]
+        dot_col = dx * self._col_vec[0] + dy * self._col_vec[1] + dz * self._col_vec[2]
+
+        rows = self._r0 + dot_row / self._dr
+        cols = self._c0 + dot_col / self._dc
+
+        return rows, cols
+
+    # ------------------------------------------------------------------
+    # GGD (GeographicProjection)  — Section 3.4 / 3.5
+    # ------------------------------------------------------------------
+
+    def _geographic_to_latlon(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """GGD forward: pixel → geodetic.
+
+        Section 3.4:
+            φ = φ0 - dr / 3600
+            λ = λ0 + dc / 3600
+            h = h0
+        where dr = Δr * (r - r0), dc = Δc * (c - c0), spacing in arc-sec.
+        """
+        dr = self._dr * (rows - self._r0)
+        dc = self._dc * (cols - self._c0)
+
+        lats = self._lat0 - dr / 3600.0
+        lons = self._lon0 + dc / 3600.0
+        heights = np.full_like(lats, self._h0)
+
+        return lats, lons, heights
+
+    def _latlon_to_geographic(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """GGD inverse: geodetic → pixel.
+
+        Section 3.5:
+            r = r0 + 3600 * (φ0 - φ) / Δr
+            c = c0 + 3600 * (λ - λ0) / Δc
+        """
+        rows = self._r0 + 3600.0 * (self._lat0 - lats) / self._dr
+        cols = self._c0 + 3600.0 * (lons - self._lon0) / self._dc
+
+        return rows, cols
+
+    # ------------------------------------------------------------------
+    # CGD (CylindricalProjection)  — Section 3.8 / 3.9
+    # ------------------------------------------------------------------
+
+    def _cylindrical_to_latlon(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """CGD forward: pixel → ECEF → geodetic.
+
+        Section 3.8:
+            θ = dc / R_S
+            P_ECEF = P_CGD + dr*R_CGD + R_S*sin(θ)*C_CGD
+                     + R_S*(cos(θ) - 1)*U'
+        """
+        dr = self._dr * (rows - self._r0)
+        dc = self._dc * (cols - self._c0)
+        theta = dc / self._rs
+
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+
+        x = (self._srp[0]
+             + dr * self._row_vec[0]
+             + self._rs * sin_t * self._col_vec[0]
+             + self._rs * (cos_t - 1.0) * self._u_prime[0])
+        y = (self._srp[1]
+             + dr * self._row_vec[1]
+             + self._rs * sin_t * self._col_vec[1]
+             + self._rs * (cos_t - 1.0) * self._u_prime[1])
+        z = (self._srp[2]
+             + dr * self._row_vec[2]
+             + self._rs * sin_t * self._col_vec[2]
+             + self._rs * (cos_t - 1.0) * self._u_prime[2])
+
+        return _ecef_to_geodetic(x, y, z)
+
+    def _latlon_to_cylindrical(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """CGD inverse: geodetic → ECEF → pixel.
+
+        Section 3.9:
+            r = r0 + ((P_ECEF - P_CGD) · R_CGD) / Δr
+            cc = (P_ECEF - P_CGD) · C_CGD
+            cu = (P_ECEF - P_CGD) · U'
+            θ  = atan2(cc, cu + R_S)
+            c  = c0 + R_S * θ / Δc
+        """
+        if np.ndim(height) == 0:
+            h = np.full_like(lats, float(height))
+        else:
+            h = np.asarray(height, dtype=np.float64)
+
+        x, y, z = _geodetic_to_ecef(lats, lons, h)
+
+        dx = x - self._srp[0]
+        dy = y - self._srp[1]
+        dz = z - self._srp[2]
+
+        dot_row = dx * self._row_vec[0] + dy * self._row_vec[1] + dz * self._row_vec[2]
+        cc = dx * self._col_vec[0] + dy * self._col_vec[1] + dz * self._col_vec[2]
+        cu = dx * self._u_prime[0] + dy * self._u_prime[1] + dz * self._u_prime[2]
+
+        theta = np.arctan2(cc, cu + self._rs)
+
+        rows = self._r0 + dot_row / self._dr
+        cols = self._c0 + self._rs * theta / self._dc
+
+        return rows, cols
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_reader(cls, reader: object) -> 'SIDDGeolocation':
+        """Create SIDDGeolocation from a SIDDReader.
+
+        Parameters
+        ----------
+        reader : SIDDReader
+            An open SIDD reader with populated metadata.
+
+        Returns
+        -------
+        SIDDGeolocation
+            Configured geolocation object.
+
+        Raises
+        ------
+        ValueError
+            If the reader is not a SIDDReader or the metadata lacks
+            a supported projection.
+        TypeError
+            If the reader type is wrong.
+
+        Examples
+        --------
+        >>> from grdl.IO.sar import SIDDReader
+        >>> from grdl.geolocation.sar.sidd import SIDDGeolocation
+        >>> with SIDDReader('product.nitf') as reader:
+        ...     geo = SIDDGeolocation.from_reader(reader)
+        ...     lat, lon, h = geo.image_to_latlon(500, 1000)
+        """
+        if type(reader).__name__ != 'SIDDReader':
+            raise TypeError(
+                f"Expected SIDDReader, got {type(reader).__name__}"
+            )
+        return cls(metadata=reader.metadata)

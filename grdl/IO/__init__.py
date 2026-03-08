@@ -31,7 +31,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-08
 """
 
 # Standard library
@@ -71,6 +71,12 @@ from grdl.IO.sar import (
     open_nisar,
     load_credentials,
 )
+
+# Generic / GDAL fallback
+from grdl.IO.generic import GDALFallbackReader, open_any
+
+# Invasive probe reader
+from grdl.IO.probe import InvasiveProbeReader
 
 # EO submodule
 from grdl.IO.eo import open_eo
@@ -319,6 +325,10 @@ __all__ = [
     'ASTERReader',
     # Multispectral readers
     'VIIRSReader',
+    # Generic / GDAL fallback / invasive probe
+    'GDALFallbackReader',
+    'InvasiveProbeReader',
+    'open_any',
     # Writer factory and convenience
     'get_writer',
     'write',

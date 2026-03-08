@@ -370,7 +370,7 @@ def _extract_measurement(xml: ET.Element) -> Optional[SIDDMeasurement]:
         rp = pp.find('{*}ReferencePoint')
         if rp is not None:
             ref_point = SIDDReferencePoint(
-                ecef=_xml_xyz(rp, '{*}ECF'),
+                ecef=_xml_xyz(rp, '{*}ECEF') or _xml_xyz(rp, '{*}ECF'),
                 point=_xml_rowcol(rp, '{*}Point'),
                 name=rp.get('name'),
             )
