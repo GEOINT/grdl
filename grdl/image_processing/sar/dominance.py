@@ -49,7 +49,7 @@ Created
 
 Modified
 --------
-2026-02-26
+2026-03-09
 """
 
 # Standard library
@@ -58,6 +58,12 @@ from typing import Annotated, Any, TYPE_CHECKING
 # Third-party
 import numpy as np
 from scipy.ndimage import uniform_filter
+
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
@@ -93,8 +99,11 @@ def compute_dominance(
 
     Parameters
     ----------
-    sublooks : np.ndarray
+    sublooks : np.ndarray or cupy.ndarray
         Complex sub-aperture stack, shape ``(n_looks, rows, cols)``.
+        If a cupy array is passed it is transferred to the CPU before
+        processing because ``scipy.ndimage.uniform_filter`` does not
+        support GPU arrays.  The return value is always a numpy array.
     window_size : int
         Spatial smoothing kernel size (uniform_filter side length).
         Default is 7.
@@ -124,6 +133,10 @@ def compute_dominance(
         raise ValueError(
             f"dom_window ({dom_window}) cannot exceed n_looks ({num_looks})"
         )
+
+    # scipy.ndimage.uniform_filter does not support GPU arrays; transfer to CPU.
+    if _HAS_CUPY and isinstance(sublooks, cp.ndarray):
+        sublooks = cp.asnumpy(sublooks)
 
     eps = np.finfo(np.float64).tiny
 
@@ -162,8 +175,11 @@ def compute_sublook_entropy(
 
     Parameters
     ----------
-    sublooks : np.ndarray
+    sublooks : np.ndarray or cupy.ndarray
         Complex sub-aperture stack, shape ``(n_looks, rows, cols)``.
+        If a cupy array is passed it is transferred to the CPU before
+        processing because ``scipy.ndimage.uniform_filter`` does not
+        support GPU arrays.  The return value is always a numpy array.
     window_size : int
         Spatial smoothing kernel size (uniform_filter side length).
         Default is 7.
@@ -184,6 +200,10 @@ def compute_sublook_entropy(
         raise ValueError(
             f"sublooks must be 3-D (n_looks, rows, cols), got {sublooks.ndim}-D"
         )
+
+    # scipy.ndimage.uniform_filter does not support GPU arrays; transfer to CPU.
+    if _HAS_CUPY and isinstance(sublooks, cp.ndarray):
+        sublooks = cp.asnumpy(sublooks)
 
     eps = np.finfo(np.float64).tiny
     num_looks = sublooks.shape[0]
