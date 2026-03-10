@@ -78,6 +78,13 @@ from numpy.linalg import norm
 from scipy.interpolate import interp1d
 from scipy.signal.windows import taylor as _taylor_window
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+
 # GRDL internal
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
@@ -606,17 +613,20 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         np.ndarray
             Range-compressed signal, shape ``(npulses, nsamples)``.
         """
+        _is_gpu = _HAS_CUPY and isinstance(signal, cp.ndarray)
+        xp = cp if _is_gpu else np
+
         data = signal.copy()
 
         if self._range_weight_func is not None:
             w_rg = self._range_weight_func(
                 data.shape[1]
             ).astype(data.real.dtype)
-            data *= w_rg[np.newaxis, :]
+            data *= xp.asarray(w_rg)[None, :]
 
-        rc = np.fft.fftshift(
-            np.fft.ifft(
-                np.fft.ifftshift(data, axes=1), axis=1,
+        rc = xp.fft.fftshift(
+            xp.fft.ifft(
+                xp.fft.ifftshift(data, axes=1), axis=1,
             ),
             axes=1,
         )
@@ -646,9 +656,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         np.ndarray
             Range-Doppler domain signal, shape ``(npulses, nsamples)``.
         """
-        return np.fft.fftshift(
-            np.fft.fft(
-                np.fft.ifftshift(range_compressed, axes=0),
+        xp = cp if (_HAS_CUPY and isinstance(range_compressed, cp.ndarray)) else np
+        return xp.fft.fftshift(
+            xp.fft.fft(
+                xp.fft.ifftshift(range_compressed, axes=0),
                 axis=0,
             ),
             axes=0,
@@ -846,9 +857,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         np.ndarray
             Focused complex SAR image, shape ``(npulses, nsamples)``.
         """
-        return np.fft.fftshift(
-            np.fft.ifft(
-                np.fft.ifftshift(rd_data, axes=0), axis=0,
+        xp = cp if (_HAS_CUPY and isinstance(rd_data, cp.ndarray)) else np
+        return xp.fft.fftshift(
+            xp.fft.ifft(
+                xp.fft.ifftshift(rd_data, axes=0), axis=0,
             ),
             axes=0,
         )
@@ -1324,14 +1336,16 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
 
             # Range compress
             rc = rephased.copy()
+            _blk_gpu = _HAS_CUPY and isinstance(rc, cp.ndarray)
+            _xp_blk = cp if _blk_gpu else np
             if self._range_weight_func is not None:
                 w_rg = self._range_weight_func(nsamples).astype(
                     rc.real.dtype,
                 )
-                rc *= w_rg[np.newaxis, :]
-            rc = np.fft.fftshift(
-                np.fft.ifft(
-                    np.fft.ifftshift(rc, axes=1), axis=1,
+                rc *= _xp_blk.asarray(w_rg)[None, :]
+            rc = _xp_blk.fft.fftshift(
+                _xp_blk.fft.ifft(
+                    _xp_blk.fft.ifftshift(rc, axes=1), axis=1,
                 ),
                 axes=1,
             )
@@ -1371,9 +1385,9 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                 rc *= demod
 
             # Azimuth FFT → range-Doppler domain
-            rd_block = np.fft.fftshift(
-                np.fft.fft(
-                    np.fft.ifftshift(rc, axes=0), axis=0,
+            rd_block = _xp_blk.fft.fftshift(
+                _xp_blk.fft.fft(
+                    _xp_blk.fft.ifftshift(rc, axes=0), axis=0,
                 ),
                 axes=0,
             )

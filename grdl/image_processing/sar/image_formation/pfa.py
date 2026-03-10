@@ -45,9 +45,16 @@ from typing import Any, Callable, Dict, Optional, Union
 
 # Third-party
 import numpy as np
-from scipy import fft
+from scipy import fft as _scipy_fft
 from scipy.interpolate import interp1d
 from scipy.signal.windows import taylor as _taylor_window
+
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
 
 # GRDL internal
 from grdl.image_processing.sar.image_formation.base import (
@@ -346,30 +353,33 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         """
         self._pad_factor = pad_factor
 
+        _is_gpu = _HAS_CUPY and isinstance(interpolated, cp.ndarray)
+        xp = cp if _is_gpu else np
+
         data = interpolated
         naz, nrg = data.shape
 
         if self._weight_func is not None:
             w_az = self._weight_func(naz).astype(data.real.dtype)
             w_rg = self._weight_func(nrg).astype(data.real.dtype)
-            data = data * w_az[:, np.newaxis] * w_rg[np.newaxis, :]
+            data = data * xp.asarray(w_az)[:, None] * xp.asarray(w_rg)[None, :]
 
         # Zero-pad to suppress circular aliasing (fold-over)
         if pad_factor > 1.0:
             naz_pad = int(np.ceil(naz * pad_factor))
             nrg_pad = int(np.ceil(nrg * pad_factor))
-            padded = np.zeros((naz_pad, nrg_pad), dtype=data.dtype)
+            padded = xp.zeros((naz_pad, nrg_pad), dtype=data.dtype)
             # Center the k-space data in the padded array
             az_start = (naz_pad - naz) // 2
             rg_start = (nrg_pad - nrg) // 2
             padded[az_start:az_start + naz, rg_start:rg_start + nrg] = data
             data = padded
 
-        shifted = np.fft.ifftshift(data)
+        shifted = xp.fft.ifftshift(data)
         if self._phase_sgn >= 0:
-            image = np.fft.fftshift(fft.fft2(shifted))
+            image = xp.fft.fftshift(xp.fft.fft2(shifted))
         else:
-            image = np.fft.fftshift(fft.ifft2(shifted))
+            image = xp.fft.fftshift(xp.fft.ifft2(shifted))
 
         # Output: rows = azimuth, cols = range
         # Transpose to SICD (rows = range, cols = azimuth) at write time

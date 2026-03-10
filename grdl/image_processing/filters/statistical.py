@@ -37,7 +37,16 @@ from typing import Annotated, Any
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
@@ -79,7 +88,7 @@ class StdDevFilter(BandwiseTransformMixin, ImageTransform):
     >>> texture = f.apply(image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Square kernel side length (odd)')] = 3
@@ -98,7 +107,7 @@ class StdDevFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -111,11 +120,15 @@ class StdDevFilter(BandwiseTransformMixin, ImageTransform):
         validate_kernel_size(ks)
         validate_mode(mode)
 
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
         # Float64 for numerical stability of E[x^2] - E[x]^2
-        x = source.astype(np.float64)
-        mean_x = uniform_filter(x, size=ks, mode=mode)
-        mean_x2 = uniform_filter(x * x, size=ks, mode=mode)
+        x = source.astype(xp.float64)
+        mean_x = ndi_uniform(x, size=ks, mode=mode)
+        mean_x2 = ndi_uniform(x * x, size=ks, mode=mode)
         variance = mean_x2 - mean_x * mean_x
         # Clamp tiny negative values from floating-point rounding
-        np.maximum(variance, 0.0, out=variance)
-        return np.sqrt(variance)
+        xp.maximum(variance, 0.0, out=variance)
+        return xp.sqrt(variance)

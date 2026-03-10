@@ -47,7 +47,16 @@ from typing import Annotated, Any
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.exceptions import ValidationError
@@ -116,7 +125,7 @@ class PhaseGradientFilter(BandwiseTransformMixin, ImageTransform):
     >>> col_grad = PhaseGradientFilter(direction='col').apply(slc)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Smoothing window side length (odd)')] = 3
@@ -175,39 +184,43 @@ class PhaseGradientFilter(BandwiseTransformMixin, ImageTransform):
         validate_kernel_size(ks)
         validate_mode(mode)
 
-        z = source.astype(np.complex128)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
+        z = source.astype(xp.complex128)
 
         # Conjugate products with shifted neighbors (forward phase difference)
         # Row gradient: conj(z[r,c]) * z[r+1,c] → φ[r+1] - φ[r]
-        conj_prod_row = np.conj(z[:-1, :]) * z[1:, :]
+        conj_prod_row = xp.conj(z[:-1, :]) * z[1:, :]
         # Pad last row to preserve shape
-        conj_prod_row = np.vstack([
+        conj_prod_row = xp.vstack([
             conj_prod_row,
             conj_prod_row[-1:, :],
         ])
 
         # Col gradient: conj(z[r,c]) * z[r,c+1] → φ[c+1] - φ[c]
-        conj_prod_col = np.conj(z[:, :-1]) * z[:, 1:]
+        conj_prod_col = xp.conj(z[:, :-1]) * z[:, 1:]
         # Pad last column to preserve shape
-        conj_prod_col = np.hstack([
+        conj_prod_col = xp.hstack([
             conj_prod_col,
             conj_prod_col[:, -1:],
         ])
 
         # Smooth complex products over window (real and imag separately)
         if direction in ('magnitude', 'row'):
-            smooth_row_re = uniform_filter(conj_prod_row.real, size=ks, mode=mode)
-            smooth_row_im = uniform_filter(conj_prod_row.imag, size=ks, mode=mode)
-            grad_row = np.arctan2(smooth_row_im, smooth_row_re)
+            smooth_row_re = ndi_uniform(conj_prod_row.real, size=ks, mode=mode)
+            smooth_row_im = ndi_uniform(conj_prod_row.imag, size=ks, mode=mode)
+            grad_row = xp.arctan2(smooth_row_im, smooth_row_re)
 
         if direction in ('magnitude', 'col'):
-            smooth_col_re = uniform_filter(conj_prod_col.real, size=ks, mode=mode)
-            smooth_col_im = uniform_filter(conj_prod_col.imag, size=ks, mode=mode)
-            grad_col = np.arctan2(smooth_col_im, smooth_col_re)
+            smooth_col_re = ndi_uniform(conj_prod_col.real, size=ks, mode=mode)
+            smooth_col_im = ndi_uniform(conj_prod_col.imag, size=ks, mode=mode)
+            grad_col = xp.arctan2(smooth_col_im, smooth_col_re)
 
         if direction == 'row':
             return grad_row
         elif direction == 'col':
             return grad_col
         else:
-            return np.sqrt(grad_row * grad_row + grad_col * grad_col)
+            return xp.sqrt(grad_row * grad_row + grad_col * grad_col)
