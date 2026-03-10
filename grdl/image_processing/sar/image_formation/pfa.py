@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -244,9 +244,26 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             (npulses, pg.rec_n_samples), dtype=signal.dtype,
         )
 
+        # Precompute all kv polar coordinates as a 2D array (npulses x
+        # nsamples) to avoid repeated per-pulse overhead in
+        # get_kv_for_pulse (arange, multiply, index lookups).
+        geo = pg.geometry
+        sample_indices = np.arange(geo.nsamples)
+        freq_all = (
+            sample_indices[np.newaxis, :]
+            * geo.fxss[:npulses, np.newaxis]
+            + geo.fx0[:npulses, np.newaxis]
+        )
+        cos_phi = np.cos(geo.phi[:npulses])
+        kv_all = (
+            pg.sf_conv
+            * freq_all
+            * cos_phi[:, np.newaxis]
+            * geo.k_sf[:npulses, np.newaxis]
+        )
+
         for i in range(npulses):
-            kv_polar = pg.get_kv_for_pulse(i)
-            result[i, :] = self._interp(kv_polar, signal[i, :], kv_uniform)
+            result[i, :] = self._interp(kv_all[i], signal[i, :], kv_uniform)
 
         return result
 
@@ -293,18 +310,25 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         # monotonically increasing x, so detect and flip once.
         ascending = proj[-1] >= proj[0]
 
+        # Precompute all ku_ks coordinates: each column i has
+        # ku_ks = kv_ks[i] * proj, giving shape (npulses, n_samples).
+        # Apply the ascending flip once to the entire 2D array and
+        # the data matrix, avoiding per-iteration conditional logic.
+        ku_ks_all = kv_ks[np.newaxis, :] * proj[:, np.newaxis]
+        data = range_interpolated
+        if not ascending:
+            ku_ks_all = ku_ks_all[::-1, :]
+            data = data[::-1, :]
+
         result = np.zeros(
             (pg.rec_n_pulses, pg.rec_n_samples),
             dtype=range_interpolated.dtype,
         )
 
         for i in range(pg.rec_n_samples):
-            ku_ks = kv_ks[i] * proj
-            col = range_interpolated[:, i]
-            if not ascending:
-                ku_ks = ku_ks[::-1]
-                col = col[::-1]
-            result[:, i] = self._interp(ku_ks, col, ku_uniform)
+            result[:, i] = self._interp(
+                ku_ks_all[:, i], data[:, i], ku_uniform,
+            )
 
         return result
 

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-03-10
 """
 
 # Standard library
@@ -135,19 +135,23 @@ class ProjectiveCoRegistration(CoRegistration):
         src_norm, T_src = self._normalize_points(self._cp_moving)
         dst_norm, T_dst = self._normalize_points(self._cp_fixed)
 
-        # Build DLT system: Ah = 0
+        # Build DLT system: Ah = 0 (vectorized)
+        r_s = src_norm[:, 0]
+        c_s = src_norm[:, 1]
+        r_d = dst_norm[:, 0]
+        c_d = dst_norm[:, 1]
+        ones = np.ones(n)
+        zeros = np.zeros(n)
+
         A = np.zeros((2 * n, 9))
-        for i in range(n):
-            r_s, c_s = src_norm[i]
-            r_d, c_d = dst_norm[i]
-            A[2 * i] = [
-                r_s, c_s, 1, 0, 0, 0,
-                -r_d * r_s, -r_d * c_s, -r_d,
-            ]
-            A[2 * i + 1] = [
-                0, 0, 0, r_s, c_s, 1,
-                -c_d * r_s, -c_d * c_s, -c_d,
-            ]
+        A[0::2] = np.column_stack([
+            r_s, c_s, ones, zeros, zeros, zeros,
+            -r_d * r_s, -r_d * c_s, -r_d,
+        ])
+        A[1::2] = np.column_stack([
+            zeros, zeros, zeros, r_s, c_s, ones,
+            -c_d * r_s, -c_d * c_s, -c_d,
+        ])
 
         # Solve via SVD
         _, _, Vt = np.linalg.svd(A)
