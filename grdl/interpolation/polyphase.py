@@ -62,7 +62,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -72,6 +72,7 @@ import math
 import numpy as np
 
 # GRDL internal
+from grdl.exceptions import ProcessorError
 from grdl.interpolation.base import Interpolator
 
 # Optional numba acceleration
@@ -262,7 +263,7 @@ def _build_filter_bank_remez(
         break
 
     if prototype is None:
-        raise RuntimeError(
+        raise ProcessorError(
             f"Remez failed to converge for K={K}, L={L}. "
             f"Try increasing kernel_length or transition_width."
         )

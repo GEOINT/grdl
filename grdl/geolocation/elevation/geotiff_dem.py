@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-10
 """
 
 # Standard library
@@ -41,6 +41,7 @@ from typing import Optional
 import numpy as np
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.geolocation.elevation._backend import require_elevation_backend
 from grdl.geolocation.elevation.base import ElevationModel
 
@@ -132,7 +133,7 @@ class GeoTIFFDEM(ElevationModel):
                     'EPSG:4326', self._crs, always_xy=True
                 )
             except ImportError:
-                raise ImportError(
+                raise DependencyError(
                     "GeoTIFFDEM with projected CRS requires pyproj. "
                     "Install with: pip install pyproj"
                 )

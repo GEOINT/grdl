@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-02-16
+2026-03-10
 """
 
 # Standard library
@@ -38,6 +38,9 @@ from typing import List, Optional, Tuple, Union, Any, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import RectBivariateSpline, LinearNDInterpolator
@@ -97,7 +100,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         geoid_path: Optional[Union[str, Any]] = None,
     ) -> None:
         if not _HAS_SCIPY:
-            raise ImportError(
+            raise DependencyError(
                 "Sentinel-1 SLC geolocation requires scipy. "
                 "Install with: conda install -c conda-forge scipy"
             )

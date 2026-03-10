@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-10
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models import ImageMetadata
 from grdl.IO.probe import InvasiveProbeReader
@@ -397,7 +398,7 @@ class GDALFallbackReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for GDAL fallback reading. "
                 "Install with: pip install rasterio"
             )

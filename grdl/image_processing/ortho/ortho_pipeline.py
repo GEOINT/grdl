@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-10
 """
 
 # Standard library
@@ -49,6 +49,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 import numpy as np
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ class OrthoResult:
         try:
             from rasterio.transform import Affine
         except ImportError:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for GeoTIFF output. "
                 "Install with: conda install -c conda-forge rasterio"
             )

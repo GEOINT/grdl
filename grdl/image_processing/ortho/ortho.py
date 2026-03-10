@@ -36,12 +36,13 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-10
 """
 
 import logging
 from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
+from grdl.exceptions import DependencyError
 from grdl.image_processing.params import Desc, Options
 from grdl.image_processing.versioning import processor_version
 
@@ -435,7 +436,7 @@ class Orthorectifier(ImageTransform):
             If scipy is not available.
         """
         if not SCIPY_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "scipy is required for orthorectification. "
                 "Install with: pip install scipy>=1.7.0"
             )

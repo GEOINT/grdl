@@ -1,247 +1,101 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Aug  2 18:10:17 2024
+Polyphase interpolation example — resample a chirp signal.
 
-@author: User
+Demonstrates using ``grdl.interpolation.PolyphaseInterpolator`` to
+resample a complex linear frequency modulated (LFM) chirp from one
+sample rate to another.  Compares Kaiser and Remez prototype designs.
+
+Dependencies
+------------
+matplotlib
+
+Author
+------
+Duane Smalley, PhD
+duane.d.smalley@gmail.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2024-08-02
+
+Modified
+--------
+2026-03-10
 """
 
+# Third-party
 import numpy as np
-
-from scipy import signal
-
-from numba import njit, complex64, float64, float32
-
-import time
-
 import matplotlib.pyplot as plt
 
-
-class Polyphase_Interpolation():
-
-    def __init__(self):
-        self.n_taps = 101
-        self.num_phases = 2048
-        self.oversample = 1.25
-        self.filter_length = 16
-        self.filter_min_oversample = 0.05
-
-
-    def build_filter_function(self):
-
-        PASSBAND = 0.5 / self.oversample
-
-        STOPBAND = 1 - PASSBAND
-
-        full_filter_length = self.num_phases*self.filter_length +1
-
-        scale_factor = full_filter_length/self.n_taps
-
-        #scale_factor = self.num_phases/self.filter_length
-        full_passband = PASSBAND / self.num_phases
-        full_stopband = STOPBAND / self.num_phases
-        bands = [0, full_passband*scale_factor, full_stopband*scale_factor, 0.5 ]
-        kernel = signal.remez( self.n_taps, bands, desired=[1,0], weight=[self.filter_min_oversample, 1.0])
-
-        # ### old, 1000
-
-        # ### new, 1250
-
-        # ### old bw, 700
-
-        # fs_old = 2000
-
-        # fs_new = 1250*2
-
-        # bw = 300
-
-        # fstop = (fs_new - bw) / fs_old
-
-        # fpass = bw / fs_old
-
-        # N_taps = int(60 / (22*(fstop-fpass)))
-
-        # sf = fstop/ 0.5
-        # fpass = fpass 
-        # fstop = fstop
-        # bands = [0,fpass, fstop,0.5]
-
-        # kernel = signal.remez( N_taps, bands, desired=[1,0], weight=[self.filter_min_oversample, 1.0])
-
-        full_kernel = np.fft.ifftshift( signal.resample( np.fft.fftshift(kernel), full_filter_length))
-        full_kernel /= np.sum(full_kernel)
-
-        col_indices = (np.arange( self.filter_length ) + 1)*self.num_phases
-        row_indices = np.arange( self.num_phases+1)*-1
-
-        filter_indices = (np.expand_dims(row_indices, axis = 1) + np.expand_dims(col_indices, axis = 0))
-        the_filter = full_kernel[filter_indices].astype(np.float32)
-        norm = np.expand_dims( the_filter.sum(axis=1), axis = 1)
-
-        self.the_filter = the_filter/norm
-    @staticmethod
-    @njit(complex64[:](float64[:], complex64[:], float32[:,:], float64[:]))
-    def poly_interp( xin, yin, poly_bank, xout ):
-
-        sampling = np.abs(xout[1]-xout[0])
-        phase_length, f_length = poly_bank.shape
-
-        phase_length -= 1
-        transform = [xout[0], 1/sampling]
-        yout = np.zeros( len( xout ), dtype=yin.dtype )
-
-        norm = np.zeros( len(xout ) )
-        half_length = f_length//2-1
-
-
-        for ndx, val in enumerate( yin ):
-
-            out_ndx = (xin[ndx]-transform[0])*transform[1]
-            base_ndx = int(out_ndx )
-
-            if base_ndx - half_length > len(xout):
-                continue
-
-            fractional_offset = out_ndx - float( base_ndx )
-            phasing = int(fractional_offset*float(phase_length)+0.5)
-            start_ndx = base_ndx - half_length
-
-            start_ndx = max( start_ndx, 0 )
-
-            end_ndx = start_ndx + f_length
-            end_ndx = min( end_ndx, len( xout) )
-            filter_start = start_ndx - (base_ndx-half_length)
-            filter_stop = filter_start + end_ndx - start_ndx
-
-            for f_ndx, coef in enumerate(poly_bank[phasing, filter_start:filter_stop]):
-
-                #if base_ndx < len(xout):
-
-                yout[f_ndx + start_ndx] += coef*val
-
-                norm[f_ndx + start_ndx] += coef
-
-
-        for ndx in range( len(yout ) ):
-
-           if norm[ndx] > 0.02:
-
-                yout[ndx] /= norm[ndx]
-
-           else:
-
-                yout[ndx] = 0
-
-        return yout
-
-    '''
-
-    @staticmethod
-
-    @njit(complex128[:](float64[:], complex128[:], float64[:,:], float64[:]))
-
-    def interpolate(xin, yin, filter, xout):
-
-        yout = np.zeros( len(xout), dtype=yin.dtype )
-
-        new_sampling = xout[1]-xout[0]
-
-        norm = np.zeros( len( xout ), dtype = yin.dtype)
-
-
-        print( new_sampling, xout[0] )
-
-        for ndx, val in enumerate( yin ):
-
-            out_ndx = (xin[ndx]-xout[0] )/new_sampling
-
-
-            base_ndx = np.round( out_ndx ).astype(int)
-
-
-
-            #for
-
-                #yout[base_ndx] += (coef*yin)
-
-            if ndx < 250:
-
-                print( ndx, xin[ndx], out_ndx)
-
-
-        return yout
-
-    
-    '''
-
-def test_func():
-
-    print( 'testing')
-
-
-
-    alpha = 250
-
-
-    #### test signal that samples a lfm
-
-    sampling_freq = 5e5
-
-
-    xin =np.arange( 0,sampling_freq)/sampling_freq
-
-    input_signal = np.exp( 1j*2*np.pi*alpha*(xin)**2)
-
-
-    sampling_out = 2.123e5
-
-    xout = np.arange( 0, sampling_out)/sampling_out
-
-
-
-    poly = Polyphase_Interpolation()
-
-    poly.build_filter_function()
-
-
-    t0 = time.perf_counter()
-
-    yout = poly.poly_interp(xin, input_signal, poly.the_filter, xout )
-
-    t1 = time.perf_counter()
-
-
-    print( 'interpolation took: ', t1 - t0, ' s')
-
-
-    plt.figure()
-
-    plt.plot( xin, np.real(input_signal) )
-
-
-    plt.plot( xout, yout)
-
-
-    in_freq = (np.arange( len(xin ) )/len(xin) - 0.5)*sampling_freq
-
-    in_spec = np.fft.fftshift( np.fft.fft( input_signal ) )
-
-
-    out_len = 2*len(xout)
-
-    out_freq = (np.arange( out_len )/out_len- 0.5)*sampling_out
-
-    out_spec = np.fft.fftshift( np.fft.fft( yout, n = 2*len( yout) ),  )
-
-
-    plt.figure()
-
-    plt.plot( in_freq, np.abs(in_spec))
-
-    plt.plot( out_freq, np.abs(out_spec) )
-
-
-
+# GRDL internal
+from grdl.interpolation import PolyphaseInterpolator
+
+
+def main() -> None:
+    """Resample a chirp signal using polyphase interpolation."""
+    # Generate a complex LFM chirp
+    chirp_rate = 250.0  # Hz/s
+    fs_in = 5e5  # Input sample rate (Hz)
+    n_in = int(fs_in)
+    x_in = np.arange(n_in) / fs_in
+    signal_in = np.exp(1j * 2 * np.pi * chirp_rate * x_in ** 2).astype(
+        np.complex64
+    )
+
+    # Define output sample grid (different rate)
+    fs_out = 2.123e5
+    n_out = int(fs_out)
+    x_out = np.arange(n_out) / fs_out
+
+    # --- Kaiser prototype (default) ---
+    interp_kaiser = PolyphaseInterpolator(
+        kernel_length=16, num_phases=2048, prototype='kaiser',
+    )
+    y_kaiser = interp_kaiser(x_in, signal_in, x_out)
+
+    # --- Remez prototype (better stopband rejection) ---
+    interp_remez = PolyphaseInterpolator(
+        kernel_length=16, num_phases=2048, prototype='remez',
+    )
+    y_remez = interp_remez(x_in, signal_in, x_out)
+
+    # --- Plot time-domain comparison ---
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6))
+
+    axes[0].set_title('Time Domain')
+    axes[0].plot(x_in[:500], np.real(signal_in[:500]), label='Input', alpha=0.7)
+    axes[0].plot(x_out[:200], np.real(y_kaiser[:200]), '--', label='Kaiser')
+    axes[0].plot(x_out[:200], np.real(y_remez[:200]), ':', label='Remez')
+    axes[0].legend()
+    axes[0].set_xlabel('Time (s)')
+
+    # --- Plot spectral comparison ---
+    in_freq = (np.arange(n_in) / n_in - 0.5) * fs_in
+    in_spec = np.fft.fftshift(np.fft.fft(signal_in))
+
+    out_freq_k = (np.arange(len(y_kaiser)) / len(y_kaiser) - 0.5) * fs_out
+    out_spec_k = np.fft.fftshift(np.fft.fft(y_kaiser))
+
+    out_freq_r = (np.arange(len(y_remez)) / len(y_remez) - 0.5) * fs_out
+    out_spec_r = np.fft.fftshift(np.fft.fft(y_remez))
+
+    axes[1].set_title('Spectrum')
+    axes[1].plot(in_freq, np.abs(in_spec), label='Input', alpha=0.5)
+    axes[1].plot(out_freq_k, np.abs(out_spec_k), '--', label='Kaiser')
+    axes[1].plot(out_freq_r, np.abs(out_spec_r), ':', label='Remez')
+    axes[1].legend()
+    axes[1].set_xlabel('Frequency (Hz)')
+
+    plt.tight_layout()
     plt.show()
 
 
-#test_func()
+if __name__ == '__main__':
+    main()

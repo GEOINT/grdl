@@ -260,7 +260,9 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
     hh_chip = reader.read_chip(0, 1024, 0, 1024, bands=[0])
 
     # Convert to magnitude in dB
-    hh_mag_db = 20 * np.log10(np.abs(hh_chip) + 1e-10)
+    from grdl.image_processing.intensity import ToDecibels
+    to_db = ToDecibels()
+    hh_mag_db = to_db.apply(hh_chip)
 
     # Read all polarizations
     all_pols = reader.read_chip(0, 512, 0, 512)  # Shape: (4, 512, 512)

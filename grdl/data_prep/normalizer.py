@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-03-10
 """
 
 # Standard library
@@ -31,6 +31,9 @@ from typing import Optional
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import ProcessorError
 
 
 _VALID_METHODS = ('minmax', 'zscore', 'percentile', 'unit_norm')
@@ -272,7 +275,7 @@ class Normalizer:
             If data is not a numpy ndarray.
         """
         if not self._is_fitted:
-            raise RuntimeError(
+            raise ProcessorError(
                 "Normalizer has not been fitted. Call fit() first."
             )
         self._validate_data(data)

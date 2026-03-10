@@ -230,8 +230,9 @@ GRDL/
       multispectral/         # Multispectral modality submodule
         _backend.py          # h5py/xarray/spectral availability
         viirs.py             # VIIRSReader
-      eo/                    # EO modality submodule (scaffold)
+      eo/                    # EO modality submodule
         _backend.py          # rasterio/glymur availability
+        sentinel2.py         # Sentinel2Reader (L1C, L2A via JP2/GeoTIFF)
     geolocation/             # Image-to-geographic coordinate transforms with DEM integration
       base.py                # Geolocation ABC, NoGeolocation
       utils.py               # Footprint, bounds, distance helpers

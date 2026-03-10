@@ -33,7 +33,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-10
 """
 
 # Standard library
@@ -55,6 +55,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models.common import XYZ, LatLonHAE
 from grdl.IO.models.terrasar import (
@@ -766,7 +767,7 @@ class TerraSARReader(ImageReader):
         )
 
         if not self._is_cosar and not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "Reading TerraSAR-X detected products (GeoTIFF) requires "
                 "rasterio. Install with: "
                 "conda install -c conda-forge rasterio"
