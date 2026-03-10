@@ -559,7 +559,9 @@ class TestPolarFormatAlgorithm:
         range_interp = pfa.interpolate_range(signal, geo)
         az_interp = pfa.interpolate_azimuth(range_interp, geo)
         image = pfa.compress(az_interp)
-        assert image.shape == az_interp.shape
+        naz, nrg = az_interp.shape
+        expected = (int(np.ceil(naz * 1.25)), int(np.ceil(nrg * 1.25)))
+        assert image.shape == expected
 
     def test_compress_complex_output(self, setup):
         geo, grid, pfa, signal = setup

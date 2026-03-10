@@ -50,25 +50,25 @@ class TestGeodeticECEF:
         x, y, z = geodetic_to_ecef(
             np.array([0.0]), np.array([0.0]), np.array([0.0])
         )
-        assert abs(float(x) - WGS84_A) < 0.01
-        assert abs(float(y)) < 0.01
-        assert abs(float(z)) < 0.01
+        assert abs(x.item() - WGS84_A) < 0.01
+        assert abs(y.item()) < 0.01
+        assert abs(z.item()) < 0.01
 
     def test_north_pole(self):
         """North pole → Z = semi-minor axis."""
         x, y, z = geodetic_to_ecef(
             np.array([90.0]), np.array([0.0]), np.array([0.0])
         )
-        assert abs(float(x)) < 0.01
-        assert abs(float(y)) < 0.01
-        assert abs(float(z) - WGS84_B) < 0.01
+        assert abs(x.item()) < 0.01
+        assert abs(y.item()) < 0.01
+        assert abs(z.item() - WGS84_B) < 0.01
 
     def test_south_pole(self):
         """South pole → Z = -semi-minor axis."""
         x, y, z = geodetic_to_ecef(
             np.array([-90.0]), np.array([0.0]), np.array([0.0])
         )
-        assert abs(float(z) + WGS84_B) < 0.01
+        assert abs(z.item() + WGS84_B) < 0.01
 
     def test_round_trip_scalar(self):
         """geodetic → ECEF → geodetic round-trip with scalar-like arrays."""
@@ -77,9 +77,9 @@ class TestGeodeticECEF:
             np.array([lat0]), np.array([lon0]), np.array([h0])
         )
         lat1, lon1, h1 = ecef_to_geodetic(x, y, z)
-        assert abs(float(lat1) - lat0) < 1e-9
-        assert abs(float(lon1) - lon0) < 1e-9
-        assert abs(float(h1) - h0) < 1e-3
+        assert abs(lat1.item() - lat0) < 1e-9
+        assert abs(lon1.item() - lon0) < 1e-9
+        assert abs(h1.item() - h0) < 1e-3
 
     def test_round_trip_array(self):
         """Round-trip with array inputs at diverse locations."""
@@ -104,7 +104,7 @@ class TestGeodeticECEF:
             np.array([0.0]), np.array([0.0]), np.array([h])
         )
         # At equator/prime meridian, X increases by h
-        assert abs(float(x1 - x0) - h) < 0.01
+        assert abs((x1 - x0).item() - h) < 0.01
 
 
 # ===================================================================
@@ -122,9 +122,9 @@ class TestGeodeticENU:
             np.array([ref_alt]),
             ref_lat, ref_lon, ref_alt,
         )
-        assert abs(float(e)) < 1e-6
-        assert abs(float(n)) < 1e-6
-        assert abs(float(u)) < 1e-6
+        assert abs(e.item()) < 1e-6
+        assert abs(n.item()) < 1e-6
+        assert abs(u.item()) < 1e-6
 
     def test_point_north_of_reference(self):
         """A point slightly north has positive north, near-zero east."""
@@ -135,8 +135,8 @@ class TestGeodeticENU:
             np.array([ref_alt]),
             ref_lat, ref_lon, ref_alt,
         )
-        assert float(n) > 1000  # should be ~1.1 km
-        assert abs(float(e)) < 1.0  # negligible east
+        assert n.item() > 1000  # should be ~1.1 km
+        assert abs(e.item()) < 1.0  # negligible east
 
     def test_point_east_of_reference(self):
         """A point slightly east has positive east, near-zero north."""
@@ -147,8 +147,8 @@ class TestGeodeticENU:
             np.array([ref_alt]),
             ref_lat, ref_lon, ref_alt,
         )
-        assert float(e) > 500  # positive east (cos(36°) shortens it)
-        assert abs(float(n)) < 1.0
+        assert e.item() > 500  # positive east (cos(36°) shortens it)
+        assert abs(n.item()) < 1.0
 
     def test_point_above_reference(self):
         """A point at higher altitude has positive up."""
@@ -158,9 +158,9 @@ class TestGeodeticENU:
             np.array([1000.0]),
             ref_lat, ref_lon, ref_alt,
         )
-        assert abs(float(e)) < 1.0
-        assert abs(float(n)) < 1.0
-        assert abs(float(u) - 1000.0) < 0.1
+        assert abs(e.item()) < 1.0
+        assert abs(n.item()) < 1.0
+        assert abs(u.item() - 1000.0) < 0.1
 
     def test_round_trip_scalar(self):
         """geodetic → ENU → geodetic round-trip."""
@@ -174,9 +174,9 @@ class TestGeodeticENU:
         )
         lat2, lon2, h2 = enu_to_geodetic(e, n, u, ref_lat, ref_lon, ref_alt)
 
-        assert abs(float(lat2) - target_lat) < 1e-9
-        assert abs(float(lon2) - target_lon) < 1e-9
-        assert abs(float(h2) - target_h) < 1e-3
+        assert abs(lat2.item() - target_lat) < 1e-9
+        assert abs(lon2.item() - target_lon) < 1e-9
+        assert abs(h2.item() - target_h) < 1e-3
 
     def test_round_trip_array(self):
         """Round-trip with multiple target points."""
@@ -207,7 +207,7 @@ class TestGeodeticENU:
             np.array([ref_alt]),
             ref_lat, ref_lon, ref_alt,
         )
-        vec_e = np.array([float(e_e), float(n_e), float(u_e)])
+        vec_e = np.array([e_e.item(), n_e.item(), u_e.item()])
 
         # North direction
         e_n, n_n, u_n = geodetic_to_enu(
@@ -215,7 +215,7 @@ class TestGeodeticENU:
             np.array([ref_alt]),
             ref_lat, ref_lon, ref_alt,
         )
-        vec_n = np.array([float(e_n), float(n_n), float(u_n)])
+        vec_n = np.array([e_n.item(), n_n.item(), u_n.item()])
 
         # Dot product should be near zero
         dot = np.dot(vec_e, vec_n)
