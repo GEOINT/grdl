@@ -30,6 +30,7 @@ Modified
 2026-02-10
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -45,6 +46,8 @@ except ImportError:
 
 from grdl.IO.base import ImageReader
 from grdl.IO.models import BIOMASSMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class BIOMASSL1Reader(ImageReader):
@@ -125,6 +128,11 @@ class BIOMASSL1Reader(ImageReader):
             # SAFE-format: outer wrapper contains inner dir with same name
             inner = self.filepath / self.filepath.name
             if inner.is_dir() and (inner / "annotation").exists():
+                logger.warning(
+                    "BIOMASS annotation not at top level; using nested "
+                    "directory %s",
+                    inner.name,
+                )
                 self.filepath = inner
                 annot_dir = self.filepath / "annotation"
             else:
@@ -281,6 +289,17 @@ class BIOMASSL1Reader(ImageReader):
                 corner_coords=corner_coords,
                 prf=prf,
                 gcps=gcps,
+            )
+
+            logger.info(
+                "Loaded BIOMASS L1 %s (%d x %d)",
+                self.filepath.name, rows, cols,
+            )
+            logger.debug(
+                "BIOMASS polarizations=%s, bands=%d, GCPs=%d",
+                polarizations,
+                bands,
+                len(gcps) if gcps else 0,
             )
 
         except Exception as e:

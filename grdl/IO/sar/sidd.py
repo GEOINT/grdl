@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -98,6 +99,8 @@ from grdl.IO.models.sicd import (
     SICDMatchCollection,
 )
 from grdl.IO.sar._backend import require_sar_backend
+
+logger = logging.getLogger(__name__)
 
 
 # Pixel-type → dtype mapping shared by both backends
@@ -1434,6 +1437,7 @@ class SIDDReader(ImageReader):
         image_index: int = 0,
     ) -> None:
         self.backend = require_sar_backend('SIDD')
+        logger.info("SIDD backend selected: %s", self.backend)
         self.image_index = image_index
         self._cached_image: Optional[np.ndarray] = None
         super().__init__(filepath)
@@ -1502,6 +1506,15 @@ class SIDDReader(ImageReader):
 
             self._xmltree = xml
 
+            logger.info(
+                "Loaded SIDD %s (%d x %d) via sarkit, image %d of %d",
+                self.filepath.name,
+                int(num_rows) if num_rows else 0,
+                int(num_cols) if num_cols else 0,
+                self.image_index,
+                num_images,
+            )
+
         except Exception as e:
             raise ValueError(f"Failed to load SIDD metadata: {e}") from e
 
@@ -1561,6 +1574,12 @@ class SIDDReader(ImageReader):
                     _extract_digital_elevation_data_sarpy(sm)
                 ),
                 product_processing=_extract_product_processing_sarpy(sm),
+            )
+
+            logger.info(
+                "Loaded SIDD %s (%d x %d) via sarpy, image %d of %d",
+                self.filepath.name, num_rows, num_cols,
+                self.image_index, num_images,
             )
 
         except Exception as e:

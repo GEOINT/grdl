@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Any, Optional, Tuple
 
 # Third-party
@@ -52,6 +53,8 @@ from grdl.coregistration.utils import (
     warp_image,
 )
 from grdl.image_processing.versioning import processor_version
+
+logger = logging.getLogger(__name__)
 
 
 def _to_uint8(image: np.ndarray) -> np.ndarray:
@@ -207,6 +210,7 @@ class FeatureMatchCoRegistration(CoRegistration):
 
         # Match features
         good_matches = self._match_features(desc_fixed, desc_moving)
+        logger.info("Feature matches found: %d", len(good_matches))
 
         min_matches = 4 if self._transform_type == 'homography' else 3
         if len(good_matches) < min_matches:
@@ -275,6 +279,7 @@ class FeatureMatchCoRegistration(CoRegistration):
 
         num_inliers = int(np.sum(inlier_mask))
         inlier_ratio = num_inliers / len(good_matches) if good_matches else 0.0
+        logger.debug("RANSAC inlier ratio: %.3f (%d/%d)", inlier_ratio, num_inliers, len(good_matches))
 
         # Compute residuals on inliers
         inlier_fixed = pts_fixed_rc[inlier_mask]

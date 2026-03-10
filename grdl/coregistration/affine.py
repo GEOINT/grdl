@@ -32,6 +32,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Any, Optional, Tuple
 
 # Third-party
@@ -45,6 +46,8 @@ from grdl.coregistration.utils import (
     warp_image,
 )
 from grdl.image_processing.versioning import processor_version
+
+logger = logging.getLogger(__name__)
 
 
 @processor_version('0.1.0')
@@ -150,6 +153,9 @@ class AffineCoRegistration(CoRegistration):
             self._cp_fixed, self._cp_moving, transform_matrix
         )
         rms = compute_rms(residuals)
+
+        logger.debug("Point pairs used: %d", n)
+        logger.info("Affine fit RMS residual: %.4f", rms)
 
         return RegistrationResult(
             transform_matrix=transform_matrix,

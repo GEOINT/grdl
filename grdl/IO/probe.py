@@ -39,6 +39,7 @@ Modified
 from __future__ import annotations
 
 # Standard library
+import logging
 import math
 import struct
 from dataclasses import dataclass, field
@@ -63,6 +64,8 @@ except ImportError:
 # GRDL internal
 from grdl.IO.base import ImageReader
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -1211,9 +1214,19 @@ def _run_probe_pipeline(filepath: Path) -> ProbeEvidence:
 
     # Probe 4: Binary structure (only if dimensions still unknown)
     if merged.rows is None or merged.cols is None:
+        logger.debug("Dimensions unknown after initial probes, trying binary structure analysis")
         binary_ev = _probe_binary_structure(filepath)
         probes.append(binary_ev)
         merged = _merge_evidence(probes)
+
+    logger.info(
+        "Probe result for %s: format=%s, strategy=%s",
+        filepath.name, merged.format_name, merged.loading_strategy,
+    )
+    logger.debug(
+        "Probe evidence for %s: probes=%s, clues=%s",
+        filepath.name, merged.probes_run, merged.clues,
+    )
 
     return merged
 
@@ -1277,6 +1290,10 @@ class InvasiveProbeReader(ImageReader):
             self.evidence.dtype = 'uint8'
             self.evidence.clues.append(
                 "dtype unknown, defaulting to uint8"
+            )
+            logger.warning(
+                "dtype unknown for %s, defaulting to uint8",
+                self.filepath.name,
             )
 
         # Build format name

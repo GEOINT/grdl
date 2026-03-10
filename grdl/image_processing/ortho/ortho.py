@@ -39,12 +39,15 @@ Modified
 2026-03-08
 """
 
+import logging
 from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from grdl.image_processing.params import Desc, Options
 from grdl.image_processing.versioning import processor_version
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     from scipy.ndimage import map_coordinates as _map_coordinates
@@ -497,8 +500,14 @@ class Orthorectifier(ImageTransform):
         total_pixels = grid.rows * grid.cols
 
         if total_pixels > _PARALLEL_THRESHOLD and grid.rows > 1:
+            logger.info(
+                "Computing %dx%d mapping (parallel)", grid.rows, grid.cols,
+            )
             return self._compute_mapping_parallel(num_workers)
 
+        logger.info(
+            "Computing %dx%d mapping (sequential)", grid.rows, grid.cols,
+        )
         return self._compute_mapping_sequential()
 
     def _compute_mapping_sequential(
@@ -506,6 +515,11 @@ class Orthorectifier(ImageTransform):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute mapping in a single vectorized pass."""
         grid = self.output_grid
+
+        if self.elevation is not None:
+            logger.debug("Using DEM for terrain-corrected mapping")
+        else:
+            logger.debug("No DEM provided, using flat-earth mapping")
 
         out_rows = np.arange(grid.rows, dtype=np.float64) + 0.5
         out_cols = np.arange(grid.cols, dtype=np.float64) + 0.5
@@ -544,6 +558,9 @@ class Orthorectifier(ImageTransform):
         self._source_rows = source_rows
         self._source_cols = source_cols
         self._valid_mask = valid
+
+        valid_pct = 100.0 * np.count_nonzero(valid) / valid.size
+        logger.debug("Valid pixel coverage: %.1f%%", valid_pct)
 
         return source_rows, source_cols, valid
 
@@ -602,6 +619,11 @@ class Orthorectifier(ImageTransform):
             source_rows[rs] = sr.reshape(n_strip_rows, grid.cols)
             source_cols[rs] = sc.reshape(n_strip_rows, grid.cols)
 
+        if self.elevation is not None:
+            logger.debug("Using DEM for terrain-corrected mapping")
+        else:
+            logger.debug("No DEM provided, using flat-earth mapping")
+
         with ThreadPoolExecutor(max_workers=num_workers) as pool:
             list(pool.map(_process_strip, row_slices))
 
@@ -618,6 +640,9 @@ class Orthorectifier(ImageTransform):
         self._source_rows = source_rows
         self._source_cols = source_cols
         self._valid_mask = valid
+
+        valid_pct = 100.0 * np.count_nonzero(valid) / valid.size
+        logger.debug("Valid pixel coverage: %.1f%%", valid_pct)
 
         return source_rows, source_cols, valid
 
@@ -715,6 +740,7 @@ class Orthorectifier(ImageTransform):
         valid_src_cols = source_cols[valid]
 
         if valid_src_rows.size == 0:
+            logger.warning("No valid source mapping found, returning nodata grid")
             # No valid mapping -- return all nodata
             shape = reader.get_shape()
             n_bands = len(bands) if bands else (shape[2] if len(shape) > 2 else 1)

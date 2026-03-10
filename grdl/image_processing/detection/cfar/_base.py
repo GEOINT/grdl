@@ -49,6 +49,7 @@ Modified
 """
 
 # Standard library
+import logging
 from abc import abstractmethod
 from typing import Annotated, Any, List, Optional, Tuple
 
@@ -69,6 +70,8 @@ from grdl.image_processing.detection.cfar._validation import (
     validate_cfar_window,
     validate_pfa,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -508,10 +511,21 @@ class CFARDetector(ImageDetector):
 
         # Step 1: Background estimation (abstract hook)
         bg_mean, bg_std = self._estimate_background(img, guard, train)
+        logger.debug(
+            "Background stats: mean=[%.4f, %.4f], std=[%.4f, %.4f]",
+            float(np.min(bg_mean)), float(np.max(bg_mean)),
+            float(np.min(bg_std)), float(np.max(bg_std)),
+        )
 
         # Step 2: Adaptive threshold
         threshold = self._compute_threshold(
             bg_mean, bg_std, pfa, train, guard, assumption,
+        )
+        logger.debug(
+            "Threshold distribution: min=%.4f, median=%.4f, max=%.4f",
+            float(np.min(threshold)),
+            float(np.median(threshold)),
+            float(np.max(threshold)),
         )
 
         # Step 3: Binary mask and connected components
@@ -522,6 +536,10 @@ class CFARDetector(ImageDetector):
         detections = self._build_detections(
             img, threshold, labeled_arr, n_components,
             min_px, assumption, geolocation,
+        )
+        logger.info(
+            "CFAR: %d detections from %d components",
+            len(detections), n_components,
         )
 
         return DetectionSet(

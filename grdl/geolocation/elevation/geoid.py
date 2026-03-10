@@ -37,6 +37,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Optional, Union
 
@@ -45,6 +46,8 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.base import _is_scalar, _to_array
+
+logger = logging.getLogger(__name__)
 
 # EGM96 15-arc-minute grid constants
 _EGM96_NROWS = 721
@@ -120,6 +123,7 @@ class GeoidCorrection:
 
         self._path = geoid_path
         self._grid = self._load_pgm(geoid_path)
+        logger.info("Loaded geoid grid %s", geoid_path.name)
 
         # Pre-compute latitude and longitude vectors for interpolation
         # Latitude: 90 (north) to -90 (south), 721 points

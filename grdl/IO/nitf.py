@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -47,6 +48,8 @@ except ImportError:
 # GRDL internal
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class NITFReader(ImageReader):
@@ -120,6 +123,17 @@ class NITFReader(ImageReader):
                 crs=str(self.dataset.crs) if self.dataset.crs else None,
                 nodata=self.dataset.nodata,
                 extras=extras,
+            )
+
+            logger.info(
+                "Opened NITF %s (%d bands, %d x %d)",
+                self.filepath.name, self.dataset.count,
+                self.dataset.height, self.dataset.width,
+            )
+            logger.debug(
+                "NITF segments: %d, CRS: %s",
+                self.dataset.count,
+                str(self.dataset.crs) if self.dataset.crs else "none",
             )
 
         except Exception as e:

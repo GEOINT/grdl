@@ -42,6 +42,7 @@ Modified
 """
 
 # Standard library
+import logging
 import math
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -52,6 +53,8 @@ import numpy as np
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
 from grdl.geolocation.elevation.base import ElevationModel
+
+logger = logging.getLogger(__name__)
 
 # DTED file extensions in order of preference (highest resolution first)
 _DTED_EXTENSIONS = ('.dt2', '.dt1', '.dt0')
@@ -271,12 +274,17 @@ class DTEDElevation(ElevationModel):
 
         # Group point indices by tile key
         tile_groups: Dict[Tuple[int, int], list] = {}
+        missing_keys = set()
         for i in range(n):
             key = (int(lon_floors[i]), int(lat_floors[i]))
             if key in self._tile_index:
                 if key not in tile_groups:
                     tile_groups[key] = []
                 tile_groups[key].append(i)
+            else:
+                missing_keys.add(key)
+        for mk in missing_keys:
+            logger.warning("No DTED tile for (%d, %d)", mk[0], mk[1])
 
         # Process each tile batch
         for key, indices in tile_groups.items():
@@ -286,6 +294,7 @@ class DTEDElevation(ElevationModel):
             batch_lons = lons[idx_arr]
 
             try:
+                logger.debug("Loading DTED tile: %s", tile_path.name)
                 with rasterio.open(str(tile_path)) as ds:
                     transform = ds.transform
                     data = ds.read(1)

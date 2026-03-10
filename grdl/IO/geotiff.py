@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -47,6 +48,8 @@ except ImportError:
 # GRDL internal
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class GeoTIFFReader(ImageReader):
@@ -111,16 +114,25 @@ class GeoTIFFReader(ImageReader):
                     self.dataset.tags()['TIFFTAG_IMAGEDESCRIPTION']
                 )
 
+            crs_str = str(self.dataset.crs) if self.dataset.crs else None
+
             self.metadata = ImageMetadata(
                 format='GeoTIFF',
                 rows=self.dataset.height,
                 cols=self.dataset.width,
                 bands=self.dataset.count,
                 dtype=str(self.dataset.dtypes[0]),
-                crs=str(self.dataset.crs) if self.dataset.crs else None,
+                crs=crs_str,
                 nodata=self.dataset.nodata,
                 extras=extras,
             )
+
+            logger.info(
+                "Opened GeoTIFF %s (%d bands, %d x %d)",
+                self.filepath.name, self.dataset.count,
+                self.dataset.height, self.dataset.width,
+            )
+            logger.debug("CRS: %s", crs_str)
 
         except Exception as e:
             raise ValueError(f"Failed to load GeoTIFF metadata: {e}") from e

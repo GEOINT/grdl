@@ -33,6 +33,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # Third-party
@@ -55,6 +56,8 @@ from grdl.image_processing.sar.image_formation.subaperture import (
     SubaperturePartitioner,
 )
 
+
+logger = logging.getLogger(__name__)
 
 # Speed of light (m/s)
 _C = 299792458.0
@@ -256,10 +259,13 @@ class StripmapPFA(ImageFormationAlgorithm):
         phase_sgn = gp.phase_sgn if gp is not None else -1
 
         if self._verbose:
-            print(f"Stripmap PFA: {n_subs} sub-apertures, "
-                  f"{self._partitioner.sub_length} pulses each, "
-                  f"stride {self._partitioner.stride}")
-            print(f"  PhaseSGN: {phase_sgn:+d}")
+            logger.info(
+                "Stripmap PFA: %d sub-apertures, %d pulses each, "
+                "stride %d",
+                n_subs, self._partitioner.sub_length,
+                self._partitioner.stride,
+            )
+            logger.debug("PhaseSGN: %+d", phase_sgn)
 
         sub_images: List[np.ndarray] = []
         sub_centers: List[np.ndarray] = []  # centre SRP per sub-aperture
@@ -267,9 +273,10 @@ class StripmapPFA(ImageFormationAlgorithm):
 
         for i, (start, end) in enumerate(partitions):
             if self._verbose:
-                print(f"\n  Sub-aperture {i + 1}/{n_subs}: "
-                      f"pulses [{start}:{end}] "
-                      f"({end - start} pulses)")
+                logger.debug(
+                    "Sub-aperture %d/%d: pulses [%d:%d] (%d pulses)",
+                    i + 1, n_subs, start, end, end - start,
+                )
 
             # ── 1. Slice metadata and signal ──
             sub_meta = create_subaperture_metadata(
@@ -301,11 +308,17 @@ class StripmapPFA(ImageFormationAlgorithm):
             )
 
             if self._verbose:
-                print(f"    Grid: {sub_grid.rec_n_pulses} x "
-                      f"{sub_grid.rec_n_samples}")
-                print(f"    Range res: {sub_grid.range_resolution:.3f} m")
-                print(f"    Azimuth res: "
-                      f"{sub_grid.azimuth_resolution:.3f} m")
+                logger.debug(
+                    "Grid: %d x %d",
+                    sub_grid.rec_n_pulses, sub_grid.rec_n_samples,
+                )
+                logger.debug(
+                    "Range res: %.3f m", sub_grid.range_resolution,
+                )
+                logger.debug(
+                    "Azimuth res: %.3f m",
+                    sub_grid.azimuth_resolution,
+                )
 
             # ── 5. Run PFA ──
             pfa = PolarFormatAlgorithm(
@@ -322,20 +335,20 @@ class StripmapPFA(ImageFormationAlgorithm):
             sub_grids.append(grid_info)
 
             if self._verbose:
-                print(f"    Image shape: {sub_image.shape}")
+                logger.debug("Image shape: %s", sub_image.shape)
 
         self._sub_grids = sub_grids
 
         # ── 6. Mosaic ──
         if self._verbose:
-            print(f"\nMosaicing {n_subs} sub-apertures...")
+            logger.info("Mosaicing %d sub-apertures", n_subs)
 
         mosaic = self._mosaic_subapertures(
             sub_images, sub_centers, sub_grids,
         )
 
         if self._verbose:
-            print(f"  Mosaic shape: {mosaic.shape}")
+            logger.info("Mosaic shape: %s", mosaic.shape)
 
         return mosaic
 

@@ -51,6 +51,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Annotated, Any
 
 # Third-party
@@ -64,6 +65,8 @@ from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.exceptions import ValidationError
 from grdl.image_processing.filters._validation import validate_kernel_size
 from grdl.vocabulary import ImageModality, ProcessorCategory
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -188,8 +191,10 @@ class LeeFilter(BandwiseTransformMixin, ImageTransform):
         # ENL estimation or use provided value
         if enl <= 0.0:
             estimated_enl = _estimate_enl(ci2)
+            logger.debug("LeeFilter: auto-estimated ENL=%.2f", estimated_enl)
         else:
             estimated_enl = enl
+            logger.debug("LeeFilter: user-provided ENL=%.2f", estimated_enl)
 
         # Noise coefficient of variation: Cn² = 1/ENL
         cn2 = 1.0 / estimated_enl
@@ -326,6 +331,11 @@ class ComplexLeeFilter(BandwiseTransformMixin, ImageTransform):
             estimated_enl = _estimate_enl(ci2)
         else:
             estimated_enl = enl
+
+        logger.debug(
+            "ComplexLeeFilter: input shape %s, ENL=%.2f",
+            source.shape, estimated_enl,
+        )
 
         # Noise coefficient of variation: Cn² = 1/ENL
         cn2 = 1.0 / estimated_enl

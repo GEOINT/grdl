@@ -40,6 +40,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Dict, Tuple
 
 # Third-party
@@ -48,6 +49,8 @@ import numpy as np
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.versioning import processor_version
+
+logger = logging.getLogger(__name__)
 
 
 @processor_version('0.1.0')
@@ -160,6 +163,10 @@ class PauliDecomposition(PolarimetricDecomposition):
             If inputs are not 2D or have mismatched shapes.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        logger.info(
+            "Pauli decomposition: shape %s, 4 channels, dtype %s",
+            shh.shape, shh.dtype,
+        )
 
         # Normalization constant in matching precision to avoid
         # silent upcast from complex64 to complex128.
@@ -168,11 +175,22 @@ class PauliDecomposition(PolarimetricDecomposition):
         else:
             norm = 1.0 / np.sqrt(2.0)
 
-        return {
+        result = {
             'surface': (shh + svv) * norm,
             'double_bounce': (shh - svv) * norm,
             'volume': (shv + svh) * norm,
         }
+        logger.debug(
+            "Pauli magnitudes: surface=[%.4f, %.4f], "
+            "double_bounce=[%.4f, %.4f], volume=[%.4f, %.4f]",
+            float(np.min(np.abs(result['surface']))),
+            float(np.max(np.abs(result['surface']))),
+            float(np.min(np.abs(result['double_bounce']))),
+            float(np.max(np.abs(result['double_bounce']))),
+            float(np.min(np.abs(result['volume']))),
+            float(np.max(np.abs(result['volume']))),
+        )
+        return result
 
     def to_rgb(
         self,

@@ -593,6 +593,7 @@ GRDL grows one well-built module at a time. When adding a new module:
 5. List module-specific dependencies.
 6. Add sample data to `example_images/` if needed for demos.
 7. **For ImageProcessor subclasses**: add `@processor_version`, `@processor_tags`, and `Annotated` parameter declarations. This metadata is what makes your processor discoverable and configurable in grdl-runtime and grdk.
+8. **Logging**: Use `logging.getLogger(__name__)` for diagnostic output. Never use `print()` or `basicConfig()` in library code. Use lazy `%s` formatting, not f-strings. See [docs/logging_tutorial.md](docs/logging_tutorial.md).
 
 See [CLAUDE.md](CLAUDE.md) for full development standards, file header format, and coding conventions.
 

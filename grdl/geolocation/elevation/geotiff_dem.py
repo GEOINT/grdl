@@ -33,6 +33,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,8 @@ import numpy as np
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
 from grdl.geolocation.elevation.base import ElevationModel
+
+logger = logging.getLogger(__name__)
 
 
 class GeoTIFFDEM(ElevationModel):
@@ -112,6 +115,7 @@ class GeoTIFFDEM(ElevationModel):
 
         # Open dataset and extract spatial reference information
         self._dataset = rasterio.open(str(dem_path))
+        logger.info("Loaded DEM %s", dem_path.name)
         self._transform = self._dataset.transform
         self._inv_transform = ~self._transform
         self._crs = self._dataset.crs
