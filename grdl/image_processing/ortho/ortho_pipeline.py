@@ -41,6 +41,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
@@ -49,6 +50,8 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.IO.base import ImageReader
@@ -577,6 +580,11 @@ class OrthoPipeline:
         grid = self._resolve_output_grid()
 
         # 2. Create orthorectifier with optional DEM
+        logger.info(
+            "Starting mapping for %dx%d grid, DEM %s",
+            grid.rows, grid.cols,
+            "provided" if self._elevation is not None else "not provided",
+        )
         ortho = Orthorectifier(
             geolocation=self._geolocation,
             output_grid=grid,
@@ -651,6 +659,10 @@ class OrthoPipeline:
                 geolocation=self._geolocation,
                 scale_factor=self._scale_factor,
             )
+            logger.info(
+                "Auto-computed resolution: %.8f deg lat, %.8f deg lon",
+                psl, psn,
+            )
 
         if self._roi_bounds is not None:
             min_lat, max_lat, min_lon, max_lon = self._roi_bounds
@@ -688,6 +700,10 @@ class OrthoPipeline:
             tile_size=self._tile_size,
         )
         tiles = tiler.tile_positions()
+        logger.info(
+            "Tiled processing: %dx%d grid, %d tiles",
+            grid.rows, grid.cols, len(tiles),
+        )
 
         # 3. Determine output dtype and shape
         if self._source_array is not None:
@@ -711,7 +727,9 @@ class OrthoPipeline:
             )
 
         # 4. Process each tile
-        for tile in tiles:
+        total_tiles = len(tiles)
+        last_logged_pct = -1
+        for tile_idx, tile in enumerate(tiles):
             sub = grid.sub_grid(
                 tile.row_start, tile.col_start,
                 tile.row_end, tile.col_end,
@@ -724,6 +742,14 @@ class OrthoPipeline:
                 elevation=self._elevation,
             )
             tile_ortho.compute_mapping()
+
+            pct = (tile_idx + 1) * 100 // total_tiles
+            if pct // 10 > last_logged_pct // 10:
+                logger.debug(
+                    "Tile progress: %d/%d (%d%%)",
+                    tile_idx + 1, total_tiles, pct,
+                )
+                last_logged_pct = pct
 
             if self._source_array is not None:
                 tile_data = tile_ortho.apply(

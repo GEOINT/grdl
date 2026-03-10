@@ -70,6 +70,7 @@ Modified
 
 
 # Standard library
+import logging
 from typing import Any, Callable, Dict, Optional, Union
 
 # Third-party
@@ -91,6 +92,8 @@ from grdl.image_processing.sar.image_formation.base import (
 )
 from grdl.IO.models.cphd import CPHDMetadata, CPHDPVP
 
+
+logger = logging.getLogger(__name__)
 
 # Speed of light (m/s)
 _C = 299792458.0
@@ -321,9 +324,9 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         if self._verbose and ci is not None:
             mode = ci.radar_mode
             if mode is not None and 'STRIP' not in mode.upper():
-                print(
-                    f"  [WARN] RDA is designed for STRIPMAP mode, "
-                    f"got '{mode}'. Results may be suboptimal."
+                logger.warning(
+                    "RDA is designed for STRIPMAP mode, got '%s'. "
+                    "Results may be suboptimal.", mode,
                 )
 
         # Validate bandwidth consistency with waveform
@@ -333,11 +336,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                 pvp_bw = float(abs(pvp.fx2[0] - pvp.fx1[0]))
                 if pvp_bw > 0 and abs(chirp_bw - pvp_bw) / pvp_bw > 0.1:
                     if self._verbose:
-                        print(
-                            f"  [WARN] Bandwidth mismatch: "
-                            f"chirp={chirp_bw / 1e6:.1f} MHz, "
-                            f"PVP={pvp_bw / 1e6:.1f} MHz "
-                            f"(>10% difference)"
+                        logger.warning(
+                            "Bandwidth mismatch: chirp=%.1f MHz, "
+                            "PVP=%.1f MHz (>10%% difference)",
+                            chirp_bw / 1e6, pvp_bw / 1e6,
                         )
 
     # ------------------------------------------------------------------
@@ -414,20 +416,18 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         if self._verbose:
             t_max = n_max * self._pri
             bw_hz = ka_abs * n_max * self._pri
-            print(
-                f"  Auto block size: {n_max} pulses "
-                f"(T_max={t_max:.4f}s)"
+            logger.debug(
+                "Auto block size: %d pulses (T_max=%.4fs)",
+                n_max, t_max,
             )
-            print(
-                f"    Drift limit: {n_drift} "
-                f"(dR/pulse={dr_per_pulse:.4f} m, "
-                f"tol={_DRIFT_FACTOR} cells)"
+            logger.debug(
+                "Drift limit: %d (dR/pulse=%.4f m, tol=%s cells)",
+                n_drift, dr_per_pulse, _DRIFT_FACTOR,
             )
-            print(
-                f"    BW limit: {n_bw}, "
-                f"Quartic limit: {n_quartic} "
-                f"(chirp BW={bw_hz:.0f} Hz, "
-                f"PRF={self._prf:.0f} Hz)"
+            logger.debug(
+                "BW limit: %d, Quartic limit: %d "
+                "(chirp BW=%.0f Hz, PRF=%.0f Hz)",
+                n_bw, n_quartic, bw_hz, self._prf,
             )
 
         return n_max
@@ -507,11 +507,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                         < 0.5):
                     self._v_eff = v_from_ka
                 elif self._verbose:
-                    print(
-                        f"  [INFO] a_frr1-derived v_eff "
-                        f"({v_from_ka:.1f} m/s) rejected, "
-                        f"using platform speed "
-                        f"({self._speed:.1f} m/s)"
+                    logger.debug(
+                        "a_frr1-derived v_eff (%.1f m/s) rejected, "
+                        "using platform speed (%.1f m/s)",
+                        v_from_ka, self._speed,
                     )
 
         # Range sample spacing after IFFT
@@ -835,8 +834,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                 np.pi * np.max(f_eta ** 2)
                 * np.max(np.abs(1.0 / ka_r))
             )
-            print(f"  Matched filter max phase: {max_phase:.1f} rad "
-                  f"({max_phase / np.pi:.1f}\u03c0)")
+            logger.debug(
+                "Matched filter max phase: %.1f rad (%.1f\u03c0)",
+                max_phase, max_phase / np.pi,
+            )
 
         return result
 
@@ -943,8 +944,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             max_phase = float(
                 n_sq.max() * np.max(np.abs(deramp_per_bin))
             )
-            print(f"  Deramp max phase: {max_phase:.2f} rad "
-                  f"({max_phase / np.pi:.1f}\u03c0)")
+            logger.debug(
+                "Deramp max phase: %.2f rad (%.1f\u03c0)",
+                max_phase, max_phase / np.pi,
+            )
 
         return result
 
@@ -1025,9 +1028,9 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
 
         n_invalid = int(np.sum(~valid_mask))
         if n_invalid > 0 and self._verbose:
-            print(
-                f"  Trimming {n_invalid} invalid pulses "
-                f"({npulses} -> {npulses - n_invalid})"
+            logger.debug(
+                "Trimming %d invalid pulses (%d -> %d)",
+                n_invalid, npulses, npulses - n_invalid,
             )
 
         # Apply AmpSF
@@ -1254,12 +1257,19 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
         n_out_rows = len(starts) * stride
 
         if self._verbose:
-            print(f"\nSubaperture RDA: {len(starts)} blocks of "
-                  f"{block_size} pulses, stride {stride}, "
-                  f"overlap {self._overlap:.0%}")
-            print(f"  Crop: rows [{crop_start}:{crop_end}] "
-                  f"per block ({stride} rows)")
-            print(f"  Output grid: {n_out_rows} x {nsamples}")
+            logger.info(
+                "Subaperture RDA: %d blocks of %d pulses, "
+                "stride %d, overlap %.0f%%",
+                len(starts), block_size, stride,
+                self._overlap * 100,
+            )
+            logger.debug(
+                "Crop: rows [%d:%d] per block (%d rows)",
+                crop_start, crop_end, stride,
+            )
+            logger.debug(
+                "Output grid: %d x %d", n_out_rows, nsamples,
+            )
 
         # Precompute RCMC shift ratios for block-sized Doppler axis
         f_eta_block = np.fft.fftshift(
@@ -1283,8 +1293,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                 np.max(np.abs(range_axis)) * np.max(D_inv_minus_1)
             )
             max_shift_bins = max_shift_m / self._delta_r
-            print(f"  RCMC max shift: {max_shift_m:.2f} m "
-                  f"({max_shift_bins:.1f} bins)")
+            logger.debug(
+                "RCMC max shift: %.2f m (%.1f bins)",
+                max_shift_m, max_shift_bins,
+            )
 
         # Collect cropped block centres for concatenation
         blocks = []
@@ -1426,9 +1438,10 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                     mag.max() / mag.mean()
                     if mag.mean() > 0 else 0
                 )
-                print(
-                    f"  Block {b_idx}: pulses [{start}:{end}], "
-                    f"fdc={f_dc_block:.1f}Hz, peak/mean={pm:.1f}"
+                logger.debug(
+                    "Block %d: pulses [%d:%d], fdc=%.1fHz, "
+                    "peak/mean=%.1f",
+                    b_idx, start, end, f_dc_block, pm,
                 )
 
             # Crop the well-focused centre of the block
@@ -1473,42 +1486,55 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             )
 
         if self._verbose:
-            print(f"RDA: {self._npulses} pulses x "
-                  f"{self._nsamples} samples")
-            print(f"  Phase SGN: {self._phase_sgn:+d}")
-            print(f"  Wavelength: {self._wavelength * 100:.2f} cm")
-            print(f"  Bandwidth: {self._bandwidth / 1e6:.1f} MHz")
-            print(f"  PRF: {self._prf:.1f} Hz")
-            print(f"  Platform speed: {self._speed:.1f} m/s")
-            print(f"  Effective velocity: {self._v_eff:.1f} m/s")
-            print(f"  Reference range: "
-                  f"{self._r0_center / 1e3:.1f} km")
-            print(f"  Doppler centroid: {self._f_dc:.1f} Hz")
-            print(f"  Az FM rate (ref): {self._ka_ref:.1f} Hz/s")
-            print(f"  Range resolution: "
-                  f"{self._range_resolution:.3f} m")
-            print(f"  Azimuth resolution: "
-                  f"{self._azimuth_resolution:.3f} m")
+            logger.info(
+                "RDA: %d pulses x %d samples",
+                self._npulses, self._nsamples,
+            )
+            logger.debug("Phase SGN: %+d", self._phase_sgn)
+            logger.debug("Wavelength: %.2f cm", self._wavelength * 100)
+            logger.debug("Bandwidth: %.1f MHz", self._bandwidth / 1e6)
+            logger.debug("PRF: %.1f Hz", self._prf)
+            logger.debug("Platform speed: %.1f m/s", self._speed)
+            logger.debug("Effective velocity: %.1f m/s", self._v_eff)
+            logger.debug(
+                "Reference range: %.1f km", self._r0_center / 1e3,
+            )
+            logger.debug("Doppler centroid: %.1f Hz", self._f_dc)
+            logger.debug("Az FM rate (ref): %.1f Hz/s", self._ka_ref)
+            logger.debug(
+                "Range resolution: %.3f m", self._range_resolution,
+            )
+            logger.debug(
+                "Azimuth resolution: %.3f m",
+                self._azimuth_resolution,
+            )
             if self._block_size is not None:
-                print(f"  Mode: subaperture ({self._block_size} "
-                      f"pulses, {self._overlap:.0%} overlap)")
+                logger.debug(
+                    "Mode: subaperture (%d pulses, %.0f%% overlap)",
+                    self._block_size, self._overlap * 100,
+                )
             else:
-                print("  Mode: single-reference (full aperture)")
+                logger.debug("Mode: single-reference (full aperture)")
 
             # Report metadata utilization
             pvp = self._metadata.pvp
             if pvp.amp_sf is not None:
-                print(f"  AmpSF: available "
-                      f"(apply={self._apply_amp_sf})")
+                logger.debug(
+                    "AmpSF: available (apply=%s)",
+                    self._apply_amp_sf,
+                )
             if self._metadata.antenna_pattern is not None:
-                print(f"  Antenna pattern: available "
-                      f"(compensate={self._antenna_compensation})")
+                logger.debug(
+                    "Antenna pattern: available (compensate=%s)",
+                    self._antenna_compensation,
+                )
             rg = self._metadata.reference_geometry
             if rg is not None and rg.graze_angle_deg is not None:
-                print(f"  Graze angle: "
-                      f"{rg.graze_angle_deg:.2f} deg")
+                logger.debug(
+                    "Graze angle: %.2f deg", rg.graze_angle_deg,
+                )
             if rg is not None and rg.side_of_track is not None:
-                print(f"  Side of track: {rg.side_of_track}")
+                logger.debug("Side of track: %s", rg.side_of_track)
 
         # Preprocess: apply AmpSF, trim invalid pulses
         signal = self._preprocess_signal(signal)
@@ -1518,11 +1544,11 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             image = self._form_image_subaperture(signal)
         else:
             if self._verbose:
-                print("\nStage 0: Rephasing to common SRP...")
+                logger.info("Stage 0: Rephasing to common SRP")
             rephased = self.rephase_to_reference(signal)
 
             if self._verbose:
-                print("Stage 1: Range compression (IFFT)...")
+                logger.info("Stage 1: Range compression (IFFT)")
             rc = self.range_compress(rephased)
 
             # Stage 1.5: Deramp — remove range-dependent residual
@@ -1532,24 +1558,26 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             # linear-only slow-time phase and the azimuth FFT
             # focuses them directly — no matched filter or IFFT.
             if self._verbose:
-                print("Stage 1.5: Azimuth deramp...")
+                logger.info("Stage 1.5: Azimuth deramp")
             rc = self._apply_dechirp(rc)
 
             if self._verbose:
-                print("Stage 2: Azimuth FFT...")
+                logger.info("Stage 2: Azimuth FFT")
             rd = self.azimuth_fft(rc)
 
             if self._verbose:
-                print("Stage 3: Range Cell Migration Correction...")
+                logger.info("Stage 3: Range Cell Migration Correction")
             rcmc_out = self.rcmc(rd)
 
             if self._verbose:
-                print("Stage 4: Azimuth windowing...")
+                logger.info("Stage 4: Azimuth windowing")
             image = self.azimuth_compress(rcmc_out)
 
         if self._verbose:
-            print(f"\nImage formed: {image.shape}, "
-                  f"dtype: {image.dtype}")
+            logger.info(
+                "Image formed: %s, dtype: %s",
+                image.shape, image.dtype,
+            )
 
         return image
 

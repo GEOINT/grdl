@@ -455,7 +455,7 @@ from grdl.image_processing.base import ImageFilter
 
 - Do not add docstrings or type hints to code you did not write or modify.
 - Do not refactor adjacent code while fixing a bug. Stay scoped.
-- Do not add logging, telemetry, or print statements unless the module's purpose requires it.
+- Do not add logging unless the module performs I/O, uses fallback paths, or has multi-stage processing worth bracketing. Never use `print()` for diagnostics — use `logging.getLogger(__name__)` with lazy `%s` formatting. See `docs/logging_tutorial.md` for level guidelines and the 7 mandatory rules.
 - Do not create utility grab-bag modules. If a helper doesn't belong to a domain, the domain is missing.
 
 ## Performance Optimization

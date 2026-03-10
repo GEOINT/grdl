@@ -30,6 +30,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -57,6 +58,8 @@ from grdl.IO.sar._backend import (
     _HAS_SARPY,
     require_sar_backend,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CPHDReader(ImageReader):
@@ -103,6 +106,7 @@ class CPHDReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('CPHD')
+        logger.info("CPHD backend selected: %s", self.backend)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -241,6 +245,18 @@ class CPHDReader(ImageReader):
                 dwell=dwell,
                 num_channels=len(channel_list),
                 extras={'backend': 'sarkit'},
+            )
+
+            logger.info(
+                "Loaded CPHD %s (%d x %d) via sarkit",
+                self.filepath.name,
+                first_ch.num_vectors,
+                first_ch.num_samples,
+            )
+            logger.debug(
+                "CPHD channels=%d, has_waveform=%s",
+                len(channel_list),
+                tx_waveform is not None,
             )
 
         except Exception as e:
@@ -734,6 +750,18 @@ class CPHDReader(ImageReader):
                     self._sarpy_meta.Data.NumCPHDChannels
                 ),
                 extras={'backend': 'sarpy'},
+            )
+
+            logger.info(
+                "Loaded CPHD %s (%d x %d) via sarpy",
+                self.filepath.name,
+                first_ch.num_vectors,
+                first_ch.num_samples,
+            )
+            logger.debug(
+                "CPHD channels=%d, has_waveform=%s",
+                len(channel_list),
+                tx_waveform is not None,
             )
 
         except Exception as e:

@@ -37,6 +37,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -67,6 +68,8 @@ from grdl.IO.models.sentinel1_slc import (
     S1SLCNoiseRangeVector,
     S1SLCNoiseAzimuthVector,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -594,6 +597,10 @@ class Sentinel1SLCReader(ImageReader):
         self._available_swaths, self._available_polarizations = (
             _discover_available(ann_dir)
         )
+        logger.debug(
+            "S1 SLC discovered swaths=%s, polarizations=%s",
+            self._available_swaths, self._available_polarizations,
+        )
 
         # Locate matching files
         swath_lower = self._swath.lower()
@@ -738,6 +745,19 @@ class Sentinel1SLCReader(ImageReader):
                 num_bursts=len(bursts),
                 lines_per_burst=lines_per_burst,
                 samples_per_burst=samples_per_burst,
+            )
+
+            logger.info(
+                "Loaded Sentinel-1 SLC %s swath=%s pol=%s (%d x %d)",
+                self._safe_dir.name,
+                self._swath,
+                self._polarization,
+                xml_rows,
+                xml_cols,
+            )
+            logger.debug(
+                "S1 SLC bursts=%d, lines_per_burst=%d, samples_per_burst=%d",
+                len(bursts), lines_per_burst, samples_per_burst,
             )
 
         except ET.ParseError as e:

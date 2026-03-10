@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Any, Optional, Tuple
 
 # Third-party
@@ -44,6 +45,8 @@ from grdl.coregistration.utils import (
     warp_image,
 )
 from grdl.image_processing.versioning import processor_version
+
+logger = logging.getLogger(__name__)
 
 
 @processor_version('0.1.0')
@@ -126,6 +129,7 @@ class ProjectiveCoRegistration(CoRegistration):
             Projective transform (3x3 homography) and quality metrics.
         """
         n = self._cp_moving.shape[0]
+        logger.debug("Projective estimate: %d point pairs", n)
 
         # Normalize points for numerical stability
         src_norm, T_src = self._normalize_points(self._cp_moving)
@@ -158,6 +162,7 @@ class ProjectiveCoRegistration(CoRegistration):
 
         residuals = compute_residuals(self._cp_fixed, self._cp_moving, H)
         rms = compute_rms(residuals)
+        logger.info("Projective fit: RMS residual=%.4f px", rms)
 
         return RegistrationResult(
             transform_matrix=H,

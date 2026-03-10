@@ -33,6 +33,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -48,6 +49,8 @@ except ImportError:
 # GRDL internal
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 def _find_datasets(
@@ -158,6 +161,8 @@ class HDF5Reader(ImageReader):
                 f"Failed to open HDF5 file: {self.filepath}: {e}"
             ) from e
 
+        logger.info("Opened HDF5 %s", self.filepath.name)
+
         # Resolve dataset path
         if self._requested_path is not None:
             if self._requested_path not in self._file:
@@ -185,6 +190,10 @@ class HDF5Reader(ImageReader):
                     "Provide an explicit dataset_path."
                 )
             self.dataset_path = candidates[0][0]
+            logger.debug(
+                "Auto-detected dataset %s from %d candidates",
+                self.dataset_path, len(candidates),
+            )
 
         ds = self._file[self.dataset_path]
         ndim = ds.ndim
@@ -240,6 +249,11 @@ class HDF5Reader(ImageReader):
             dtype=str(ds.dtype),
             bands=bands,
             extras=extras,
+        )
+
+        logger.info(
+            "Loaded %s dataset %s (%d bands, %d x %d)",
+            self.filepath.name, self.dataset_path, bands, rows, cols,
         )
 
     def read_chip(

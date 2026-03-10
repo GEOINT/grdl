@@ -28,10 +28,13 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
@@ -78,12 +81,14 @@ def compute_output_resolution(
     from grdl.IO.models.sicd import SICDMetadata
 
     if isinstance(metadata, SICDMetadata):
+        logger.debug("Matched metadata type: SICDMetadata")
         return _resolution_from_sicd(metadata, geolocation, scale_factor)
 
     # Sentinel-1 SLC (typed dataclass, not dict-like)
     try:
         from grdl.IO.models.sentinel1_slc import Sentinel1SLCMetadata
         if isinstance(metadata, Sentinel1SLCMetadata):
+            logger.debug("Matched metadata type: Sentinel1SLCMetadata")
             return _resolution_from_sentinel1_slc(
                 metadata, geolocation, scale_factor,
             )
@@ -94,6 +99,7 @@ def compute_output_resolution(
     try:
         from grdl.IO.models.nisar import NISARMetadata
         if isinstance(metadata, NISARMetadata):
+            logger.debug("Matched metadata type: NISARMetadata")
             return _resolution_from_nisar(
                 metadata, geolocation, scale_factor,
             )
@@ -103,8 +109,10 @@ def compute_output_resolution(
     # Dict-like metadata (BIOMASS, GeoTIFF, etc.)
     if hasattr(metadata, 'get'):
         if metadata.get('range_pixel_spacing') is not None:
+            logger.debug("Matched metadata type: BIOMASS (dict-like)")
             return _resolution_from_biomass(metadata, geolocation, scale_factor)
         if metadata.get('transform') is not None:
+            logger.debug("Matched metadata type: GeoTIFF (dict-like)")
             return _resolution_from_geotiff(metadata, scale_factor)
 
     raise ValueError(
@@ -171,6 +179,10 @@ def _resolution_from_sicd(
             and metadata.scpcoa.graze_ang is not None):
         sin_graze = np.sin(np.radians(metadata.scpcoa.graze_ang))
         if sin_graze > 0.01:
+            logger.debug(
+                "SLANT-plane graze angle correction: %.2f deg",
+                metadata.scpcoa.graze_ang,
+            )
             row_m = row_m / sin_graze
 
     ground_m = max(row_m, col_m)
@@ -301,6 +313,9 @@ def _resolution_from_sentinel1_slc(
     if inc is not None and inc > 0.1:
         sin_inc = np.sin(np.radians(inc))
         if sin_inc > 0.01:
+            logger.debug(
+                "SLANT-plane incidence angle correction: %.2f deg", inc,
+            )
             range_m = range_m / sin_inc
 
     ground_m = max(range_m, azimuth_m)

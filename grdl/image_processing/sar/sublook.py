@@ -40,6 +40,7 @@ Modified
 
 # Standard library
 import dataclasses
+import logging
 from typing import Annotated, Any, Optional, Tuple, TYPE_CHECKING, Union
 
 # Third-party
@@ -66,6 +67,8 @@ from grdl.IO.models import SICDMetadata
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -467,7 +470,15 @@ class SublookDecomposition(ImageProcessor):
             If *image* is not 2D.
         """
         if _HAS_TORCH and isinstance(image, torch.Tensor):
+            logger.info(
+                "Sublook decomposition: backend=torch, num_looks=%d",
+                self._num_looks,
+            )
             return self._decompose_torch(image)
+        logger.info(
+            "Sublook decomposition: backend=numpy, num_looks=%d",
+            self._num_looks,
+        )
         return self._decompose_numpy(image)
 
     def _decompose_numpy(self, image: np.ndarray) -> np.ndarray:

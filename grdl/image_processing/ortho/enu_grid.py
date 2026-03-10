@@ -28,6 +28,7 @@ Modified
 2026-03-08
 """
 
+import logging
 from typing import Tuple, Union, TYPE_CHECKING
 
 import numpy as np
@@ -36,6 +37,8 @@ from grdl.geolocation.coordinates import (
     geodetic_to_enu,
     enu_to_geodetic,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.geolocation.base import Geolocation
@@ -213,6 +216,10 @@ class ENUGrid:
                 ref_lat = float(center_lat)
             if ref_lon is None:
                 ref_lon = float(center_lon)
+            logger.debug(
+                "Auto-selected reference point: lat=%.6f, lon=%.6f",
+                ref_lat, ref_lon,
+            )
 
         # Get footprint corners and convert to ENU
         min_lon, min_lat, max_lon, max_lat = geolocation.get_bounds()

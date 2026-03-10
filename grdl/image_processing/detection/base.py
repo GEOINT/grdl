@@ -28,6 +28,7 @@ Modified
 """
 
 # Standard library
+import logging
 from abc import abstractmethod
 from typing import Any, Optional, Tuple, TYPE_CHECKING
 
@@ -41,6 +42,8 @@ from grdl.image_processing.detection.models import DetectionSet
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
     from grdl.geolocation.base import Geolocation
+
+logger = logging.getLogger(__name__)
 
 
 class ImageDetector(ImageProcessor):
@@ -98,6 +101,7 @@ class ImageDetector(ImageProcessor):
         tuple[DetectionSet, ImageMetadata]
         """
         self._metadata = metadata
+        logger.debug("Detection start: image shape %s", source.shape)
         result = self.detect(source, **kwargs)
         return result, metadata
 

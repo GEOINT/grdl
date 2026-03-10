@@ -36,6 +36,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -61,6 +62,8 @@ from grdl.IO.models.nisar import (
     NISARCalibration,
     NISARProcessingInfo,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -281,6 +284,11 @@ class NISARReader(ImageReader):
             return pols
 
         # Fallback: enumerate dataset names matching polarization codes
+        logger.warning(
+            "NISAR listOfPolarizations not found; falling back to "
+            "dataset enumeration for frequency %s",
+            self._frequency,
+        )
         pol_names = {'HH', 'HV', 'VH', 'VV'}
         pols = sorted(
             k for k in freq_group.keys()
@@ -535,6 +543,14 @@ class NISARReader(ImageReader):
         self._available_polarizations = self._discover_polarizations()
         self._polarization = self._resolve_polarization()
 
+        logger.debug(
+            "NISAR band=%s, product=%s, frequencies=%s, polarizations=%s",
+            self._radar_band,
+            self._product_type,
+            self._available_frequencies,
+            self._available_polarizations,
+        )
+
         # Resolve imagery dataset path
         self._imagery_path = self._resolve_imagery_path()
         ds = self._file[self._imagery_path]
@@ -586,6 +602,16 @@ class NISARReader(ImageReader):
             geolocation_grid=geolocation,
             calibration=calibration,
             processing_info=processing,
+        )
+
+        logger.info(
+            "Loaded NISAR %s %s (%d x %d) freq=%s pol=%s",
+            self._product_type,
+            self.filepath.name,
+            rows,
+            cols,
+            self._frequency,
+            self._polarization,
         )
 
     def read_chip(

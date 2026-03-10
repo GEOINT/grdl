@@ -34,6 +34,7 @@ Modified
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
+import logging
 import os
 import sqlite3
 import warnings
@@ -53,6 +54,8 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import CatalogInterface
+
+logger = logging.getLogger(__name__)
 
 # Default credentials file path (repo-agnostic, shared across projects)
 _CREDENTIALS_PATH = Path.home() / ".config" / "geoint" / "credentials.json"
@@ -625,7 +628,7 @@ class BIOMASSCatalog(CatalogInterface):
         zip_path = destination / f"{product_id}.zip"
 
         try:
-            print(f"Downloading {product_id}...")
+            logger.info("Downloading %s", product_id)
 
             session = requests.Session()
             session.headers["Authorization"] = f"Bearer {access_token}"
@@ -637,6 +640,7 @@ class BIOMASSCatalog(CatalogInterface):
 
             total = int(response.headers.get("content-length", 0))
             downloaded = 0
+            next_threshold = 25
             with open(zip_path, "wb") as f:
                 for chunk in response.iter_content(
                     chunk_size=1024 * 1024,
@@ -645,15 +649,14 @@ class BIOMASSCatalog(CatalogInterface):
                     downloaded += len(chunk)
                     if total:
                         pct = downloaded / total * 100
-                        print(
-                            f"\r  {downloaded / 1e6:.1f} / "
-                            f"{total / 1e6:.1f} MB ({pct:.0f}%)",
-                            end="",
-                            flush=True,
-                        )
-            print()
+                        if pct >= next_threshold:
+                            logger.debug(
+                                "Download progress: %.1f / %.1f MB (%.0f%%)",
+                                downloaded / 1e6, total / 1e6, pct,
+                            )
+                            next_threshold += 25
 
-            print(f"Downloaded to {zip_path}")
+            logger.info("Downloaded %s", zip_path.name)
 
             product_path = zip_path
             if extract and zipfile.is_zipfile(zip_path):
@@ -662,7 +665,8 @@ class BIOMASSCatalog(CatalogInterface):
                     zf.extractall(extract_dir)
                 zip_path.unlink()
                 product_path = extract_dir
-                print(f"Extracted to {product_path}")
+                logger.info("Extracted %s to %s", product_id,
+                            product_path.name)
 
             cursor.execute("""
                 UPDATE products
