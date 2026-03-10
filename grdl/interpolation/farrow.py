@@ -371,7 +371,7 @@ class FarrowInterpolator(Interpolator):
         # Build neighbor index matrix: (M, kernel_length)
         # Shift so x_new falls between center-left (half-1) and
         # center-right (half), matching the polynomial centering.
-        offsets = np.arange(-half, half)
+        offsets = np.arange(-half, kl - half)
         neighbor_idx = idx[:, np.newaxis] + offsets[np.newaxis, :]
         neighbor_idx_clipped = np.clip(neighbor_idx, 0, n_in - 1)
 

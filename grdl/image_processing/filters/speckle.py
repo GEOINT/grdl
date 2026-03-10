@@ -55,7 +55,16 @@ from typing import Annotated, Any
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
@@ -80,6 +89,7 @@ def _estimate_enl(ci2: np.ndarray, homogeneous_fraction: float = 0.1) -> float:
     ----------
     ci2 : np.ndarray
         Coefficient of variation squared, Ci² = var(I) / E[I]².
+        Accepts cupy arrays; computation is performed on the same device.
     homogeneous_fraction : float
         Fraction of lowest-Ci² pixels assumed homogeneous.
         Default is 0.1 (10%).
@@ -89,9 +99,11 @@ def _estimate_enl(ci2: np.ndarray, homogeneous_fraction: float = 0.1) -> float:
     float
         Estimated ENL (>= 1.0 for valid SAR data).
     """
-    sorted_vals = np.sort(ci2.ravel())
+    _is_gpu = _HAS_CUPY and isinstance(ci2, cp.ndarray)
+    xp = cp if _is_gpu else np
+    sorted_vals = xp.sort(ci2.ravel())
     n_homog = max(1, int(len(sorted_vals) * homogeneous_fraction))
-    mean_ci2 = float(np.mean(sorted_vals[:n_homog]))
+    mean_ci2 = float(xp.mean(sorted_vals[:n_homog]))
     if mean_ci2 > 0:
         return 1.0 / mean_ci2
     return 1.0
@@ -161,7 +173,7 @@ class LeeFilter(BandwiseTransformMixin, ImageTransform):
         ----------
         source : np.ndarray
             2D image array, shape ``(rows, cols)``. Typically SAR
-            intensity or amplitude data.
+            intensity or amplitude data. Accepts cupy arrays.
 
         Returns
         -------
@@ -173,14 +185,18 @@ class LeeFilter(BandwiseTransformMixin, ImageTransform):
         enl = params['enl']
         validate_kernel_size(ks)
 
-        eps = np.finfo(np.float64).tiny
-        x = source.astype(np.float64)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
+        eps = xp.finfo(xp.float64).tiny
+        x = source.astype(xp.float64)
 
         # Local statistics via variance decomposition: var = E[X²] - E[X]²
-        local_mean = uniform_filter(x, size=ks, mode='reflect')
-        local_mean_sq = uniform_filter(x * x, size=ks, mode='reflect')
+        local_mean = ndi_uniform(x, size=ks, mode='reflect')
+        local_mean_sq = ndi_uniform(x * x, size=ks, mode='reflect')
         local_var = local_mean_sq - local_mean * local_mean
-        np.maximum(local_var, 0.0, out=local_var)
+        xp.maximum(local_var, 0.0, out=local_var)
 
         # Coefficient of variation squared: Ci² = var / mean²
         ci2 = local_var / (local_mean * local_mean + eps)
@@ -195,7 +211,7 @@ class LeeFilter(BandwiseTransformMixin, ImageTransform):
         cn2 = 1.0 / estimated_enl
 
         # Adaptive weight: W = clamp(1 - Cn²/Ci², 0, 1)
-        weight = np.clip(1.0 - cn2 / (ci2 + eps), 0.0, 1.0)
+        weight = xp.clip(1.0 - cn2 / (ci2 + eps), 0.0, 1.0)
 
         return local_mean + weight * (x - local_mean)
 
@@ -256,7 +272,7 @@ class ComplexLeeFilter(BandwiseTransformMixin, ImageTransform):
     >>> despeckled_slc = clf.apply(complex_sar_image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=31),
                            Desc('Square kernel side length (odd)')] = 7
@@ -279,6 +295,7 @@ class ComplexLeeFilter(BandwiseTransformMixin, ImageTransform):
         ----------
         source : np.ndarray
             2D complex-valued array, shape ``(rows, cols)``.
+            Accepts cupy arrays.
 
         Returns
         -------
@@ -301,22 +318,26 @@ class ComplexLeeFilter(BandwiseTransformMixin, ImageTransform):
         enl = params['enl']
         validate_kernel_size(ks)
 
-        eps = np.finfo(np.float64).tiny
-        z = source.astype(np.complex128)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
+        eps = xp.finfo(xp.float64).tiny
+        z = source.astype(xp.complex128)
 
         # Local complex mean (smooth real and imag independently)
-        local_mean_re = uniform_filter(z.real, size=ks, mode='reflect')
-        local_mean_im = uniform_filter(z.imag, size=ks, mode='reflect')
+        local_mean_re = ndi_uniform(z.real, size=ks, mode='reflect')
+        local_mean_im = ndi_uniform(z.imag, size=ks, mode='reflect')
         local_mean_z = local_mean_re + 1j * local_mean_im
 
         # Intensity statistics: I = |z|²
         intensity = z.real * z.real + z.imag * z.imag
-        local_mean_I = uniform_filter(intensity, size=ks, mode='reflect')
-        local_mean_I2 = uniform_filter(
+        local_mean_I = ndi_uniform(intensity, size=ks, mode='reflect')
+        local_mean_I2 = ndi_uniform(
             intensity * intensity, size=ks, mode='reflect',
         )
         local_var_I = local_mean_I2 - local_mean_I * local_mean_I
-        np.maximum(local_var_I, 0.0, out=local_var_I)
+        xp.maximum(local_var_I, 0.0, out=local_var_I)
 
         # Coefficient of variation squared: Ci² = var(I) / E[I]²
         ci2 = local_var_I / (local_mean_I * local_mean_I + eps)
@@ -331,6 +352,6 @@ class ComplexLeeFilter(BandwiseTransformMixin, ImageTransform):
         cn2 = 1.0 / estimated_enl
 
         # Adaptive weight: W = clamp(1 - Cn²/Ci², 0, 1)
-        weight = np.clip(1.0 - cn2 / (ci2 + eps), 0.0, 1.0)
+        weight = xp.clip(1.0 - cn2 / (ci2 + eps), 0.0, 1.0)
 
         return local_mean_z + weight * (z - local_mean_z)

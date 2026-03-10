@@ -62,6 +62,13 @@ try:
 except ImportError:
     _HAS_NUMBA = False
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+
 # GRDL internal
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
@@ -592,15 +599,18 @@ class FastBackProjection(ImageFormationAlgorithm):
         np.ndarray
             Range-compressed data, shape ``(npulses, nsamples)``.
         """
+        _is_gpu = _HAS_CUPY and isinstance(signal, cp.ndarray)
+        xp = cp if _is_gpu else np
+
         data = signal.copy()
         if self._range_weight_func is not None:
             w = self._range_weight_func(data.shape[1]).astype(
                 data.real.dtype,
             )
-            data *= w[np.newaxis, :]
-        return np.fft.fftshift(
-            np.fft.ifft(
-                np.fft.ifftshift(data, axes=1), axis=1,
+            data *= xp.asarray(w)[None, :]
+        return xp.fft.fftshift(
+            xp.fft.ifft(
+                xp.fft.ifftshift(data, axes=1), axis=1,
             ),
             axes=1,
         )
