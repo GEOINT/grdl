@@ -125,8 +125,9 @@ def _annular_stats(
     guard_mean = ndi_uniform(image, size=guard_size, mode='reflect')
     bg_mean = (outer_mean * outer_count - guard_mean * guard_count) / train_count
 
-    outer_sq = ndi_uniform(image * image, size=outer_size, mode='reflect')
-    guard_sq = ndi_uniform(image * image, size=guard_size, mode='reflect')
+    image_sq = image * image
+    outer_sq = ndi_uniform(image_sq, size=outer_size, mode='reflect')
+    guard_sq = ndi_uniform(image_sq, size=guard_size, mode='reflect')
     bg_sq_mean = (outer_sq * outer_count - guard_sq * guard_count) / train_count
 
     bg_var = bg_sq_mean - bg_mean * bg_mean
