@@ -39,9 +39,14 @@ Modified
 
 # Third-party
 import numpy as np
-from shapely.geometry import Point, Polygon, box
+try:
+    from shapely.geometry import Point, Polygon, box
+    _HAS_SHAPELY = True
+except ImportError:
+    _HAS_SHAPELY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.coregistration.base import RegistrationResult
 from grdl.coregistration.utils import apply_transform_to_points
 from grdl.image_processing.detection.models import (
@@ -89,6 +94,11 @@ def transform_pixel_geometry(
     ValueError
         If ``bbox_mode`` is not ``'refit'`` or ``'polygon'``.
     """
+    if not _HAS_SHAPELY:
+        raise DependencyError(
+            "transform_pixel_geometry() requires shapely. "
+            "Install with: pip install grdl[detection]"
+        )
     if bbox_mode not in ('refit', 'polygon'):
         raise ValueError(
             f"bbox_mode must be 'refit' or 'polygon', got {bbox_mode!r}"

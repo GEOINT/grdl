@@ -67,10 +67,14 @@ except ImportError:
     _HAS_CUPY = False
     cp = None
     _cupyx_ndimage = None
-from shapely.geometry import Point, box
+try:
+    from shapely.geometry import Point, box
+    _HAS_SHAPELY = True
+except ImportError:
+    _HAS_SHAPELY = False
 
 # GRDL internal
-from grdl.exceptions import ValidationError
+from grdl.exceptions import DependencyError, ValidationError
 from grdl.image_processing.detection.base import ImageDetector
 from grdl.image_processing.detection.models import Detection, DetectionSet
 from grdl.image_processing.detection.fields import Fields
@@ -276,6 +280,11 @@ class CFARDetector(ImageDetector):
         min_pixels: int = 9,
         assumption: str = 'gaussian',
     ) -> None:
+        if not _HAS_SHAPELY:
+            raise DependencyError(
+                "CFARDetector requires shapely. "
+                "Install with: pip install grdl[detection]"
+            )
         validate_cfar_window(guard_cells, training_cells)
         validate_pfa(pfa)
         validate_assumption(assumption)

@@ -44,12 +44,9 @@ from grdl.coregistration.utils import (
     compute_rms,
     warp_image,
 )
-from grdl.image_processing.versioning import processor_version
-
 logger = logging.getLogger(__name__)
 
 
-@processor_version('0.1.0')
 class ProjectiveCoRegistration(CoRegistration):
     """Projective (homography) co-registration from control points.
 

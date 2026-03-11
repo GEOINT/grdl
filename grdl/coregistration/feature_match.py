@@ -55,8 +55,6 @@ from grdl.coregistration.utils import (
     compute_rms,
     warp_image,
 )
-from grdl.image_processing.versioning import processor_version
-
 logger = logging.getLogger(__name__)
 
 
@@ -98,7 +96,6 @@ def _to_uint8(image: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-@processor_version('0.1.0')
 class FeatureMatchCoRegistration(CoRegistration):
     """Automated feature-based co-registration using OpenCV.
 
