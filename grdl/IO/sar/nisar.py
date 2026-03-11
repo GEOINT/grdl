@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-25
+2026-03-10
 """
 
 # Standard library
@@ -50,6 +50,7 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models.nisar import (
     NISARMetadata,
@@ -195,7 +196,7 @@ class NISARReader(ImageReader):
         polarization: Optional[str] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "Reading NISAR products requires h5py. "
                 "Install with: pip install h5py"
             )

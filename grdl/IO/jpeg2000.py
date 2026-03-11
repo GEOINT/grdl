@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 # Standard library
@@ -74,6 +74,7 @@ finally:
         _sys.stderr.write(_captured)
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models import ImageMetadata
 
@@ -147,18 +148,18 @@ class JP2Reader(ImageReader):
         # Validate backend availability
         if backend == 'rasterio' or backend == 'auto':
             if not _HAS_RASTERIO and backend == 'rasterio':
-                raise ImportError(
+                raise DependencyError(
                     "rasterio is required for JP2 reading with backend='rasterio'. "
                     "Install with: pip install rasterio"
                 )
         if backend == 'glymur' or backend == 'auto':
             if not _HAS_GLYMUR and backend == 'glymur':
-                raise ImportError(
+                raise DependencyError(
                     "glymur is required for JP2 reading with backend='glymur'. "
                     "Install with: pip install glymur"
                 )
         if backend == 'auto' and not (_HAS_RASTERIO or _HAS_GLYMUR):
-            raise ImportError(
+            raise DependencyError(
                 "Either rasterio or glymur is required for JP2 reading. "
                 "Install with: pip install rasterio  OR  pip install glymur"
             )

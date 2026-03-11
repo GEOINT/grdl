@@ -1,5 +1,7 @@
 # Image Processing Module — Architecture
 
+*Modified: 2026-03-10*
+
 ## Overview
 
 The `image_processing` module provides all raster-to-raster transforms,
@@ -97,9 +99,8 @@ ImageProcessor (ABC)
 │       └── OSCFARDetector      [FIND_MAXIMA, SAR]
 │
 ├── PolarimetricDecomposition (ABC) ── scattering matrix → components
-│   └── PauliDecomposition      (quad-pol)
-│
-├── DualPolHAlpha               (dual-pol H/Alpha eigendecomposition)
+│   ├── PauliDecomposition      (quad-pol)
+│   └── DualPolHAlpha           (dual-pol H/Alpha eigendecomposition)
 │
 ├── SublookDecomposition        [STACKS, SAR] ── 1D sub-aperture
 ├── MultilookDecomposition      [STACKS, SAR] ── 2D sub-aperture

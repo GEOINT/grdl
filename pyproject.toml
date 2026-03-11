@@ -30,7 +30,6 @@ classifiers = [
 dependencies = [
     "numpy>=1.20.0",
     "scipy>=1.7.0",
-    "shapely>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +60,9 @@ biomass = [
 geolocation = [
     "pyproj>=3.4.0",
 ]
+detection = [
+    "shapely>=2.0.0",
+]
 coregistration = [
     "opencv-python-headless>=4.5.0",
 ]
@@ -76,6 +78,7 @@ all = [
     "h5py>=3.0.0",
     "xarray>=2022.0.0",
     "spectral>=0.23",
+    "shapely>=2.0.0",
     "pyproj>=3.4.0",
     "opencv-python-headless>=4.5.0",
     "requests>=2.25.0",

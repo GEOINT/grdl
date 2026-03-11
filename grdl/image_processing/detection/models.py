@@ -45,9 +45,14 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party
-from shapely.geometry import mapping as shapely_mapping
+try:
+    from shapely.geometry import mapping as shapely_mapping
+    _HAS_SHAPELY = True
+except ImportError:
+    _HAS_SHAPELY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.image_processing.detection.fields import is_dictionary_field
 
 
@@ -102,6 +107,11 @@ class Detection:
             ``'properties'`` keys.  Confidence is included in
             properties if set.
         """
+        if not _HAS_SHAPELY:
+            raise DependencyError(
+                "to_geojson_feature() requires shapely. "
+                "Install with: pip install grdl[detection]"
+            )
         geom = (
             self.geo_geometry
             if self.geo_geometry is not None

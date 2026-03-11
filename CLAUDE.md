@@ -203,6 +203,7 @@ class MedianFilter(ImageTransform):
 GRDL/
   grdl/
     exceptions.py            # Custom exception hierarchy (GrdlError → ValidationError, ProcessorError, etc.)
+    vocabulary.py            # Enum definitions (ImageModality, ProcessorCategory, DetectionType, etc.)
     py.typed                 # PEP 561 type stub marker
     IO/                      # Input/Output — format readers and writers
       base.py                # ImageReader / ImageWriter / CatalogInterface ABCs
@@ -210,6 +211,10 @@ GRDL/
       hdf5.py                # HDF5Reader (h5py)
       jpeg2000.py            # JP2Reader (glymur)
       nitf.py                # NITFReader (rasterio/GDAL)
+      generic.py             # GDALFallbackReader, format auto-detection
+      numpy_io.py            # NumPy array writer
+      png.py                 # PNG writer
+      probe.py               # InvasiveProbeReader (deep file introspection)
       models/                # Typed metadata dataclasses
         base.py              # ImageMetadata base class
         common.py            # Shared primitives (XYZ, LatLonHAE, Poly2D, ...)
@@ -218,10 +223,22 @@ GRDL/
         biomass.py           # BIOMASSMetadata
         viirs.py             # VIIRSMetadata
         aster.py             # ASTERMetadata
+        cphd.py              # CPHDMetadata
+        nisar.py             # NISARMetadata
+        sentinel1_slc.py     # Sentinel1SLCMetadata
+        sentinel2.py         # Sentinel2Metadata
+        terrasar.py          # TerraSARMetadata
       sar/                   # SAR modality submodule
         _backend.py          # sarkit/sarpy availability
-        sicd.py, cphd.py     # SICDReader, CPHDReader (sarkit/sarpy)
-        crsd.py, sidd.py     # CRSDReader, SIDDReader (sarkit)
+        sicd.py              # SICDReader (sarkit/sarpy)
+        sicd_writer.py       # SICDWriter
+        cphd.py              # CPHDReader (sarkit/sarpy)
+        crsd.py              # CRSDReader (sarkit)
+        sidd.py              # SIDDReader (sarkit)
+        sidd_writer.py       # SIDDWriter
+        sentinel1_slc.py     # Sentinel1SLCReader
+        terrasar.py          # TerraSARReader
+        nisar.py             # NISARReader
         biomass.py           # BIOMASSL1Reader
         biomass_catalog.py   # BIOMASSCatalog
       ir/                    # IR/thermal modality submodule
@@ -230,16 +247,21 @@ GRDL/
       multispectral/         # Multispectral modality submodule
         _backend.py          # h5py/xarray/spectral availability
         viirs.py             # VIIRSReader
-      eo/                    # EO modality submodule (scaffold)
+      eo/                    # EO modality submodule
         _backend.py          # rasterio/glymur availability
+        sentinel2.py         # Sentinel2Reader (L1C, L2A via JP2/GeoTIFF)
     geolocation/             # Image-to-geographic coordinate transforms with DEM integration
       base.py                # Geolocation ABC, NoGeolocation
+      coordinates.py         # Coordinate frame transforms (geodetic ↔ ECEF ↔ ENU)
       utils.py               # Footprint, bounds, distance helpers
       __init__.py            # Re-exports all public classes
       sar/                   # SAR geolocation submodule
         _backend.py          # sarpy/sarkit availability probing
         gcp.py               # GCPGeolocation (BIOMASS Delaunay interpolation)
         sicd.py              # SICDGeolocation (SICD imagery via sarpy/sarkit)
+        sidd.py              # SIDDGeolocation (SIDD imagery)
+        nisar.py             # NISARGeolocation
+        sentinel1_slc.py     # Sentinel1SLCGeolocation
         __init__.py
       eo/                    # EO geolocation submodule
         _backend.py          # rasterio/pyproj availability probing
@@ -253,20 +275,75 @@ GRDL/
         geotiff_dem.py       # GeoTIFFDEM (GeoTIFF DEM via rasterio)
         geoid.py             # GeoidCorrection (EGM96 geoid undulation lookup)
         __init__.py
-    <domain>/                # Other top-level module areas
-      base.py                # ABCs defining the domain's contracts
-      <submodule>.py         # Concrete implementations
-      __init__.py            # Expose public API
-      <subdomain>/           # Nested subdomains (e.g. detection/, ortho/, decomposition/)
+    image_processing/        # Transforms, detectors, decompositions, SAR processing
+      base.py                # ImageProcessor / ImageTransform / BandwiseTransformMixin ABCs
+      intensity.py           # ToDecibels, PercentileStretch
+      params.py              # Annotated parameter machinery (Range, Options, Desc, ParamSpec)
+      pipeline.py            # Pipeline (sequential ImageTransform chain)
+      versioning.py          # @processor_version, @processor_tags, @globalprocessor decorators
+      filters/               # Spatial image filters
+        _validation.py       # Shared kernel-size validation
+        linear.py            # MeanFilter, GaussianFilter
+        rank.py              # MedianFilter, MinFilter, MaxFilter
+        statistical.py       # StdDevFilter
+        speckle.py           # LeeFilter, ComplexLeeFilter
+        phase.py             # PhaseGradientFilter
+      decomposition/         # Polarimetric decompositions
+        base.py              # PolarimetricDecomposition ABC
+        pauli.py             # PauliDecomposition
+        dual_pol_halpha.py   # DualPolHAlpha
+      detection/             # Target detection
+        base.py              # ImageDetector ABC
+        fields.py            # Detection field definitions
+        models.py            # Detection, DetectionSet data models
+        cfar/                # CFAR detector family
+          _base.py           # CFARDetector base (template method)
+          _validation.py     # CFAR parameter validation
+          ca_cfar.py         # CACFARDetector
+          go_cfar.py         # GOCFARDetector
+          so_cfar.py         # SOCFARDetector
+          os_cfar.py         # OSCFARDetector
+      ortho/                 # Orthorectification
+        ortho.py             # Orthorectifier, OutputGrid
+        ortho_pipeline.py    # OrthoPipeline
+        enu_grid.py          # ENU grid utilities
+        resolution.py        # compute_output_resolution
+        accelerated.py       # GPU-accelerated ortho path
+      sar/                   # SAR-specific transforms
+        sublook.py           # SublookDecomposition
+        multilook.py         # MultilookDecomposition
+        csi.py               # CSIProcessor
+        dominance.py         # DominanceFeatures
+        image_formation/     # SAR image formation algorithms
+          base.py            # ImageFormationAlgorithm ABC
+          pfa.py             # PolarFormatAlgorithm (spotlight PFA)
+          rda.py             # RangeDopplerAlgorithm
+          ffbp.py            # FastBackProjection
+          stripmap_pfa.py    # StripmapPFA
+          geometry.py        # CollectionGeometry utilities
+          polar_grid.py      # Polar grid construction
+          subaperture.py     # Subaperture partitioning
     data_prep/               # ML/AI data preparation — index-only chip/tile planning
       base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
       tiler.py               # Tiler (stride-based tile region computation)
       chip_extractor.py      # ChipExtractor (point-centered and whole-image chip regions)
       normalizer.py          # Normalizer (minmax, zscore, percentile, unit_norm)
     coregistration/          # Image alignment and registration
-      affine.py              # Affine transform alignment
-      projective.py          # Projective transform alignment
-      feature_match.py       # Feature-based matching (OpenCV)
+      base.py                # CoRegistration ABC, RegistrationResult
+      utils.py               # Transform utility functions (apply_transform_to_points)
+      affine.py              # AffineCoRegistration
+      projective.py          # ProjectiveCoRegistration
+      feature_match.py       # FeatureMatchCoRegistration (OpenCV)
+    interpolation/           # Bandwidth-preserving 1D interpolation
+      base.py                # Interpolator / KernelInterpolator ABCs
+      lanczos.py             # LanczosInterpolator
+      windowed_sinc.py       # KaiserSincInterpolator
+      lagrange.py            # LagrangeInterpolator
+      farrow.py              # FarrowInterpolator
+      polyphase.py           # PolyphaseInterpolator
+      thiran.py              # ThiranDelayFilter
+    transforms/              # Vector geometry transforms (detection ↔ coregistration bridge)
+      detection.py           # transform_pixel_geometry, transform_detection, transform_detection_set
   tests/
     conftest.py              # Shared pytest fixtures (synthetic images)
     test_<domain>_<module>.py
@@ -280,14 +357,15 @@ Domain directories map to the module areas defined in the README:
 | Directory | Domain |
 |-----------|--------|
 | `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
-| `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
+| `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`, `CPHDMetadata`, `NISARMetadata`, `Sentinel1SLCMetadata`, `Sentinel2Metadata`, `TerraSARMetadata`) |
 | `geolocation/` | Image-to-geographic coordinate transforms with DEM integration (`sar/`, `eo/`, `elevation/` submodules) |
-| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, tunable parameters, pipeline, transforms |
+| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook/multilook/dominance/CSI, CFAR detection, image formation, versioning, tunable parameters, pipeline, filters |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
+| `interpolation/` | Bandwidth-preserving 1D interpolation (Lanczos, Kaiser-sinc, Lagrange, Farrow, polyphase, Thiran) |
+| `transforms/` | Vector geometry transforms — applies co-registration transforms to detection geometries |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
-| `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |
-| `ml/` | Feature extraction, annotation, dataset builders -- planned |
+| `vocabulary.py` | Enum definitions (ImageModality, ProcessorCategory, DetectionType, SegmentationType, etc.) |
 
 ## File Header Standard
 
@@ -589,6 +667,7 @@ Three files must be kept synchronized:
 | `ir` | `rasterio`, `h5py` | `grdl.IO.ir` |
 | `biomass` | `rasterio`, `requests` | `grdl.IO.sar.biomass`, `grdl.IO.sar.biomass_catalog` |
 | `geolocation` | `pyproj` | `grdl.geolocation.eo`, `grdl.geolocation.elevation` |
+| `detection` | `shapely` | `grdl.image_processing.detection`, `grdl.transforms` |
 | `coregistration` | `opencv-python-headless` | `grdl.coregistration.feature_match` |
 | `examples` | `matplotlib` | `grdl.example.*` |
 | `all` | everything above | full installation |

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-03-10
 """
 
 # Standard library
@@ -37,10 +37,13 @@ from typing import Any, Optional, Tuple
 # Third-party
 import numpy as np
 
+# GRDL internal
+from grdl.exceptions import DependencyError, ProcessorError
+
 try:
     import cv2
 except ImportError:
-    raise ImportError(
+    raise DependencyError(
         "FeatureMatchCoRegistration requires opencv-python-headless. "
         "Install with: pip install opencv-python-headless>=4.5"
     )
@@ -52,8 +55,6 @@ from grdl.coregistration.utils import (
     compute_rms,
     warp_image,
 )
-from grdl.image_processing.versioning import processor_version
-
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +96,6 @@ def _to_uint8(image: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-@processor_version('0.1.0')
 class FeatureMatchCoRegistration(CoRegistration):
     """Automated feature-based co-registration using OpenCV.
 
@@ -203,7 +203,7 @@ class FeatureMatchCoRegistration(CoRegistration):
         kp_moving, desc_moving = detector.detectAndCompute(moving_u8, None)
 
         if desc_fixed is None or desc_moving is None:
-            raise RuntimeError(
+            raise ProcessorError(
                 "Feature detection failed: no descriptors found in one or "
                 "both images."
             )
@@ -214,7 +214,7 @@ class FeatureMatchCoRegistration(CoRegistration):
 
         min_matches = 4 if self._transform_type == 'homography' else 3
         if len(good_matches) < min_matches:
-            raise RuntimeError(
+            raise ProcessorError(
                 f"Insufficient matches ({len(good_matches)}) for "
                 f"{self._transform_type} estimation (need >= {min_matches})."
             )
@@ -240,7 +240,7 @@ class FeatureMatchCoRegistration(CoRegistration):
                 cv2.RANSAC, self._ransac_threshold,
             )
             if H is None:
-                raise RuntimeError(
+                raise ProcessorError(
                     "Homography estimation failed (RANSAC could not find "
                     "a valid model)."
                 )
@@ -257,7 +257,7 @@ class FeatureMatchCoRegistration(CoRegistration):
                 ransacReprojThreshold=self._ransac_threshold,
             )
             if M is None:
-                raise RuntimeError(
+                raise ProcessorError(
                     "Affine estimation failed (RANSAC could not find "
                     "a valid model)."
                 )

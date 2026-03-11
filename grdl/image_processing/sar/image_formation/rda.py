@@ -65,7 +65,7 @@ Created
 
 Modified
 --------
-2026-02-15
+2026-03-10
 """
 
 
@@ -703,26 +703,20 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             np.arange(nsamples) - nsamples / 2.0
         ) * self._delta_r
 
+        # Vectorized D factor computation
+        arg = (self._wavelength * self._f_eta / (2.0 * self._v_eff)) ** 2
+        valid = arg < 1.0
+        D = np.ones(npulses)
+        D[valid] = np.sqrt(1.0 - arg[valid])
+
+        # Vectorized shift: each row's shift is range_axis * (1/D - 1)
+        D_inv_minus_1 = 1.0 / D - 1.0
+
         for i in range(npulses):
-            f_eta_i = self._f_eta[i]
-            arg = (
-                self._wavelength * f_eta_i / (2.0 * self._v_eff)
-            ) ** 2
-
-            if arg >= 1.0:
+            if not valid[i]:
                 continue
-
-            D = np.sqrt(1.0 - arg)
-
-            # Differential RCMC: range_axis * (1/D - 1)
-            # Rephasing already corrects bulk migration at R0.
-            delta_r_shift = range_axis * (1.0 / D - 1.0)
-
-            x_old = range_axis
-            y_old = range_doppler[i, :]
-            x_new = range_axis + delta_r_shift
-
-            result[i, :] = self._interp(x_old, y_old, x_new)
+            x_new = range_axis + range_axis * D_inv_minus_1[i]
+            result[i, :] = self._interp(range_axis, range_doppler[i, :], x_new)
 
         return result
 
@@ -1180,13 +1174,11 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
 
         # Evaluate 2D gain polynomial (dB)
         gain_poly = ant.gain_poly
-        gain_db = np.zeros(len(dt))
-        for i in range(gain_poly.shape[0]):
-            for j in range(gain_poly.shape[1]):
-                if gain_poly[i, j] != 0:
-                    gain_db += (
-                        gain_poly[i, j] * dcx**i * dcy**j
-                    )
+        # Vectorized 2D polynomial evaluation
+        ni, nj = gain_poly.shape
+        dcx_powers = np.column_stack([dcx**i for i in range(ni)])  # (npts, ni)
+        dcy_powers = np.column_stack([dcy**j for j in range(nj)])  # (npts, nj)
+        gain_db = np.einsum('pi,ij,pj->p', dcx_powers, gain_poly, dcy_powers)
 
         # Add boresight gain
         if ant.gain_zero is not None:
@@ -1411,8 +1403,7 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             for i in range(block_size):
                 if not valid_doppler[i]:
                     continue
-                shift = range_axis * D_inv_minus_1[i]
-                x_new = range_axis + shift
+                x_new = range_axis + range_axis * D_inv_minus_1[i]
                 rcmc_block[i, :] = self._interp(
                     range_axis, rd_block[i, :], x_new,
                 )

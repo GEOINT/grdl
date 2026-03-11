@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 # Standard library
@@ -46,6 +46,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
 
@@ -94,7 +95,7 @@ class NITFReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for NITF reading. "
                 "Install with: pip install rasterio"
             )
@@ -285,7 +286,7 @@ class NITFWriter(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for NITF writing. "
                 "Install with: pip install rasterio"
             )

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 import logging
@@ -44,6 +44,8 @@ try:
 except ImportError:
     _HAS_RASTERIO = False
 
+# GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models import BIOMASSMetadata
 
@@ -99,7 +101,7 @@ class BIOMASSL1Reader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for BIOMASS reading. "
                 "Install with: pip install rasterio"
             )

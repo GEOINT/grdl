@@ -27,12 +27,15 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
 
 from typing import Dict, List, Tuple, Union, Any
 
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import LinearNDInterpolator
@@ -107,7 +110,7 @@ class GCPGeolocation(Geolocation):
             If scipy is not installed
         """
         if not SCIPY_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "scipy is required for GCP-based geolocation. "
                 "Install with: pip install scipy>=1.7.0"
             )

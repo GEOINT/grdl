@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -36,6 +36,9 @@ from typing import Dict, Optional, Tuple
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     import cupy as cp
@@ -359,7 +362,7 @@ class PolarGrid:
             matplotlib.use("QtAgg")
             import matplotlib.pyplot as plt
         except ImportError:
-            raise ImportError(
+            raise DependencyError(
                 "matplotlib is required for plotting."
             )
 

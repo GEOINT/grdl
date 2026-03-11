@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-03-10
 """
 
 # Standard library
@@ -53,6 +53,7 @@ except ImportError:
     )
 
 # GRDL internal
+from grdl.exceptions import DependencyError, ProcessorError
 from grdl.IO.base import CatalogInterface
 
 logger = logging.getLogger(__name__)
@@ -379,7 +380,7 @@ class BIOMASSCatalog(CatalogInterface):
             If token exchange fails.
         """
         if not REQUESTS_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "Requests library required. "
                 "Install with: pip install requests"
             )
@@ -400,7 +401,7 @@ class BIOMASSCatalog(CatalogInterface):
         )
 
         if response.status_code != 200:
-            raise RuntimeError(
+            raise ProcessorError(
                 f"MAAP token exchange failed ({response.status_code}): "
                 f"{response.text[:300]}"
             )
@@ -452,7 +453,7 @@ class BIOMASSCatalog(CatalogInterface):
             If STAC query fails.
         """
         if not REQUESTS_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "Requests library required for ESA queries. "
                 "Install with: pip install requests"
             )
@@ -511,7 +512,7 @@ class BIOMASSCatalog(CatalogInterface):
             return products
 
         except requests.RequestException as e:
-            raise RuntimeError(f"MAAP STAC query failed: {e}") from e
+            raise ProcessorError(f"MAAP STAC query failed: {e}") from e
 
     def _index_remote_product(self, feature: Dict[str, Any]) -> None:
         """Index a STAC feature in the local database.
@@ -595,7 +596,7 @@ class BIOMASSCatalog(CatalogInterface):
         import zipfile
 
         if not REQUESTS_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "Requests library required for downloads. "
                 "Install with: pip install requests"
             )
@@ -684,7 +685,7 @@ class BIOMASSCatalog(CatalogInterface):
         except requests.RequestException as e:
             if zip_path.exists():
                 zip_path.unlink()
-            raise RuntimeError(f"Download failed: {e}") from e
+            raise ProcessorError(f"Download failed: {e}") from e
 
     def get_metadata_summary(
         self,

@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 # Standard library
@@ -47,6 +47,7 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
 
@@ -145,7 +146,7 @@ class HDF5Reader(ImageReader):
         dataset_path: Optional[str] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 reading. "
                 "Install with: pip install h5py"
             )
@@ -408,7 +409,7 @@ class HDF5Reader(ImageReader):
         /HDFEOS/GRIDS/NDVI: (2400, 2400) float32
         """
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 reading. "
                 "Install with: pip install h5py"
             )
@@ -465,7 +466,7 @@ class HDF5Writer(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 writing. "
                 "Install with: pip install h5py"
             )
