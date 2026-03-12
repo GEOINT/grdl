@@ -24,10 +24,16 @@ Created
 
 Modified
 --------
-2026-03-11
+2026-03-12
 """
 
-from grdl.IO.catalog.biomass_catalog import BIOMASSCatalog, load_credentials
+from grdl.IO.catalog.remote_utils import (
+    load_credentials,
+    get_cdse_token,
+    get_earthdata_token,
+    download_file,
+)
+from grdl.IO.catalog.biomass_catalog import BIOMASSCatalog
 from grdl.IO.catalog.sentinel1_catalog import Sentinel1SLCCatalog
 from grdl.IO.catalog.terrasar_catalog import TerraSARCatalog
 from grdl.IO.catalog.nisar_catalog import NISARCatalog
@@ -36,8 +42,11 @@ from grdl.IO.catalog.aster_catalog import ASTERCatalog
 from grdl.IO.catalog.viirs_catalog import VIIRSCatalog
 
 __all__ = [
-    'BIOMASSCatalog',
     'load_credentials',
+    'get_cdse_token',
+    'get_earthdata_token',
+    'download_file',
+    'BIOMASSCatalog',
     'Sentinel1SLCCatalog',
     'TerraSARCatalog',
     'NISARCatalog',

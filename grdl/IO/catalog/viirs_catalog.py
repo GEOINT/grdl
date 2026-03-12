@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-VIIRS Catalog - Local discovery and SQLite indexing for VIIRS HDF5 products
-from Suomi NPP, NOAA-20, and NOAA-21.
+VIIRS Catalog - Discovery, indexing, remote query, and download for VIIRS
+HDF5 products from Suomi NPP, NOAA-20, and NOAA-21.
 
-Provides tools for discovering VIIRS products on disk, extracting metadata
-via VIIRSReader, and tracking collections in a local SQLite database.
-Supports offline filtering by time, product type, satellite, and day/night.
+Provides tools for discovering VIIRS products on disk, querying NASA
+Earthdata CMR for available granules, downloading products via LAADS DAAC
+with Earthdata Login authentication, and tracking collections in a local
+SQLite database. Supports offline filtering by time, product type,
+satellite, and day/night.
 
 Dependencies
 ------------
 h5py (via VIIRSReader)
+requests (for Earthdata CMR queries and downloads)
 
 Author
 ------
 Duane Smalley, PhD
 duane.d.smalley@gmail.com
+
+Ava Courtney
+courtney-ava@zai.com
 
 License
 -------
@@ -28,7 +34,7 @@ Created
 
 Modified
 --------
-2026-03-11
+2026-03-12
 """
 
 # Standard library
@@ -40,24 +46,41 @@ import logging
 import sqlite3
 import warnings
 
+# Third-party
+try:
+    import requests
+except ImportError:
+    pass
+
 # GRDL internal
 from grdl.IO.base import CatalogInterface
+from grdl.IO.catalog.remote_utils import (
+    REQUESTS_AVAILABLE,
+    download_file,
+    get_earthdata_token,
+    load_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class VIIRSCatalog(CatalogInterface):
-    """Catalog for VIIRS HDF5 products on local disk.
+    """Catalog and download manager for VIIRS HDF5 products.
 
-    Discovers VIIRS HDF5 files (VNP, VJ1, VJ2 prefixes), extracts
-    metadata via VIIRSReader, and maintains a local SQLite database for
-    offline querying. Corner coordinates are derived from
-    ``metadata.geospatial_bounds`` when available.
+    Provides integrated capabilities for:
+
+    - Local file system discovery of VIIRS HDF5 products
+    - Remote querying via NASA Earthdata CMR
+    - Product download via LAADS DAAC with Earthdata Login authentication
+    - SQLite database tracking of products
+
+    Credentials are loaded from ``~/.config/geoint/credentials.json``
+    (provider block ``nasa_earthdata``).
 
     Attributes
     ----------
     search_path : Path
-        Root directory for local product searches.
+        Root directory for local product searches and downloads.
     db_path : Path
         Path to SQLite database file.
     conn : sqlite3.Connection
@@ -69,9 +92,19 @@ class VIIRSCatalog(CatalogInterface):
     >>> catalog = VIIRSCatalog('/data/viirs')
     >>> products = catalog.discover_local()
     >>> print(f"Found {len(products)} products")
-    >>> results = catalog.query_database(product_short_name='VNP46A1',
-    ...                                  day_night_flag='Night')
+    >>>
+    >>> # Search Earthdata for nighttime light products
+    >>> remote = catalog.query_earthdata(
+    ...     product_short_name='VNP46A1',
+    ...     bbox=(-120.0, 34.0, -118.0, 36.0),
+    ... )
+    >>> catalog.download_product(remote[0]['id'])
     """
+
+    # NASA CMR API for granule search
+    CMR_SEARCH_URL = (
+        "https://cmr.earthdata.nasa.gov/search/granules.json"
+    )
 
     def __init__(
         self,
@@ -129,6 +162,7 @@ class VIIRSCatalog(CatalogInterface):
                 spatial_resolution INTEGER,
                 corner_coords TEXT,
                 local_path TEXT,
+                remote_url TEXT,
                 file_size INTEGER,
                 download_date TEXT,
                 metadata_json TEXT,
@@ -145,6 +179,18 @@ class VIIRSCatalog(CatalogInterface):
             "ON products(product_short_name)"
         )
 
+        self.conn.commit()
+
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add columns introduced after the initial schema."""
+        cursor = self.conn.cursor()
+        for col in ("remote_url TEXT",):
+            try:
+                cursor.execute(f"ALTER TABLE products ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.conn.commit()
 
     def discover_images(
@@ -497,6 +543,234 @@ class VIIRSCatalog(CatalogInterface):
         cursor.execute(query, params)
 
         return [dict(row) for row in cursor.fetchall()]
+
+    # ── Remote (NASA Earthdata CMR) ────────────────────────────────────
+
+    def query_earthdata(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
+        product_short_name: Optional[str] = None,
+        satellite_name: Optional[str] = None,
+        day_night_flag: Optional[str] = None,
+        max_results: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Query NASA Earthdata CMR for VIIRS granules.
+
+        Parameters
+        ----------
+        start_date : Optional[str], default=None
+            Start date in ISO format (YYYY-MM-DD).
+        end_date : Optional[str], default=None
+            End date in ISO format (YYYY-MM-DD).
+        bbox : Optional[Tuple[float, float, float, float]], default=None
+            Bounding box as ``(min_lon, min_lat, max_lon, max_lat)``.
+        product_short_name : Optional[str], default=None
+            CMR collection short name (e.g., ``'VNP46A1'``,
+            ``'VNP02DNB'``, ``'VJ102IMG'``).
+        satellite_name : Optional[str], default=None
+            Satellite platform filter. Maps to CMR short name prefix:
+            ``'Suomi NPP'`` → ``VNP``, ``'NOAA-20'`` → ``VJ1``,
+            ``'NOAA-21'`` → ``VJ2``.
+        day_night_flag : Optional[str], default=None
+            Day/night flag (``'Day'``, ``'Night'``, ``'Both'``).
+        max_results : int, default=50
+            Maximum number of results.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of CMR granule dicts.
+
+        Raises
+        ------
+        DependencyError
+            If ``requests`` is not installed.
+        ProcessorError
+            If CMR query fails.
+        ValueError
+            If ``product_short_name`` is not provided and cannot be
+            inferred.
+        """
+        if not REQUESTS_AVAILABLE:
+            raise DependencyError(
+                "Requests library required for Earthdata queries. "
+                "Install with: pip install requests"
+            )
+
+        # Determine collection short name
+        short_name = product_short_name
+        if not short_name:
+            # Default based on satellite
+            prefix_map = {
+                "Suomi NPP": "VNP02DNB",
+                "NOAA-20": "VJ102DNB",
+                "NOAA-21": "VJ202DNB",
+            }
+            short_name = prefix_map.get(satellite_name or "", "VNP02DNB")
+
+        params: Dict[str, Any] = {
+            "short_name": short_name,
+            "page_size": max_results,
+            "sort_key": "-start_date",
+        }
+
+        if bbox:
+            params["bounding_box"] = (
+                f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+            )
+
+        if start_date or end_date:
+            start = start_date or ""
+            end = end_date or ""
+            params["temporal"] = f"{start},{end}"
+
+        if day_night_flag:
+            params["day_night_flag"] = day_night_flag
+
+        try:
+            response = requests.get(
+                self.CMR_SEARCH_URL, params=params, timeout=30,
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            granules = data.get("feed", {}).get("entry", [])
+
+            for granule in granules:
+                self._index_remote_product(granule)
+
+            logger.info(
+                "Earthdata CMR returned %d VIIRS granules",
+                len(granules),
+            )
+            return granules
+
+        except requests.RequestException as e:
+            raise ProcessorError(
+                f"Earthdata CMR query failed: {e}"
+            ) from e
+
+    def _index_remote_product(self, granule: Dict[str, Any]) -> None:
+        """Index a CMR granule in the local database.
+
+        Parameters
+        ----------
+        granule : Dict[str, Any]
+            Granule entry from CMR JSON response.
+        """
+        try:
+            granule_id = granule.get("id", granule.get("title", ""))
+            title = granule.get("title", granule_id)
+
+            # Extract download URL from links
+            remote_url = ""
+            for link in granule.get("links", []):
+                href = link.get("href", "")
+                if href.endswith(".h5") or "data#" in link.get("rel", ""):
+                    remote_url = href
+                    break
+
+            time_start = granule.get("time_start", "")
+            time_end = granule.get("time_end", "")
+
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO products
+                (id, product_name, product_short_name,
+                 start_datetime, end_datetime,
+                 remote_url, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                granule_id,
+                title,
+                granule.get("short_name", ""),
+                time_start,
+                time_end,
+                remote_url,
+                json.dumps(granule),
+            ))
+            self.conn.commit()
+
+        except Exception as e:
+            warnings.warn(f"Failed to index remote VIIRS granule: {e}")
+
+    def download_product(
+        self,
+        product_id: str,
+        destination: Optional[Union[str, Path]] = None,
+    ) -> Path:
+        """Download a VIIRS HDF5 product from LAADS DAAC via Earthdata.
+
+        Uses Earthdata Login credentials from
+        ``~/.config/geoint/credentials.json`` (``nasa_earthdata`` block).
+
+        Parameters
+        ----------
+        product_id : str
+            Granule ID. Must exist in the local database
+            (run ``query_earthdata`` first).
+        destination : Optional[Union[str, Path]], default=None
+            Directory to save the product. If None, uses ``search_path``.
+
+        Returns
+        -------
+        Path
+            Path to downloaded HDF5 file.
+
+        Raises
+        ------
+        ValueError
+            If product not found or has no download URL.
+        ProcessorError
+            If download or authentication fails.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            raise ValueError(
+                f"Product {product_id} not found in catalog. "
+                f"Run query_earthdata() first to populate the database."
+            )
+
+        remote_url = row["remote_url"]
+        if not remote_url:
+            raise ValueError(
+                f"No download URL for product {product_id}"
+            )
+
+        if destination is None:
+            destination = self.search_path
+        destination = Path(destination)
+
+        access_token = get_earthdata_token()
+
+        filename = remote_url.split("/")[-1] or f"{product_id}.h5"
+        product_path = download_file(
+            url=remote_url,
+            destination=destination,
+            filename=filename,
+            headers={"Authorization": f"Bearer {access_token}"},
+            extract=False,
+        )
+
+        cursor.execute("""
+            UPDATE products
+            SET local_path = ?, download_date = ?
+            WHERE id = ?
+        """, (
+            str(product_path),
+            datetime.now().isoformat(),
+            product_id,
+        ))
+        self.conn.commit()
+
+        return product_path
 
     def close(self) -> None:
         """Close database connection."""

@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-03-12
 """
 
 # Standard library
@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
 import logging
-import os
 import sqlite3
 import warnings
 from datetime import datetime
@@ -43,82 +42,19 @@ from datetime import datetime
 # Third-party
 try:
     import requests
-    REQUESTS_AVAILABLE = True
 except ImportError:
-    REQUESTS_AVAILABLE = False
-    warnings.warn(
-        "Requests not available for remote queries. "
-        "Install with: pip install requests",
-        ImportWarning,
-    )
+    pass
 
 # GRDL internal
 from grdl.exceptions import DependencyError, ProcessorError
 from grdl.IO.base import CatalogInterface
+from grdl.IO.catalog.remote_utils import (
+    REQUESTS_AVAILABLE,
+    download_file,
+    load_credentials,
+)
 
 logger = logging.getLogger(__name__)
-
-# Default credentials file path (repo-agnostic, shared across projects)
-_CREDENTIALS_PATH = Path.home() / ".config" / "geoint" / "credentials.json"
-
-
-def load_credentials(
-    provider: str = "esa_maap",
-    credentials_file: Optional[Union[str, Path]] = None,
-) -> Dict[str, str]:
-    """Load credentials from the shared geoint config file.
-
-    For ``esa_maap``, returns a dict with ``offline_token``.
-    For ``esa_copernicus``, returns a dict with ``username`` and ``password``.
-    Falls back to environment variables if the file entry is empty.
-
-    Parameters
-    ----------
-    provider : str, default="esa_maap"
-        Key in the credentials JSON for the provider block.
-    credentials_file : Optional[Union[str, Path]], default=None
-        Path to credentials JSON. If None, uses
-        ``~/.config/geoint/credentials.json``.
-
-    Returns
-    -------
-    Dict[str, str]
-        Credential fields for the requested provider.
-
-    Raises
-    ------
-    ValueError
-        If credentials are empty or missing for the requested provider.
-    """
-    cred_path = (
-        Path(credentials_file) if credentials_file else _CREDENTIALS_PATH
-    )
-
-    if cred_path.exists():
-        with open(cred_path, 'r') as f:
-            creds = json.load(f)
-
-        block = creds.get(provider, {})
-
-        # Check for non-empty values
-        if all(v for v in block.values()):
-            return dict(block)
-
-    # Fallback to environment variables
-    if provider == "esa_maap":
-        token = os.environ.get("ESA_MAAP_OFFLINE_TOKEN", "")
-        if token:
-            return {"offline_token": token}
-    elif provider == "esa_copernicus":
-        username = os.environ.get("ESA_BIOMASS_USER", "")
-        password = os.environ.get("ESA_BIOMASS_PASSWORD", "")
-        if username and password:
-            return {"username": username, "password": password}
-
-    raise ValueError(
-        f"No credentials found for '{provider}'. "
-        f"Set them in {_CREDENTIALS_PATH} or via environment variables."
-    )
 
 
 class BIOMASSCatalog(CatalogInterface):
@@ -290,7 +226,7 @@ class BIOMASSCatalog(CatalogInterface):
         products = []
 
         patterns = [
-            "BIO_S1_SCS*",
+            "BIO_S*_SCS*",
             "BIO_S*_FBD*",
         ]
 
@@ -342,7 +278,7 @@ class BIOMASSCatalog(CatalogInterface):
                     json.dumps(metadata.get('corner_coords', {})),
                     str(product_path),
                     self._get_dir_size(product_path),
-                    json.dumps(metadata),
+                    json.dumps(metadata.to_dict(), default=str),
                 ))
 
                 self.conn.commit()
@@ -593,14 +529,6 @@ class BIOMASSCatalog(CatalogInterface):
         RuntimeError
             If download or authentication fails.
         """
-        import zipfile
-
-        if not REQUESTS_AVAILABLE:
-            raise DependencyError(
-                "Requests library required for downloads. "
-                "Install with: pip install requests"
-            )
-
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM products WHERE id = ?", (product_id,)
@@ -622,70 +550,29 @@ class BIOMASSCatalog(CatalogInterface):
         if destination is None:
             destination = self.search_path
         destination = Path(destination)
-        destination.mkdir(parents=True, exist_ok=True)
 
         access_token = self._get_access_token()
 
-        zip_path = destination / f"{product_id}.zip"
+        product_path = download_file(
+            url=remote_url,
+            destination=destination,
+            filename=f"{product_id}.zip",
+            headers={"Authorization": f"Bearer {access_token}"},
+            extract=extract,
+        )
 
-        try:
-            logger.info("Downloading %s", product_id)
+        cursor.execute("""
+            UPDATE products
+            SET local_path = ?, download_date = ?
+            WHERE id = ?
+        """, (
+            str(product_path),
+            datetime.now().isoformat(),
+            product_id,
+        ))
+        self.conn.commit()
 
-            session = requests.Session()
-            session.headers["Authorization"] = f"Bearer {access_token}"
-
-            response = session.get(
-                remote_url, stream=True, timeout=600,
-            )
-            response.raise_for_status()
-
-            total = int(response.headers.get("content-length", 0))
-            downloaded = 0
-            next_threshold = 25
-            with open(zip_path, "wb") as f:
-                for chunk in response.iter_content(
-                    chunk_size=1024 * 1024,
-                ):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total * 100
-                        if pct >= next_threshold:
-                            logger.debug(
-                                "Download progress: %.1f / %.1f MB (%.0f%%)",
-                                downloaded / 1e6, total / 1e6, pct,
-                            )
-                            next_threshold += 25
-
-            logger.info("Downloaded %s", zip_path.name)
-
-            product_path = zip_path
-            if extract and zipfile.is_zipfile(zip_path):
-                extract_dir = destination / product_id
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(extract_dir)
-                zip_path.unlink()
-                product_path = extract_dir
-                logger.info("Extracted %s to %s", product_id,
-                            product_path.name)
-
-            cursor.execute("""
-                UPDATE products
-                SET local_path = ?, download_date = ?
-                WHERE id = ?
-            """, (
-                str(product_path),
-                datetime.now().isoformat(),
-                product_id,
-            ))
-            self.conn.commit()
-
-            return product_path
-
-        except requests.RequestException as e:
-            if zip_path.exists():
-                zip_path.unlink()
-            raise ProcessorError(f"Download failed: {e}") from e
+        return product_path
 
     def get_metadata_summary(
         self,

@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-NISAR Catalog - Local discovery and SQLite indexing for NASA NISAR
-RSLC and GSLC HDF5 products.
+NISAR Catalog - Discovery, indexing, remote query, and download for NASA
+NISAR RSLC and GSLC HDF5 products.
 
-Provides tools for discovering NISAR products on disk, extracting metadata
-via NISARReader, and tracking collections in a local SQLite database.
-Supports offline filtering by time, orbit, radar band, and polarization.
+Provides tools for discovering NISAR products on disk, querying NASA
+Earthdata CMR for available granules, downloading products via ASF DAAC
+with Earthdata Login authentication, and tracking collections in a local
+SQLite database. Supports offline filtering by time, orbit, radar band,
+and polarization.
 
 Dependencies
 ------------
 h5py (via NISARReader)
+requests (for Earthdata CMR queries and downloads)
 
 Author
 ------
 Duane Smalley, PhD
 duane.d.smalley@gmail.com
+
+Ava Courtney
+courtney-ava@zai.com
 
 License
 -------
@@ -28,7 +34,7 @@ Created
 
 Modified
 --------
-2026-03-11
+2026-03-12
 """
 
 # Standard library
@@ -40,24 +46,41 @@ import logging
 import sqlite3
 import warnings
 
+# Third-party
+try:
+    import requests
+except ImportError:
+    pass
+
 # GRDL internal
 from grdl.IO.base import CatalogInterface
+from grdl.IO.catalog.remote_utils import (
+    REQUESTS_AVAILABLE,
+    download_file,
+    get_earthdata_token,
+    load_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class NISARCatalog(CatalogInterface):
-    """Catalog for NASA NISAR RSLC and GSLC HDF5 products on local disk.
+    """Catalog and download manager for NASA NISAR RSLC and GSLC products.
 
-    Discovers NISAR HDF5 files, extracts metadata via NISARReader, and
-    maintains a local SQLite database for offline querying. Spatial
-    filtering uses the WKT bounding polygon from NISAR identification
-    metadata rather than discrete corner points.
+    Provides integrated capabilities for:
+
+    - Local file system discovery of NISAR HDF5 products
+    - Remote querying via NASA Earthdata CMR
+    - Product download via ASF DAAC with Earthdata Login authentication
+    - SQLite database tracking of products
+
+    Credentials are loaded from ``~/.config/geoint/credentials.json``
+    (provider block ``nasa_earthdata``).
 
     Attributes
     ----------
     search_path : Path
-        Root directory for local product searches.
+        Root directory for local product searches and downloads.
     db_path : Path
         Path to SQLite database file.
     conn : sqlite3.Connection
@@ -69,8 +92,24 @@ class NISARCatalog(CatalogInterface):
     >>> catalog = NISARCatalog('/data/nisar')
     >>> products = catalog.discover_local()
     >>> print(f"Found {len(products)} products")
-    >>> results = catalog.query_database(radar_band='LSAR')
+    >>>
+    >>> # Search Earthdata for L-band RSLC products
+    >>> remote = catalog.query_earthdata(
+    ...     bbox=(-120.0, 34.0, -118.0, 36.0),
+    ...     product_type='RSLC',
+    ...     radar_band='LSAR',
+    ... )
+    >>> catalog.download_product(remote[0]['umm']['GranuleUR'])
     """
+
+    # NASA CMR API for granule search
+    CMR_SEARCH_URL = (
+        "https://cmr.earthdata.nasa.gov/search/granules.json"
+    )
+
+    # CMR collection short names for NISAR products
+    COLLECTION_RSLC = "NISAR_L1_RSLC"
+    COLLECTION_GSLC = "NISAR_L1_GSLC"
 
     def __init__(
         self,
@@ -128,6 +167,7 @@ class NISARCatalog(CatalogInterface):
                 bounding_polygon TEXT,
                 corner_coords TEXT,
                 local_path TEXT,
+                remote_url TEXT,
                 file_size INTEGER,
                 download_date TEXT,
                 metadata_json TEXT,
@@ -144,6 +184,18 @@ class NISARCatalog(CatalogInterface):
             "ON products(absolute_orbit_number)"
         )
 
+        self.conn.commit()
+
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add columns introduced after the initial schema."""
+        cursor = self.conn.cursor()
+        for col in ("remote_url TEXT",):
+            try:
+                cursor.execute(f"ALTER TABLE products ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.conn.commit()
 
     def discover_images(
@@ -491,6 +543,225 @@ class NISARCatalog(CatalogInterface):
         cursor.execute(query, params)
 
         return [dict(row) for row in cursor.fetchall()]
+
+    # ── Remote (NASA Earthdata CMR) ────────────────────────────────────
+
+    def query_earthdata(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
+        radar_band: Optional[str] = None,
+        product_type: Optional[str] = None,
+        max_results: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Query NASA Earthdata CMR for NISAR granules.
+
+        Parameters
+        ----------
+        start_date : Optional[str], default=None
+            Start date in ISO format (YYYY-MM-DD).
+        end_date : Optional[str], default=None
+            End date in ISO format (YYYY-MM-DD).
+        bbox : Optional[Tuple[float, float, float, float]], default=None
+            Bounding box as ``(min_lon, min_lat, max_lon, max_lat)``.
+        radar_band : Optional[str], default=None
+            Radar band filter (``'LSAR'`` or ``'SSAR'``).
+        product_type : Optional[str], default=None
+            Product type filter (``'RSLC'`` or ``'GSLC'``).
+        max_results : int, default=50
+            Maximum number of results.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of CMR granule dicts.
+
+        Raises
+        ------
+        DependencyError
+            If ``requests`` is not installed.
+        ProcessorError
+            If CMR query fails.
+        """
+        if not REQUESTS_AVAILABLE:
+            raise DependencyError(
+                "Requests library required for Earthdata queries. "
+                "Install with: pip install requests"
+            )
+
+        # Select collection by product type
+        if product_type and product_type.upper() == "GSLC":
+            short_name = self.COLLECTION_GSLC
+        else:
+            short_name = self.COLLECTION_RSLC
+
+        params: Dict[str, Any] = {
+            "short_name": short_name,
+            "page_size": max_results,
+            "sort_key": "-start_date",
+        }
+
+        if bbox:
+            params["bounding_box"] = (
+                f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+            )
+
+        if start_date or end_date:
+            start = start_date or ""
+            end = end_date or ""
+            params["temporal"] = f"{start},{end}"
+
+        try:
+            response = requests.get(
+                self.CMR_SEARCH_URL, params=params, timeout=30,
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            granules = data.get("feed", {}).get("entry", [])
+
+            for granule in granules:
+                self._index_remote_product(granule)
+
+            logger.info(
+                "Earthdata CMR returned %d NISAR granules",
+                len(granules),
+            )
+            return granules
+
+        except requests.RequestException as e:
+            raise ProcessorError(
+                f"Earthdata CMR query failed: {e}"
+            ) from e
+
+    def _index_remote_product(self, granule: Dict[str, Any]) -> None:
+        """Index a CMR granule in the local database.
+
+        Parameters
+        ----------
+        granule : Dict[str, Any]
+            Granule entry from CMR JSON response.
+        """
+        try:
+            granule_id = granule.get("id", granule.get("title", ""))
+            title = granule.get("title", granule_id)
+
+            # Extract download URL from links
+            remote_url = ""
+            for link in granule.get("links", []):
+                href = link.get("href", "")
+                if href.endswith(".h5") or "data#" in link.get("rel", ""):
+                    remote_url = href
+                    break
+
+            # Time range
+            time_start = granule.get("time_start", "")
+            time_end = granule.get("time_end", "")
+
+            # Bounding box
+            bounding_polygon = None
+            if "boxes" in granule:
+                bounding_polygon = granule["boxes"][0]
+
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO products
+                (id, product_name, product_type,
+                 start_time, stop_time, bounding_polygon,
+                 remote_url, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                granule_id,
+                title,
+                granule.get("collection_concept_id", ""),
+                time_start,
+                time_end,
+                bounding_polygon,
+                remote_url,
+                json.dumps(granule),
+            ))
+            self.conn.commit()
+
+        except Exception as e:
+            warnings.warn(f"Failed to index remote NISAR granule: {e}")
+
+    def download_product(
+        self,
+        product_id: str,
+        destination: Optional[Union[str, Path]] = None,
+    ) -> Path:
+        """Download a NISAR HDF5 product from ASF DAAC via Earthdata.
+
+        Uses Earthdata Login credentials from
+        ``~/.config/geoint/credentials.json`` (``nasa_earthdata`` block).
+
+        Parameters
+        ----------
+        product_id : str
+            Granule ID or title. Must exist in the local database
+            (run ``query_earthdata`` first).
+        destination : Optional[Union[str, Path]], default=None
+            Directory to save the product. If None, uses ``search_path``.
+
+        Returns
+        -------
+        Path
+            Path to downloaded HDF5 file.
+
+        Raises
+        ------
+        ValueError
+            If product not found or has no download URL.
+        ProcessorError
+            If download or authentication fails.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            raise ValueError(
+                f"Product {product_id} not found in catalog. "
+                f"Run query_earthdata() first to populate the database."
+            )
+
+        remote_url = row["remote_url"]
+        if not remote_url:
+            raise ValueError(
+                f"No download URL for product {product_id}"
+            )
+
+        if destination is None:
+            destination = self.search_path
+        destination = Path(destination)
+
+        access_token = get_earthdata_token()
+
+        # NISAR products are HDF5 files — no extraction needed
+        filename = remote_url.split("/")[-1] or f"{product_id}.h5"
+        product_path = download_file(
+            url=remote_url,
+            destination=destination,
+            filename=filename,
+            headers={"Authorization": f"Bearer {access_token}"},
+            extract=False,
+        )
+
+        cursor.execute("""
+            UPDATE products
+            SET local_path = ?, download_date = ?
+            WHERE id = ?
+        """, (
+            str(product_path),
+            datetime.now().isoformat(),
+            product_id,
+        ))
+        self.conn.commit()
+
+        return product_path
 
     def close(self) -> None:
         """Close database connection."""

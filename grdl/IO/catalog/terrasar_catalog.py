@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-03-11
+2026-03-12
 """
 
 # Standard library
@@ -42,6 +42,7 @@ import warnings
 
 # GRDL internal
 from grdl.IO.base import CatalogInterface
+from grdl.IO.sar.terrasar import _find_main_xml
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,12 @@ class TerraSARCatalog(CatalogInterface):
             found = list(self.search_path.rglob(pattern))
             for p in found:
                 if p.is_dir() and p not in seen:
+                    # Only include directories that contain a valid
+                    # annotation XML — avoids indexing auxiliary
+                    # subdirectories (e.g. iif/) that match the name
+                    # pattern but lack product metadata.
+                    if _find_main_xml(p) is None:
+                        continue
                     products.append(p)
                     seen.add(p)
 

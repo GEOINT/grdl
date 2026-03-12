@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Sentinel-1 SLC Catalog - Local discovery and SQLite indexing for Sentinel-1
-IW/EW/SM SLC SAFE products.
+Sentinel-1 SLC Catalog - Discovery, indexing, remote query, and download
+for Sentinel-1 IW/EW/SM SLC SAFE products.
 
-Provides tools for discovering Sentinel-1 SLC products on disk, extracting
-metadata via Sentinel1SLCReader, and tracking collections in a local SQLite
+Provides tools for discovering Sentinel-1 SLC products on disk, querying the
+Copernicus Data Space Ecosystem (CDSE) STAC catalog, downloading products
+with OAuth2 authentication, and tracking collections in a local SQLite
 database. Supports offline filtering by time, orbit, polarization, and swath.
 
 Dependencies
 ------------
 rasterio (via Sentinel1SLCReader)
+requests (for CDSE remote queries and downloads)
 
 Author
 ------
 Duane Smalley, PhD
 duane.d.smalley@gmail.com
+
+Ava Courtney
+courtney-ava@zai.com
 
 License
 -------
@@ -28,7 +33,7 @@ Created
 
 Modified
 --------
-2026-03-11
+2026-03-12
 """
 
 # Standard library
@@ -40,23 +45,41 @@ import logging
 import sqlite3
 import warnings
 
+# Third-party
+try:
+    import requests
+except ImportError:
+    pass
+
 # GRDL internal
 from grdl.IO.base import CatalogInterface
+from grdl.IO.catalog.remote_utils import (
+    REQUESTS_AVAILABLE,
+    download_file,
+    get_cdse_token,
+    load_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class Sentinel1SLCCatalog(CatalogInterface):
-    """Catalog for Sentinel-1 IW/EW/SM SLC SAFE products on local disk.
+    """Catalog and download manager for Sentinel-1 IW/EW/SM SLC SAFE products.
 
-    Discovers Sentinel-1 SLC SAFE directories, extracts metadata via
-    Sentinel1SLCReader, and maintains a local SQLite database for
-    offline querying.
+    Provides integrated capabilities for:
+
+    - Local file system discovery of Sentinel-1 SLC products
+    - Remote querying via Copernicus Data Space Ecosystem (CDSE) STAC
+    - Product download with CDSE OAuth2 authentication
+    - SQLite database tracking of products
+
+    Credentials are loaded from ``~/.config/geoint/credentials.json``
+    (provider block ``esa_copernicus``).
 
     Attributes
     ----------
     search_path : Path
-        Root directory for local product searches.
+        Root directory for local product searches and downloads.
     db_path : Path
         Path to SQLite database file.
     conn : sqlite3.Connection
@@ -68,8 +91,22 @@ class Sentinel1SLCCatalog(CatalogInterface):
     >>> catalog = Sentinel1SLCCatalog('/data/sentinel1')
     >>> products = catalog.discover_local()
     >>> print(f"Found {len(products)} products")
-    >>> results = catalog.query_database(orbit_pass='ASCENDING')
+    >>>
+    >>> # Search CDSE for ascending products
+    >>> remote = catalog.query_cdse(
+    ...     bbox=(12.0, 41.0, 13.0, 42.0),
+    ...     orbit_pass='ASCENDING',
+    ...     max_results=10,
+    ... )
+    >>> catalog.download_product(remote[0]['id'])
     """
+
+    # Copernicus Data Space Ecosystem STAC API
+    CDSE_STAC_URL = "https://catalogue.dataspace.copernicus.eu/stac"
+    CDSE_DOWNLOAD_URL = (
+        "https://zipper.dataspace.copernicus.eu/odata/v1/Products"
+    )
+    CDSE_COLLECTION = "SENTINEL-1"
 
     def __init__(
         self,
@@ -121,6 +158,7 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 swath TEXT,
                 corner_coords TEXT,
                 local_path TEXT,
+                remote_url TEXT,
                 file_size INTEGER,
                 download_date TEXT,
                 metadata_json TEXT,
@@ -137,6 +175,18 @@ class Sentinel1SLCCatalog(CatalogInterface):
             "ON products(absolute_orbit)"
         )
 
+        self.conn.commit()
+
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add columns introduced after the initial schema."""
+        cursor = self.conn.cursor()
+        for col in ("remote_url TEXT",):
+            try:
+                cursor.execute(f"ALTER TABLE products ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.conn.commit()
 
     def discover_images(
@@ -228,23 +278,23 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 if metadata.geolocation_grid:
                     grid = metadata.geolocation_grid
                     lines = [p.line for p in grid]
-                    samples = [p.sample for p in grid]
+                    pixels = [p.pixel for p in grid]
                     min_line = min(lines)
                     max_line = max(lines)
-                    min_sample = min(samples)
-                    max_sample = max(samples)
+                    min_pixel = min(pixels)
+                    max_pixel = max(pixels)
 
                     corners = []
-                    for target_line, target_sample in [
-                        (min_line, min_sample),
-                        (min_line, max_sample),
-                        (max_line, max_sample),
-                        (max_line, min_sample),
+                    for target_line, target_pixel in [
+                        (min_line, min_pixel),
+                        (min_line, max_pixel),
+                        (max_line, max_pixel),
+                        (max_line, min_pixel),
                     ]:
                         best = min(
                             grid,
-                            key=lambda p, tl=target_line, ts=target_sample: (
-                                abs(p.line - tl) + abs(p.sample - ts)
+                            key=lambda p, tl=target_line, tp=target_pixel: (
+                                abs(p.line - tl) + abs(p.pixel - tp)
                             ),
                         )
                         corners.append([best.latitude, best.longitude])
@@ -478,6 +528,253 @@ class Sentinel1SLCCatalog(CatalogInterface):
         cursor.execute(query, params)
 
         return [dict(row) for row in cursor.fetchall()]
+
+    # ── Remote (CDSE) ──────────────────────────────────────────────────
+
+    def query_cdse(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
+        orbit_pass: Optional[str] = None,
+        polarization: Optional[str] = None,
+        max_results: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Query Copernicus Data Space Ecosystem for Sentinel-1 SLC products.
+
+        Parameters
+        ----------
+        start_date : Optional[str], default=None
+            Start date in ISO format (YYYY-MM-DD).
+        end_date : Optional[str], default=None
+            End date in ISO format (YYYY-MM-DD).
+        bbox : Optional[Tuple[float, float, float, float]], default=None
+            Bounding box as ``(min_lon, min_lat, max_lon, max_lat)``.
+        orbit_pass : Optional[str], default=None
+            Orbit pass filter (``'ASCENDING'`` or ``'DESCENDING'``).
+        polarization : Optional[str], default=None
+            Polarization filter (``'VV'``, ``'VH'``, ``'VV+VH'``).
+        max_results : int, default=50
+            Maximum number of results.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of STAC feature dicts from CDSE.
+
+        Raises
+        ------
+        DependencyError
+            If ``requests`` is not installed.
+        ProcessorError
+            If STAC query fails.
+        """
+        if not REQUESTS_AVAILABLE:
+            raise DependencyError(
+                "Requests library required for CDSE queries. "
+                "Install with: pip install requests"
+            )
+
+        search_url = f"{self.CDSE_STAC_URL}/search"
+
+        payload: Dict[str, Any] = {
+            "collections": [self.CDSE_COLLECTION],
+            "limit": max_results,
+            "sortby": [{"field": "datetime", "direction": "desc"}],
+        }
+
+        if bbox:
+            payload["bbox"] = list(bbox)
+
+        if start_date or end_date:
+            start = start_date or ".."
+            end = end_date or ".."
+            payload["datetime"] = f"{start}/{end}"
+
+        filters: List[Dict[str, Any]] = []
+
+        # Sentinel-1 SLC product type filter
+        filters.append({
+            "op": "=",
+            "args": [{"property": "productType"}, "SLC"],
+        })
+
+        if orbit_pass:
+            filters.append({
+                "op": "=",
+                "args": [
+                    {"property": "sat:orbit_state"}, orbit_pass.lower()
+                ],
+            })
+        if polarization:
+            filters.append({
+                "op": "=",
+                "args": [
+                    {"property": "polarisation"}, polarization
+                ],
+            })
+
+        if len(filters) == 1:
+            payload["filter"] = filters[0]
+        else:
+            payload["filter"] = {"op": "and", "args": filters}
+        payload["filter-lang"] = "cql2-json"
+
+        try:
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(
+                search_url, json=payload, headers=headers, timeout=30,
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            products = data.get("features", [])
+
+            for product in products:
+                self._index_remote_product(product)
+
+            logger.info(
+                "CDSE query returned %d Sentinel-1 SLC products",
+                len(products),
+            )
+            return products
+
+        except requests.RequestException as e:
+            raise ProcessorError(
+                f"CDSE STAC query failed: {e}"
+            ) from e
+
+    def _index_remote_product(self, feature: Dict[str, Any]) -> None:
+        """Index a CDSE STAC feature in the local database.
+
+        Parameters
+        ----------
+        feature : Dict[str, Any]
+            GeoJSON Feature from CDSE STAC search response.
+        """
+        try:
+            props = feature.get("properties", {})
+            product_id = feature.get("id", "")
+
+            assets = feature.get("assets", {})
+            product_asset = assets.get("product", assets.get("download", {}))
+            remote_url = product_asset.get("href", "")
+
+            # Fallback: construct OData download URL from product ID
+            if not remote_url and product_id:
+                remote_url = (
+                    f"{self.CDSE_DOWNLOAD_URL}({product_id})/$value"
+                )
+
+            geom = feature.get("geometry", {})
+            corner_coords = json.dumps(geom.get("coordinates", []))
+
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO products
+                (id, product_name, product_type, mission, mode,
+                 polarization, absolute_orbit, orbit_pass,
+                 start_time, stop_time, corner_coords,
+                 remote_url, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                product_id,
+                props.get("title", product_id),
+                "SLC",
+                props.get("platform", ""),
+                props.get("sar:instrument_mode", ""),
+                props.get("polarisation", ""),
+                props.get("sat:absolute_orbit", None),
+                props.get("sat:orbit_state", ""),
+                props.get("start_datetime",
+                          props.get("datetime", "")),
+                props.get("end_datetime", ""),
+                corner_coords,
+                remote_url,
+                json.dumps(feature),
+            ))
+            self.conn.commit()
+
+        except Exception as e:
+            warnings.warn(f"Failed to index remote Sentinel-1 product: {e}")
+
+    def download_product(
+        self,
+        product_id: str,
+        destination: Optional[Union[str, Path]] = None,
+        extract: bool = True,
+    ) -> Path:
+        """Download a Sentinel-1 SLC product from CDSE.
+
+        Uses CDSE OAuth2 credentials from
+        ``~/.config/geoint/credentials.json`` (``esa_copernicus`` block).
+
+        Parameters
+        ----------
+        product_id : str
+            CDSE product ID. Must exist in the local database
+            (run ``query_cdse`` first).
+        destination : Optional[Union[str, Path]], default=None
+            Directory to save the product. If None, uses ``search_path``.
+        extract : bool, default=True
+            If True, extract the ZIP and return the SAFE directory.
+
+        Returns
+        -------
+        Path
+            Path to extracted SAFE directory or downloaded ZIP file.
+
+        Raises
+        ------
+        ValueError
+            If product not found or has no download URL.
+        ProcessorError
+            If download or authentication fails.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            raise ValueError(
+                f"Product {product_id} not found in catalog. "
+                f"Run query_cdse() first to populate the database."
+            )
+
+        remote_url = row["remote_url"]
+        if not remote_url:
+            raise ValueError(
+                f"No download URL for product {product_id}"
+            )
+
+        if destination is None:
+            destination = self.search_path
+        destination = Path(destination)
+
+        access_token = get_cdse_token()
+
+        product_path = download_file(
+            url=remote_url,
+            destination=destination,
+            filename=f"{product_id}.zip",
+            headers={"Authorization": f"Bearer {access_token}"},
+            extract=extract,
+        )
+
+        cursor.execute("""
+            UPDATE products
+            SET local_path = ?, download_date = ?
+            WHERE id = ?
+        """, (
+            str(product_path),
+            datetime.now().isoformat(),
+            product_id,
+        ))
+        self.conn.commit()
+
+        return product_path
 
     def close(self) -> None:
         """Close database connection."""
