@@ -135,8 +135,9 @@ class BIOMASSCatalog(CatalogInterface):
 
         # Set up database
         if db_path is None:
-            db_path = self.search_path / "biomass_catalog.db"
+            db_path = Path.home() / ".config" / "geoint" / "catalogs" / "biomass.db"
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize database
         self._init_database()

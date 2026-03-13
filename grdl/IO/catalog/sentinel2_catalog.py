@@ -135,8 +135,9 @@ class Sentinel2Catalog(CatalogInterface):
         super().__init__(search_path)
 
         if db_path is None:
-            db_path = self.search_path / "sentinel2_catalog.db"
+            db_path = Path.home() / ".config" / "geoint" / "catalogs" / "sentinel2.db"
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._init_database()
 

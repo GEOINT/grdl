@@ -112,6 +112,23 @@ Environment variable fallbacks: ``COPERNICUS_USERNAME``,
 ``COPERNICUS_PASSWORD``, ``EARTHDATA_USERNAME``, ``EARTHDATA_PASSWORD``,
 ``ESA_MAAP_OFFLINE_TOKEN``.
 
+**SQLite catalog databases** are stored by default in
+``~/.config/geoint/catalogs/``::
+
+    ~/.config/geoint/
+    ├── credentials.json
+    └── catalogs/
+        ├── sentinel1_slc.db
+        ├── sentinel2.db
+        ├── nisar.db
+        ├── aster.db
+        ├── viirs.db
+        ├── biomass.db
+        └── terrasar.db
+
+The directory is created automatically on first use. Pass a custom
+``db_path`` to the constructor to override the default location.
+
 **bbox format**: ``(west, south, east, north)`` in decimal degrees
 (WGS-84). West/East are longitude (-180 to 180), South/North are
 latitude (-90 to 90).

@@ -269,6 +269,8 @@ Available catalogs and their query methods:
 
 All query methods share these common optional parameters: `start_date`, `end_date`, `bbox`, `max_results` (default 50).
 
+Catalog databases are stored in `~/.config/geoint/catalogs/` by default (created automatically). Pass a custom `db_path` to the constructor to override.
+
 ### Geolocation Transforms
 
 All geolocation classes share the same `Geolocation` ABC and support three input forms: scalar, separate arrays, or `(2, N)` stacked ndarray. The ABC constructor accepts optional `dem_path` and `geoid_path` parameters for DEM integration.
@@ -605,6 +607,21 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
 
 ## Credentials
+
+All GRDL configuration lives under `~/.config/geoint/`:
+
+```
+~/.config/geoint/
+├── credentials.json          # API credentials (see below)
+└── catalogs/                 # SQLite catalog databases (auto-created)
+    ├── sentinel1_slc.db
+    ├── sentinel2.db
+    ├── nisar.db
+    ├── aster.db
+    ├── viirs.db
+    ├── biomass.db
+    └── terrasar.db
+```
 
 Remote catalog access requires credentials stored in `~/.config/geoint/credentials.json`:
 

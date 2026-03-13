@@ -135,8 +135,9 @@ class NISARCatalog(CatalogInterface):
         super().__init__(search_path)
 
         if db_path is None:
-            db_path = self.search_path / "nisar_catalog.db"
+            db_path = Path.home() / ".config" / "geoint" / "catalogs" / "nisar.db"
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._init_database()
 
