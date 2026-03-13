@@ -50,6 +50,7 @@ from grdl.exceptions import DependencyError, ProcessorError
 from grdl.IO.base import CatalogInterface
 from grdl.IO.catalog.remote_utils import (
     REQUESTS_AVAILABLE,
+    _normalize_stac_datetime,
     download_file,
     load_credentials,
 )
@@ -409,8 +410,8 @@ class BIOMASSCatalog(CatalogInterface):
             payload["bbox"] = list(bbox)
 
         if start_date or end_date:
-            start = start_date or ".."
-            end = end_date or ".."
+            start = _normalize_stac_datetime(start_date or "..")
+            end = _normalize_stac_datetime(end_date or "..")
             payload["datetime"] = f"{start}/{end}"
 
         filters = []

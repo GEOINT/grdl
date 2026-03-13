@@ -55,10 +55,12 @@ except ImportError:
 from grdl.IO.base import CatalogInterface
 from grdl.IO.catalog.remote_utils import (
     REQUESTS_AVAILABLE,
+    _normalize_stac_datetime,
     download_file,
     get_cdse_token,
     load_credentials,
 )
+from grdl.exceptions import DependencyError, ProcessorError
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +103,10 @@ class Sentinel1SLCCatalog(CatalogInterface):
     >>> catalog.download_product(remote[0]['id'])
     """
 
-    # Copernicus Data Space Ecosystem STAC API
-    CDSE_STAC_URL = "https://catalogue.dataspace.copernicus.eu/stac"
+    # Copernicus Data Space Ecosystem OData API
+    CDSE_ODATA_URL = (
+        "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+    )
     CDSE_DOWNLOAD_URL = (
         "https://zipper.dataspace.copernicus.eu/odata/v1/Products"
     )
@@ -575,60 +579,63 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 "Install with: pip install requests"
             )
 
-        search_url = f"{self.CDSE_STAC_URL}/search"
+        # Build OData $filter expression
+        filter_parts = [
+            f"Collection/Name eq '{self.CDSE_COLLECTION}'",
+            "contains(Name,'SLC')",
+        ]
 
-        payload: Dict[str, Any] = {
-            "collections": [self.CDSE_COLLECTION],
-            "limit": max_results,
-            "sortby": [{"field": "datetime", "direction": "desc"}],
+        if start_date:
+            ts = _normalize_stac_datetime(start_date)
+            filter_parts.append(
+                f"ContentDate/Start gt {ts.replace('Z', '.000Z')}"
+            )
+        if end_date:
+            ts = _normalize_stac_datetime(end_date)
+            filter_parts.append(
+                f"ContentDate/Start lt {ts.replace('Z', '.000Z')}"
+            )
+        if bbox:
+            west, south, east, north = bbox
+            wkt = (
+                f"POLYGON(({west} {south},{east} {south},"
+                f"{east} {north},{west} {north},{west} {south}))"
+            )
+            filter_parts.append(
+                f"OData.CSC.Intersects(area=geography"
+                f"'SRID=4326;{wkt}')"
+            )
+
+        params: Dict[str, str] = {
+            "$filter": " and ".join(filter_parts),
+            "$top": str(max_results),
+            "$orderby": "ContentDate/Start desc",
         }
 
-        if bbox:
-            payload["bbox"] = list(bbox)
-
-        if start_date or end_date:
-            start = start_date or ".."
-            end = end_date or ".."
-            payload["datetime"] = f"{start}/{end}"
-
-        filters: List[Dict[str, Any]] = []
-
-        # Sentinel-1 SLC product type filter
-        filters.append({
-            "op": "=",
-            "args": [{"property": "productType"}, "SLC"],
-        })
-
-        if orbit_pass:
-            filters.append({
-                "op": "=",
-                "args": [
-                    {"property": "sat:orbit_state"}, orbit_pass.lower()
-                ],
-            })
-        if polarization:
-            filters.append({
-                "op": "=",
-                "args": [
-                    {"property": "polarisation"}, polarization
-                ],
-            })
-
-        if len(filters) == 1:
-            payload["filter"] = filters[0]
-        else:
-            payload["filter"] = {"op": "and", "args": filters}
-        payload["filter-lang"] = "cql2-json"
-
         try:
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(
-                search_url, json=payload, headers=headers, timeout=30,
+            response = requests.get(
+                self.CDSE_ODATA_URL, params=params, timeout=30,
             )
             response.raise_for_status()
 
             data = response.json()
-            products = data.get("features", [])
+            products = data.get("value", [])
+
+            # Post-filter by orbit pass and polarization (OData has
+            # limited attribute filtering for these fields)
+            if orbit_pass:
+                orbit_upper = orbit_pass.upper()
+                products = [
+                    p for p in products
+                    if orbit_upper in p.get("Name", "").upper()
+                    or orbit_upper[:3] in p.get("Name", "").upper()
+                ]
+            if polarization:
+                pol = polarization.upper().replace("+", "")
+                products = [
+                    p for p in products
+                    if pol in p.get("Name", "").upper()
+                ]
 
             for product in products:
                 self._index_remote_product(product)
@@ -641,33 +648,46 @@ class Sentinel1SLCCatalog(CatalogInterface):
 
         except requests.RequestException as e:
             raise ProcessorError(
-                f"CDSE STAC query failed: {e}"
+                f"CDSE OData query failed: {e}"
             ) from e
 
-    def _index_remote_product(self, feature: Dict[str, Any]) -> None:
-        """Index a CDSE STAC feature in the local database.
+    def _index_remote_product(self, product: Dict[str, Any]) -> None:
+        """Index a CDSE OData product in the local database.
 
         Parameters
         ----------
-        feature : Dict[str, Any]
-            GeoJSON Feature from CDSE STAC search response.
+        product : Dict[str, Any]
+            Product dict from CDSE OData ``/Products`` response.
         """
         try:
-            props = feature.get("properties", {})
-            product_id = feature.get("id", "")
+            product_id = product.get("Id", "")
+            product_name = product.get("Name", "")
+            remote_url = (
+                f"{self.CDSE_DOWNLOAD_URL}({product_id})/$value"
+            )
 
-            assets = feature.get("assets", {})
-            product_asset = assets.get("product", assets.get("download", {}))
-            remote_url = product_asset.get("href", "")
+            # Parse name: S1A_IW_SLC__1SDV_20251202T060153_...
+            parts = product_name.split("_")
+            mission = parts[0] if len(parts) > 0 else ""
+            mode = parts[1] if len(parts) > 1 else ""
+            polarization = ""
+            if len(parts) > 3 and len(parts[3]) >= 3:
+                pol_code = parts[3][2:4]
+                pol_map = {"DV": "VV+VH", "DH": "HH+HV",
+                           "SV": "VV", "SH": "HH"}
+                polarization = pol_map.get(pol_code, pol_code)
 
-            # Fallback: construct OData download URL from product ID
-            if not remote_url and product_id:
-                remote_url = (
-                    f"{self.CDSE_DOWNLOAD_URL}({product_id})/$value"
-                )
+            start_time = product.get(
+                "ContentDate", {}
+            ).get("Start", "")
+            stop_time = product.get(
+                "ContentDate", {}
+            ).get("End", "")
 
-            geom = feature.get("geometry", {})
-            corner_coords = json.dumps(geom.get("coordinates", []))
+            footprint = product.get("GeoFootprint", {})
+            corner_coords = json.dumps(
+                footprint.get("coordinates", [])
+            )
 
             cursor = self.conn.cursor()
             cursor.execute("""
@@ -679,19 +699,18 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product_id,
-                props.get("title", product_id),
+                product_name,
                 "SLC",
-                props.get("platform", ""),
-                props.get("sar:instrument_mode", ""),
-                props.get("polarisation", ""),
-                props.get("sat:absolute_orbit", None),
-                props.get("sat:orbit_state", ""),
-                props.get("start_datetime",
-                          props.get("datetime", "")),
-                props.get("end_datetime", ""),
+                mission,
+                mode,
+                polarization,
+                None,
+                "",
+                start_time,
+                stop_time,
                 corner_coords,
                 remote_url,
-                json.dumps(feature),
+                json.dumps(product),
             ))
             self.conn.commit()
 

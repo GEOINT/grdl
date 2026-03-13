@@ -60,6 +60,7 @@ from grdl.IO.catalog.remote_utils import (
     get_earthdata_token,
     load_credentials,
 )
+from grdl.exceptions import DependencyError, ProcessorError
 
 logger = logging.getLogger(__name__)
 

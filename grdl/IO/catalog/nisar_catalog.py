@@ -60,6 +60,7 @@ from grdl.IO.catalog.remote_utils import (
     get_earthdata_token,
     load_credentials,
 )
+from grdl.exceptions import DependencyError, ProcessorError
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,8 @@ class NISARCatalog(CatalogInterface):
     )
 
     # CMR collection short names for NISAR products
-    COLLECTION_RSLC = "NISAR_L1_RSLC"
-    COLLECTION_GSLC = "NISAR_L1_GSLC"
+    COLLECTION_RSLC = "NISAR_L1_RSLC_BETA_V1"
+    COLLECTION_GSLC = "NISAR_L2_GSLC_BETA_V1"
 
     def __init__(
         self,

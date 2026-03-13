@@ -72,6 +72,29 @@ EARTHDATA_TOKEN_URL = (
 )
 
 
+# ── STAC Datetime Helpers ─────────────────────────────────────────────
+
+
+def _normalize_stac_datetime(date_str: str) -> str:
+    """Ensure a date string is full ISO 8601 for STAC APIs.
+
+    Parameters
+    ----------
+    date_str : str
+        Date string, either ``YYYY-MM-DD`` or full ISO 8601.
+
+    Returns
+    -------
+    str
+        Full ISO 8601 datetime (e.g. ``2025-01-01T00:00:00Z``).
+    """
+    if date_str == "..":
+        return date_str
+    if "T" not in date_str:
+        return f"{date_str}T00:00:00Z"
+    return date_str
+
+
 # ── Credential Management ──────────────────────────────────────────────
 
 
