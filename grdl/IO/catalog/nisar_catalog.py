@@ -34,7 +34,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -282,7 +282,7 @@ class NISARCatalog(CatalogInterface):
 
                 cursor = self.conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, mission_id, radar_band,
                      frequency, polarization, available_frequencies,
                      available_polarizations, look_direction,
@@ -293,6 +293,28 @@ class NISARCatalog(CatalogInterface):
                      download_date, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        mission_id = excluded.mission_id,
+                        radar_band = excluded.radar_band,
+                        frequency = excluded.frequency,
+                        polarization = excluded.polarization,
+                        available_frequencies = excluded.available_frequencies,
+                        available_polarizations = excluded.available_polarizations,
+                        look_direction = excluded.look_direction,
+                        orbit_pass_direction = excluded.orbit_pass_direction,
+                        absolute_orbit_number = excluded.absolute_orbit_number,
+                        track_number = excluded.track_number,
+                        frame_number = excluded.frame_number,
+                        granule_id = excluded.granule_id,
+                        start_time = excluded.start_time,
+                        stop_time = excluded.stop_time,
+                        bounding_polygon = excluded.bounding_polygon,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        download_date = excluded.download_date,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,
@@ -668,11 +690,19 @@ class NISARCatalog(CatalogInterface):
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO products
+                INSERT INTO products
                 (id, product_name, product_type,
                  start_time, stop_time, bounding_polygon,
                  remote_url, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_name) DO UPDATE SET
+                    id = excluded.id,
+                    remote_url = excluded.remote_url,
+                    bounding_polygon = COALESCE(products.bounding_polygon,
+                                                excluded.bounding_polygon),
+                    metadata_json = excluded.metadata_json,
+                    product_type = COALESCE(products.product_type,
+                                            excluded.product_type)
             """, (
                 granule_id,
                 title,
@@ -692,11 +722,16 @@ class NISARCatalog(CatalogInterface):
         self,
         product_id: str,
         destination: Optional[Union[str, Path]] = None,
+        force: bool = False,
     ) -> Path:
         """Download a NISAR HDF5 product from ASF DAAC via Earthdata.
 
         Uses Earthdata Login credentials from
         ``~/.config/geoint/credentials.json`` (``nasa_earthdata`` block).
+
+        If the product already exists locally (``local_path`` is set and
+        the path exists on disk), a warning is issued and the existing
+        path is returned unless ``force=True``.
 
         Parameters
         ----------
@@ -705,6 +740,10 @@ class NISARCatalog(CatalogInterface):
             (run ``query_earthdata`` first).
         destination : Optional[Union[str, Path]], default=None
             Directory to save the product. If None, uses ``search_path``.
+        force : bool, default=False
+            If True, download even when the product already exists
+            locally. The database ``local_path`` will be updated to
+            the new download location.
 
         Returns
         -------
@@ -735,6 +774,17 @@ class NISARCatalog(CatalogInterface):
             raise ValueError(
                 f"No download URL for product {product_id}"
             )
+
+        # Check if the product already exists locally
+        existing_path = row["local_path"]
+        if existing_path and Path(existing_path).exists() and not force:
+            warnings.warn(
+                f"Product {row['product_name']} already exists locally "
+                f"at {existing_path}. Downloading again will update the "
+                f"database to point to the new location. Use "
+                f"force=True to proceed."
+            )
+            return Path(existing_path)
 
         if destination is None:
             destination = self.search_path

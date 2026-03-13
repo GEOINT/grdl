@@ -33,7 +33,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -345,7 +345,7 @@ class Sentinel2Catalog(CatalogInterface):
 
                 cursor = self.conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, satellite,
                      processing_level, sensing_datetime, product_discriminator,
                      mgrs_tile_id, utm_zone, latitude_band,
@@ -357,6 +357,27 @@ class Sentinel2Catalog(CatalogInterface):
                      download_date, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        satellite = excluded.satellite,
+                        processing_level = excluded.processing_level,
+                        sensing_datetime = excluded.sensing_datetime,
+                        product_discriminator = excluded.product_discriminator,
+                        mgrs_tile_id = excluded.mgrs_tile_id,
+                        utm_zone = excluded.utm_zone,
+                        latitude_band = excluded.latitude_band,
+                        relative_orbit = excluded.relative_orbit,
+                        orbit_direction = excluded.orbit_direction,
+                        band_id = excluded.band_id,
+                        resolution_tier = excluded.resolution_tier,
+                        wavelength_center = excluded.wavelength_center,
+                        wavelength_range = excluded.wavelength_range,
+                        baseline_processing = excluded.baseline_processing,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        download_date = excluded.download_date,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,
@@ -735,12 +756,22 @@ class Sentinel2Catalog(CatalogInterface):
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO products
+                INSERT INTO products
                 (id, product_name, product_type, satellite,
                  processing_level, sensing_datetime,
                  mgrs_tile_id, relative_orbit, orbit_direction,
                  corner_coords, remote_url, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_name) DO UPDATE SET
+                    id = excluded.id,
+                    remote_url = excluded.remote_url,
+                    corner_coords = COALESCE(products.corner_coords,
+                                             excluded.corner_coords),
+                    metadata_json = excluded.metadata_json,
+                    satellite = COALESCE(products.satellite,
+                                         excluded.satellite),
+                    processing_level = COALESCE(products.processing_level,
+                                                excluded.processing_level)
             """, (
                 product_id,
                 product_name,
@@ -765,11 +796,16 @@ class Sentinel2Catalog(CatalogInterface):
         product_id: str,
         destination: Optional[Union[str, Path]] = None,
         extract: bool = True,
+        force: bool = False,
     ) -> Path:
         """Download a Sentinel-2 product from CDSE.
 
         Uses CDSE OAuth2 credentials from
         ``~/.config/geoint/credentials.json`` (``esa_copernicus`` block).
+
+        If the product already exists locally (``local_path`` is set and
+        the path exists on disk), a warning is issued and the existing
+        path is returned unless ``force=True``.
 
         Parameters
         ----------
@@ -780,6 +816,10 @@ class Sentinel2Catalog(CatalogInterface):
             Directory to save the product. If None, uses ``search_path``.
         extract : bool, default=True
             If True, extract the ZIP and return the SAFE directory.
+        force : bool, default=False
+            If True, download even when the product already exists
+            locally. The database ``local_path`` will be updated to
+            the new download location.
 
         Returns
         -------
@@ -810,6 +850,17 @@ class Sentinel2Catalog(CatalogInterface):
             raise ValueError(
                 f"No download URL for product {product_id}"
             )
+
+        # Check if the product already exists locally
+        existing_path = row["local_path"]
+        if existing_path and Path(existing_path).exists() and not force:
+            warnings.warn(
+                f"Product {row['product_name']} already exists locally "
+                f"at {existing_path}. Downloading again will update the "
+                f"database to point to the new location. Use "
+                f"force=True to proceed."
+            )
+            return Path(existing_path)
 
         if destination is None:
             destination = self.search_path

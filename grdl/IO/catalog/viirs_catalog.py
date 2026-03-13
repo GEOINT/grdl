@@ -34,7 +34,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -306,7 +306,7 @@ class VIIRSCatalog(CatalogInterface):
 
                 cursor = self.conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, satellite_name,
                      instrument_name, product_short_name, product_long_name,
                      processing_level, collection_version,
@@ -318,6 +318,28 @@ class VIIRSCatalog(CatalogInterface):
                      download_date, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        satellite_name = excluded.satellite_name,
+                        instrument_name = excluded.instrument_name,
+                        product_short_name = excluded.product_short_name,
+                        product_long_name = excluded.product_long_name,
+                        processing_level = excluded.processing_level,
+                        collection_version = excluded.collection_version,
+                        start_datetime = excluded.start_datetime,
+                        end_datetime = excluded.end_datetime,
+                        production_datetime = excluded.production_datetime,
+                        day_night_flag = excluded.day_night_flag,
+                        granule_id = excluded.granule_id,
+                        orbit_number = excluded.orbit_number,
+                        horizontal_tile_number = excluded.horizontal_tile_number,
+                        vertical_tile_number = excluded.vertical_tile_number,
+                        spatial_resolution = excluded.spatial_resolution,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        download_date = excluded.download_date,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,
@@ -679,11 +701,18 @@ class VIIRSCatalog(CatalogInterface):
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO products
+                INSERT INTO products
                 (id, product_name, product_short_name,
                  start_datetime, end_datetime,
                  remote_url, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_name) DO UPDATE SET
+                    id = excluded.id,
+                    remote_url = excluded.remote_url,
+                    metadata_json = excluded.metadata_json,
+                    product_short_name = COALESCE(
+                        products.product_short_name,
+                        excluded.product_short_name)
             """, (
                 granule_id,
                 title,
@@ -702,11 +731,16 @@ class VIIRSCatalog(CatalogInterface):
         self,
         product_id: str,
         destination: Optional[Union[str, Path]] = None,
+        force: bool = False,
     ) -> Path:
         """Download a VIIRS HDF5 product from LAADS DAAC via Earthdata.
 
         Uses Earthdata Login credentials from
         ``~/.config/geoint/credentials.json`` (``nasa_earthdata`` block).
+
+        If the product already exists locally (``local_path`` is set and
+        the path exists on disk), a warning is issued and the existing
+        path is returned unless ``force=True``.
 
         Parameters
         ----------
@@ -715,6 +749,10 @@ class VIIRSCatalog(CatalogInterface):
             (run ``query_earthdata`` first).
         destination : Optional[Union[str, Path]], default=None
             Directory to save the product. If None, uses ``search_path``.
+        force : bool, default=False
+            If True, download even when the product already exists
+            locally. The database ``local_path`` will be updated to
+            the new download location.
 
         Returns
         -------
@@ -745,6 +783,17 @@ class VIIRSCatalog(CatalogInterface):
             raise ValueError(
                 f"No download URL for product {product_id}"
             )
+
+        # Check if the product already exists locally
+        existing_path = row["local_path"]
+        if existing_path and Path(existing_path).exists() and not force:
+            warnings.warn(
+                f"Product {row['product_name']} already exists locally "
+                f"at {existing_path}. Downloading again will update the "
+                f"database to point to the new location. Use "
+                f"force=True to proceed."
+            )
+            return Path(existing_path)
 
         if destination is None:
             destination = self.search_path

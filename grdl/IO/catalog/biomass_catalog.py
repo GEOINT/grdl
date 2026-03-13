@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -260,12 +260,25 @@ class BIOMASSCatalog(CatalogInterface):
                 cursor = self.conn.cursor()
 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, processing_level,
                      swath, polarizations, orbit_number, orbit_pass,
                      start_time, stop_time, corner_coords, local_path,
                      file_size, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        processing_level = excluded.processing_level,
+                        swath = excluded.swath,
+                        polarizations = excluded.polarizations,
+                        orbit_number = excluded.orbit_number,
+                        orbit_pass = excluded.orbit_pass,
+                        start_time = excluded.start_time,
+                        stop_time = excluded.stop_time,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,
@@ -473,11 +486,21 @@ class BIOMASSCatalog(CatalogInterface):
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO products
+                INSERT INTO products
                 (id, product_name, product_type, processing_level,
                  orbit_number, orbit_pass, start_time, stop_time,
                  corner_coords, remote_url, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_name) DO UPDATE SET
+                    id = excluded.id,
+                    remote_url = excluded.remote_url,
+                    corner_coords = COALESCE(products.corner_coords,
+                                             excluded.corner_coords),
+                    metadata_json = excluded.metadata_json,
+                    product_type = COALESCE(products.product_type,
+                                            excluded.product_type),
+                    processing_level = COALESCE(products.processing_level,
+                                                excluded.processing_level)
             """, (
                 product_id,
                 props.get("title", product_id),
@@ -501,12 +524,17 @@ class BIOMASSCatalog(CatalogInterface):
         product_id: str,
         destination: Optional[Union[str, Path]] = None,
         extract: bool = True,
+        force: bool = False,
     ) -> Path:
         """Download a BIOMASS product ZIP from the ESA MAAP.
 
         Uses the MAAP offline token (from
         ``~/.config/geoint/credentials.json``) to authenticate via
         OAuth2 Bearer token.
+
+        If the product already exists locally (``local_path`` is set and
+        the path exists on disk), a warning is issued and the existing
+        path is returned unless ``force=True``.
 
         Parameters
         ----------
@@ -517,6 +545,10 @@ class BIOMASSCatalog(CatalogInterface):
             Directory to save the product. If None, uses ``search_path``.
         extract : bool, default=True
             If True, extract the ZIP and return the extracted directory.
+        force : bool, default=False
+            If True, download even when the product already exists
+            locally. The database ``local_path`` will be updated to
+            the new download location.
 
         Returns
         -------
@@ -548,6 +580,17 @@ class BIOMASSCatalog(CatalogInterface):
             raise ValueError(
                 f"No download URL for product {product_id}"
             )
+
+        # Check if the product already exists locally
+        existing_path = row["local_path"]
+        if existing_path and Path(existing_path).exists() and not force:
+            warnings.warn(
+                f"Product {row['product_name']} already exists locally "
+                f"at {existing_path}. Downloading again will update the "
+                f"database to point to the new location. Use "
+                f"force=True to proceed."
+            )
+            return Path(existing_path)
 
         if destination is None:
             destination = self.search_path

@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -247,7 +247,7 @@ class TerraSARCatalog(CatalogInterface):
 
                 cursor = self.conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, mission, satellite,
                      imaging_mode, look_direction, orbit_direction,
                      polarization_mode, polarization_list,
@@ -258,6 +258,27 @@ class TerraSARCatalog(CatalogInterface):
                      download_date, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        mission = excluded.mission,
+                        satellite = excluded.satellite,
+                        imaging_mode = excluded.imaging_mode,
+                        look_direction = excluded.look_direction,
+                        orbit_direction = excluded.orbit_direction,
+                        polarization_mode = excluded.polarization_mode,
+                        polarization_list = excluded.polarization_list,
+                        absolute_orbit = excluded.absolute_orbit,
+                        start_time = excluded.start_time,
+                        stop_time = excluded.stop_time,
+                        scene_center_lat = excluded.scene_center_lat,
+                        scene_center_lon = excluded.scene_center_lon,
+                        incidence_angle_near = excluded.incidence_angle_near,
+                        incidence_angle_far = excluded.incidence_angle_far,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        download_date = excluded.download_date,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,

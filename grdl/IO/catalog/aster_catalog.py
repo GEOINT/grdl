@@ -34,7 +34,7 @@ Created
 
 Modified
 --------
-2026-03-12
+2026-03-13
 """
 
 # Standard library
@@ -289,7 +289,7 @@ class ASTERCatalog(CatalogInterface):
 
                 cursor = self.conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO products
+                    INSERT INTO products
                     (id, product_name, product_type, entity_id,
                      local_granule_id, acquisition_date, acquisition_time,
                      orbit_direction, wrs_path, wrs_row,
@@ -301,6 +301,29 @@ class ASTERCatalog(CatalogInterface):
                      download_date, metadata_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_name) DO UPDATE SET
+                        product_type = excluded.product_type,
+                        entity_id = excluded.entity_id,
+                        local_granule_id = excluded.local_granule_id,
+                        acquisition_date = excluded.acquisition_date,
+                        acquisition_time = excluded.acquisition_time,
+                        orbit_direction = excluded.orbit_direction,
+                        wrs_path = excluded.wrs_path,
+                        wrs_row = excluded.wrs_row,
+                        scene_center_lat = excluded.scene_center_lat,
+                        scene_center_lon = excluded.scene_center_lon,
+                        sun_azimuth = excluded.sun_azimuth,
+                        sun_elevation = excluded.sun_elevation,
+                        cloud_cover = excluded.cloud_cover,
+                        correction_level = excluded.correction_level,
+                        vnir_available = excluded.vnir_available,
+                        swir_available = excluded.swir_available,
+                        tir_available = excluded.tir_available,
+                        corner_coords = excluded.corner_coords,
+                        local_path = excluded.local_path,
+                        file_size = excluded.file_size,
+                        download_date = excluded.download_date,
+                        metadata_json = excluded.metadata_json
                 """, (
                     product_id,
                     product_path.name,
@@ -658,10 +681,16 @@ class ASTERCatalog(CatalogInterface):
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO products
+                INSERT INTO products
                 (id, product_name, product_type,
                  acquisition_date, remote_url, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_name) DO UPDATE SET
+                    id = excluded.id,
+                    remote_url = excluded.remote_url,
+                    metadata_json = excluded.metadata_json,
+                    product_type = COALESCE(products.product_type,
+                                            excluded.product_type)
             """, (
                 granule_id,
                 title,
@@ -679,11 +708,16 @@ class ASTERCatalog(CatalogInterface):
         self,
         product_id: str,
         destination: Optional[Union[str, Path]] = None,
+        force: bool = False,
     ) -> Path:
         """Download an ASTER product from LP DAAC via Earthdata.
 
         Uses Earthdata Login credentials from
         ``~/.config/geoint/credentials.json`` (``nasa_earthdata`` block).
+
+        If the product already exists locally (``local_path`` is set and
+        the path exists on disk), a warning is issued and the existing
+        path is returned unless ``force=True``.
 
         Parameters
         ----------
@@ -692,6 +726,10 @@ class ASTERCatalog(CatalogInterface):
             (run ``query_earthdata`` first).
         destination : Optional[Union[str, Path]], default=None
             Directory to save the product. If None, uses ``search_path``.
+        force : bool, default=False
+            If True, download even when the product already exists
+            locally. The database ``local_path`` will be updated to
+            the new download location.
 
         Returns
         -------
@@ -722,6 +760,17 @@ class ASTERCatalog(CatalogInterface):
             raise ValueError(
                 f"No download URL for product {product_id}"
             )
+
+        # Check if the product already exists locally
+        existing_path = row["local_path"]
+        if existing_path and Path(existing_path).exists() and not force:
+            warnings.warn(
+                f"Product {row['product_name']} already exists locally "
+                f"at {existing_path}. Downloading again will update the "
+                f"database to point to the new location. Use "
+                f"force=True to proceed."
+            )
+            return Path(existing_path)
 
         if destination is None:
             destination = self.search_path
