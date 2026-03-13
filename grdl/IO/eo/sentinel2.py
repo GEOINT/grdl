@@ -31,9 +31,10 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-12
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
@@ -43,6 +44,8 @@ import numpy as np
 from grdl.IO.base import ImageReader
 from grdl.IO.models import Sentinel2Metadata
 from grdl.IO.jpeg2000 import JP2Reader
+
+logger = logging.getLogger(__name__)
 
 
 # Band wavelength lookup table (center, min, max) in nm
@@ -181,6 +184,46 @@ def _parse_mgrs_tile(mgrs_id: str) -> Tuple[Optional[int], Optional[str]]:
         return None, None
 
 
+def _resolve_jp2_from_safe(safe_dir: Path) -> Optional[Path]:
+    """Find a representative JP2 band file inside a SAFE directory.
+
+    Handles both L2A (resolution-tiered) and L1C (flat) SAFE layouts:
+
+    - **L2A**: ``GRANULE/*/IMG_DATA/R10m/T*_B*.jp2`` (tries R10m first,
+      then R20m, then R60m for the highest available resolution).
+    - **L1C**: ``GRANULE/*/IMG_DATA/T*_B*.jp2`` (band files directly
+      under ``IMG_DATA`` with no resolution subdirectories).
+
+    Falls back to any ``*.jp2`` in the tree if neither layout matches.
+
+    Parameters
+    ----------
+    safe_dir : Path
+        Path to a Sentinel-2 ``.SAFE`` directory.
+
+    Returns
+    -------
+    Path or None
+        First JP2 band file found, or None.
+    """
+    # L2A layout: resolution-tiered subdirectories
+    for res_dir in ('R10m', 'R20m', 'R60m'):
+        candidates = sorted(safe_dir.rglob(
+            f'GRANULE/*/IMG_DATA/{res_dir}/T*_B*.jp2'
+        ))
+        if candidates:
+            return candidates[0]
+
+    # L1C layout: band files directly under IMG_DATA
+    candidates = sorted(safe_dir.rglob('GRANULE/*/IMG_DATA/T*_B*.jp2'))
+    if candidates:
+        return candidates[0]
+
+    # Fallback: any JP2 anywhere under the SAFE directory
+    fallback = sorted(safe_dir.rglob('*.jp2'))
+    return fallback[0] if fallback else None
+
+
 class Sentinel2Reader(ImageReader):
     """Read Sentinel-2 MSI JPEG2000 products.
 
@@ -191,7 +234,11 @@ class Sentinel2Reader(ImageReader):
     Parameters
     ----------
     filepath : str or Path
-        Path to Sentinel-2 JP2 file (standalone or within SAFE archive).
+        Path to a Sentinel-2 JP2 file, or a ``.SAFE`` directory.
+        When a SAFE directory is given, the reader resolves the
+        highest-resolution band file automatically using the standard
+        ESA directory layout (L2A: ``R10m > R20m > R60m``; L1C: flat
+        ``IMG_DATA``).
     backend : str, optional
         JP2 backend to use ('rasterio', 'glymur', or 'auto'). Default 'auto'.
 
@@ -211,7 +258,8 @@ class Sentinel2Reader(ImageReader):
     FileNotFoundError
         If the file does not exist.
     ValueError
-        If the file is not a valid Sentinel-2 JP2.
+        If the file is not a valid Sentinel-2 JP2, or if a SAFE
+        directory contains no JP2 band files.
 
     Examples
     --------
@@ -222,6 +270,9 @@ class Sentinel2Reader(ImageReader):
     ...     chip = reader.read_chip(0, 1000, 0, 1000)
     'S2A'
     'T10SEG'
+
+    >>> # Accept a SAFE directory directly
+    >>> reader = Sentinel2Reader('S2A_MSIL2A_20240115T184719_N0510_R070_T10SEG.SAFE')
 
     >>> # Auto-detection via open_eo()
     >>> from grdl.IO.eo import open_eo
@@ -237,6 +288,20 @@ class Sentinel2Reader(ImageReader):
     ) -> None:
         self._backend = backend
         self.jp2_reader: Optional[JP2Reader] = None
+
+        # If given a SAFE directory, resolve to a JP2 band file.
+        resolved = Path(filepath)
+        if resolved.is_dir() and resolved.suffix == '.SAFE':
+            jp2 = _resolve_jp2_from_safe(resolved)
+            if jp2 is None:
+                raise ValueError(
+                    f"No JP2 band files found in SAFE directory: {resolved}"
+                )
+            logger.info(
+                "Resolved SAFE directory to band file: %s", jp2.name,
+            )
+            filepath = jp2
+
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:

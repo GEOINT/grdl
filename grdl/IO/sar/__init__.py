@@ -52,7 +52,6 @@ from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
 
 # BIOMASS
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
-from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 
 # NISAR
 from grdl.IO.sar.nisar import NISARReader, open_nisar
@@ -193,7 +192,6 @@ __all__ = [
     'open_terrasar',
     # BIOMASS
     'BIOMASSL1Reader',
-    'BIOMASSCatalog',
     # NISAR
     'NISARReader',
     'NISARMetadata',
@@ -206,5 +204,4 @@ __all__ = [
     'open_sar',
     'open_biomass',
     'open_nisar',
-    'load_credentials',
 ]

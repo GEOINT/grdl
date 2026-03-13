@@ -250,6 +250,15 @@ GRDL/
       eo/                    # EO modality submodule
         _backend.py          # rasterio/glymur availability
         sentinel2.py         # Sentinel2Reader (L1C, L2A via JP2/GeoTIFF)
+      catalog/               # Remote query, download & SQLite cataloging
+        remote_utils.py      # Shared credentials, token auth, streaming download
+        biomass_catalog.py   # BIOMASSCatalog (ESA MAAP STAC)
+        sentinel1_catalog.py # Sentinel1SLCCatalog (CDSE OData)
+        sentinel2_catalog.py # Sentinel2Catalog (CDSE OData)
+        nisar_catalog.py     # NISARCatalog (NASA CMR / ASF DAAC)
+        aster_catalog.py     # ASTERCatalog (NASA CMR / LP DAAC)
+        viirs_catalog.py     # VIIRSCatalog (NASA CMR / LAADS DAAC)
+        terrasar_catalog.py  # TerraSARCatalog (local discovery only)
     geolocation/             # Image-to-geographic coordinate transforms with DEM integration
       base.py                # Geolocation ABC, NoGeolocation
       coordinates.py         # Coordinate frame transforms (geodetic ↔ ECEF ↔ ENU)
@@ -358,6 +367,7 @@ Domain directories map to the module areas defined in the README:
 |-----------|--------|
 | `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
 | `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`, `CPHDMetadata`, `NISARMetadata`, `Sentinel1SLCMetadata`, `Sentinel2Metadata`, `TerraSARMetadata`) |
+| `IO/catalog/` | Remote query, download & SQLite cataloging for Sentinel-1, Sentinel-2, NISAR, ASTER, VIIRS, BIOMASS, TerraSAR-X. Shared utilities in `remote_utils.py` |
 | `geolocation/` | Image-to-geographic coordinate transforms with DEM integration (`sar/`, `eo/`, `elevation/` submodules) |
 | `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook/multilook/dominance/CSI, CFAR detection, image formation, versioning, tunable parameters, pipeline, filters |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
@@ -665,7 +675,8 @@ Three files must be kept synchronized:
 | `hdf5` | `h5py` | `grdl.IO.hdf5` |
 | `multispectral` | `h5py`, `xarray`, `spectral` | `grdl.IO.multispectral` |
 | `ir` | `rasterio`, `h5py` | `grdl.IO.ir` |
-| `biomass` | `rasterio`, `requests` | `grdl.IO.sar.biomass`, `grdl.IO.sar.biomass_catalog` |
+| `biomass` | `rasterio`, `requests` | `grdl.IO.sar.biomass`, `grdl.IO.catalog.biomass_catalog` |
+| `remote` | `requests` | `grdl.IO.catalog` (all remote catalog queries & downloads) |
 | `geolocation` | `pyproj` | `grdl.geolocation.eo`, `grdl.geolocation.elevation` |
 | `detection` | `shapely` | `grdl.image_processing.detection`, `grdl.transforms` |
 | `coregistration` | `opencv-python-headless` | `grdl.coregistration.feature_match` |

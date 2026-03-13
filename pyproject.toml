@@ -57,6 +57,9 @@ biomass = [
     "rasterio>=1.2.0",
     "requests>=2.25.0",
 ]
+remote = [
+    "requests>=2.25.0",
+]
 geolocation = [
     "pyproj>=3.4.0",
 ]

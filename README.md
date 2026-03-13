@@ -61,10 +61,15 @@ with SICDReader('image.nitf') as reader:
 |--------|-------------|--------|
 | **I/O** | Readers and writers for geospatial imagery formats | Implemented |
 | | Base formats: GeoTIFF, HDF5, NITF, JPEG2000 | |
-| | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS | |
+| | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS, Sentinel-1 SLC, TerraSAR-X, NISAR | |
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
-| | EO: scaffold (Landsat, Sentinel-2, WorldView planned) | |
+| | EO: Sentinel-2 (L1C, L2A) | |
+| **Catalog & Download** | Remote query, download, and local SQLite cataloging | Implemented |
+| | ESA Copernicus (CDSE OData): Sentinel-1, Sentinel-2 | |
+| | NASA Earthdata (CMR): NISAR, ASTER, VIIRS | |
+| | ESA MAAP (STAC): BIOMASS | |
+| | Local-only: TerraSAR-X | |
 | **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
 | | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
 | | SAR: `SICDGeolocation` (SICD complex imagery via sarpy/sarkit), `GCPGeolocation` (BIOMASS GCPs) | |
@@ -103,15 +108,24 @@ GRDL/
 │   │   │   ├── crsd.py              #     CRSDReader (sarkit only)
 │   │   │   ├── sidd.py              #     SIDDReader (sarkit only)
 │   │   │   ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
-│   │   │   └── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
+│   │   │   └── biomass_catalog.py   #     BIOMASSCatalog (MAAP STAC query & download)
 │   │   ├── ir/                      #   IR/thermal readers
 │   │   │   ├── _backend.py          #     rasterio/h5py availability detection
 │   │   │   └── aster.py             #     ASTERReader (L1T, GDEM)
 │   │   ├── multispectral/           #   Multispectral/hyperspectral readers
 │   │   │   ├── _backend.py          #     h5py/xarray/spectral availability detection
 │   │   │   └── viirs.py             #     VIIRSReader (nightlights, vegetation, reflectance)
-│   │   └── eo/                      #   EO readers (scaffold)
-│   │       └── _backend.py          #     rasterio/glymur availability detection
+│   │   ├── eo/                      #   EO readers
+│   │   │   ├── _backend.py          #     rasterio/glymur availability detection
+│   │   │   └── sentinel2.py         #     Sentinel2Reader (L1C, L2A via JP2/GeoTIFF)
+│   │   └── catalog/                 #   Remote query, download & SQLite cataloging
+│   │       ├── remote_utils.py      #     Shared credentials, token auth, streaming download
+│   │       ├── sentinel1_catalog.py #     Sentinel1SLCCatalog (CDSE OData)
+│   │       ├── sentinel2_catalog.py #     Sentinel2Catalog (CDSE OData)
+│   │       ├── nisar_catalog.py     #     NISARCatalog (NASA CMR / ASF DAAC)
+│   │       ├── aster_catalog.py     #     ASTERCatalog (NASA CMR / LP DAAC)
+│   │       ├── viirs_catalog.py     #     VIIRSCatalog (NASA CMR / LAADS DAAC)
+│   │       └── terrasar_catalog.py  #     TerraSARCatalog (local discovery only)
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
@@ -215,24 +229,47 @@ with BIOMASSL1Reader('path/to/BIO_S3_SCS__1S_...') as reader:
     print(f"Center: ({lat:.6f}, {lon:.6f})")
 ```
 
-### Searching & Downloading from ESA MAAP
+### Catalog: Searching & Downloading Remote Data
+
+Every catalog follows the same pattern: **query** a remote archive (all parameters optional), then **download** by product ID. Results are indexed into a local SQLite database for offline filtering.
 
 ```python
-from grdl.IO import BIOMASSCatalog
+from grdl.IO.catalog import Sentinel1SLCCatalog
 
-catalog = BIOMASSCatalog('/data/biomass')
+catalog = Sentinel1SLCCatalog('/data/sentinel1')
 
-# Search the MAAP STAC catalog
-products = catalog.query_esa(
-    bbox=(115.5, -31.5, 116.8, -30.5),
-    product_type="S3_SCS__1S",
+# Query with no filters -- returns up to 50 most recent products
+results = catalog.query_cdse()
+
+# Or filter by date, geography, and sensor-specific params
+results = catalog.query_cdse(
+    start_date='2025-12-01',
+    end_date='2025-12-07',
+    bbox=(-5.0, 40.0, 0.0, 42.0),   # (west, south, east, north) in degrees
+    orbit_pass='ASCENDING',
+    polarization='VV+VH',
     max_results=10,
 )
 
 # Download a product (uses OAuth2 via ~/.config/geoint/credentials.json)
-catalog.download_product(products[0]['id'], extract=True)
-catalog.close()
+path = catalog.download_product(results[0]['Id'], extract=True)
 ```
+
+Available catalogs and their query methods:
+
+| Catalog | Query method | Remote API | Sensor-specific filters |
+|---------|-------------|------------|------------------------|
+| `Sentinel1SLCCatalog` | `query_cdse()` | ESA CDSE OData | `orbit_pass`, `polarization` |
+| `Sentinel2Catalog` | `query_cdse()` | ESA CDSE OData | `mgrs_tile_id`, `processing_level` |
+| `NISARCatalog` | `query_earthdata()` | NASA CMR / ASF | `product_type`, `radar_band` |
+| `ASTERCatalog` | `query_earthdata()` | NASA CMR / LP DAAC | `entity_id`, `cloud_cover_max` |
+| `VIIRSCatalog` | `query_earthdata()` | NASA CMR / LAADS | `product_short_name`, `satellite_name`, `day_night_flag` |
+| `BIOMASSCatalog` | `query_esa()` | ESA MAAP STAC | `orbit`, `product_type`, `collection` |
+| `TerraSARCatalog` | -- | Local only | -- |
+
+All query methods share these common optional parameters: `start_date`, `end_date`, `bbox`, `max_results` (default 50).
+
+Catalog databases are stored in `~/.config/geoint/catalogs/` by default (created automatically). Pass a custom `db_path` to the constructor to override.
 
 ### Geolocation Transforms
 
@@ -551,6 +588,7 @@ pip install -e .
 pip install -e ".[sar]"         # SAR format readers (sarpy)
 pip install -e ".[eo]"          # EO format readers (rasterio)
 pip install -e ".[biomass]"     # BIOMASS catalog (rasterio + requests)
+pip install -e ".[remote]"     # Remote catalog queries & downloads (requests)
 pip install -e ".[coregistration]"  # Image alignment (opencv-python-headless)
 pip install -e ".[all]"         # Everything
 pip install -e ".[dev]"         # Development tools (pytest, ruff, mypy, etc.)
@@ -565,22 +603,56 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 - `sarkit` -- SICD / CPHD / CRSD / SIDD format support (primary SAR backend, `[sar]` extra)
 - `sarpy` -- SICD / CPHD fallback backend (`[sar]` extra)
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
-- `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
+- `requests` -- Remote catalog queries & downloads (`[remote]` / `[biomass]` extra)
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
 
 ## Credentials
 
-BIOMASS catalog access requires an ESA MAAP offline token. Store credentials in `~/.config/geoint/credentials.json`:
+All GRDL configuration lives under `~/.config/geoint/`:
+
+```
+~/.config/geoint/
+├── credentials.json          # API credentials (see below)
+└── catalogs/                 # SQLite catalog databases (auto-created)
+    ├── sentinel1_slc.db
+    ├── sentinel2.db
+    ├── nisar.db
+    ├── aster.db
+    ├── viirs.db
+    ├── biomass.db
+    └── terrasar.db
+```
+
+Remote catalog access requires credentials stored in `~/.config/geoint/credentials.json`:
 
 ```json
 {
+    "esa_copernicus": {
+        "username": "<copernicus-username>",
+        "password": "<copernicus-password>"
+    },
+    "nasa_earthdata": {
+        "username": "<earthdata-username>",
+        "password": "<earthdata-password>"
+    },
     "esa_maap": {
         "offline_token": "<your-offline-token>"
     }
 }
 ```
 
-Generate a token at [https://portal.maap.eo.esa.int/](https://portal.maap.eo.esa.int/) after creating an [EO Sign In](https://eoiam-idp.eo.esa.int/) account.
+Only include the providers you need:
+
+| Provider | Used by | Register at |
+|----------|---------|-------------|
+| `esa_copernicus` | Sentinel-1, Sentinel-2 | [dataspace.copernicus.eu](https://dataspace.copernicus.eu) |
+| `nasa_earthdata` | NISAR, ASTER, VIIRS | [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov) |
+| `esa_maap` | BIOMASS | [portal.maap.eo.esa.int](https://portal.maap.eo.esa.int/) |
+
+Environment variable fallbacks (alternative to JSON file):
+- `COPERNICUS_USERNAME` / `COPERNICUS_PASSWORD`
+- `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD`
+- `ESA_MAAP_OFFLINE_TOKEN`
 
 ## Contributing
 
