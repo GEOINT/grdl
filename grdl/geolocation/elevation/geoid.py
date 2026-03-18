@@ -33,6 +33,8 @@ Created
 
 Modified
 --------
+2026-03-18  Fix _interpolate_array to use actual grid dimensions instead of
+            hardcoded EGM96 constants — was silently wrong for GeoTIFF geoids.
 2026-02-11
 """
 
@@ -409,9 +411,10 @@ class GeoidCorrection:
     ) -> np.ndarray:
         """Bilinear interpolation of geoid undulation values.
 
-        Vectorized implementation using numpy array operations. Handles
-        longitude wrapping (input range [-180, 180] mapped to grid range
-        [0, 360]) and latitude clamping to [-90, 90].
+        Vectorized implementation using numpy array operations. Works
+        with any grid resolution by using the actual ``self._lats`` and
+        ``self._lons`` vectors built at load time.  Handles longitude
+        wrapping and latitude clamping.
 
         Parameters
         ----------
@@ -425,37 +428,61 @@ class GeoidCorrection:
         np.ndarray
             Interpolated undulation values in meters. Shape ``(N,)``.
         """
-        # Clamp latitude to valid range
-        lats_clamped = np.clip(lats, -90.0, 90.0)
+        nrows, ncols = self._grid.shape
 
-        # Normalize longitude to [0, 360) range for grid lookup
-        lons_normalized = lons % 360.0
+        # Grid parameters from the actual loaded vectors
+        lat_max = float(self._lats[0])
+        lat_min = float(self._lats[-1])
+        lon_min = float(self._lons[0])
+        lon_max = float(self._lons[-1])
+
+        lat_step = (lat_max - lat_min) / (nrows - 1)  # positive
+        lon_step = (lon_max - lon_min) / (ncols - 1)
+
+        # Determine if grid is global (wraps in longitude)
+        lon_span = lon_max - lon_min + lon_step
+        is_global = lon_span > 359.0
+
+        # Clamp latitude to grid range
+        lats_clamped = np.clip(lats, lat_min, lat_max)
+
+        # Normalize longitude into the grid range
+        if is_global:
+            lons_normalized = lons % 360.0
+            if lon_min < 0:
+                # Grid uses [-180, 180) convention
+                lons_normalized = np.where(
+                    lons_normalized > 180.0,
+                    lons_normalized - 360.0,
+                    lons_normalized,
+                )
+        else:
+            lons_normalized = np.clip(lons, lon_min, lon_max)
 
         # Convert to fractional grid indices
-        # Latitude: row 0 = 90N, row 720 = 90S
-        row_frac = (_EGM96_LAT_MAX - lats_clamped) / _EGM96_LAT_STEP
-        # Longitude: col 0 = 0E, col 1439 = 359.75E
-        col_frac = lons_normalized / _EGM96_LON_STEP
+        # Latitude runs north-to-south (row 0 = lat_max)
+        row_frac = (lat_max - lats_clamped) / lat_step
+        col_frac = (lons_normalized - lon_min) / lon_step
 
-        # Floor and ceil indices for bilinear interpolation
+        # Floor indices for bilinear interpolation
         row0 = np.floor(row_frac).astype(np.intp)
         col0 = np.floor(col_frac).astype(np.intp)
 
         # Clamp row indices to valid grid range
-        row0 = np.clip(row0, 0, _EGM96_NROWS - 2)
+        row0 = np.clip(row0, 0, nrows - 2)
         row1 = row0 + 1
 
         # Handle longitude wrapping for column indices
-        col0 = col0 % _EGM96_NCOLS
-        col1 = (col0 + 1) % _EGM96_NCOLS
+        if is_global:
+            col0 = col0 % ncols
+            col1 = (col0 + 1) % ncols
+        else:
+            col0 = np.clip(col0, 0, ncols - 2)
+            col1 = col0 + 1
 
         # Fractional parts for interpolation weights
-        dr = row_frac - row0.astype(np.float64)
-        dc = col_frac - np.floor(col_frac)
-
-        # Clamp fractional parts
-        dr = np.clip(dr, 0.0, 1.0)
-        dc = np.clip(dc, 0.0, 1.0)
+        dr = np.clip(row_frac - row0.astype(np.float64), 0.0, 1.0)
+        dc = np.clip(col_frac - np.floor(col_frac), 0.0, 1.0)
 
         # Sample four corners
         q00 = self._grid[row0, col0]
