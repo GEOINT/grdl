@@ -285,6 +285,11 @@ class SICDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Project ground coordinates to image via native R/Rdot engine.
 
+        Fully vectorized scene-to-image per SICD Volume 3, Section 6.
+        All N points processed simultaneously — one R/Rdot forward
+        call per iteration.  Follows sarpy's ``_ground_to_image``
+        algorithm.
+
         Parameters
         ----------
         lats : np.ndarray
@@ -299,19 +304,20 @@ class SICDGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
-        from grdl.geolocation.projection import ground_to_image
+        from grdl.geolocation.projection import (
+            image_to_ground_plane, wgs84_norm)
         from grdl.geolocation.coordinates import geodetic_to_ecef
 
         if np.ndim(height) > 0:
             heights_arr = np.asarray(height, dtype=np.float64)
         else:
-            heights_arr = np.full_like(lats, height)
+            heights_arr = np.full_like(lats, float(height))
 
-        # Convert geodetic to ECF
+        # Convert to ECF (height is embedded)
         x, y, z = geodetic_to_ecef(lats, lons, heights_arr)
-        ground_ecf = np.column_stack([x, y, z])
+        coords = np.column_stack([x, y, z])
 
-        # Get image plane parameters
+        # Image plane parameters
         grid = self.metadata.grid
         scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
         u_row = (grid.row.uvect_ecf.to_array()
@@ -322,19 +328,52 @@ class SICDGeolocation(Geolocation):
                  np.array([0.0, 1.0, 0.0]))
         row_ss = grid.row.ss if grid.row and grid.row.ss else 1.0
         col_ss = grid.col.ss if grid.col and grid.col.ss else 1.0
-        scp_pixel = (self.metadata.image_data.scp_pixel.row,
-                     self.metadata.image_data.scp_pixel.col)
+        scp_pixel = np.array([self.metadata.image_data.scp_pixel.row,
+                              self.metadata.image_data.scp_pixel.col])
 
-        im_points = ground_to_image(
-            self._coa_proj,
-            ground_ecf,
-            scp_ecf=scp_ecf,
-            u_row=u_row,
-            u_col=u_col,
-            row_ss=row_ss,
-            col_ss=col_ss,
-            scp_pixel=scp_pixel,
-        )
+        # Image Plane Normal and projection vectors
+        u_ipn = np.cross(u_row, u_col)
+        u_ipn = u_ipn / np.linalg.norm(u_ipn)
+        u_gpn = wgs84_norm(scp_ecf)
+        u_spn = u_ipn
+        sf = float(np.dot(u_spn, u_ipn))
+
+        # Handle non-orthogonal row/col
+        cos_theta = np.dot(u_row, u_col)
+        sin_theta = np.sqrt(max(1.0 - cos_theta * cos_theta, 1e-30))
+        ipp_transform = np.array(
+            [[1, -cos_theta], [-cos_theta, 1]],
+            dtype=np.float64) / (sin_theta * sin_theta)
+        matrix_transform = np.column_stack([u_row, u_col]) @ ipp_transform
+
+        n = coords.shape[0]
+        g_n = coords.copy()
+        im_points = np.zeros((n, 2), dtype=np.float64)
+
+        for _it in range(10):
+            # Project ground points onto image plane
+            dist_n = np.dot(scp_ecf - g_n, u_ipn) / sf
+            i_n = g_n + np.outer(dist_n, u_spn)
+
+            # Convert to pixel coordinates
+            delta_ipp = i_n - scp_ecf
+            ip_iter = delta_ipp @ matrix_transform
+            im_points[:, 0] = ip_iter[:, 0] / row_ss + scp_pixel[0]
+            im_points[:, 1] = ip_iter[:, 1] / col_ss + scp_pixel[1]
+
+            # R/Rdot forward to ground plane at scene points
+            r, rdot, _, arp_coa, varp_coa = \
+                self._coa_proj.projection(im_points)
+            p_n = image_to_ground_plane(
+                r, rdot, arp_coa, varp_coa, g_n, u_gpn)
+
+            # Displacement and adjustment
+            diff_n = coords - p_n
+            delta_gpn = np.linalg.norm(diff_n, axis=1)
+            g_n += diff_n
+
+            if np.all(delta_gpn < 1e-2):
+                break
 
         return im_points[:, 0], im_points[:, 1]
 

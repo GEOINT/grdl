@@ -437,7 +437,6 @@ class TestGroundToImage:
             coa, gpp, g['scp_ecf'], u_row, u_col,
             row_ss=1.0, col_ss=1.0,
             scp_pixel=scp_pixel,
-            hae=0.0,
             max_iter=15,
             tol=1.0,
         )

@@ -110,8 +110,18 @@ def _pfa_projector(
 ) -> Callable:
     """Build PFA-specific image-to-R/Rdot closure.
 
-    Parameters follow SICD Volume 3, Section 4.1.
+    Implements the PFA projection per SICD Volume 3, Section 4.1,
+    matching sarpy's ``pfa_projection`` algorithm exactly.
+
+    The row_transform and col_transform (in meters) are rotated into
+    the polar aperture (Ka, Kc) frame using the polar angle at COA
+    time.  Range and range-rate offsets from SCP are computed via
+    the spatial frequency scale factor and its derivative.
     """
+    # Pre-compute derivative polynomials
+    polar_ang_poly_der = polar_ang_poly.derivative(1)
+    spatial_freq_sf_poly_der = spatial_freq_sf_poly.derivative(1)
+
     def project(
         row_t: np.ndarray,
         col_t: np.ndarray,
@@ -120,36 +130,33 @@ def _pfa_projector(
         varp_coa: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         # R and Rdot at SCP
-        delta_arp = arp_coa - scp_ecf
-        r_scp = np.linalg.norm(delta_arp, axis=-1)
-        u_rng = delta_arp / r_scp[..., np.newaxis]
-        rdot_scp = np.sum(varp_coa * u_rng, axis=-1)
+        arp_minus_scp = arp_coa - scp_ecf
+        r_scp = np.linalg.norm(arp_minus_scp, axis=-1)
+        rdot_scp = np.sum(varp_coa * arp_minus_scp, axis=-1) / r_scp
 
-        # Polar angle and spatial frequency scale factor
-        polar_ang = polar_ang_poly(time_coa)
-        k_sf = spatial_freq_sf_poly(polar_ang)
+        # Polar angle and derivatives at COA time
+        theta = polar_ang_poly(time_coa)
+        dtheta_dt = polar_ang_poly_der(time_coa)
 
-        # Polar angle rate: d(polar_ang)/dt
-        dpolar_dt = polar_ang_poly.derivative_eval(time_coa)
+        # Spatial frequency scale factor and derivative wrt polar angle
+        k_sf = spatial_freq_sf_poly(theta)
+        dk_sf_dtheta = spatial_freq_sf_poly_der(theta)
 
-        # Spatial frequency offsets from SCP
-        # Row and col in spatial frequency domain
-        delta_kcol = col_t * (2 * np.pi / col_ss) * col_sgn
-        delta_krow = row_t * (2 * np.pi / row_ss) * row_sgn
+        # Rotate (row, col) transforms into polar aperture frame
+        # dPhiDKa: phase slope along aperture (range-like)
+        # dPhiDKc: phase slope cross aperture (azimuth-like)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        dphi_dka = row_t * cos_theta + col_t * sin_theta
+        dphi_dkc = -row_t * sin_theta + col_t * cos_theta
 
-        # Along-aperture and cross-aperture spatial frequencies
-        cos_pa = np.cos(polar_ang)
-        sin_pa = np.sin(polar_ang)
-        k_a = col_kctr + delta_kcol  # along-aperture (azimuth)
-        k_c = row_kctr + delta_krow  # cross-aperture (range)
+        # Range offset from SCP
+        delta_r = k_sf * dphi_dka
 
-        # Range offset from SCP via spatial frequency mapping
-        # k_sf maps spatial frequency to slant range
-        delta_r = k_sf * (k_c / row_kctr - 1.0) * r_scp
-
-        # Rdot offset from SCP
-        # d(delta_r)/d(theta) * d(theta)/dt
-        delta_rdot = k_sf * (k_a / col_kctr - 1.0) * r_scp * dpolar_dt
+        # Range-rate offset from SCP:
+        # d(deltaR)/dtheta * dtheta/dt
+        d_delta_r_dtheta = dk_sf_dtheta * dphi_dka + k_sf * dphi_dkc
+        delta_rdot = d_delta_r_dtheta * dtheta_dt
 
         return r_scp + delta_r, rdot_scp + delta_rdot
 
@@ -926,16 +933,20 @@ def ground_to_image(
     row_ss: float,
     col_ss: float,
     scp_pixel: Tuple[float, float],
-    hae: Optional[float] = None,
     max_iter: int = 10,
-    tol: float = 1e-3,
+    tol: float = 1e-2,
 ) -> np.ndarray:
     """Project ground ECF points to image pixel coordinates.
 
-    Iterative algorithm from SICD Volume 3, Section 6.  Projects
-    ground points onto the image plane, computes R/Rdot contour,
-    projects back to ground at the original HAE, and iterates
-    until convergence.
+    Fully vectorized SICD Volume 3, Section 6 algorithm.  All N
+    points are processed simultaneously per iteration.  Follows
+    sarpy's ``_ground_to_image`` pattern:
+
+    1. Project ECF ground points onto the image plane.
+    2. Convert to pixel coordinates.
+    3. R/Rdot forward those pixels back to the ground plane
+       containing the original scene points.
+    4. Compute displacement, adjust ground points, repeat.
 
     Parameters
     ----------
@@ -955,12 +966,10 @@ def ground_to_image(
         Column sample spacing (meters).
     scp_pixel : tuple of float
         (row, col) of SCP in image.
-    hae : float, optional
-        Target HAE for reprojection.  If None, uses per-point height.
     max_iter : int
         Maximum iterations (default 10).
     tol : float
-        Convergence tolerance (meters, default 1 mm).
+        Ground plane displacement tolerance (meters, default 1 cm).
 
     Returns
     -------
@@ -971,50 +980,54 @@ def ground_to_image(
     scp_ecf = np.asarray(scp_ecf, dtype=np.float64)
     u_row = np.asarray(u_row, dtype=np.float64)
     u_col = np.asarray(u_col, dtype=np.float64)
+    scp_pixel = np.asarray(scp_pixel, dtype=np.float64)
+
     n = ground_ecf.shape[0]
 
     # Image Plane Normal
     u_ipn = np.cross(u_row, u_col)
     u_ipn = u_ipn / np.linalg.norm(u_ipn)
 
-    # Get height of each ground point for reprojection
-    if hae is None:
-        _, _, pt_heights = ecef_to_geodetic(
-            ground_ecf[:, 0], ground_ecf[:, 1], ground_ecf[:, 2])
-    else:
-        pt_heights = np.full(n, hae)
+    # Ground Plane Normal (WGS-84 normal at SCP)
+    u_gpn = wgs84_norm(scp_ecf)
 
-    # Initial: project ground points onto image plane
-    delta_g = ground_ecf - scp_ecf
-    row_proj = np.dot(delta_g, u_row) / row_ss + scp_pixel[0]
-    col_proj = np.dot(delta_g, u_col) / col_ss + scp_pixel[1]
-    im_points = np.column_stack([row_proj, col_proj])
+    # Slant Plane Normal = IPN; scale factor
+    u_spn = u_ipn
+    sf = float(np.dot(u_spn, u_ipn))
 
-    for _ in range(max_iter):
-        # Forward project these image points to ground at target HAE
-        gpp_arr = np.zeros((n, 3))
-        for i in range(n):
-            gpp_i = image_to_ground_hae(
-                coa_proj,
-                im_points[i:i + 1],
-                hae=pt_heights[i],
-                scp_ecf=scp_ecf,
-                max_iter=5,
-                tol=tol * 0.1,
-            )
-            gpp_arr[i] = gpp_i[0]
+    # Handle non-orthogonal row/col
+    cos_theta = np.dot(u_row, u_col)
+    sin_theta = np.sqrt(max(1.0 - cos_theta * cos_theta, 1e-30))
+    ipp_transform = np.array(
+        [[1, -cos_theta], [-cos_theta, 1]],
+        dtype=np.float64) / (sin_theta * sin_theta)
+    matrix_transform = np.column_stack([u_row, u_col]) @ ipp_transform
 
-        # Compute error
-        err = ground_ecf - gpp_arr
-        err_mag = np.linalg.norm(err, axis=-1)
+    g_n = ground_ecf.copy()
+    im_points = np.zeros((n, 2), dtype=np.float64)
 
-        if np.max(err_mag) < tol:
+    for _it in range(max_iter):
+        # Project ground points onto image plane
+        dist_n = np.dot(scp_ecf - g_n, u_ipn) / sf
+        i_n = g_n + np.outer(dist_n, u_spn)
+
+        # Convert to pixel coordinates
+        delta_ipp = i_n - scp_ecf
+        ip_iter = delta_ipp @ matrix_transform
+        im_points[:, 0] = ip_iter[:, 0] / row_ss + scp_pixel[0]
+        im_points[:, 1] = ip_iter[:, 1] / col_ss + scp_pixel[1]
+
+        # R/Rdot forward to ground plane at scene points
+        r, rdot, _, arp_coa, varp_coa = coa_proj.projection(im_points)
+        p_n = image_to_ground_plane(
+            r, rdot, arp_coa, varp_coa, g_n, u_gpn)
+
+        # Displacement and adjustment
+        diff_n = ground_ecf - p_n
+        delta_gpn = np.linalg.norm(diff_n, axis=1)
+        g_n += diff_n
+
+        if np.all(delta_gpn < tol):
             break
-
-        # Update: project error onto image plane and adjust
-        d_row = np.dot(err, u_row) / row_ss
-        d_col = np.dot(err, u_col) / col_ss
-        im_points[:, 0] += d_row
-        im_points[:, 1] += d_col
 
     return im_points
