@@ -106,14 +106,23 @@ class GeoidCorrection:
         Parameters
         ----------
         geoid_path : str or Path
-            Path to the EGM96 geoid grid file in PGM format.
+            Path to a geoid undulation grid file.  Supported formats:
+
+            - **PGM** (``*.pgm``): EGM96 15-arc-minute grid (P5 binary
+              or P2 ASCII).  Fixed 721 x 1440 global grid.
+            - **GeoTIFF** (``*.tif``, ``*.tiff``): Any geoid model
+              (EGM96, EGM2008, etc.) stored as a single-band GeoTIFF
+              with geographic CRS.  Grid dimensions and extent are read
+              from the file.
 
         Raises
         ------
         FileNotFoundError
             If ``geoid_path`` does not exist.
         ValueError
-            If the file is not a valid EGM96 PGM grid.
+            If the file format is not recognized.
+        ImportError
+            If rasterio is required but not installed (GeoTIFF path).
         """
         geoid_path = Path(geoid_path)
         if not geoid_path.exists():
@@ -122,20 +131,73 @@ class GeoidCorrection:
             )
 
         self._path = geoid_path
-        self._grid = self._load_pgm(geoid_path)
+
+        suffix = geoid_path.suffix.lower()
+        if suffix in ('.tif', '.tiff', '.geotiff'):
+            self._load_geotiff(geoid_path)
+        elif suffix in ('.pgm',):
+            self._grid = self._load_pgm(geoid_path)
+            # Pre-compute latitude and longitude vectors for interpolation
+            # Latitude: 90 (north) to -90 (south), 721 points
+            self._lats = np.linspace(
+                _EGM96_LAT_MAX, -_EGM96_LAT_MAX, _EGM96_NROWS
+            )
+            # Longitude: 0 to 359.75, 1440 points
+            self._lons = np.linspace(
+                _EGM96_LON_MIN,
+                _EGM96_LON_MIN + (_EGM96_NCOLS - 1) * _EGM96_LON_STEP,
+                _EGM96_NCOLS,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported geoid file format: {suffix!r}. "
+                f"Expected .pgm, .tif, or .tiff."
+            )
         logger.info("Loaded geoid grid %s", geoid_path.name)
 
-        # Pre-compute latitude and longitude vectors for interpolation
-        # Latitude: 90 (north) to -90 (south), 721 points
-        self._lats = np.linspace(
-            _EGM96_LAT_MAX, -_EGM96_LAT_MAX, _EGM96_NROWS
-        )
-        # Longitude: 0 to 359.75, 1440 points
-        self._lons = np.linspace(
-            _EGM96_LON_MIN,
-            _EGM96_LON_MIN + (_EGM96_NCOLS - 1) * _EGM96_LON_STEP,
-            _EGM96_NCOLS,
-        )
+    def _load_geotiff(self, filepath: Path) -> None:
+        """Load a geoid GeoTIFF and set up interpolation arrays.
+
+        Reads the raster band and extracts the geographic extent from
+        the transform to build latitude/longitude vectors.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path to the GeoTIFF file.
+        """
+        try:
+            import rasterio
+        except ImportError:
+            raise ImportError(
+                "rasterio is required for GeoTIFF geoid files. "
+                "Install with: pip install rasterio"
+            )
+
+        with rasterio.open(str(filepath)) as ds:
+            self._grid = ds.read(1).astype(np.float64)
+            nrows, ncols = self._grid.shape
+            transform = ds.transform
+
+            # Build lat/lon vectors from the affine transform
+            # transform: col → lon, row → lat
+            # For geographic CRS: transform.c = west lon,
+            # transform.f = north lat
+            lon_min = transform.c
+            lat_max = transform.f
+            lon_step = transform.a
+            lat_step = transform.e  # negative (north → south)
+
+            self._lons = np.linspace(
+                lon_min + lon_step * 0.5,
+                lon_min + lon_step * (ncols - 0.5),
+                ncols,
+            )
+            self._lats = np.linspace(
+                lat_max + lat_step * 0.5,
+                lat_max + lat_step * (nrows - 0.5),
+                nrows,
+            )
 
     @staticmethod
     def _load_pgm(filepath: Path) -> np.ndarray:

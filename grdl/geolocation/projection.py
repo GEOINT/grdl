@@ -251,9 +251,10 @@ def _plane_projector(
         varp_coa: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         # Image Plane Point in ECF
+        # row_t and col_t arrive already in meters from COAProjection
         ipp = (scp_ecf
-               + np.outer(row_t * row_ss, u_row)
-               + np.outer(col_t * col_ss, u_col))
+               + np.outer(row_t, u_row)
+               + np.outer(col_t, u_col))
 
         # Slant range: ||ARP - IPP||
         delta = arp_coa - ipp
