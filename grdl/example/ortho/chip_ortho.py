@@ -216,9 +216,26 @@ def main() -> None:
         center_col = int(round(float(np.asarray(cc).ravel()[0])))
         print(f"\n  Input lat/lon: ({target_lat:.6f}, {target_lon:.6f})")
         print(f"  Mapped pixel:  ({center_row}, {center_col})")
-        # Clamp to image bounds
-        center_row = max(0, min(center_row, rows - 1))
-        center_col = max(0, min(center_col, cols - 1))
+        # Check if point is within image bounds
+        if (center_row < 0 or center_row >= rows
+                or center_col < 0 or center_col >= cols):
+            print(f"  ERROR: point is outside image bounds "
+                  f"[0:{rows}, 0:{cols}]")
+            margin = int(half / max(
+                getattr(getattr(meta, 'grid', None),
+                        'row', None) and meta.grid.row.ss or 1.0, 0.1))
+            in_row = 0 <= center_row < rows
+            in_col = 0 <= center_col < cols
+            if not in_row and not in_col:
+                print("  Both row and col are out of bounds. "
+                      "Choose a point inside the image footprint.")
+                reader.close()
+                return
+            # Clamp for partial coverage
+            center_row = max(0, min(center_row, rows - 1))
+            center_col = max(0, min(center_col, cols - 1))
+            print(f"  Clamped to:    ({center_row}, {center_col}) "
+                  f"— chip will be partial")
         center_lat, center_lon = target_lat, target_lon
         _, _, center_h = geo.image_to_latlon(
             float(center_row), float(center_col))
@@ -226,6 +243,13 @@ def main() -> None:
     else:
         center_row = args.row if args.row is not None else rows // 2
         center_col = args.col if args.col is not None else cols // 2
+        # Validate pixel is in bounds
+        if (center_row < 0 or center_row >= rows
+                or center_col < 0 or center_col >= cols):
+            print(f"\n  ERROR: pixel ({center_row}, {center_col}) is "
+                  f"outside image bounds [0:{rows}, 0:{cols}]")
+            reader.close()
+            return
         center_lat, center_lon, center_h = geo.image_to_latlon(
             float(center_row), float(center_col))
         center_lat, center_lon, center_h = (
