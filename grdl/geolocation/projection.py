@@ -705,14 +705,26 @@ def image_to_ground_hae(
     im_points: np.ndarray,
     hae: float = 0.0,
     scp_ecf: Optional[np.ndarray] = None,
+    elevation_model: Optional[object] = None,
     max_iter: int = 10,
     tol: float = 1e-3,
 ) -> np.ndarray:
-    """Project image points to constant HAE above WGS-84 ellipsoid.
+    """Project image points to a height surface via R/Rdot iteration.
 
-    Iterative algorithm from SICD Volume 3, Section 5.2.  Uses
-    successive R/Rdot contour intersections with tangent planes
-    until the projected height converges to the target HAE.
+    Implements the SICD Volume 3 iterative projection algorithm.
+    Supports three modes:
+
+    - **Constant HAE** (default): All points projected to the same
+      height above the WGS-84 ellipsoid.
+    - **DEM surface**: When ``elevation_model`` is provided, the DEM
+      height is queried at each candidate (lat, lon) during every
+      iteration.  The DEM height feeds back into the R/Rdot cone
+      intersection, producing terrain-corrected ground points.
+    - **Per-point HAE**: Not yet supported; use DEM mode instead.
+
+    The DEM-integrated iteration follows the same pattern as sarpy's
+    ``image_to_ground_dem``: project → query DEM → adjust reference
+    surface → repeat until height converges.
 
     Parameters
     ----------
@@ -721,11 +733,14 @@ def image_to_ground_hae(
     im_points : np.ndarray
         Image coordinates, shape ``(N, 2)`` as ``[row, col]``.
     hae : float
-        Target height above WGS-84 ellipsoid (meters).
+        Target height above WGS-84 (meters).  Used as the initial
+        guess and as fallback when ``elevation_model`` returns NaN.
     scp_ecf : np.ndarray, optional
-        Scene Center Point in ECF (meters), shape ``(3,)``.  Used as
-        the initial ground reference for iteration.  If not provided,
-        the ARP nadir is used (slower convergence for side-looking).
+        Scene Center Point in ECF (meters), shape ``(3,)``.
+    elevation_model : ElevationModel, optional
+        DEM/DTED elevation model with ``get_elevation(lat, lon)``
+        returning HAE (meters).  When provided, the target height
+        at each point is queried from the DEM at every iteration.
     max_iter : int
         Maximum iterations (default 10).
     tol : float
@@ -742,7 +757,7 @@ def image_to_ground_hae(
     # Get R/Rdot parameters from COAProjection
     r, rdot, time_coa, arp_coa, varp_coa = coa_proj.projection(im_points)
 
-    # Initial ground reference: prefer SCP, fall back to ARP nadir
+    # Initial ground reference at target HAE
     if scp_ecf is not None:
         ref_ecf = np.asarray(scp_ecf, dtype=np.float64)
     else:
@@ -755,7 +770,9 @@ def image_to_ground_hae(
     gref_x, gref_y, gref_z = geodetic_to_ecef(lat0, lon0, np.array([hae]))
     gref = np.array([gref_x[0], gref_y[0], gref_z[0]])
 
-    # Iterate: project to tangent plane, check height, adjust
+    # Per-point target heights — start with constant, update from DEM
+    target_hae = np.full(n, hae, dtype=np.float64)
+
     for iteration in range(max_iter):
         # Normal to ellipsoid at current ground reference
         u_z = wgs84_norm(gref)
@@ -763,30 +780,44 @@ def image_to_ground_hae(
         # Project R/Rdot contour to plane at gref
         gpp = image_to_ground_plane(r, rdot, arp_coa, varp_coa, gref, u_z)
 
-        # Check convergence: compute HAE of projected points
         valid = ~np.any(np.isnan(gpp), axis=-1)
         if not np.any(valid):
             break
 
+        # Convert projected points to geodetic
         lats, lons, heights = ecef_to_geodetic(
             gpp[valid, 0], gpp[valid, 1], gpp[valid, 2])
-        height_err = np.max(np.abs(heights - hae))
+
+        # Query DEM at projected positions to update target heights
+        if elevation_model is not None:
+            dem_h = elevation_model.get_elevation(lats, lons)
+            if isinstance(dem_h, (int, float)):
+                dem_h = np.full_like(lats, float(dem_h))
+            # Fill NaN (outside coverage) with initial hae
+            nan_mask = np.isnan(dem_h)
+            dem_h[nan_mask] = hae
+            target_hae[valid] = dem_h
+
+        # Check convergence against per-point target heights
+        height_err = np.max(np.abs(heights - target_hae[valid]))
 
         if height_err < tol:
             break
 
-        # Update ground reference to mean of projected points
+        # Update ground reference: move to mean projected position
+        # at the mean target height
         gref_mean = np.mean(gpp[valid], axis=0)
         lat_m, lon_m, _ = ecef_to_geodetic(
             np.array([gref_mean[0]]),
             np.array([gref_mean[1]]),
             np.array([gref_mean[2]]),
         )
-        gx, gy, gz = geodetic_to_ecef(lat_m, lon_m, np.array([hae]))
+        mean_target_h = float(np.mean(target_hae[valid]))
+        gx, gy, gz = geodetic_to_ecef(
+            lat_m, lon_m, np.array([mean_target_h]))
         gref = np.array([gx[0], gy[0], gz[0]])
 
-    # Final projection with converged reference using slant plane
-    # normal for sub-meter accuracy (SICD Vol 3 recommendation)
+    # Final projection with converged reference
     u_slant = wgs84_norm(gref)
     result = image_to_ground_plane(
         r, rdot, arp_coa, varp_coa, gref, u_slant)

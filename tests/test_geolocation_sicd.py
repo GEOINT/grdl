@@ -425,12 +425,16 @@ class TestFromReader:
         assert geo.shape == (2048, 4096)
 
     def test_from_reader_explicit_native_backend(self, metadata):
-        """Test from_reader with explicit native backend."""
+        """Test from_reader with explicit native backend.
+
+        Mock metadata lacks Grid/Position, so COAProjection can't be
+        built.  The constructor handles this gracefully (_coa_proj=None)
+        and falls back to sarpy for projection.
+        """
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
         mock_reader.backend = 'sarpy'
 
-        # Native requires Grid/Position/etc; mock metadata lacks these,
-        # so COAProjection construction should raise ValueError.
-        with pytest.raises((ValueError, AttributeError)):
-            SICDGeolocation.from_reader(mock_reader, backend='native')
+        geo = SICDGeolocation.from_reader(mock_reader, backend='native')
+        assert geo._coa_proj is None  # native unavailable
+        assert geo.backend == 'native'

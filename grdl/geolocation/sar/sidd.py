@@ -676,10 +676,11 @@ class SIDDGeolocation(Geolocation):
         cols: np.ndarray,
         height: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """R/Rdot forward projection: pixel → geodetic at constant HAE.
+        """R/Rdot forward projection: pixel → geodetic.
 
-        Fully vectorized — projects all N points to the same HAE
-        surface in a single batch call.
+        When an elevation model is configured on this geolocation
+        object, the DEM is queried at each iteration to refine the
+        projection surface.  Otherwise projects to constant HAE.
         """
         from grdl.geolocation.projection import image_to_ground_hae
 
@@ -689,6 +690,7 @@ class SIDDGeolocation(Geolocation):
         gpp = image_to_ground_hae(
             self._coa_proj, im_points, hae=height,
             scp_ecf=self._scp_ecf,
+            elevation_model=self.elevation,
         )
         return _ecef_to_geodetic(gpp[:, 0], gpp[:, 1], gpp[:, 2])
 

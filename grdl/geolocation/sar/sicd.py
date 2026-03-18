@@ -198,9 +198,16 @@ class SICDGeolocation(Geolocation):
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
         )
 
-        if backend == 'native':
+        # Always try to build native COAProjection (needed for DEM
+        # integration).  Falls back to sarpy/sarkit if metadata is
+        # insufficient for native projection.
+        self._coa_proj = None
+        try:
             self._coa_proj = self._build_native_projection()
-        elif backend == 'sarpy':
+        except (ValueError, AttributeError):
+            pass  # Missing Grid/Position metadata — native unavailable
+
+        if backend == 'sarpy':
             self._sarpy_meta = raw_meta
         elif backend == 'sarkit':
             self._xmltree = raw_meta
@@ -262,6 +269,7 @@ class SICDGeolocation(Geolocation):
             im_points,
             hae=height,
             scp_ecf=scp_ecf,
+            elevation_model=self.elevation,
         )
 
         lats, lons, heights = ecef_to_geodetic(
@@ -342,6 +350,11 @@ class SICDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinate arrays to geographic coordinate arrays.
 
+        Always uses the native R/Rdot engine which supports DEM
+        integration.  The native backend handles all formation types
+        (PFA, INCA, RgAzComp, PLANE) and passes the elevation model
+        into the R/Rdot iteration loop.
+
         Parameters
         ----------
         rows : np.ndarray
@@ -356,7 +369,10 @@ class SICDGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) arrays in WGS84 coordinates.
         """
-        if self.backend == 'native':
+        # Native backend first (handles DEM in R/Rdot iteration).
+        # Falls back to sarpy if native projection is not available
+        # (missing Grid/Position metadata for COAProjection).
+        if self._coa_proj is not None:
             return self._image_to_latlon_native(rows, cols, height)
         elif self.backend == 'sarpy':
             return self._image_to_latlon_sarpy(rows, cols, height)
@@ -385,7 +401,7 @@ class SICDGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
-        if self.backend == 'native':
+        if self._coa_proj is not None:
             return self._latlon_to_image_native(lats, lons, height)
         elif self.backend == 'sarpy':
             return self._latlon_to_image_sarpy(lats, lons, height)
