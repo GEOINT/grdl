@@ -1,0 +1,363 @@
+# -*- coding: utf-8 -*-
+"""
+Chip and Orthorectify — Ground-extent chip extraction and orthorectification.
+
+Loads a SAR image (SICD or SIDD), computes the pixel extent for a
+user-specified ground patch (in meters) centered on a lat/lon point or
+pixel coordinate, extracts the chip, and orthorectifies it to a local
+ENU meter grid.
+
+Demonstrates full GRDL integration:
+  - ``grdl.IO.sar`` readers (SICDReader / SIDDReader)
+  - ``grdl.data_prep.ChipExtractor`` for pixel-domain chip planning
+  - ``grdl.geolocation`` for pixel ↔ ground transforms
+  - ``grdl.geolocation.coordinates.enu_to_geodetic`` for meter → pixel
+  - ``grdl.image_processing.ortho.OrthoPipeline`` with ENU grid output
+
+Usage
+-----
+  python chip_ortho.py <sar_file>
+  python chip_ortho.py <sar_file> --lat 34.05 --lon -118.25
+  python chip_ortho.py <sar_file> --row 3000 --col 4000
+  python chip_ortho.py <sar_file> --extent 1000 --pixel-size 0.5
+  python chip_ortho.py --help
+
+Dependencies
+------------
+matplotlib
+sarpy or sarkit
+
+Author
+------
+Duane Smalley
+170194430+DDSmalls@users.noreply.github.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-03-18
+
+Modified
+--------
+2026-03-18
+"""
+
+# Standard library
+import argparse
+import sys
+from pathlib import Path
+from typing import Tuple, Union
+
+# Third-party
+import numpy as np
+
+# GRDL
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from grdl.data_prep import ChipExtractor
+from grdl.geolocation.coordinates import enu_to_geodetic
+
+
+# ── Chip geolocation wrapper ─────────────────────────────────────────
+
+
+class _ChipGeolocationWrapper:
+    """Adapts full-image geolocation to chip-relative coordinates.
+
+    Parameters
+    ----------
+    geo : Geolocation
+        Full-image geolocation object.
+    row_off : int
+        Row offset of chip origin in the full image.
+    col_off : int
+        Column offset of chip origin in the full image.
+    nrows : int
+        Chip height in pixels.
+    ncols : int
+        Chip width in pixels.
+    """
+
+    def __init__(self, geo, row_off, col_off, nrows, ncols):
+        self._geo = geo
+        self._row_off = row_off
+        self._col_off = col_off
+        self.shape = (nrows, ncols)
+        self.crs = getattr(geo, 'crs', 'WGS84')
+        self.elevation = getattr(geo, 'elevation', None)
+
+    def image_to_latlon(
+        self,
+        row: Union[float, np.ndarray],
+        col: Union[float, np.ndarray],
+        height: float = 0.0,
+    ) -> Tuple:
+        return self._geo.image_to_latlon(
+            np.asarray(row, dtype=np.float64) + self._row_off,
+            np.asarray(col, dtype=np.float64) + self._col_off,
+            height=height,
+        )
+
+    def latlon_to_image(
+        self,
+        lat: Union[float, np.ndarray],
+        lon: Union[float, np.ndarray],
+        height: float = 0.0,
+    ) -> Tuple:
+        r, c = self._geo.latlon_to_image(lat, lon, height=height)
+        r = np.atleast_1d(np.asarray(r, dtype=np.float64)) - self._row_off
+        c = np.atleast_1d(np.asarray(c, dtype=np.float64)) - self._col_off
+        return r, c
+
+    def get_bounds(self):
+        nr, nc = self.shape
+        corners_r = np.array([0.0, 0.0, nr - 1.0, nr - 1.0])
+        corners_c = np.array([0.0, nc - 1.0, 0.0, nc - 1.0])
+        lats, lons, _ = self.image_to_latlon(corners_r, corners_c)
+        return (float(np.min(lons)), float(np.min(lats)),
+                float(np.max(lons)), float(np.max(lats)))
+
+
+# ── Format detection ─────────────────────────────────────────────────
+
+
+def _detect_format(filepath: Path) -> str:
+    """Detect SAR format from filename or content.
+
+    Returns
+    -------
+    str
+        ``'SICD'`` or ``'SIDD'``.
+    """
+    name = filepath.name.upper()
+    if 'SIDD' in name:
+        return 'SIDD'
+    if 'SICD' in name:
+        return 'SICD'
+    # Default to SICD for .nitf files
+    return 'SICD'
+
+
+# ── Argument parser ──────────────────────────────────────────────────
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Extract a ground-extent chip from a SAR image "
+                    "(SICD or SIDD) and orthorectify it to ENU meters.",
+    )
+    p.add_argument("filepath", type=Path,
+                   help="Path to SICD or SIDD NITF file")
+
+    center = p.add_argument_group("center point (choose one)")
+    center.add_argument("--lat", type=float, default=None,
+                        help="Center latitude (degrees)")
+    center.add_argument("--lon", type=float, default=None,
+                        help="Center longitude (degrees)")
+    center.add_argument("--row", type=int, default=None,
+                        help="Center row pixel")
+    center.add_argument("--col", type=int, default=None,
+                        help="Center col pixel")
+
+    p.add_argument("--extent", type=float, default=500.0,
+                   help="Ground extent in meters (default: 500)")
+    p.add_argument("--pixel-size", type=float, default=1.0,
+                   help="Ortho output pixel size in meters (default: 1.0)")
+    p.add_argument("--interp", choices=("nearest", "bilinear", "bicubic"),
+                   default="bilinear",
+                   help="Resampling interpolation (default: bilinear)")
+    p.add_argument("--format", choices=("SICD", "SIDD"), default=None,
+                   help="Force format (default: auto-detect from filename)")
+    return p.parse_args()
+
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+
+def main() -> None:
+    args = parse_args()
+    filepath = args.filepath
+    extent_m = args.extent
+    half = extent_m / 2.0
+
+    # Detect format
+    fmt = args.format or _detect_format(filepath)
+    print(f"Opening ({fmt}): {filepath.name}")
+
+    # Open reader and geolocation
+    if fmt == 'SICD':
+        from grdl.IO.sar import SICDReader
+        from grdl.geolocation.sar.sicd import SICDGeolocation
+        reader = SICDReader(filepath)
+        meta = reader.metadata
+        geo = SICDGeolocation.from_reader(reader)
+        is_complex = True
+    else:
+        from grdl.IO.sar import SIDDReader
+        from grdl.geolocation.sar.sidd import SIDDGeolocation
+        reader = SIDDReader(filepath)
+        meta = reader.metadata
+        geo = SIDDGeolocation(meta, refine=False)
+        is_complex = False
+
+    rows, cols = meta.rows, meta.cols
+    print(f"  Image size: {rows} x {cols}")
+
+    # ── Determine center point ───────────────────────────────
+    if args.lat is not None and args.lon is not None:
+        target_lat, target_lon = args.lat, args.lon
+        cr, cc = geo.latlon_to_image(target_lat, target_lon)
+        center_row = int(round(float(np.asarray(cr).ravel()[0])))
+        center_col = int(round(float(np.asarray(cc).ravel()[0])))
+        print(f"\n  Input lat/lon: ({target_lat:.6f}, {target_lon:.6f})")
+        print(f"  Mapped pixel:  ({center_row}, {center_col})")
+        # Clamp to image bounds
+        center_row = max(0, min(center_row, rows - 1))
+        center_col = max(0, min(center_col, cols - 1))
+        center_lat, center_lon = target_lat, target_lon
+        _, _, center_h = geo.image_to_latlon(
+            float(center_row), float(center_col))
+        center_h = float(center_h)
+    else:
+        center_row = args.row if args.row is not None else rows // 2
+        center_col = args.col if args.col is not None else cols // 2
+        center_lat, center_lon, center_h = geo.image_to_latlon(
+            float(center_row), float(center_col))
+        center_lat, center_lon, center_h = (
+            float(center_lat), float(center_lon), float(center_h))
+        print(f"\n  Center pixel: ({center_row}, {center_col})")
+
+    print(f"  Center geo:   ({center_lat:.6f}, {center_lon:.6f}), "
+          f"h={center_h:.1f} m")
+
+    # ── Convert ground extent to pixel extent ────────────────
+    east_off = np.array([-half, half, -half, half])
+    north_off = np.array([-half, -half, half, half])
+    corner_lats, corner_lons, _ = enu_to_geodetic(
+        east_off, north_off, np.zeros(4),
+        ref_lat=center_lat, ref_lon=center_lon, ref_alt=center_h,
+    )
+    corner_rows, corner_cols = geo.latlon_to_image(
+        corner_lats, corner_lons, center_h)
+
+    row_min = int(np.floor(np.min(corner_rows)))
+    row_max = int(np.ceil(np.max(corner_rows)))
+    col_min = int(np.floor(np.min(corner_cols)))
+    col_max = int(np.ceil(np.max(corner_cols)))
+
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
+    region = extractor.chip_at_point(
+        center_row, center_col, row_max - row_min, col_max - col_min)
+
+    chip_rows = region.row_end - region.row_start
+    chip_cols = region.col_end - region.col_start
+    print(f"  Ground extent: {extent_m:.0f} m x {extent_m:.0f} m")
+    print(f"  Pixel extent:  {chip_rows} x {chip_cols}")
+
+    # ── Read chip ────────────────────────────────────────────
+    print("\nReading chip...")
+    chip = reader.read_chip(
+        region.row_start, region.row_end,
+        region.col_start, region.col_end,
+    )
+    reader.close()
+
+    # Convert to display array
+    if is_complex:
+        img = np.abs(chip).astype(np.float32)
+    elif chip.ndim == 3 and chip.shape[0] == 3:
+        img = (0.299 * chip[0].astype(np.float32)
+               + 0.587 * chip[1].astype(np.float32)
+               + 0.114 * chip[2].astype(np.float32))
+    elif chip.ndim == 3:
+        img = chip[0].astype(np.float32)
+    else:
+        img = chip.astype(np.float32)
+
+    # ── Wrap geolocation ─────────────────────────────────────
+    chip_geo = _ChipGeolocationWrapper(
+        geo, region.row_start, region.col_start, chip_rows, chip_cols)
+
+    # ── Orthorectify ─────────────────────────────────────────
+    from grdl.image_processing.ortho import OrthoPipeline
+    from grdl.geolocation.elevation.constant import ConstantElevation
+
+    scene_elev = ConstantElevation(height=center_h)
+
+    print(f"Orthorectifying to ENU grid ({args.pixel_size:.1f} m)...")
+    pipeline = (
+        OrthoPipeline()
+        .with_source_array(img)
+        .with_metadata(meta)
+        .with_geolocation(chip_geo)
+        .with_elevation(scene_elev)
+        .with_interpolation(args.interp)
+        .with_nodata(np.nan)
+        .with_enu_grid(
+            pixel_size_m=args.pixel_size,
+            ref_lat=center_lat,
+            ref_lon=center_lon,
+            ref_alt=center_h,
+        )
+    )
+    result = pipeline.run()
+
+    ortho = result.data
+    grid = result.output_grid
+    print(f"  Output: {ortho.shape[0]} x {ortho.shape[1]} px, "
+          f"{grid.pixel_size_east:.2f} m/px")
+
+    valid = ~np.isnan(ortho)
+    print(f"  Valid:  {100 * np.sum(valid) / ortho.size:.1f}%")
+
+    # ── Plot ─────────────────────────────────────────────────
+    import matplotlib
+    matplotlib.use("QtAgg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    # Left: chip
+    vmin = np.percentile(img[img > 0], 2) if np.any(img > 0) else 0
+    vmax = np.percentile(img[img > 0], 99) if np.any(img > 0) else 1
+    axes[0].imshow(img, cmap='gray', aspect='auto',
+                   vmin=vmin, vmax=vmax)
+    # Mark target point
+    mr, mc = chip_geo.latlon_to_image(center_lat, center_lon, center_h)
+    mr = float(np.asarray(mr).ravel()[0])
+    mc = float(np.asarray(mc).ravel()[0])
+    axes[0].plot(mc, mr, 'r+', markersize=14, markeredgewidth=2)
+    axes[0].set_title(f"{fmt} Chip  ({chip_rows} x {chip_cols} px)\n"
+                      f"{extent_m:.0f} m x {extent_m:.0f} m ground",
+                      fontsize=11)
+    axes[0].set_xlabel("Column")
+    axes[0].set_ylabel("Row")
+
+    # Right: ortho
+    extent_enu = [grid.min_east, grid.max_east,
+                  grid.min_north, grid.max_north]
+    axes[1].imshow(ortho, cmap='gray', aspect='equal',
+                   vmin=vmin, vmax=vmax,
+                   extent=extent_enu, origin='upper')
+    axes[1].plot(0.0, 0.0, 'r+', markersize=14, markeredgewidth=2)
+    axes[1].set_title(f"Orthorectified ENU  ({ortho.shape[0]} x "
+                      f"{ortho.shape[1]} px)\n"
+                      f"{args.pixel_size:.1f} m pixels, {args.interp}",
+                      fontsize=11)
+    axes[1].set_xlabel("East (m)")
+    axes[1].set_ylabel("North (m)")
+
+    fig.suptitle(f"{filepath.name}  |  "
+                 f"({center_lat:.4f}, {center_lon:.4f})",
+                 fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
