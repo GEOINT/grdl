@@ -213,6 +213,18 @@ class SICDGeolocation(Geolocation):
             self._xmltree = raw_meta
             self._sarkit_xml_ref = raw_meta
 
+    def _get_scp_hae(self) -> float:
+        """Return the SCP geodetic height (HAE) from metadata."""
+        if self.metadata.geo_data.scp.llh is not None:
+            return float(self.metadata.geo_data.scp.llh.hae)
+        scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
+        from grdl.geolocation.coordinates import ecef_to_geodetic
+        _, _, h = ecef_to_geodetic(
+            np.array([scp_ecf[0]]),
+            np.array([scp_ecf[1]]),
+            np.array([scp_ecf[2]]))
+        return float(h[0])
+
     # ------------------------------------------------------------------
     # Native R/Rdot backend
     # ------------------------------------------------------------------
@@ -260,14 +272,15 @@ class SICDGeolocation(Geolocation):
         from grdl.geolocation.coordinates import ecef_to_geodetic
 
         im_points = np.column_stack([rows, cols])
-
-        # Get SCP ECF for initial reference
         scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
+
+        # Default HAE: SCP height (never 0 for real scenes)
+        hae = height if height != 0.0 else self._get_scp_hae()
 
         gpp = image_to_ground_hae(
             self._coa_proj,
             im_points,
-            hae=height,
+            hae=hae,
             scp_ecf=scp_ecf,
             elevation_model=self.elevation,
         )
@@ -308,10 +321,22 @@ class SICDGeolocation(Geolocation):
             image_to_ground_plane, wgs84_norm)
         from grdl.geolocation.coordinates import geodetic_to_ecef
 
-        if np.ndim(height) > 0:
+        # Determine per-point heights: DEM → explicit → SCP HAE
+        if self.elevation is not None:
+            heights_arr = self.elevation.get_elevation(lats, lons)
+            if isinstance(heights_arr, (int, float)):
+                heights_arr = np.full_like(lats, float(heights_arr))
+            nan_mask = np.isnan(heights_arr)
+            if np.any(nan_mask):
+                # Fill gaps with explicit height or SCP HAE
+                fill = float(height) if height != 0.0 else self._get_scp_hae()
+                heights_arr[nan_mask] = fill
+        elif np.ndim(height) > 0:
             heights_arr = np.asarray(height, dtype=np.float64)
-        else:
+        elif height != 0.0:
             heights_arr = np.full_like(lats, float(height))
+        else:
+            heights_arr = np.full_like(lats, self._get_scp_hae())
 
         # Convert to ECF (height is embedded)
         x, y, z = geodetic_to_ecef(lats, lons, heights_arr)

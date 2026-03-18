@@ -416,31 +416,16 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinates to geographic coordinates.
 
-        When R/Rdot is available, uses the R/Rdot engine to project
-        onto the WGS-84 ellipsoid at the given ``height``.  Otherwise
-        falls back to the grid projection (product plane).
+        Model selection (determined at init, used consistently):
 
-        The base class ``_image_to_latlon_with_dem`` calls this method
-        iteratively with DEM heights when an elevation model is
-        configured, providing terrain-corrected geolocation.
-
-        Parameters
-        ----------
-        rows : np.ndarray
-            Row pixel coordinates (1D array, float64).
-        cols : np.ndarray
-            Column pixel coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS-84 ellipsoid (meters).
-
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray, np.ndarray]
-            (lats, lons, heights) in WGS-84 coordinates.
+        - **R/Rdot + DEM**: Projects to terrain surface via R/Rdot
+          with DEM heights fed into the iteration loop.
+        - **R/Rdot only**: Projects to constant HAE (SCP height).
+        - **Grid only**: PlaneProjection / GGD / CGD (no R/Rdot).
         """
         if self.has_rdot:
-            h = height if height != 0.0 else self._default_hae
-            return self._image_to_latlon_rdot_fwd(rows, cols, h)
+            hae = height if height != 0.0 else self._default_hae
+            return self._image_to_latlon_rdot_fwd(rows, cols, hae)
 
         if self.projection_type == 'PlaneProjection':
             return self._plane_to_latlon(rows, cols)
@@ -453,52 +438,6 @@ class SIDDGeolocation(Geolocation):
             f"{self.projection_type!r}"
         )
 
-    def image_to_latlon_precise(
-        self,
-        row: float,
-        col: float,
-        height: float = 0.0,
-    ) -> Tuple[float, float, float]:
-        """R/Rdot-refined forward projection for precise point queries.
-
-        Projects onto the WGS-84 ellipsoid at the given HAE using the
-        full R/Rdot sensor model.  More accurate than the grid
-        projection away from the reference point, but NOT consistent
-        with ``latlon_to_image`` (which uses the grid inverse).
-
-        Use this for geolocation accuracy assessment, not for ortho
-        mapping.  Requires ``has_rdot=True``.
-
-        Parameters
-        ----------
-        row : float
-            Row pixel coordinate.
-        col : float
-            Column pixel coordinate.
-        height : float
-            Height above WGS-84 (meters).
-
-        Returns
-        -------
-        Tuple[float, float, float]
-            (lat, lon, height) in WGS-84.
-
-        Raises
-        ------
-        RuntimeError
-            If R/Rdot refinement is not available.
-        """
-        if not self.has_rdot:
-            raise RuntimeError(
-                "R/Rdot refinement not available (TimeCOAPoly or "
-                "ARPPoly missing from SIDD Measurement block)")
-        h = height if height != 0.0 else self._default_hae
-        rows = np.array([float(row)])
-        cols = np.array([float(col)])
-        lats, lons, heights = self._image_to_latlon_rdot_fwd(
-            rows, cols, h)
-        return float(lats[0]), float(lons[0]), float(heights[0])
-
     def _latlon_to_image_array(
         self,
         lats: np.ndarray,
@@ -507,39 +446,24 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic coordinates to pixel coordinates.
 
-        When R/Rdot is available, uses a fully vectorized Newton
-        iteration — all N points are updated simultaneously per
-        iteration using batch R/Rdot forward evaluations and
-        vectorized Jacobian computation.
+        Uses the same model as ``_image_to_latlon_array`` for
+        consistency:
 
-        When a DEM is configured, heights are looked up automatically.
-
-        Parameters
-        ----------
-        lats : np.ndarray
-            Latitudes in degrees (1D array, float64).
-        lons : np.ndarray
-            Longitudes in degrees (1D array, float64).
-        height : float or np.ndarray, default=0.0
-            Height above WGS-84 ellipsoid (meters).
-
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray]
-            (rows, cols) pixel coordinate arrays.
+        - **R/Rdot**: Vectorized scene-to-image (SICD Vol 3 Sec 6).
+          Heights: DEM → explicit → SCP HAE.
+        - **Grid only**: Fast vectorized plane inverse.
         """
         if self.has_rdot:
-            # Determine height per point: DEM → explicit → default
+            # Height chain: DEM → explicit → SCP HAE
             if self.elevation is not None:
                 h_arr = self.elevation.get_elevation(lats, lons)
                 if isinstance(h_arr, (int, float)):
                     h_arr = np.full_like(lats, float(h_arr))
                 nan_mask = np.isnan(h_arr)
                 if np.any(nan_mask):
-                    if np.ndim(height) > 0:
-                        h_arr[nan_mask] = np.asarray(height)[nan_mask]
-                    else:
-                        h_arr[nan_mask] = float(height)
+                    fill = float(height) if height != 0.0 \
+                        else self._default_hae
+                    h_arr[nan_mask] = fill
             elif np.ndim(height) > 0:
                 h_arr = np.asarray(height, dtype=np.float64)
             else:
@@ -547,7 +471,6 @@ class SIDDGeolocation(Geolocation):
                 h_arr = np.full_like(lats, float(h))
             return self._latlon_to_image_rdot(lats, lons, h_arr)
 
-        # Fast vectorized grid inverse
         if self.projection_type == 'PlaneProjection':
             return self._latlon_to_plane(lats, lons, height)
         elif self.projection_type == 'GeographicProjection':
