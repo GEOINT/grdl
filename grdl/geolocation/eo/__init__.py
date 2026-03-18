@@ -26,7 +26,11 @@ Modified
 """
 
 from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.eo.rpc import RPCGeolocation
+from grdl.geolocation.eo.rsm import RSMGeolocation
 
 __all__ = [
     'AffineGeolocation',
+    'RPCGeolocation',
+    'RSMGeolocation',
 ]

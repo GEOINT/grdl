@@ -407,24 +407,30 @@ class TestFromReader:
         assert geo.shape == (2048, 4096)
         mock_open.assert_called_once_with('/fake/path.nitf')
 
-    @patch('grdl.geolocation.sar._backend._HAS_SARPY', False)
+    @patch('grdl.geolocation.sar.sicd._HAS_SARPY', False)
     def test_from_sarkit_reader_sarpy_unavailable(self, metadata):
-        """Test from_reader with sarkit reader when sarpy is not installed."""
+        """Test from_reader with sarkit reader when sarpy is not installed.
+
+        When sarpy is unavailable, auto-selects native backend.
+        Explicit backend='sarkit' overrides to sarkit.
+        """
         xmltree = MagicMock(name='XMLTree')
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
         mock_reader.backend = 'sarkit'
         mock_reader._xmltree = xmltree
 
-        geo = SICDGeolocation.from_reader(mock_reader)
+        geo = SICDGeolocation.from_reader(mock_reader, backend='sarkit')
         assert geo.backend == 'sarkit'
         assert geo.shape == (2048, 4096)
 
-    def test_from_reader_unsupported_backend(self, metadata):
-        """Test from_reader with unsupported backend raises ValueError."""
+    def test_from_reader_explicit_native_backend(self, metadata):
+        """Test from_reader with explicit native backend."""
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
-        mock_reader.backend = 'unknown'
+        mock_reader.backend = 'sarpy'
 
-        with pytest.raises(ValueError, match="Unsupported"):
-            SICDGeolocation.from_reader(mock_reader)
+        # Native requires Grid/Position/etc; mock metadata lacks these,
+        # so COAProjection construction should raise ValueError.
+        with pytest.raises((ValueError, AttributeError)):
+            SICDGeolocation.from_reader(mock_reader, backend='native')

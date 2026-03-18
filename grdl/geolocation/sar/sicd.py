@@ -2,14 +2,19 @@
 """
 SICD Geolocation - Coordinate transformations for SICD complex SAR imagery.
 
-Wraps the SICD Volume 3 projection model via sarpy (preferred) or sarkit
-to transform between image pixel coordinates and geographic coordinates.
-Sarpy provides ``image_to_ground_geo`` and ``ground_to_image_geo`` for
-high-accuracy projection using the full SICD sensor model.
+Implements the SICD Volume 3 projection model with three backends:
+
+- **native** (preferred): Pure GRDL R/Rdot projection engine using
+  ``COAProjection`` and ``image_to_ground_hae``.  No external dependencies
+  beyond numpy.  Supports all formation types (PFA, INCA, RgAzComp, PLANE)
+  and adjustable parameters (delta_arp, delta_varp, range_bias).
+- **sarpy**: Delegates to ``sarpy.geometry.point_projection`` for projection.
+- **sarkit**: Detection-time fallback (projection not yet implemented).
 
 Dependencies
 ------------
-sarpy (preferred) or sarkit (fallback)
+sarpy (optional, for sarpy backend)
+sarkit (optional, for sarkit backend)
 
 Author
 ------
@@ -28,6 +33,7 @@ Created
 
 Modified
 --------
+2026-03-16  Add native R/Rdot backend via COAProjection.
 2026-02-17  height param broadened to Union[float, np.ndarray] for DEM support.
 2026-02-11  Fixed from_reader() to prefer sarpy for projection even when
             reader used sarkit backend.
@@ -41,110 +47,123 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.base import Geolocation
-from grdl.geolocation.sar._backend import (
-    require_projection_backend,
-    _HAS_SARPY,
-    _HAS_SARKIT,
-)
+from grdl.geolocation.sar._backend import _HAS_SARPY, _HAS_SARKIT
 
 if TYPE_CHECKING:
     from grdl.IO.models.sicd import SICDMetadata
     from grdl.IO.sar.sicd import SICDReader
+    from grdl.geolocation.projection import COAProjection
+
+
+def _select_backend(preferred: Optional[str] = None) -> str:
+    """Select the best available projection backend.
+
+    Priority: preferred > sarpy > native > sarkit.
+
+    Parameters
+    ----------
+    preferred : str, optional
+        Force a specific backend.
+
+    Returns
+    -------
+    str
+        One of ``'native'``, ``'sarpy'``, ``'sarkit'``.
+    """
+    if preferred is not None:
+        return preferred
+    if _HAS_SARPY:
+        return 'sarpy'
+    # Native is always available (pure numpy)
+    return 'native'
 
 
 class SICDGeolocation(Geolocation):
     """Geolocation for SICD (Sensor Independent Complex Data) imagery.
 
-    Wraps the SICD Volume 3 projection model to transform between image
-    pixel coordinates (row, col) and geographic coordinates (lat, lon, HAE).
-    Uses sarpy's ``point_projection`` module as the preferred backend, with
-    sarkit as a detection-time fallback.
+    Implements the SICD Volume 3 projection model to transform between
+    image pixel coordinates (row, col) and geographic coordinates
+    (lat, lon, HAE).
 
-    The sarpy backend provides full-accuracy projection using the complete
-    SICD sensor model, including:
+    Three backends are available:
 
-    - Scene Center Point (SCP) as the projection reference
-    - ARP position and velocity polynomials
-    - Grid geometry (row/col unit vectors, sample spacing)
-    - Image formation algorithm parameters (PFA, RMA, RgAzComp)
+    - **native** (default): Pure GRDL R/Rdot engine.  Uses
+      :class:`~grdl.geolocation.projection.COAProjection` with
+      formation-specific projectors (PFA, INCA, RgAzComp, PLANE).
+      No external dependencies.  Supports adjustable parameters.
+    - **sarpy**: Delegates to sarpy's ``point_projection`` module.
+    - **sarkit**: Detection only; projection raises ``NotImplementedError``.
 
     Attributes
     ----------
     metadata : SICDMetadata
         Typed SICD metadata with all 17 sections.
     backend : str
-        Active projection backend (``'sarpy'`` or ``'sarkit'``).
+        Active projection backend (``'native'``, ``'sarpy'``, or
+        ``'sarkit'``).
 
-    Notes
-    -----
-    The sarpy backend projects through the HAE (Height Above Ellipsoid)
-    surface model by default. For terrain-corrected projection, pass
-    ``dem_path`` to the constructor or set a specific ``height`` value
-    in the ``image_to_latlon`` call.
+    Parameters
+    ----------
+    metadata : SICDMetadata
+        Typed SICD metadata.  Must have ``image_data`` with ``scp_pixel``
+        and ``geo_data`` with ``scp``.
+    raw_meta : Any, optional
+        Raw backend metadata object (sarpy ``SICDType`` or sarkit XML).
+        Required for ``sarpy`` and ``sarkit`` backends; ignored for
+        ``native``.
+    backend : str, optional
+        Force a specific backend.  If ``None``, uses ``'native'``.
+    delta_arp : np.ndarray, optional
+        ARP position correction in ECF (meters), shape ``(3,)``.
+    delta_varp : np.ndarray, optional
+        ARP velocity correction in ECF (m/s), shape ``(3,)``.
+    range_bias : float
+        Range bias correction (meters).  Applied to all projections.
+    dem_path : str or Path, optional
+        Path to DEM/DTED data folder for terrain-corrected projection.
+    geoid_path : str or Path, optional
+        Path to geoid correction file (EGM96/EGM2008).
 
-    The sarkit backend currently raises ``NotImplementedError`` for
-    projection operations. Install sarpy alongside sarkit for full
-    SICD projection support.
+    Raises
+    ------
+    ValueError
+        If required metadata sections are missing.
 
     Examples
     --------
-    From a reader (preferred):
+    Native backend (no sarpy required):
 
     >>> from grdl.IO.sar import SICDReader
     >>> from grdl.geolocation.sar.sicd import SICDGeolocation
     >>> with SICDReader('image.nitf') as reader:
-    ...     geo = SICDGeolocation.from_reader(reader)
+    ...     geo = SICDGeolocation(reader.metadata)
     ...     lat, lon, h = geo.image_to_latlon(500, 1000)
 
-    Array of pixels (vectorized):
+    With adjustable parameters:
 
-    >>> lats, lons, heights = geo.image_to_latlon(
-    ...     np.array([100, 200, 300]),
-    ...     np.array([400, 500, 600]),
+    >>> geo = SICDGeolocation(
+    ...     reader.metadata,
+    ...     range_bias=2.5,
+    ...     delta_arp=np.array([0.1, -0.2, 0.05]),
     ... )
 
-    Inverse projection:
+    From a reader (auto-selects backend):
 
-    >>> row, col = geo.latlon_to_image(34.05, -118.25)
+    >>> geo = SICDGeolocation.from_reader(reader)
     """
 
     def __init__(
         self,
         metadata: 'SICDMetadata',
-        raw_meta: Any,
+        raw_meta: Any = None,
         backend: Optional[str] = None,
+        delta_arp: Optional[np.ndarray] = None,
+        delta_varp: Optional[np.ndarray] = None,
+        range_bias: float = 0.0,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
     ) -> None:
-        """Initialize SICD geolocation from metadata and raw backend object.
-
-        Parameters
-        ----------
-        metadata : SICDMetadata
-            Typed SICD metadata. Must have ``image_data`` with ``scp_pixel``
-            and ``geo_data`` with ``scp``.
-        raw_meta : Any
-            Raw backend metadata object:
-            - sarpy: ``SICDType`` instance (``reader.sicd_meta``)
-            - sarkit: ``lxml.etree.ElementTree`` XML tree
-        backend : str, optional
-            Force a specific backend (``'sarpy'`` or ``'sarkit'``). If
-            ``None``, auto-detects via ``require_projection_backend``.
-        dem_path : str or Path, optional
-            Path to DEM/DTED data folder for terrain-corrected projection.
-        geoid_path : str or Path, optional
-            Path to geoid correction file (EGM96/EGM2008).
-
-        Raises
-        ------
-        ImportError
-            If neither sarpy nor sarkit is installed.
-        ValueError
-            If required metadata sections (``image_data``, ``geo_data``)
-            are missing or incomplete.
-        """
-        if backend is None:
-            backend = require_projection_backend('SICD')
+        backend = _select_backend(backend)
 
         # Validate required metadata sections
         if metadata.image_data is None:
@@ -169,6 +188,9 @@ class SICDGeolocation(Geolocation):
         self.metadata = metadata
         self.backend = backend
         self._raw_meta = raw_meta
+        self._delta_arp = delta_arp
+        self._delta_varp = delta_varp
+        self._range_bias = range_bias
 
         shape = (metadata.rows, metadata.cols)
 
@@ -176,11 +198,141 @@ class SICDGeolocation(Geolocation):
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
         )
 
-        if backend == 'sarpy':
+        if backend == 'native':
+            self._coa_proj = self._build_native_projection()
+        elif backend == 'sarpy':
             self._sarpy_meta = raw_meta
         elif backend == 'sarkit':
             self._xmltree = raw_meta
-            self._build_sarkit_params()
+            self._sarkit_xml_ref = raw_meta
+
+    # ------------------------------------------------------------------
+    # Native R/Rdot backend
+    # ------------------------------------------------------------------
+
+    def _build_native_projection(self) -> 'COAProjection':
+        """Build the native COAProjection from GRDL SICDMetadata.
+
+        Returns
+        -------
+        COAProjection
+            Configured R/Rdot projection object.
+        """
+        from grdl.geolocation.projection import COAProjection
+
+        return COAProjection.from_sicd(
+            self.metadata,
+            delta_arp=self._delta_arp,
+            delta_varp=self._delta_varp,
+            range_bias=self._range_bias,
+        )
+
+    def _image_to_latlon_native(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        height: float = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Project image coordinates to ground via native R/Rdot engine.
+
+        Parameters
+        ----------
+        rows : np.ndarray
+            Row coordinates (1D array, float64).
+        cols : np.ndarray
+            Column coordinates (1D array, float64).
+        height : float, default=0.0
+            Height above WGS84 ellipsoid (meters).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            (lats, lons, heights) arrays in WGS84 coordinates.
+        """
+        from grdl.geolocation.projection import image_to_ground_hae
+        from grdl.geolocation.coordinates import ecef_to_geodetic
+
+        im_points = np.column_stack([rows, cols])
+
+        # Get SCP ECF for initial reference
+        scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
+
+        gpp = image_to_ground_hae(
+            self._coa_proj,
+            im_points,
+            hae=height,
+            scp_ecf=scp_ecf,
+        )
+
+        lats, lons, heights = ecef_to_geodetic(
+            gpp[:, 0], gpp[:, 1], gpp[:, 2])
+
+        return lats, lons, heights
+
+    def _latlon_to_image_native(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Project ground coordinates to image via native R/Rdot engine.
+
+        Parameters
+        ----------
+        lats : np.ndarray
+            Latitudes in degrees North (1D array, float64).
+        lons : np.ndarray
+            Longitudes in degrees East (1D array, float64).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        from grdl.geolocation.projection import ground_to_image
+        from grdl.geolocation.coordinates import geodetic_to_ecef
+
+        if np.ndim(height) > 0:
+            heights_arr = np.asarray(height, dtype=np.float64)
+        else:
+            heights_arr = np.full_like(lats, height)
+
+        # Convert geodetic to ECF
+        x, y, z = geodetic_to_ecef(lats, lons, heights_arr)
+        ground_ecf = np.column_stack([x, y, z])
+
+        # Get image plane parameters
+        grid = self.metadata.grid
+        scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
+        u_row = (grid.row.uvect_ecf.to_array()
+                 if grid.row and grid.row.uvect_ecf else
+                 np.array([1.0, 0.0, 0.0]))
+        u_col = (grid.col.uvect_ecf.to_array()
+                 if grid.col and grid.col.uvect_ecf else
+                 np.array([0.0, 1.0, 0.0]))
+        row_ss = grid.row.ss if grid.row and grid.row.ss else 1.0
+        col_ss = grid.col.ss if grid.col and grid.col.ss else 1.0
+        scp_pixel = (self.metadata.image_data.scp_pixel.row,
+                     self.metadata.image_data.scp_pixel.col)
+
+        im_points = ground_to_image(
+            self._coa_proj,
+            ground_ecf,
+            scp_ecf=scp_ecf,
+            u_row=u_row,
+            u_col=u_col,
+            row_ss=row_ss,
+            col_ss=col_ss,
+            scp_pixel=scp_pixel,
+        )
+
+        return im_points[:, 0], im_points[:, 1]
+
+    # ------------------------------------------------------------------
+    # Public interface dispatch
+    # ------------------------------------------------------------------
 
     def _image_to_latlon_array(
         self,
@@ -190,9 +342,6 @@ class SICDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinate arrays to geographic coordinate arrays.
 
-        Uses the SICD Volume 3 projection model to convert image (row, col)
-        coordinates to geodetic (lat, lon, HAE) coordinates.
-
         Parameters
         ----------
         rows : np.ndarray
@@ -200,20 +349,16 @@ class SICDGeolocation(Geolocation):
         cols : np.ndarray
             Column coordinates (1D array, float64).
         height : float, default=0.0
-            Height above WGS84 ellipsoid (meters). Used as the projection
-            surface height when DEM is not configured.
+            Height above WGS84 ellipsoid (meters).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) arrays in WGS84 coordinates.
-
-        Raises
-        ------
-        NotImplementedError
-            If using the sarkit backend (sarpy required for projection).
         """
-        if self.backend == 'sarpy':
+        if self.backend == 'native':
+            return self._image_to_latlon_native(rows, cols, height)
+        elif self.backend == 'sarpy':
             return self._image_to_latlon_sarpy(rows, cols, height)
         else:
             return self._image_to_latlon_sarkit(rows, cols, height)
@@ -226,9 +371,6 @@ class SICDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic coordinate arrays to pixel coordinate arrays.
 
-        Uses the SICD Volume 3 inverse projection model to convert geodetic
-        (lat, lon) coordinates to image (row, col) coordinates.
-
         Parameters
         ----------
         lats : np.ndarray
@@ -236,21 +378,16 @@ class SICDGeolocation(Geolocation):
         lons : np.ndarray
             Longitudes in degrees East (1D array, float64).
         height : float or np.ndarray, default=0.0
-            Height above WGS84 ellipsoid (meters). Scalar applies a
-            constant height to all points. An array of shape ``(N,)``
-            provides per-point heights for terrain-corrected projection.
+            Height above WGS84 ellipsoid (meters).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
-
-        Raises
-        ------
-        NotImplementedError
-            If using the sarkit backend (sarpy required for projection).
         """
-        if self.backend == 'sarpy':
+        if self.backend == 'native':
+            return self._latlon_to_image_native(lats, lons, height)
+        elif self.backend == 'sarpy':
             return self._latlon_to_image_sarpy(lats, lons, height)
         else:
             return self._latlon_to_image_sarkit(lats, lons, height)
@@ -265,39 +402,17 @@ class SICDGeolocation(Geolocation):
         cols: np.ndarray,
         height: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Project image coordinates to ground via sarpy.
-
-        Parameters
-        ----------
-        rows : np.ndarray
-            Row coordinates (1D array, float64).
-        cols : np.ndarray
-            Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
-
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray, np.ndarray]
-            (lats, lons, heights) arrays in WGS84 coordinates.
-        """
+        """Project image coordinates to ground via sarpy."""
         from sarpy.geometry.point_projection import image_to_ground_geo
 
         im_points = np.column_stack([rows, cols])
-
-        # sarpy returns Nx3 array: [lat, lon, hae]
         ground_geo = image_to_ground_geo(
             im_points,
             self._sarpy_meta,
             ordering='latlong',
             projection_type='HAE',
         )
-
-        lats = ground_geo[:, 0]
-        lons = ground_geo[:, 1]
-        heights = ground_geo[:, 2]
-
-        return lats, lons, heights
+        return ground_geo[:, 0], ground_geo[:, 1], ground_geo[:, 2]
 
     def _latlon_to_image_sarpy(
         self,
@@ -305,23 +420,7 @@ class SICDGeolocation(Geolocation):
         lons: np.ndarray,
         height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Project ground coordinates to image via sarpy.
-
-        Parameters
-        ----------
-        lats : np.ndarray
-            Latitudes in degrees North (1D array, float64).
-        lons : np.ndarray
-            Longitudes in degrees East (1D array, float64).
-        height : float or np.ndarray, default=0.0
-            Height above WGS84 ellipsoid (meters). Scalar broadcasts
-            to all points; array provides per-point heights.
-
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray]
-            (rows, cols) pixel coordinate arrays.
-        """
+        """Project ground coordinates to image via sarpy."""
         from sarpy.geometry.point_projection import ground_to_image_geo
 
         if np.ndim(height) > 0:
@@ -330,33 +429,16 @@ class SICDGeolocation(Geolocation):
             heights_arr = np.full_like(lats, height)
         coords = np.column_stack([lats, lons, heights_arr])
 
-        # Returns tuple: (image_points Nx2, delta_gpn, iterations)
         image_points, _, _ = ground_to_image_geo(
             coords,
             self._sarpy_meta,
             ordering='latlong',
         )
-
-        rows = image_points[:, 0]
-        cols = image_points[:, 1]
-
-        return rows, cols
+        return image_points[:, 0], image_points[:, 1]
 
     # ------------------------------------------------------------------
-    # sarkit backend
+    # sarkit backend (stub)
     # ------------------------------------------------------------------
-
-    def _build_sarkit_params(self) -> None:
-        """Build sarkit projection parameters from XML metadata.
-
-        Placeholder for future sarkit projection support. Currently
-        stores a reference to the XML tree for potential future use
-        when sarkit's projection API stabilizes.
-        """
-        # Store reference for future sarkit projection implementation.
-        # sarkit.sicd.projection.MetadataParams.from_xml() could be
-        # used here once the API is stable and well-documented.
-        self._sarkit_xml_ref = self._xmltree
 
     def _image_to_latlon_sarkit(
         self,
@@ -364,26 +446,10 @@ class SICDGeolocation(Geolocation):
         cols: np.ndarray,
         height: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Project image coordinates to ground via sarkit.
-
-        Parameters
-        ----------
-        rows : np.ndarray
-            Row coordinates (1D array, float64).
-        cols : np.ndarray
-            Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
-
-        Raises
-        ------
-        NotImplementedError
-            Always. sarkit projection is not yet implemented. Install
-            sarpy for SICD projection support.
-        """
+        """Project image coordinates to ground via sarkit."""
         raise NotImplementedError(
             "SICD projection via sarkit is not yet implemented. "
-            "Install sarpy for SICD geolocation support: pip install sarpy"
+            "Use backend='native' or install sarpy: pip install sarpy"
         )
 
     def _latlon_to_image_sarkit(
@@ -392,26 +458,10 @@ class SICDGeolocation(Geolocation):
         lons: np.ndarray,
         height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Project ground coordinates to image via sarkit.
-
-        Parameters
-        ----------
-        lats : np.ndarray
-            Latitudes in degrees North (1D array, float64).
-        lons : np.ndarray
-            Longitudes in degrees East (1D array, float64).
-        height : float or np.ndarray, default=0.0
-            Height above WGS84 ellipsoid (meters).
-
-        Raises
-        ------
-        NotImplementedError
-            Always. sarkit projection is not yet implemented. Install
-            sarpy for SICD projection support.
-        """
+        """Project ground coordinates to image via sarkit."""
         raise NotImplementedError(
             "SICD inverse projection via sarkit is not yet implemented. "
-            "Install sarpy for SICD geolocation support: pip install sarpy"
+            "Use backend='native' or install sarpy: pip install sarpy"
         )
 
     # ------------------------------------------------------------------
@@ -419,64 +469,64 @@ class SICDGeolocation(Geolocation):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_reader(cls, reader: 'SICDReader') -> 'SICDGeolocation':
+    def from_reader(
+        cls,
+        reader: 'SICDReader',
+        backend: Optional[str] = None,
+        delta_arp: Optional[np.ndarray] = None,
+        delta_varp: Optional[np.ndarray] = None,
+        range_bias: float = 0.0,
+    ) -> 'SICDGeolocation':
         """Create SICDGeolocation from a SICDReader instance.
 
         Extracts the raw backend metadata from the reader and constructs
         the geolocation object with the best available projection backend.
 
-        When the reader used sarkit for I/O but sarpy is available, this
-        method opens the file with sarpy to obtain the ``SICDType`` object
-        needed for projection (sarpy provides the only working SICD
-        Volume 3 projection implementation).
-
         Parameters
         ----------
         reader : SICDReader
             An open SICD reader with loaded metadata.
+        backend : str, optional
+            Force a specific backend (``'native'``, ``'sarpy'``,
+            ``'sarkit'``).  Default auto-selects ``'native'``.
+        delta_arp : np.ndarray, optional
+            ARP position correction in ECF (meters).
+        delta_varp : np.ndarray, optional
+            ARP velocity correction in ECF (m/s).
+        range_bias : float
+            Range bias correction (meters).
 
         Returns
         -------
         SICDGeolocation
-            Configured geolocation object.
-
-        Raises
-        ------
-        ValueError
-            If the reader's metadata is missing required geolocation
-            sections.
 
         Examples
         --------
-        >>> from grdl.IO.sar import SICDReader
-        >>> from grdl.geolocation.sar.sicd import SICDGeolocation
         >>> with SICDReader('image.nitf') as reader:
         ...     geo = SICDGeolocation.from_reader(reader)
         ...     lat, lon, h = geo.image_to_latlon(500, 1000)
         """
-        # Determine projection backend (prefers sarpy for projection)
-        proj_backend = require_projection_backend('SICD')
+        proj_backend = _select_backend(backend)
 
-        if proj_backend == 'sarpy' and reader.backend == 'sarpy':
-            # Reader already used sarpy — grab the SICDType directly
-            raw_meta = reader._sarpy_meta
-        elif proj_backend == 'sarpy' and reader.backend == 'sarkit':
-            # Reader used sarkit for I/O, but sarpy is available for
-            # projection. Open the file with sarpy to get SICDType.
-            from sarpy.io.complex.converter import open_complex
-            sarpy_reader = open_complex(str(reader.filepath))
-            raw_meta = sarpy_reader.sicd_meta
-        elif reader.backend == 'sarkit':
-            raw_meta = reader._xmltree
-        elif reader.backend == 'sarpy':
-            raw_meta = reader._sarpy_meta
-        else:
-            raise ValueError(
-                f"Unsupported SICDReader backend: {reader.backend!r}"
-            )
+        raw_meta = None
+        if proj_backend == 'sarpy':
+            if reader.backend == 'sarpy':
+                raw_meta = reader._sarpy_meta
+            elif _HAS_SARPY:
+                from sarpy.io.complex.converter import open_complex
+                sarpy_reader = open_complex(str(reader.filepath))
+                raw_meta = sarpy_reader.sicd_meta
+        elif proj_backend == 'sarkit':
+            if reader.backend == 'sarkit':
+                raw_meta = reader._xmltree
+            elif reader.backend == 'sarpy':
+                raw_meta = reader._sarpy_meta
 
         return cls(
             metadata=reader.metadata,
             raw_meta=raw_meta,
             backend=proj_backend,
+            delta_arp=delta_arp,
+            delta_varp=delta_varp,
+            range_bias=range_bias,
         )

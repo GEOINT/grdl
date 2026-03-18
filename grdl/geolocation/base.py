@@ -168,6 +168,76 @@ class Geolocation(ABC):
         """
         pass
 
+    def _image_to_latlon_with_dem(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        height: float = 0.0,
+        max_iter: int = 5,
+        tol: float = 0.5,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Project pixels to ground with iterative DEM refinement.
+
+        When an elevation model is configured, iterates:
+        project at current height → DEM lookup → re-project at DEM
+        height → converge.  This correctly handles height-dependent
+        projections (RPC, RSM, R/Rdot).
+
+        When no elevation model is configured, falls through to the
+        subclass ``_image_to_latlon_array`` with the constant ``height``.
+
+        Parameters
+        ----------
+        rows, cols : np.ndarray
+            Pixel coordinates (1D arrays).
+        height : float
+            Initial height above WGS-84 (meters).  Ignored when DEM
+            is configured.
+        max_iter : int
+            Maximum DEM refinement iterations (default 5).
+        tol : float
+            Height convergence tolerance (meters, default 0.5).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            (lats, lons, heights) in WGS-84.
+        """
+        if self.elevation is None:
+            return self._image_to_latlon_array(rows, cols, height)
+
+        # Iterative DEM refinement
+        current_h = height
+        for _ in range(max_iter):
+            lats, lons, heights = self._image_to_latlon_array(
+                rows, cols, current_h)
+
+            # Look up DEM heights at projected positions
+            dem_h = self.elevation.get_elevation(lats, lons)
+
+            # Handle NaN DEM values (outside coverage)
+            if isinstance(dem_h, np.ndarray):
+                nan_mask = np.isnan(dem_h)
+                dem_h[nan_mask] = current_h
+                new_h = float(np.mean(dem_h))
+            else:
+                new_h = dem_h if not np.isnan(dem_h) else current_h
+
+            if abs(new_h - current_h) < tol:
+                # Converged — final projection at DEM height
+                lats, lons, _ = self._image_to_latlon_array(
+                    rows, cols, new_h)
+                if isinstance(dem_h, np.ndarray):
+                    return lats, lons, dem_h
+                return lats, lons, np.full_like(lats, dem_h)
+
+            current_h = new_h
+
+        # Return last iteration result with DEM heights
+        if isinstance(dem_h, np.ndarray):
+            return lats, lons, dem_h
+        return lats, lons, np.full_like(lats, dem_h)
+
     def image_to_latlon(
         self,
         row_or_points: Union[float, list, np.ndarray],
@@ -243,31 +313,25 @@ class Geolocation(ABC):
                 )
             rows_arr = pts[0]
             cols_arr = pts[1]
-            lats, lons, heights = self._image_to_latlon_array(
+            lats, lons, heights = self._image_to_latlon_with_dem(
                 rows_arr, cols_arr, height
             )
-            if self.elevation is not None and height == 0.0:
-                heights = self.elevation._get_elevation_array(lats, lons)
             return np.vstack([lats, lons, heights])
         elif _is_scalar(row_or_points) and _is_scalar(col):
             # Scalar input
             rows_arr = _to_array(row_or_points)
             cols_arr = _to_array(col)
-            lats, lons, heights = self._image_to_latlon_array(
+            lats, lons, heights = self._image_to_latlon_with_dem(
                 rows_arr, cols_arr, height
             )
-            if self.elevation is not None and height == 0.0:
-                heights = self.elevation._get_elevation_array(lats, lons)
             return (float(lats[0]), float(lons[0]), float(heights[0]))
         else:
             # Separate array/list inputs
             rows_arr = _to_array(row_or_points)
             cols_arr = _to_array(col)
-            lats, lons, heights = self._image_to_latlon_array(
+            lats, lons, heights = self._image_to_latlon_with_dem(
                 rows_arr, cols_arr, height
             )
-            if self.elevation is not None and height == 0.0:
-                heights = self.elevation._get_elevation_array(lats, lons)
             return lats, lons, heights
 
     def latlon_to_image(

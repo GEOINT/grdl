@@ -142,8 +142,12 @@ def open_eo(filepath: Union[str, Path]) -> ImageReader:
 # Sentinel-2 reader
 from grdl.IO.eo.sentinel2 import Sentinel2Reader
 
+# EO NITF reader
+from grdl.IO.eo.nitf import EONITFReader
+
 
 __all__ = [
     'open_eo',
     'Sentinel2Reader',
+    'EONITFReader',
 ]

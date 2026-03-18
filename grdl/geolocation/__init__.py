@@ -78,8 +78,18 @@ from grdl.geolocation.sar.sicd import SICDGeolocation
 from grdl.geolocation.sar.sidd import SIDDGeolocation
 from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.eo.rpc import RPCGeolocation
+from grdl.geolocation.eo.rsm import RSMGeolocation
 from grdl.geolocation.elevation.base import ElevationModel
 from grdl.geolocation.elevation.constant import ConstantElevation
+from grdl.geolocation.projection import (
+    COAProjection,
+    image_to_ground_hae,
+    image_to_ground_dem,
+    image_to_ground_plane,
+    ground_to_image,
+    wgs84_norm,
+)
 
 __all__ = [
     'Geolocation',
@@ -94,8 +104,16 @@ __all__ = [
     'SIDDGeolocation',
     'Sentinel1SLCGeolocation',
     'AffineGeolocation',
+    'RPCGeolocation',
+    'RSMGeolocation',
     'ElevationModel',
     'ConstantElevation',
+    'COAProjection',
+    'image_to_ground_hae',
+    'image_to_ground_dem',
+    'image_to_ground_plane',
+    'ground_to_image',
+    'wgs84_norm',
 ]
 
 __version__ = '0.2.0'
