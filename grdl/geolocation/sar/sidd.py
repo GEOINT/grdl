@@ -14,6 +14,12 @@ geographic-to-pixel projection equations for all three grid types:
   grid sampled on a cylindrical surface aligned with the stripmap
   direction.
 
+When ``TimeCOAPoly`` and ``ARPPoly`` are present in the Measurement
+block, R/Rdot refinement is used for sub-meter accuracy.  The grid
+projection provides the initial approximation; the native R/Rdot engine
+(``COAProjection``) then iteratively projects onto the WGS-84 surface
+at the target HAE, correcting for Earth curvature and terrain.
+
 All transforms follow the standard's sensor-model-grid convention::
 
     r' = r - r0       (translate to sensor model coordinates)
@@ -42,6 +48,8 @@ Created
 
 Modified
 --------
+2026-03-16  Add R/Rdot refinement via COAProjection when TimeCOAPoly
+            and ARPPoly are available.
 2026-03-07
 """
 
@@ -198,11 +206,21 @@ class SIDDGeolocation(Geolocation):
     sampled on a plane in ECEF space.  Forward and inverse transforms
     are exact (no iteration required for the pixel ↔ ECEF step).
 
+    When ``TimeCOAPoly`` and ``ARPPoly`` are present in the SIDD
+    Measurement block, R/Rdot refinement is automatically enabled for
+    maximum positional accuracy.  The grid projection provides the
+    initial approximation; the native R/Rdot engine then iteratively
+    projects onto the WGS-84 surface at the target HAE.
+
     Parameters
     ----------
     metadata : SIDDMetadata
         Typed SIDD metadata.  Must have ``measurement`` with a
         supported projection type.
+    refine : bool
+        Enable R/Rdot refinement when ``TimeCOAPoly`` and ``ARPPoly``
+        are available (default ``True``).  Set to ``False`` to force
+        grid-only projection.
 
     Attributes
     ----------
@@ -211,6 +229,8 @@ class SIDDGeolocation(Geolocation):
     projection_type : str
         Active projection type (``'PlaneProjection'``,
         ``'GeographicProjection'``, ``'CylindricalProjection'``).
+    has_rdot : bool
+        Whether R/Rdot refinement is active.
 
     Raises
     ------
@@ -230,6 +250,7 @@ class SIDDGeolocation(Geolocation):
     def __init__(
         self,
         metadata: 'SIDDMetadata',
+        refine: bool = True,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
     ) -> None:
@@ -256,6 +277,13 @@ class SIDDGeolocation(Geolocation):
                 f"PlaneProjection, GeographicProjection, "
                 f"CylindricalProjection."
             )
+
+        # R/Rdot refinement: requires TimeCOAPoly + ARPPoly
+        self.has_rdot = False
+        self._coa_proj = None
+        self._scp_ecf = None
+        if refine:
+            self._init_rdot_refinement(meas)
 
         shape = (metadata.rows, metadata.cols)
         super().__init__(
@@ -435,6 +463,47 @@ class SIDDGeolocation(Geolocation):
             self._u_prime /= norm
 
     # ------------------------------------------------------------------
+    # R/Rdot refinement initializer
+    # ------------------------------------------------------------------
+
+    def _init_rdot_refinement(self, meas: object) -> None:
+        """Attempt to build R/Rdot refinement from Measurement params.
+
+        Sets ``self.has_rdot = True`` and populates ``self._coa_proj``
+        if both ``TimeCOAPoly`` and ``ARPPoly`` are present.  Otherwise
+        silently leaves refinement disabled.
+
+        Parameters
+        ----------
+        meas : SIDDMeasurement
+            Measurement section.
+        """
+        # Check for required parameters
+        pp = meas.plane_projection
+        if pp is None or pp.time_coa_poly is None:
+            return
+        if pp.time_coa_poly.coefs is None:
+            return
+        if meas.arp_poly is None:
+            return
+        if (meas.arp_poly.x is None or meas.arp_poly.y is None
+                or meas.arp_poly.z is None):
+            return
+
+        try:
+            from grdl.geolocation.projection import COAProjection
+            self._coa_proj = COAProjection.from_sidd(self.metadata)
+            # Store SCP ECF for initial reference in HAE iteration
+            rp = pp.reference_point
+            if rp is not None and rp.ecef is not None:
+                self._scp_ecf = np.array(
+                    [rp.ecef.x, rp.ecef.y, rp.ecef.z], dtype=np.float64)
+            self.has_rdot = True
+        except (ValueError, AttributeError):
+            # Missing fields — fall back to grid-only
+            pass
+
+    # ------------------------------------------------------------------
     # Forward: pixel → lat/lon  (array interface for base class)
     # ------------------------------------------------------------------
 
@@ -446,7 +515,15 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinates to geographic coordinates.
 
-        Dispatches to the appropriate projection-specific method.
+        Always uses the grid projection for consistency with the
+        inverse (``_latlon_to_image_array``).  The grid forward and
+        inverse operate on the same surface (the product plane),
+        guaranteeing exact round-trips.
+
+        R/Rdot refinement, when available, is exposed via
+        :meth:`image_to_latlon_precise` for point queries that need
+        sub-meter accuracy on the WGS-84 ellipsoid rather than on
+        the product plane.
 
         Parameters
         ----------
@@ -473,6 +550,51 @@ class SIDDGeolocation(Geolocation):
             f"{self.projection_type!r}"
         )
 
+    def image_to_latlon_precise(
+        self,
+        row: float,
+        col: float,
+        height: float = 0.0,
+    ) -> Tuple[float, float, float]:
+        """R/Rdot-refined forward projection for precise point queries.
+
+        Projects onto the WGS-84 ellipsoid at the given HAE using the
+        full R/Rdot sensor model.  More accurate than the grid
+        projection away from the reference point, but NOT consistent
+        with ``latlon_to_image`` (which uses the grid inverse).
+
+        Use this for geolocation accuracy assessment, not for ortho
+        mapping.  Requires ``has_rdot=True``.
+
+        Parameters
+        ----------
+        row : float
+            Row pixel coordinate.
+        col : float
+            Column pixel coordinate.
+        height : float
+            Height above WGS-84 (meters).
+
+        Returns
+        -------
+        Tuple[float, float, float]
+            (lat, lon, height) in WGS-84.
+
+        Raises
+        ------
+        RuntimeError
+            If R/Rdot refinement is not available.
+        """
+        if not self.has_rdot:
+            raise RuntimeError(
+                "R/Rdot refinement not available (TimeCOAPoly or "
+                "ARPPoly missing from SIDD Measurement block)")
+        rows = np.array([float(row)])
+        cols = np.array([float(col)])
+        lats, lons, heights = self._image_to_latlon_rdot(
+            rows, cols, height)
+        return float(lats[0]), float(lons[0]), float(heights[0])
+
     def _latlon_to_image_array(
         self,
         lats: np.ndarray,
@@ -481,7 +603,11 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic coordinates to pixel coordinates.
 
-        Dispatches to the appropriate projection-specific method.
+        Uses the fast vectorized grid inverse by default.  When R/Rdot
+        refinement is available **and** per-point heights differ from
+        the product plane (i.e., a non-scalar ``height`` array is
+        passed), falls back to R/Rdot iteration to correct for
+        elevation-induced parallax.
 
         Parameters
         ----------
@@ -490,13 +616,22 @@ class SIDDGeolocation(Geolocation):
         lons : np.ndarray
             Longitudes in degrees (1D array, float64).
         height : float or np.ndarray, default=0.0
-            Height above WGS-84 ellipsoid (meters).
+            Height above WGS-84 ellipsoid (meters).  Scalar uses
+            the fast grid path.  An array of per-point heights
+            triggers R/Rdot refinement when available.
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
+        # Use R/Rdot only when per-point heights vary (DEM terrain)
+        if self.has_rdot and np.ndim(height) > 0:
+            h_arr = np.asarray(height, dtype=np.float64)
+            if np.ptp(h_arr) > 1.0:  # >1 m variation → parallax matters
+                return self._latlon_to_image_rdot(lats, lons, height)
+
+        # Fast vectorized grid inverse (exact on the product plane)
         if self.projection_type == 'PlaneProjection':
             return self._latlon_to_plane(lats, lons, height)
         elif self.projection_type == 'GeographicProjection':
@@ -507,6 +642,75 @@ class SIDDGeolocation(Geolocation):
             f"Inverse projection not implemented for "
             f"{self.projection_type!r}"
         )
+
+    # ------------------------------------------------------------------
+    # R/Rdot refined projection
+    # ------------------------------------------------------------------
+
+    def _image_to_latlon_rdot(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        height: float = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """R/Rdot refined forward projection: pixel → geodetic.
+
+        Uses the native R/Rdot engine (``COAProjection`` +
+        ``image_to_ground_hae``) for precise projection.
+        """
+        from grdl.geolocation.projection import image_to_ground_hae
+
+        im_points = np.column_stack([rows, cols])
+        gpp = image_to_ground_hae(
+            self._coa_proj,
+            im_points,
+            hae=height,
+            scp_ecf=self._scp_ecf,
+        )
+        return _ecef_to_geodetic(gpp[:, 0], gpp[:, 1], gpp[:, 2])
+
+    def _latlon_to_image_rdot(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """R/Rdot refined inverse projection: geodetic → pixel.
+
+        Uses the native R/Rdot engine (``ground_to_image``) for
+        precise inverse projection.
+        """
+        from grdl.geolocation.projection import ground_to_image
+
+        if np.ndim(height) == 0:
+            h = np.full_like(lats, float(height))
+        else:
+            h = np.asarray(height, dtype=np.float64)
+
+        x, y, z = _geodetic_to_ecef(lats, lons, h)
+        ground_ecf = np.column_stack([x, y, z])
+
+        # Use grid parameters for the image plane
+        pp = self.metadata.measurement.plane_projection
+        plane = pp.product_plane
+        u_row = np.array(
+            [plane.row_unit_vector.x, plane.row_unit_vector.y,
+             plane.row_unit_vector.z], dtype=np.float64)
+        u_col = np.array(
+            [plane.col_unit_vector.x, plane.col_unit_vector.y,
+             plane.col_unit_vector.z], dtype=np.float64)
+
+        im_points = ground_to_image(
+            self._coa_proj,
+            ground_ecf,
+            scp_ecf=self._scp_ecf,
+            u_row=u_row,
+            u_col=u_col,
+            row_ss=self._dr,
+            col_ss=self._dc,
+            scp_pixel=(self._r0, self._c0),
+        )
+        return im_points[:, 0], im_points[:, 1]
 
     # ------------------------------------------------------------------
     # PGD (PlaneProjection)  — Section 3.2 / 3.3
