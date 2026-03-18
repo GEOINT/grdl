@@ -33,10 +33,11 @@ Created
 
 Modified
 --------
-2026-02-16
+2026-03-10
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -52,6 +53,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models.common import XYZ
 from grdl.IO.models.sentinel1_slc import (
@@ -67,6 +69,8 @@ from grdl.IO.models.sentinel1_slc import (
     S1SLCNoiseRangeVector,
     S1SLCNoiseAzimuthVector,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -566,7 +570,7 @@ class Sentinel1SLCReader(ImageReader):
         polarization: str = 'VV',
     ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "Reading Sentinel-1 SLC requires rasterio. "
                 "Install with: conda install -c conda-forge rasterio"
             )
@@ -593,6 +597,10 @@ class Sentinel1SLCReader(ImageReader):
         # Discover available swaths/polarizations
         self._available_swaths, self._available_polarizations = (
             _discover_available(ann_dir)
+        )
+        logger.debug(
+            "S1 SLC discovered swaths=%s, polarizations=%s",
+            self._available_swaths, self._available_polarizations,
         )
 
         # Locate matching files
@@ -738,6 +746,19 @@ class Sentinel1SLCReader(ImageReader):
                 num_bursts=len(bursts),
                 lines_per_burst=lines_per_burst,
                 samples_per_burst=samples_per_burst,
+            )
+
+            logger.info(
+                "Loaded Sentinel-1 SLC %s swath=%s pol=%s (%d x %d)",
+                self._safe_dir.name,
+                self._swath,
+                self._polarization,
+                xml_rows,
+                xml_cols,
+            )
+            logger.debug(
+                "S1 SLC bursts=%d, lines_per_burst=%d, samples_per_burst=%d",
+                len(bursts), lines_per_burst, samples_per_burst,
             )
 
         except ET.ParseError as e:

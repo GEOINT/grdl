@@ -41,6 +41,13 @@ from typing import Tuple
 # Third-party
 import numpy as np
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+
 # GRDL internal
 from grdl.image_processing.detection.cfar._base import (
     CFARDetector,
@@ -119,5 +126,7 @@ class GOCFARDetector(CFARDetector):
         """
         _, bg_std = _annular_stats(image, guard_cells, training_cells)
         quads = _quadrant_means(image, guard_cells, training_cells)
-        bg_mean = np.maximum.reduce(quads)
+        xp = cp if (_HAS_CUPY and isinstance(image, cp.ndarray)) else np
+        q0, q1, q2, q3 = quads
+        bg_mean = xp.maximum(xp.maximum(xp.maximum(q0, q1), q2), q3)
         return bg_mean, bg_std

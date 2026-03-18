@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.1.2"
+version = "0.2.1"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,7 +30,6 @@ classifiers = [
 dependencies = [
     "numpy>=1.20.0",
     "scipy>=1.7.0",
-    "shapely>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -58,8 +57,14 @@ biomass = [
     "rasterio>=1.2.0",
     "requests>=2.25.0",
 ]
+remote = [
+    "requests>=2.25.0",
+]
 geolocation = [
     "pyproj>=3.4.0",
+]
+detection = [
+    "shapely>=2.0.0",
 ]
 coregistration = [
     "opencv-python-headless>=4.5.0",
@@ -76,6 +81,7 @@ all = [
     "h5py>=3.0.0",
     "xarray>=2022.0.0",
     "spectral>=0.23",
+    "shapely>=2.0.0",
     "pyproj>=3.4.0",
     "opencv-python-headless>=4.5.0",
     "requests>=2.25.0",

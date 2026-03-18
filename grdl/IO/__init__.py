@@ -62,13 +62,23 @@ from grdl.IO.sar import (
     CRSDReader,
     SIDDReader,
     BIOMASSL1Reader,
-    BIOMASSCatalog,
     TerraSARReader,
     NISARReader,
     open_sar,
     open_biomass,
     open_terrasar,
     open_nisar,
+)
+
+# Catalog submodule
+from grdl.IO.catalog import (
+    BIOMASSCatalog,
+    Sentinel1SLCCatalog,
+    TerraSARCatalog,
+    NISARCatalog,
+    Sentinel2Catalog,
+    ASTERCatalog,
+    VIIRSCatalog,
     load_credentials,
 )
 
@@ -313,6 +323,13 @@ __all__ = [
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
+    # Catalogs
+    'Sentinel1SLCCatalog',
+    'TerraSARCatalog',
+    'NISARCatalog',
+    'Sentinel2Catalog',
+    'ASTERCatalog',
+    'VIIRSCatalog',
     # TerraSAR-X / TanDEM-X
     'TerraSARMetadata',
     'TerraSARReader',

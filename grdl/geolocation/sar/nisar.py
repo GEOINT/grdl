@@ -35,7 +35,7 @@ Created
 
 Modified
 --------
-2026-02-25
+2026-03-10
 """
 
 # Standard library
@@ -43,6 +43,9 @@ from typing import Optional, Tuple, Union, Any, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import RectBivariateSpline, LinearNDInterpolator
@@ -94,7 +97,7 @@ class NISARGeolocation(Geolocation):
         geoid_path: Optional[Union[str, Any]] = None,
     ) -> None:
         if not _HAS_SCIPY:
-            raise ImportError(
+            raise DependencyError(
                 "NISAR RSLC geolocation requires scipy. "
                 "Install with: conda install -c conda-forge scipy"
             )

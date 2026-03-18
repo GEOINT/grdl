@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -45,9 +45,16 @@ from typing import Any, Callable, Dict, Optional, Union
 
 # Third-party
 import numpy as np
-from scipy import fft
+from scipy import fft as _scipy_fft
 from scipy.interpolate import interp1d
 from scipy.signal.windows import taylor as _taylor_window
+
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
 
 # GRDL internal
 from grdl.image_processing.sar.image_formation.base import (
@@ -237,9 +244,26 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             (npulses, pg.rec_n_samples), dtype=signal.dtype,
         )
 
+        # Precompute all kv polar coordinates as a 2D array (npulses x
+        # nsamples) to avoid repeated per-pulse overhead in
+        # get_kv_for_pulse (arange, multiply, index lookups).
+        geo = pg.geometry
+        sample_indices = np.arange(geo.nsamples)
+        freq_all = (
+            sample_indices[np.newaxis, :]
+            * geo.fxss[:npulses, np.newaxis]
+            + geo.fx0[:npulses, np.newaxis]
+        )
+        cos_phi = np.cos(geo.phi[:npulses])
+        kv_all = (
+            pg.sf_conv
+            * freq_all
+            * cos_phi[:, np.newaxis]
+            * geo.k_sf[:npulses, np.newaxis]
+        )
+
         for i in range(npulses):
-            kv_polar = pg.get_kv_for_pulse(i)
-            result[i, :] = self._interp(kv_polar, signal[i, :], kv_uniform)
+            result[i, :] = self._interp(kv_all[i], signal[i, :], kv_uniform)
 
         return result
 
@@ -286,18 +310,25 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         # monotonically increasing x, so detect and flip once.
         ascending = proj[-1] >= proj[0]
 
+        # Precompute all ku_ks coordinates: each column i has
+        # ku_ks = kv_ks[i] * proj, giving shape (npulses, n_samples).
+        # Apply the ascending flip once to the entire 2D array and
+        # the data matrix, avoiding per-iteration conditional logic.
+        ku_ks_all = kv_ks[np.newaxis, :] * proj[:, np.newaxis]
+        data = range_interpolated
+        if not ascending:
+            ku_ks_all = ku_ks_all[::-1, :]
+            data = data[::-1, :]
+
         result = np.zeros(
             (pg.rec_n_pulses, pg.rec_n_samples),
             dtype=range_interpolated.dtype,
         )
 
         for i in range(pg.rec_n_samples):
-            ku_ks = kv_ks[i] * proj
-            col = range_interpolated[:, i]
-            if not ascending:
-                ku_ks = ku_ks[::-1]
-                col = col[::-1]
-            result[:, i] = self._interp(ku_ks, col, ku_uniform)
+            result[:, i] = self._interp(
+                ku_ks_all[:, i], data[:, i], ku_uniform,
+            )
 
         return result
 
@@ -346,30 +377,33 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         """
         self._pad_factor = pad_factor
 
+        _is_gpu = _HAS_CUPY and isinstance(interpolated, cp.ndarray)
+        xp = cp if _is_gpu else np
+
         data = interpolated
         naz, nrg = data.shape
 
         if self._weight_func is not None:
             w_az = self._weight_func(naz).astype(data.real.dtype)
             w_rg = self._weight_func(nrg).astype(data.real.dtype)
-            data = data * w_az[:, np.newaxis] * w_rg[np.newaxis, :]
+            data = data * xp.asarray(w_az)[:, None] * xp.asarray(w_rg)[None, :]
 
         # Zero-pad to suppress circular aliasing (fold-over)
         if pad_factor > 1.0:
             naz_pad = int(np.ceil(naz * pad_factor))
             nrg_pad = int(np.ceil(nrg * pad_factor))
-            padded = np.zeros((naz_pad, nrg_pad), dtype=data.dtype)
+            padded = xp.zeros((naz_pad, nrg_pad), dtype=data.dtype)
             # Center the k-space data in the padded array
             az_start = (naz_pad - naz) // 2
             rg_start = (nrg_pad - nrg) // 2
             padded[az_start:az_start + naz, rg_start:rg_start + nrg] = data
             data = padded
 
-        shifted = np.fft.ifftshift(data)
+        shifted = xp.fft.ifftshift(data)
         if self._phase_sgn >= 0:
-            image = np.fft.fftshift(fft.fft2(shifted))
+            image = xp.fft.fftshift(xp.fft.fft2(shifted))
         else:
-            image = np.fft.fftshift(fft.ifft2(shifted))
+            image = xp.fft.fftshift(xp.fft.ifft2(shifted))
 
         # Output: rows = azimuth, cols = range
         # Transpose to SICD (rows = range, cols = azimuth) at write time

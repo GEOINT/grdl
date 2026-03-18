@@ -27,10 +27,11 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -45,8 +46,11 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class NITFReader(ImageReader):
@@ -91,7 +95,7 @@ class NITFReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for NITF reading. "
                 "Install with: pip install rasterio"
             )
@@ -120,6 +124,17 @@ class NITFReader(ImageReader):
                 crs=str(self.dataset.crs) if self.dataset.crs else None,
                 nodata=self.dataset.nodata,
                 extras=extras,
+            )
+
+            logger.info(
+                "Opened NITF %s (%d bands, %d x %d)",
+                self.filepath.name, self.dataset.count,
+                self.dataset.height, self.dataset.width,
+            )
+            logger.debug(
+                "NITF segments: %d, CRS: %s",
+                self.dataset.count,
+                str(self.dataset.crs) if self.dataset.crs else "none",
             )
 
         except Exception as e:
@@ -271,7 +286,7 @@ class NITFWriter(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for NITF writing. "
                 "Install with: pip install rasterio"
             )

@@ -33,14 +33,15 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-10
 """
 
 # Standard library
 from dataclasses import dataclass
+import logging
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
 import struct
+from typing import List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
 # Third-party
@@ -54,6 +55,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models.common import XYZ, LatLonHAE
 from grdl.IO.models.terrasar import (
@@ -68,6 +70,8 @@ from grdl.IO.models.terrasar import (
     TSXDopplerInfo,
     TSXProcessingInfo,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -749,6 +753,10 @@ class TerraSARReader(ImageReader):
             raise ValueError(
                 f"Failed to parse annotation XML: {e}"
             ) from e
+        logger.debug(
+            "TerraSAR-X parsed annotation XML %s",
+            self._main_xml_path.name,
+        )
 
         data_format = _xml_text(
             self._xmltree, 'productInfo/imageDataInfo/imageDataFormat'
@@ -759,7 +767,7 @@ class TerraSARReader(ImageReader):
         )
 
         if not self._is_cosar and not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "Reading TerraSAR-X detected products (GeoTIFF) requires "
                 "rasterio. Install with: "
                 "conda install -c conda-forge rasterio"
@@ -891,6 +899,11 @@ class TerraSARReader(ImageReader):
                 tiff_rows = self._rasterio_dataset.height
                 tiff_cols = self._rasterio_dataset.width
                 if tiff_rows != rows or tiff_cols != cols:
+                    logger.warning(
+                        "TerraSAR-X TIFF dims (%d x %d) differ from XML "
+                        "(%d x %d); using TIFF",
+                        tiff_rows, tiff_cols, rows, cols,
+                    )
                     rows = tiff_rows
                     cols = tiff_cols
                 # Use actual dtype from TIFF
@@ -917,6 +930,15 @@ class TerraSARReader(ImageReader):
                 calibration=calibration,
                 doppler_info=doppler_info,
                 processing_info=processing_info,
+            )
+
+            logger.info(
+                "Loaded TerraSAR-X %s (%d x %d), product=%s",
+                self._main_xml_path.name, rows, cols, product_type,
+            )
+            logger.debug(
+                "TerraSAR-X geo_grid_points=%d, has_calibration=%s",
+                len(geo_grid), calibration is not None,
             )
 
         except ET.ParseError as e:

@@ -27,10 +27,11 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-03-10
 """
 
 # Standard library
+import logging
 from typing import Any, Optional, Tuple
 
 # Third-party
@@ -43,10 +44,9 @@ from grdl.coregistration.utils import (
     compute_rms,
     warp_image,
 )
-from grdl.image_processing.versioning import processor_version
+logger = logging.getLogger(__name__)
 
 
-@processor_version('0.1.0')
 class ProjectiveCoRegistration(CoRegistration):
     """Projective (homography) co-registration from control points.
 
@@ -126,24 +126,29 @@ class ProjectiveCoRegistration(CoRegistration):
             Projective transform (3x3 homography) and quality metrics.
         """
         n = self._cp_moving.shape[0]
+        logger.debug("Projective estimate: %d point pairs", n)
 
         # Normalize points for numerical stability
         src_norm, T_src = self._normalize_points(self._cp_moving)
         dst_norm, T_dst = self._normalize_points(self._cp_fixed)
 
-        # Build DLT system: Ah = 0
+        # Build DLT system: Ah = 0 (vectorized)
+        r_s = src_norm[:, 0]
+        c_s = src_norm[:, 1]
+        r_d = dst_norm[:, 0]
+        c_d = dst_norm[:, 1]
+        ones = np.ones(n)
+        zeros = np.zeros(n)
+
         A = np.zeros((2 * n, 9))
-        for i in range(n):
-            r_s, c_s = src_norm[i]
-            r_d, c_d = dst_norm[i]
-            A[2 * i] = [
-                r_s, c_s, 1, 0, 0, 0,
-                -r_d * r_s, -r_d * c_s, -r_d,
-            ]
-            A[2 * i + 1] = [
-                0, 0, 0, r_s, c_s, 1,
-                -c_d * r_s, -c_d * c_s, -c_d,
-            ]
+        A[0::2] = np.column_stack([
+            r_s, c_s, ones, zeros, zeros, zeros,
+            -r_d * r_s, -r_d * c_s, -r_d,
+        ])
+        A[1::2] = np.column_stack([
+            zeros, zeros, zeros, r_s, c_s, ones,
+            -c_d * r_s, -c_d * c_s, -c_d,
+        ])
 
         # Solve via SVD
         _, _, Vt = np.linalg.svd(A)
@@ -158,6 +163,7 @@ class ProjectiveCoRegistration(CoRegistration):
 
         residuals = compute_residuals(self._cp_fixed, self._cp_moving, H)
         rms = compute_rms(residuals)
+        logger.info("Projective fit: RMS residual=%.4f px", rms)
 
         return RegistrationResult(
             transform_matrix=H,

@@ -2,510 +2,90 @@
 
 Roadmap and planned features for the IO module.
 
-## Current Status
+## Current Status (v0.2.0)
 
-### ✅ Completed
+### Completed
 
-- [x] Base class architecture (`base.py`)
-  - [x] `ImageReader` ABC with lazy loading
-  - [x] `ImageWriter` ABC with incremental writes
-  - [x] `CatalogInterface` ABC for discovery
-- [x] SAR readers (`sar/` submodule)
-  - [x] `SICDReader` - SICD format (sarkit primary, sarpy fallback)
-  - [x] `CPHDReader` - CPHD format (sarkit primary, sarpy fallback)
-  - [x] `CRSDReader` - CRSD format (sarkit-only)
-  - [x] `SIDDReader` - SIDD format (sarkit-only)
-  - [x] `_backend.py` - sarkit/sarpy availability detection
-  - [x] `open_sar()` - Auto-detection utility
-- [x] Base format readers (IO level)
-  - [x] `GeoTIFFReader` - GeoTIFF/COG via rasterio
-  - [x] `HDF5Reader` - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
-  - [x] `NITFReader` - Generic NITF via rasterio/GDAL
-  - [x] `open_image()` - Auto-detection for base formats (GeoTIFF, HDF5, NITF)
-- [x] BIOMASS readers (`sar/biomass.py`)
-  - [x] `BIOMASSL1Reader` - BIOMASS L1 SCS format (magnitude/phase GeoTIFFs)
-  - [x] `open_biomass()` - Auto-detection utility
-  - [x] Full quad-pol support (HH, HV, VH, VV)
-  - [x] XML annotation metadata parsing
-  - [x] Complex data reconstruction from magnitude/phase
-- [x] Catalog system (`sar/biomass_catalog.py`)
-  - [x] `BIOMASSCatalog` - BIOMASS-specific catalog and download manager
-  - [x] Local file system discovery
-  - [x] ESA MAAP STAC API search (`query_esa()`)
-  - [x] CQL2 filtering (product type, orbit, bbox, date)
-  - [x] OAuth2 authentication (offline token exchange)
-  - [x] Streaming product download with ZIP extraction
-  - [x] SQLite database for product tracking
-  - [x] Metadata extraction and indexing
-  - [x] Spatial overlap detection
-  - [x] `load_credentials()` utility (repo-agnostic `~/.config/geoint/`)
-  - [x] Operational collection support (`BiomassLevel1a/1b/2a`)
-- [x] Geolocation integration
-  - [x] GCP-based coordinate transforms via `grdl.geolocation`
-  - [x] Vectorized batch transforms
-  - [x] `Geolocation.from_reader()` factory
-- [x] Image processing module (`image_processing/`)
-  - [x] `ImageProcessor` / `ImageTransform` ABCs
-  - [x] `@processor_version()` decorator and versioning system
-  - [x] `TunableParameterSpec` for runtime-adjustable parameters
-  - [x] `DetectionInputSpec` for detection input chaining
-  - [x] `Orthorectifier` / `OutputGrid` - slant-to-ground projection
-  - [x] `PauliDecomposition` - quad-pol Pauli basis decomposition
-  - [x] `ImageDetector` ABC with geo-registration helpers
-  - [x] `Detection`, `DetectionSet`, `Geometry`, `OutputSchema`, `OutputField` data models
-  - [x] GeoJSON export and optional DataFrame conversion
-- [x] Data preparation module (`data_prep/`)
-  - [x] ChipBase ABC -- image dimension management and coordinate snapping
-  - [x] ChipExtractor -- point-centered and whole-image chip region computation
-  - [x] Tiler -- stride-based tile region computation
-  - [x] Normalizer -- minmax, zscore, percentile, unit_norm with fit/transform
-- [x] Coregistration module (`coregistration/`)
-  - [x] Affine transform alignment
-  - [x] Projective transform alignment
-  - [x] Feature-based matching (OpenCV)
-- [x] Pipeline composition (`image_processing/pipeline.py`)
-  - [x] Sequential transform chaining with progress callback rescaling
-- [x] BandwiseTransformMixin for automatic 3D stack support
-- [x] Custom exception hierarchy (`grdl/exceptions.py`)
-  - [x] GrdlError, ValidationError, ProcessorError, DependencyError, GeolocationError
-- [x] PEP 561 type marker (`grdl/py.typed`)
-- [x] `pyproject.toml` with setuptools backend and optional dependency extras
-- [x] Shared test fixtures (`tests/conftest.py`)
-- [x] Performance benchmarks (`tests/test_benchmarks.py`, pytest-benchmark)
-- [x] Documentation
-  - [x] README.md with examples (including BIOMASS and catalog)
-  - [x] ARCHITECTURE.md with design decisions
-  - [x] This TODO.md
-- [x] Example scripts (`example/`)
-  - [x] `catalog/discover_and_download.py` - MAAP catalog search and download
-  - [x] `catalog/view_product.py` - Pauli RGB and HH dB viewer with interactive markers
-  - [x] `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB
-  - [x] `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
-- [x] Ground truth data (`ground_truth/`)
-  - [x] `biomass_calibration_targets.geojson` - BIOMASS cal/val sites
-- [x] Typed metadata (`models/` package)
-  - [x] `ImageMetadata` base dataclass with dict-like backward compatibility
-  - [x] Common primitive types (`XYZ`, `LatLon`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`)
-  - [x] `SICDMetadata` — all 17 SICD sections with ~35 nested dataclasses
-  - [x] `SIDDMetadata` — all 13 SIDD sections with ~25 nested dataclasses
-  - [x] `BIOMASSMetadata` — flat typed fields for mission-specific annotation
-  - [x] Full metadata extraction in SICD reader (sarkit + sarpy backends)
-  - [x] Full metadata extraction in SIDD reader (sarkit backend)
-  - [x] BIOMASS reader migrated from extras dict to typed `BIOMASSMetadata`
-  - [x] Metadata model tests (`test_io_models.py`)
-- [x] EO/IR/Multispectral submodules
-  - [x] `eo/` scaffold with `open_eo()` and `_backend.py`
-  - [x] `ir/` submodule with `ASTERReader` (L1T thermal, GDEM elevation)
-  - [x] `multispectral/` submodule with `VIIRSReader` (VNP46A1, VNP13A1)
-  - [x] `VIIRSMetadata` — flat typed fields for VIIRS HDF5 products
-  - [x] `ASTERMetadata` — flat typed fields for ASTER GeoTIFF + XML
-  - [x] `_backend.py` for each submodule (rasterio, h5py, glymur, xarray, spectral)
-  - [x] `open_ir()` and `open_multispectral()` auto-detection functions
-  - [x] IO-level exports updated
-- [x] Testing
-  - [x] Test suite structure (`tests/`)
-  - [x] BIOMASS L1 reader tests
-  - [x] Geolocation tests with interactive marker plotting
-  - [x] Orthorectification tests
-  - [x] Pauli decomposition tests
-  - [x] Detection model and geo-registration tests
-  - [x] Processor versioning tests
-  - [x] Tunable parameter tests
-  - [x] IO import path tests (`test_io_imports.py`)
-  - [x] GeoTIFF reader tests (`test_io_geotiff.py`)
-  - [x] HDF5 reader tests (`test_io_hdf5.py`)
-  - [x] NITF reader tests (`test_io_nitf.py`)
-  - [x] SAR backend detection tests (`test_io_sar_backend.py`)
-  - [x] SAR reader API contract tests (`test_io_sar_readers.py`)
+- Base class architecture (`base.py`): `ImageReader`, `ImageWriter`, `CatalogInterface` ABCs
+- SAR readers (`sar/`): `SICDReader`, `CPHDReader`, `CRSDReader`, `SIDDReader`, sarkit/sarpy dual backend, `open_sar()`
+- SAR writers (`sar/`): `SICDWriter` (sarpy), `SIDDWriter` (sarpy)
+- Base format readers: `GeoTIFFReader`, `HDF5Reader`, `NITFReader`, `JP2Reader`, `open_image()`
+- Base format writers: `GeoTIFFWriter` (rasterio/COG), `HDF5Writer` (h5py), `NITFWriter` (rasterio), `PNGWriter` (Pillow)
+- BIOMASS: `BIOMASSL1Reader` (quad-pol SCS), `BIOMASSCatalog` (MAAP STAC, OAuth2, download, SQLite)
+- Sensor-specific readers: `Sentinel1SLCReader`, `Sentinel2Reader`, `TerraSARReader`, `NISARReader`
+- EO/IR/Multispectral submodules: `ASTERReader`, `VIIRSReader`, `open_ir()`, `open_multispectral()`
+- Typed metadata (`models/`): `SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`
+- Generic fallback: `GDALReader` for rasterio-supported formats
+- Geolocation integration: `Geolocation.from_reader()` factory, GCP-based transforms
+- Custom exceptions: `DependencyError` adopted throughout IO
 
 ## High Priority
 
-### SAR Readers (sar/)
+### SAR
 
-- [x] **CRSDReader** - CRSD format support (sarkit-only)
-- [x] **SIDDReader** - SIDD format support (sarkit-only)
-- [x] **sarkit/sarpy dual backend** - sarkit primary, sarpy fallback for SICD/CPHD
-
-- [ ] **SLCReader** - Single Look Complex
-  - Distinguish from GRD (also GeoTIFF)
+- [ ] **SLCReader** — Generic Single Look Complex reader
+  - Distinguish SLC from GRD (both GeoTIFF)
   - Parse SAR-specific metadata tags
   - Handle complex data in GeoTIFF
 
-### Base Format Readers (IO level)
+### Catalog
 
-- [x] **GeoTIFFReader** - General raster imagery via rasterio
-- [x] **HDF5Reader** - HDF5/HDF-EOS5 via h5py (auto-detect or explicit dataset path)
-- [x] **NITFReader** - Generic NITF via rasterio/GDAL
-- [x] **open_image()** - Auto-detect GeoTIFF, HDF5, or NITF
-
-- [ ] **JP2Reader** - JPEG2000 imagery
-  - Via rasterio or glymur
-  - Common in satellite imagery (Sentinel-2)
-  - Handle tiled/pyramidal structure
-
-### Geospatial Readers (geospatial.py) - NEW MODULE
-
-- [ ] **GeoJSONReader** - GeoJSON vector data
-  - Use geopandas or fiona
-  - Return as GeoDataFrame or dict
-  - Handle large files (streaming)
-
-- [ ] **GeoJSONWriter** - Write GeoJSON
-  - From GeoDataFrame or dict
-  - Pretty-print option for readability
-  - Coordinate precision control
-
-- [ ] **ShapefileReader** - ESRI Shapefile
-  - Via geopandas/fiona
-  - Handle .shp, .shx, .dbf bundle
-  - Support for .prj (projection info)
-
-- [ ] **ShapefileWriter** - Write shapefiles
-  - From GeoDataFrame
-  - Automatic .prj generation
-  - Handle attribute types
-
-- [ ] **KMLReader** - Google Earth KML/KMZ
-  - Parse placemark, polygon, linestring
-  - Extract style information
-  - Handle KMZ (zipped KML)
-
-### Catalog (catalog.py)
-
-- [x] **BIOMASSCatalog** - BIOMASS data management (COMPLETED)
-  - Local discovery and indexing
-  - ESA MAAP STAC API search with CQL2 filtering
-  - OAuth2 authentication (offline token exchange)
-  - Streaming download with ZIP extraction and progress reporting
-  - SQLite database tracking
-  - `load_credentials()` utility with env var fallback
-
-- [ ] **Generic ImageCatalog** - Multi-format catalog
-  - Support SAR, EO, and other formats
-  - Unified database schema
-  - Format-agnostic queries
-
-- [ ] **Parallel Metadata Extraction**
-  - Thread/process pool for batch operations
-  - Progress tracking for large collections
-  - Query by sensor, date, location
-
-- [ ] **SpatialCatalog** - Geospatial queries
-  - Build spatial index (R-tree)
-  - Find overlapping images
-  - Query by bounding box or polygon
+- [ ] **Generic ImageCatalog** — Multi-format, multi-sensor catalog
+  - Unified database schema across SAR/EO/MSI
+  - Format-agnostic spatial and temporal queries
+  - Build on existing `BIOMASSCatalog` patterns
 
 ## Medium Priority
 
-### Writers (sar.py, eo.py)
+### Writers
 
-- [ ] **GeoTIFFWriter** - Generic raster output
-  - Via rasterio
-  - COG output option
-  - Compression options (LZW, DEFLATE, etc.)
-
-- [ ] **SICDWriter** - SICD format output
-  - Via SARPY
-  - Preserve metadata in conversions
-  - Handle complex data properly
-
-- [ ] **NITFWriter** - NITF 2.1 output
-  - Via SARPY
-  - Custom TRE injection
-  - Multi-image NITF support
+- [ ] **COG output** — Cloud-Optimized GeoTIFF via GeoTIFFWriter
+  - Tiled layout with overview pyramids
+  - Compression options (LZW, DEFLATE, ZSTD)
 
 ### Advanced Features
 
-- [ ] **Cloud Storage Support**
-  - S3/GCS readers via fsspec
-  - Streaming large files from cloud
-  - Credential management
-
-- [ ] **Lazy Metadata Loading**
-  - Option to defer metadata parsing
-  - Faster instantiation for batch operations
-  - Trade-off: metadata access may raise exceptions
-
-- [ ] **Parallel Chip Reading**
-  - Thread pool for concurrent chip reads
-  - Useful for tiled processing
-  - Configurable number of workers
-
-- [ ] **Metadata Caching**
-  - Sidecar .json files with pre-parsed metadata
-  - Dramatically faster re-opening
-  - Automatic invalidation on file change
-
-- [ ] **Format Conversion Utilities**
-  - SICD → GeoTIFF converter
-  - GRD → COG converter
-  - Batch conversion scripts
+- [ ] **Cloud Storage Support** — S3/GCS readers via fsspec
+- [ ] **Parallel Chip Reading** — Thread pool for concurrent chip reads
+- [ ] **Metadata Caching** — Sidecar .json files for faster re-opening
 
 ## Low Priority / Research
 
-### Experimental Formats
+- [ ] **SAFE Format** — Sentinel-1/2 native manifest.safe parsing
+- [ ] **ENVI Format** — Hyperspectral .hdr + .bil/.bip/.bsq
+- [ ] **Zarr Arrays** — Cloud-native chunked array support
+- [ ] **Dask Integration** — Lazy evaluation with Dask arrays
 
-- [ ] **SAFE Format** - Sentinel-1/2 native
-  - Parse manifest.safe
-  - Handle multi-file structure
-  - Extract orbit/calibration data
+## API Evolution
 
-- [ ] **ENVI Format** - Hyperspectral imagery
-  - .hdr + .bil/.bip/.bsq
-  - Header parsing
-  - Wavelength/band metadata
+### Potential Breaking Changes (next major version)
 
-- [ ] **Zarr Arrays** - Cloud-native chunked arrays
-  - Read/write Zarr stores
-  - S3/GCS backend support
-  - Chunk-aligned operations
+- [ ] Standardize band indexing: all 0-based
+- [ ] Unified geolocation dict structure across all readers
 
-- [ ] **COG Streaming** - Optimize COG access
-  - Range request optimization
-  - Overview pyramid usage
-  - Minimize HTTP requests
+### Non-Breaking Additions
 
-### Performance Optimizations
+- [ ] `read_bands()` — Explicit multi-band reading
+- [ ] `get_band_names()` — Semantic band labels (e.g., 'VV', 'VH')
+- [ ] `get_footprint()` — Geographic footprint as shapely geometry
 
-- [ ] **Memory-Mapped I/O**
-  - Option for mmap-backed arrays
-  - Faster for local files
-  - OS handles caching
+## Open Questions
 
-- [ ] **Dask Integration**
-  - Return Dask arrays instead of NumPy
-  - Lazy evaluation
-  - Distributed processing
-
-- [ ] **GPU Direct I/O**
-  - Load directly to GPU memory
-  - Avoid CPU ↔ GPU copy
-  - Requires CUDA/ROCm support
-
-### Quality of Life
-
-- [ ] **Progress Bars**
-  - TQDM integration for long reads
-  - Optional (don't clutter non-interactive use)
-  - Configurable via environment variable
-
-- [ ] **Logging**
-  - Structured logging with Python logging module
-  - Debug mode for troubleshooting
-  - Performance metrics logging
-
-- [ ] **Validation Utilities**
-  - Check format compliance (e.g., valid SICD?)
-  - Metadata completeness checks
-  - Corruption detection
-
-## Testing TODO
-
-### Unit Tests
-
-- [ ] SAR readers
-  - [x] SICDReader basic functionality
-  - [ ] SICDReader edge cases (multi-segment NITF)
-  - [x] CPHDReader basic functionality
-  - [ ] CPHDReader multi-channel handling
-  - [x] GeoTIFFReader basic functionality
-  - [ ] GeoTIFFReader multi-band imagery
-  - [ ] open_sar() format detection logic
-
-- [ ] EO readers (once implemented)
-  - [ ] GeoTIFFReader RGB imagery
-  - [ ] GeoTIFFReader multispectral bands
-  - [ ] NITFReader with TREs
-
-- [ ] Geospatial readers (once implemented)
-  - [ ] GeoJSONReader valid GeoJSON
-  - [ ] ShapefileReader .prj handling
-  - [ ] KMLReader placemarks and polygons
-
-- [ ] Catalog (once implemented)
-  - [ ] ImageCatalog recursive discovery
-  - [ ] SpatialCatalog overlap detection
-  - [ ] MetadataCatalog query performance
-
-### Integration Tests
-
-- [ ] End-to-end workflows
-  - [ ] Read SICD → process → write GeoTIFF
-  - [ ] Catalog images → query overlaps → process subset
-  - [ ] Multi-format pipeline (SAR + EO fusion)
-
-### Performance Tests
-
-- [ ] Benchmarks
-  - [ ] Chip read latency vs. size
-  - [ ] Metadata extraction time
-  - [ ] Memory usage for large files
-  - [ ] Parallel reading speedup
-
-### Test Data
-
-- [ ] Synthetic test files
-  - [ ] Minimal valid SICD (via SARPY generators)
-  - [ ] Minimal valid CPHD
-  - [ ] Small GeoTIFF with georeferencing
-  - [ ] Valid GeoJSON fixtures
-
-- [ ] Real-world data
-  - [ ] Not in repo (too large)
-  - [ ] Document sources for public datasets
-  - [ ] Test suite can download if needed
-
-## Documentation TODO
-
-### User Documentation
-
-- [ ] **Tutorials**
-  - [ ] "Reading Your First SAR Image"
-  - [ ] "Working with SICD Metadata"
-  - [ ] "Processing Large Images in Chunks"
-  - [ ] "Building an Image Catalog"
-
-- [ ] **How-To Guides**
-  - [ ] "Converting SICD to GeoTIFF"
-  - [ ] "Extracting Geolocation from SAR"
-  - [ ] "Finding Overlapping Images"
-  - [ ] "Handling Missing Dependencies"
-
-- [ ] **API Reference**
-  - [ ] Auto-generated from docstrings (Sphinx)
-  - [ ] Cross-references to related functions
-  - [ ] Usage examples in every public function
-
-### Developer Documentation
-
-- [ ] **Contributing Guide**
-  - [ ] How to add a new reader
-  - [ ] Testing requirements
-  - [ ] Code review process
-
-- [ ] **Architecture Decisions**
-  - [ ] Why SARPY over custom NITF parser
-  - [ ] Why rasterio over GDAL directly
-  - [ ] Memory management strategy
-
-## Dependencies TODO
-
-- [x] **Package Setup**
-  - [x] `pyproject.toml` with setuptools backend
-  - [x] Declare optional dependencies
-    - `pip install grdl[sar]` → sarpy
-    - `pip install grdl[eo]` → rasterio
-    - `pip install grdl[biomass]` → rasterio + requests
-    - `pip install grdl[coregistration]` → opencv-python-headless
-    - `pip install grdl[all]` → all optional deps
-    - `pip install grdl[dev]` → pytest, pytest-benchmark, ruff, mypy, black
-  - [ ] Continuous integration (GitHub Actions)
-
-- [x] **Dependency Pinning**
-  - [x] Broad version ranges in pyproject.toml (don't over-constrain)
-
-- [ ] **Compatibility Testing**
-  - [ ] Test with multiple NumPy versions
-  - [ ] Test with multiple SARPY versions
-  - [ ] Test with multiple rasterio versions
-
-## Breaking Changes / API Evolution
-
-### Potential Breaking Changes
-
-Track here for next major version:
-
-- [ ] **Standardize band indexing**: All 0-based (currently GRD converts internally)
-- [ ] **Geolocation format**: Unified dict structure across all readers
-- [x] **Metadata standardization**: Typed metadata subclasses with `ImageMetadata` base providing common fields (`format`, `rows`, `cols`, `dtype`, `bands`, `crs`) and format-specific subclasses for SICD, SIDD, BIOMASS
-- [x] **Error handling**: Custom exception hierarchy (`grdl.exceptions`) -- implemented
-
-### API Additions (Non-Breaking)
-
-Can add in minor versions:
-
-- [ ] **`read_bands()` method**: Explicit multi-band reading
-- [ ] **`get_band_names()` method**: Semantic band labels (e.g., 'VV', 'VH')
-- [ ] **`to_dask()` method**: Return Dask array for lazy evaluation
-- [ ] **`get_footprint()` method**: Return geographic footprint as shapely geometry
-
-## Questions / Decisions Needed
-
-- [x] **Metadata format**: ~~Dict vs. custom classes vs. dataclasses?~~ **Resolved — dataclasses.**
-  - `ImageMetadata` base dataclass with dict-like backward compatibility
-  - `SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata` subclasses with nested typed fields
-  - ~60 dataclasses in `grdl/IO/models/` package (common primitives, SICD 17 sections, SIDD 13 sections, BIOMASS flat)
-
-- [ ] **Geolocation standard**: Always convert to WGS84 lat/lon or preserve native?
-  - WGS84: Simple, consistent
-  - Native: Preserves precision, matches source
-
-- [ ] **Complex data return type**: NumPy complex64 or separate I/Q arrays?
-  - complex64: Standard, compact
-  - Separate: Explicit, some algorithms prefer
-
-- [ ] **Async I/O**: Support asyncio for concurrent reads?
-  - Pro: Better for networked storage
-  - Con: Complexity, limited backend support
-
-## Community Requests
-
-Track user-requested features here:
-
-- [ ] _No requests yet - library not yet released_
+- **Geolocation standard**: Always WGS84 lat/lon or preserve native CRS?
+- **Complex data return type**: NumPy complex64 vs. separate I/Q arrays?
 
 ## Version Milestones
 
-### v0.1.0 (Current)
-- [x] Base classes (ImageReader, ImageWriter, CatalogInterface ABCs)
-- [x] SAR readers (SICD, CPHD, GRD)
-- [x] BIOMASS L1 SCS reader (complex P-band SAR)
-- [x] BIOMASS catalog (MAAP STAC search, OAuth2 download, SQLite tracking)
-- [x] Geolocation module (GCP interpolation, batch transforms)
-- [x] Image processing module
-  - [x] ImageProcessor / ImageTransform / BandwiseTransformMixin ABCs
-  - [x] Orthorectification (Orthorectifier, OutputGrid)
-  - [x] Polarimetric decomposition (PauliDecomposition)
-  - [x] Detection data models (Geometry, Detection, DetectionSet, OutputSchema)
-  - [x] ImageDetector ABC with geo-registration helpers
-  - [x] Processor versioning (`@processor_version` decorator)
-  - [x] Processor capability tags (`@processor_tags` decorator)
-  - [x] Tunable parameter system (TunableParameterSpec)
-  - [x] Detection input chaining (DetectionInputSpec)
-  - [x] Pipeline composition (sequential transform chaining)
-  - [x] Progress callback protocol (`_report_progress()`)
-- [x] Data preparation module (ChipBase, ChipExtractor, Tiler, Normalizer)
-- [x] Coregistration module (affine, projective, feature-matching)
-- [x] Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.)
-- [x] PEP 561 type marker (py.typed)
-- [x] pyproject.toml with optional dependency extras
-- [x] Shared test fixtures (conftest.py)
-- [x] Performance benchmarks (pytest-benchmark)
-- [x] Example scripts (catalog discovery, Pauli viewer, ortho workflow, SICD viewer)
-- [x] Ground truth data (BIOMASS cal/val targets GeoJSON)
-- [x] Documentation framework
+### v0.3.0 (Next)
 
-### v0.2.0 (Next)
-- [x] Additional SAR readers (CRSD, SIDD) with sarkit backend
-- [x] Base format readers (GeoTIFF, NITF) at IO level
-- [x] IO restructure into modality-based submodules (sar/)
-- [x] sarkit/sarpy dual backend for SICD and CPHD
-- [x] IO import, GeoTIFF, NITF, SAR backend, and SAR reader tests
-- [x] Typed metadata subclasses (`models/` package) with complete SICD/SIDD/BIOMASS extraction
-- [x] EO/IR/Multispectral modality submodules (`eo/`, `ir/`, `multispectral/`)
-- [x] VIIRSReader and ASTERReader with typed metadata
-- [ ] SLCReader for Single Look Complex GeoTIFFs
-- [ ] Concrete ImageDetector implementations
+- [ ] Generic multi-format catalog
+- [ ] SLCReader
+- [ ] Concrete `ImageDetector` implementations
 - [ ] Test coverage >80%
 
-### v0.3.0
-- [ ] Geospatial readers/writers (GeoJSON, Shapefile)
-- [ ] Generic multi-format catalog
-- [ ] Performance optimizations
-
 ### v1.0.0 (Stable)
+
 - [ ] Full test coverage (>90%)
-- [ ] Complete documentation
 - [ ] API stability guarantees
 - [ ] PyPI release
 
@@ -513,6 +93,5 @@ Track user-requested features here:
 
 - Prioritize real-world use cases over feature completeness
 - Get user feedback early on API design
-- Don't implement writers until reader API is stable
 - Cloud support is important but requires careful design
-- Performance matters - benchmark before optimizing
+- Performance matters — benchmark before optimizing

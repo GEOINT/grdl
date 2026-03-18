@@ -61,133 +61,18 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.base import Geolocation
+from grdl.geolocation.coordinates import (
+    WGS84_A as _WGS84_A,
+    WGS84_B as _WGS84_B,
+    WGS84_F as _WGS84_F,
+    WGS84_E1_SQ as _WGS84_E1_SQ,
+    WGS84_E2_SQ as _WGS84_E2_SQ,
+    geodetic_to_ecef as _geodetic_to_ecef,
+    ecef_to_geodetic as _ecef_to_geodetic,
+)
 
 if TYPE_CHECKING:
     from grdl.IO.models.sidd import SIDDMetadata
-
-
-# ===================================================================
-# WGS-84 constants (NGA.STND.0025-1 Section 3.6)
-# ===================================================================
-
-_WGS84_A = 6378137.0                  # semi-major axis (m)
-_WGS84_B = 6356752.314245179          # semi-minor axis (m)
-_WGS84_F = 1.0 / 298.257223563        # flattening
-_WGS84_E1_SQ = 2 * _WGS84_F - _WGS84_F ** 2  # first eccentricity squared
-_WGS84_E2_SQ = (_WGS84_A ** 2 - _WGS84_B ** 2) / _WGS84_B ** 2  # second ecc sq
-
-
-def _geodetic_to_ecef(
-    lats: np.ndarray,
-    lons: np.ndarray,
-    heights: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Convert geodetic (lat, lon, height) to ECEF (X, Y, Z).
-
-    Implements Section 3.6 of the SIDD standard.
-
-    Parameters
-    ----------
-    lats : np.ndarray
-        Latitudes in degrees.
-    lons : np.ndarray
-        Longitudes in degrees.
-    heights : np.ndarray
-        Heights above WGS-84 ellipsoid in meters.
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (X, Y, Z) ECEF coordinates in meters.
-    """
-    lat_rad = np.radians(lats)
-    lon_rad = np.radians(lons)
-    sin_lat = np.sin(lat_rad)
-    cos_lat = np.cos(lat_rad)
-    sin_lon = np.sin(lon_rad)
-    cos_lon = np.cos(lon_rad)
-
-    # Radius of curvature in the prime vertical
-    rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
-
-    x = (rc + heights) * cos_lat * cos_lon
-    y = (rc + heights) * cos_lat * sin_lon
-    z = ((_WGS84_B ** 2 / _WGS84_A ** 2) * rc + heights) * sin_lat
-
-    return x, y, z
-
-
-def _ecef_to_geodetic(
-    x: np.ndarray,
-    y: np.ndarray,
-    z: np.ndarray,
-    max_iter: int = 10,
-    tol: float = 1e-12,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Convert ECEF (X, Y, Z) to geodetic (lat, lon, height).
-
-    Implements Section 3.7 of the SIDD standard (iterative method).
-
-    Parameters
-    ----------
-    x, y, z : np.ndarray
-        ECEF coordinates in meters.
-    max_iter : int
-        Maximum iterations for latitude convergence.
-    tol : float
-        Convergence tolerance on tan(latitude).
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (lats, lons, heights) in degrees and meters.
-    """
-    lon = np.arctan2(y, x)
-
-    dxy = np.sqrt(x ** 2 + y ** 2)
-    theta = np.arctan2(_WGS84_A * z, _WGS84_B * dxy)
-
-    # Initial latitude estimate (Bowring's formula)
-    tan_lat = (
-        (z + _WGS84_E2_SQ * _WGS84_B * np.sin(theta) ** 3)
-        / (dxy - _WGS84_E1_SQ * _WGS84_A * np.cos(theta) ** 3)
-    )
-
-    # Iterative refinement (Section 3.7)
-    for _ in range(max_iter):
-        tan_lat_prev = tan_lat
-        # Reduced latitude step
-        tan_lat_reduced = (1.0 - _WGS84_F) * tan_lat
-        lat_reduced = np.arctan(tan_lat_reduced)
-        # Compute geocentric latitude for next iteration
-        sin_reduced = np.sin(lat_reduced)
-        cos_reduced = np.cos(lat_reduced)
-        theta_new = np.arctan2(
-            _WGS84_A * z, _WGS84_B * dxy
-        )
-        tan_lat = (
-            (z + _WGS84_E2_SQ * _WGS84_B * np.sin(theta_new) ** 3)
-            / (dxy - _WGS84_E1_SQ * _WGS84_A * np.cos(theta_new) ** 3)
-        )
-        if np.all(np.abs(tan_lat - tan_lat_prev) < tol):
-            break
-
-    lat = np.arctan(tan_lat)
-
-    # Height above ellipsoid
-    sin_lat = np.sin(lat)
-    cos_lat = np.cos(lat)
-    rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
-
-    # Avoid division by zero near poles
-    with np.errstate(invalid='ignore', divide='ignore'):
-        h_equatorial = dxy / cos_lat - rc
-        h_polar = np.abs(z) / np.where(
-            np.abs(sin_lat) > 0, np.abs(sin_lat), 1.0
-        ) - (_WGS84_B ** 2 / _WGS84_A ** 2) * rc
-    height = np.where(np.abs(cos_lat) > 1e-10, h_equatorial, h_polar)
-
-    return np.degrees(lat), np.degrees(lon), height
 
 
 # ===================================================================

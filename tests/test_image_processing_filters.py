@@ -146,9 +146,9 @@ class TestMeanFilter:
         # Different kernel sizes should produce different results
         assert not np.allclose(result_3, result_5)
 
-    def test_gpu_compatible_false(self):
-        """MeanFilter uses scipy, so not GPU-compatible."""
-        assert MeanFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """MeanFilter dispatches to cupyx when given a cupy array."""
+        assert MeanFilter.__gpu_compatible__ is True
 
     def test_mode_options(self, random_image):
         """All boundary modes produce valid output."""
@@ -198,9 +198,9 @@ class TestGaussianFilter:
         assert result[25, 25] > result[25, 28]
         assert result[25, 28] > result[25, 31]
 
-    def test_gpu_compatible_false(self):
-        """GaussianFilter uses scipy, so not GPU-compatible."""
-        assert GaussianFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """GaussianFilter dispatches to cupyx when given a cupy array."""
+        assert GaussianFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +237,9 @@ class TestMedianFilter:
         with pytest.raises(ValidationError):
             MedianFilter(kernel_size=4)
 
-    def test_gpu_compatible_false(self):
-        """MedianFilter uses scipy, so not GPU-compatible."""
-        assert MedianFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """MedianFilter dispatches to cupyx when given a cupy array."""
+        assert MedianFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +267,9 @@ class TestMinFilter:
         result = f.apply(random_image)
         assert result.shape == random_image.shape
 
-    def test_gpu_compatible_false(self):
-        """MinFilter uses scipy, so not GPU-compatible."""
-        assert MinFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """MinFilter dispatches to cupyx when given a cupy array."""
+        assert MinFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +297,9 @@ class TestMaxFilter:
         result = f.apply(random_image)
         assert result.shape == random_image.shape
 
-    def test_gpu_compatible_false(self):
-        """MaxFilter uses scipy, so not GPU-compatible."""
-        assert MaxFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """MaxFilter dispatches to cupyx when given a cupy array."""
+        assert MaxFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +347,9 @@ class TestStdDevFilter:
         with pytest.raises(ValidationError):
             StdDevFilter(kernel_size=4)
 
-    def test_gpu_compatible_false(self):
-        """StdDevFilter uses scipy, so not GPU-compatible."""
-        assert StdDevFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """StdDevFilter dispatches to cupyx when given a cupy array."""
+        assert StdDevFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -499,9 +499,9 @@ class TestComplexLeeFilter:
         with pytest.raises(ValidationError):
             ComplexLeeFilter(kernel_size=4)
 
-    def test_gpu_compatible_false(self):
-        """ComplexLeeFilter uses scipy, so not GPU-compatible."""
-        assert ComplexLeeFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """ComplexLeeFilter dispatches to cupyx when given a cupy array."""
+        assert ComplexLeeFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------
@@ -598,9 +598,9 @@ class TestPhaseGradientFilter:
             assert result.shape == z.shape
             assert np.all(np.isfinite(result))
 
-    def test_gpu_compatible_false(self):
-        """PhaseGradientFilter uses scipy, so not GPU-compatible."""
-        assert PhaseGradientFilter.__gpu_compatible__ is False
+    def test_gpu_compatible_true(self):
+        """PhaseGradientFilter dispatches to cupyx when given a cupy array."""
+        assert PhaseGradientFilter.__gpu_compatible__ is True
 
 
 # ---------------------------------------------------------------------------

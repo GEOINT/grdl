@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -41,6 +41,9 @@ from typing import Optional
 # Third-party
 import numpy as np
 from numpy.linalg import norm
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from sarpy.geometry.geocoords import wgs_84_norm, ecf_to_geodetic
@@ -420,7 +423,7 @@ class CollectionGeometry:
             import cartopy.crs as ccrs
             import cartopy.feature as cfeature
         except ImportError:
-            raise ImportError(
+            raise DependencyError(
                 "matplotlib and cartopy are required for plotting. "
                 "Install with: conda install -c conda-forge cartopy"
             )

@@ -29,11 +29,14 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
 
 # Standard library
 from typing import List
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 _HAS_RASTERIO = False
 _HAS_PYPROJ = False
@@ -73,7 +76,7 @@ def require_affine_backend() -> None:
 
     if missing:
         packages = ' '.join(missing)
-        raise ImportError(
+        raise DependencyError(
             f"AffineGeolocation requires {', '.join(missing)}. "
             f"Install with: pip install {packages}"
         )

@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-03-10
 """
 
 # Standard library
@@ -36,6 +36,16 @@ from typing import Dict, Optional, Tuple
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
+
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
 
 # GRDL internal
 from grdl.image_processing.sar.image_formation.geometry import (
@@ -106,6 +116,12 @@ class PolarGrid:
         # Spatial frequency conversion factor: k = 2f/c
         self.sf_conv = 2.0 / geometry.c
 
+        # Dispatch on geometry array type
+        self._xp = (
+            cp if (_HAS_CUPY and isinstance(geometry.phi, cp.ndarray))
+            else np
+        )
+
         self._compute_grid_limits()
         self._compute_grid_parameters()
 
@@ -127,22 +143,23 @@ class PolarGrid:
         All pulses are considered for ku extrema, not just first/last,
         to handle ground-plane collections where ``k_sf`` varies per pulse.
         """
+        xp = self._xp
         geo = self.geometry
         scale = geo.k_sf
 
         # kv bounds (range direction): fx1 and fx2 projected per pulse
-        sf_v_fx1 = self.sf_conv * geo.fx1 * np.cos(geo.phi) * scale
-        sf_v_fx2 = self.sf_conv * geo.fx2 * np.cos(geo.phi) * scale
+        sf_v_fx1 = self.sf_conv * geo.fx1 * xp.cos(geo.phi) * scale
+        sf_v_fx2 = self.sf_conv * geo.fx2 * xp.cos(geo.phi) * scale
 
         # ku at inner and outer frequency edges for ALL pulses
         # ku = sf_conv * freq * sin(phi) * k_sf
-        sf_u_fx1 = self.sf_conv * geo.fx1 * np.sin(geo.phi) * scale
-        sf_u_fx2 = self.sf_conv * geo.fx2 * np.sin(geo.phi) * scale
+        sf_u_fx1 = self.sf_conv * geo.fx1 * xp.sin(geo.phi) * scale
+        sf_u_fx2 = self.sf_conv * geo.fx2 * xp.sin(geo.phi) * scale
 
         if self.grid_mode == 'INSCRIBED':
-            kv_min_idx = np.argmax(np.abs(sf_v_fx1))
-            kv_max_idx = np.argmin(np.abs(sf_v_fx2))
-            self.kv_bounds = np.array([
+            kv_min_idx = xp.argmax(xp.abs(sf_v_fx1))
+            kv_max_idx = xp.argmin(xp.abs(sf_v_fx2))
+            self.kv_bounds = xp.array([
                 sf_v_fx1[kv_min_idx], sf_v_fx2[kv_max_idx],
             ])
 
@@ -151,23 +168,23 @@ class PolarGrid:
             # ku = kv * tan(phi), so at kv_min the ku range is tightest.
             # Evaluate ku for all pulses at the inscribed kv_min.
             kv_min = self.kv_bounds[0]
-            ku_at_kv_min = kv_min * np.tan(geo.phi)
-            self.ku_bounds = np.array([
-                np.min(ku_at_kv_min),
-                np.max(ku_at_kv_min),
+            ku_at_kv_min = kv_min * xp.tan(geo.phi)
+            self.ku_bounds = xp.array([
+                xp.min(ku_at_kv_min),
+                xp.max(ku_at_kv_min),
             ])
 
         elif self.grid_mode == 'CIRCUMSCRIBED':
-            kv_min_idx = np.argmin(np.abs(sf_v_fx1))
-            kv_max_idx = np.argmax(np.abs(sf_v_fx2))
-            self.kv_bounds = np.array([
+            kv_min_idx = xp.argmin(xp.abs(sf_v_fx1))
+            kv_max_idx = xp.argmax(xp.abs(sf_v_fx2))
+            self.kv_bounds = xp.array([
                 sf_v_fx1[kv_min_idx], sf_v_fx2[kv_max_idx],
             ])
 
             # Circumscribed: widest ku extent across all pulses and freqs
-            self.ku_bounds = np.array([
-                min(np.min(sf_u_fx1), np.min(sf_u_fx2)),
-                max(np.max(sf_u_fx1), np.max(sf_u_fx2)),
+            self.ku_bounds = xp.array([
+                min(xp.min(sf_u_fx1), xp.min(sf_u_fx2)),
+                max(xp.max(sf_u_fx1), xp.max(sf_u_fx2)),
             ])
         else:
             raise ValueError(
@@ -187,6 +204,7 @@ class PolarGrid:
         number of samples in the rectangular grid — they change the
         sampling density without affecting bandwidth or resolution.
         """
+        xp = self._xp
         geo = self.geometry
         c = geo.c
 
@@ -198,7 +216,7 @@ class PolarGrid:
         self.range_resolution = c * 0.886 / (2 * self.proc_bw)
 
         # Azimuth resolution: 0.886 / ku_bandwidth (ku in cycles/m)
-        center_freq = float(np.mean(self.kv_bounds) / self.sf_conv)
+        center_freq = float(xp.mean(self.kv_bounds) / self.sf_conv)
         self.center_wl = c / center_freq
         ku_span = float(abs(self.ku_bounds[1] - self.ku_bounds[0]))
         self.azimuth_resolution = 0.886 / ku_span
@@ -219,8 +237,8 @@ class PolarGrid:
 
         # Azimuth sampling: minimum ku step between adjacent pulses,
         # then scale by oversampling factor
-        az_sf_sampling = float(np.min(np.abs(np.diff(
-            self.kv_bounds[0] * np.tan(geo.phi),
+        az_sf_sampling = float(xp.min(xp.abs(xp.diff(
+            self.kv_bounds[0] * xp.tan(geo.phi),
         )))) * 0.889
 
         self.rec_n_pulses = max(
@@ -232,14 +250,14 @@ class PolarGrid:
         self.rg_imp_resp_bw = float(self.kv_bounds[1] - self.kv_bounds[0])
         self.rg_imp_resp_wid = 0.886 / self.rg_imp_resp_bw
         self.rg_ss = 1.0 / self.rg_imp_resp_bw
-        self.rg_kctr = float(np.mean(self.kv_bounds))
+        self.rg_kctr = float(xp.mean(self.kv_bounds))
         self.rg_delta_k1 = float(self.kv_bounds[0])
         self.rg_delta_k2 = float(self.kv_bounds[1])
 
         self.az_imp_resp_bw = ku_span
         self.az_imp_resp_wid = 0.886 / self.az_imp_resp_bw
         self.az_ss = 1.0 / self.az_imp_resp_bw
-        self.az_kctr = float(np.mean(self.ku_bounds))
+        self.az_kctr = float(xp.mean(self.ku_bounds))
 
     def _get_rcv_window(self) -> Optional[float]:
         """Get receive window length from metadata."""
@@ -269,12 +287,13 @@ class PolarGrid:
         np.ndarray
             kv values, shape ``(nsamples,)``.
         """
+        xp = self._xp
         geo = self.geometry
         scaling = geo.k_sf[pulse]
         freq = (
-            np.arange(geo.nsamples) * geo.fxss[pulse] + geo.fx0[pulse]
+            xp.arange(geo.nsamples) * geo.fxss[pulse] + geo.fx0[pulse]
         )
-        return self.sf_conv * freq * np.cos(geo.phi[pulse]) * scaling
+        return self.sf_conv * freq * xp.cos(geo.phi[pulse]) * scaling
 
     def get_ku_for_sample(self, sample: int) -> np.ndarray:
         """Return ku (azimuth spatial freq) values for a given sample.
@@ -289,12 +308,13 @@ class PolarGrid:
         np.ndarray
             ku values, shape ``(npulses,)``.
         """
+        xp = self._xp
         geo = self.geometry
         scaling = geo.k_sf
         if sample == -1:
             sample = geo.nsamples - 1
         freq = sample * geo.fxss + geo.fx0
-        return self.sf_conv * freq * np.sin(geo.phi) * scaling
+        return self.sf_conv * freq * xp.sin(geo.phi) * scaling
 
     def get_output_grid(self) -> Dict[str, float]:
         """Return output grid parameters for SICD metadata.
@@ -342,7 +362,7 @@ class PolarGrid:
             matplotlib.use("QtAgg")
             import matplotlib.pyplot as plt
         except ImportError:
-            raise ImportError(
+            raise DependencyError(
                 "matplotlib is required for plotting."
             )
 

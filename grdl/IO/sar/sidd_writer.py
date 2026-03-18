@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-03-07
+2026-03-10
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageWriter
 from grdl.IO.models import SIDDMetadata
 from grdl.IO.models.common import XYZ, LatLon, Poly2D
@@ -155,7 +156,7 @@ class SIDDWriter(ImageWriter):
         metadata: Optional[SIDDMetadata] = None,
     ) -> None:
         if not _HAS_SARPY_SIDD:
-            raise ImportError(
+            raise DependencyError(
                 "sarpy is required for SIDDWriter. "
                 "Install with: pip install sarpy"
             )

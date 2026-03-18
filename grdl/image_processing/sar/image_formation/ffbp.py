@@ -46,6 +46,7 @@ Modified
 """
 
 # Standard library
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -62,12 +63,21 @@ try:
 except ImportError:
     _HAS_NUMBA = False
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+
 # GRDL internal
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
 )
 from grdl.IO.models.cphd import CPHDMetadata
 
+
+logger = logging.getLogger(__name__)
 
 # Speed of light (m/s)
 _C = 299792458.0
@@ -546,9 +556,9 @@ class FastBackProjection(ImageFormationAlgorithm):
 
         n_invalid = int(np.sum(~valid_mask))
         if n_invalid > 0 and self._verbose:
-            print(
-                f"  Trimming {n_invalid} invalid pulses "
-                f"({npulses} -> {npulses - n_invalid})"
+            logger.debug(
+                "Trimming %d invalid pulses (%d -> %d)",
+                n_invalid, npulses, npulses - n_invalid,
             )
 
         if self._apply_amp_sf and pvp.amp_sf is not None:
@@ -592,15 +602,18 @@ class FastBackProjection(ImageFormationAlgorithm):
         np.ndarray
             Range-compressed data, shape ``(npulses, nsamples)``.
         """
+        _is_gpu = _HAS_CUPY and isinstance(signal, cp.ndarray)
+        xp = cp if _is_gpu else np
+
         data = signal.copy()
         if self._range_weight_func is not None:
             w = self._range_weight_func(data.shape[1]).astype(
                 data.real.dtype,
             )
-            data *= w[np.newaxis, :]
-        return np.fft.fftshift(
-            np.fft.ifft(
-                np.fft.ifftshift(data, axes=1), axis=1,
+            data *= xp.asarray(w)[None, :]
+        return xp.fft.fftshift(
+            xp.fft.ifft(
+                xp.fft.ifftshift(data, axes=1), axis=1,
             ),
             axes=1,
         )
@@ -776,9 +789,9 @@ class FastBackProjection(ImageFormationAlgorithm):
                 i % max(1, len(starts) // 10) == 0
                 or i == len(starts) - 1
             ):
-                print(
-                    f"  Leaf {i + 1}/{len(starts)}: "
-                    f"pulses [{s}:{e}]"
+                logger.debug(
+                    "Leaf %d/%d: pulses [%d:%d]",
+                    i + 1, len(starts), s, e,
                 )
 
         return leaves
@@ -942,10 +955,9 @@ class FastBackProjection(ImageFormationAlgorithm):
         while len(nodes) > 1:
             level += 1
             if self._verbose:
-                print(
-                    f"  Merge level {level}: "
-                    f"{len(nodes)} nodes → "
-                    f"{(len(nodes) + 1) // 2}"
+                logger.debug(
+                    "Merge level %d: %d nodes -> %d",
+                    level, len(nodes), (len(nodes) + 1) // 2,
                 )
 
             merged = []
@@ -1000,13 +1012,14 @@ class FastBackProjection(ImageFormationAlgorithm):
             ang_extent_deg = np.degrees(
                 angle_axis[-1] - angle_axis[0]
             )
-            print(f"  Root angular extent: "
-                  f"{ang_extent_deg:.4f} deg "
-                  f"({angle_axis[-1] - angle_axis[0]:.6f} rad)")
-            print(f"  Cross-range extent: "
-                  f"{xr_extent:.1f} m")
-            print(f"  Output: {n_xr} x {n_rg} "
-                  f"(cross-range x range)")
+            logger.debug(
+                "Root angular extent: %.4f deg (%.6f rad)",
+                ang_extent_deg, angle_axis[-1] - angle_axis[0],
+            )
+            logger.debug("Cross-range extent: %.1f m", xr_extent)
+            logger.debug(
+                "Output: %d x %d (cross-range x range)", n_xr, n_rg,
+            )
 
         # -- Numba fast path --
         if self._use_numba:
@@ -1069,56 +1082,67 @@ class FastBackProjection(ImageFormationAlgorithm):
             )
 
         if self._verbose:
-            print(f"FFBP: {self._npulses} pulses x "
-                  f"{self._nsamples} samples")
-            print(f"  Phase SGN: {self._phase_sgn:+d}")
-            print(f"  Wavelength: {self._wavelength * 100:.2f} cm")
-            print(f"  Bandwidth: {self._bandwidth / 1e6:.1f} MHz")
-            print(f"  PRF: {self._prf:.1f} Hz")
-            print(f"  Platform speed: {self._speed:.1f} m/s")
-            print(f"  Reference range: "
-                  f"{self._r0_center / 1e3:.1f} km")
-            print(f"  Range resolution: "
-                  f"{self._range_resolution:.3f} m")
-            print(f"  Azimuth resolution: "
-                  f"{self._azimuth_resolution:.3f} m")
-            print(f"  Leaf size: {self._leaf_size} pulses")
-            print(f"  Angular samples: {self._n_angular}")
-            print(f"  Cross-range spacing: "
-                  f"{self._xr_spacing:.3f} m")
-            print(f"  Numba acceleration: "
-                  f"{'enabled' if self._use_numba else 'disabled'}")
+            logger.info(
+                "FFBP: %d pulses x %d samples",
+                self._npulses, self._nsamples,
+            )
+            logger.debug("Phase SGN: %+d", self._phase_sgn)
+            logger.debug("Wavelength: %.2f cm", self._wavelength * 100)
+            logger.debug("Bandwidth: %.1f MHz", self._bandwidth / 1e6)
+            logger.debug("PRF: %.1f Hz", self._prf)
+            logger.debug("Platform speed: %.1f m/s", self._speed)
+            logger.debug(
+                "Reference range: %.1f km", self._r0_center / 1e3,
+            )
+            logger.debug(
+                "Range resolution: %.3f m", self._range_resolution,
+            )
+            logger.debug(
+                "Azimuth resolution: %.3f m",
+                self._azimuth_resolution,
+            )
+            logger.debug("Leaf size: %d pulses", self._leaf_size)
+            logger.debug("Angular samples: %d", self._n_angular)
+            logger.debug(
+                "Cross-range spacing: %.3f m", self._xr_spacing,
+            )
+            logger.debug(
+                "Numba acceleration: %s",
+                "enabled" if self._use_numba else "disabled",
+            )
             n_leaves = (self._npulses + self._leaf_size - 1) // self._leaf_size
             n_levels = int(np.ceil(np.log2(max(2, n_leaves))))
-            print(f"  Tree: {n_leaves} leaves, "
-                  f"{n_levels} merge levels")
+            logger.debug(
+                "Tree: %d leaves, %d merge levels",
+                n_leaves, n_levels,
+            )
 
         # Preprocess
         signal = self._preprocess_signal(signal)
 
         # Stage 1: Range compress
         if self._verbose:
-            print("\nStage 1: Range compression...")
+            logger.info("Stage 1: Range compression")
         rc = self.range_compress(signal)
 
         # Stage 2: Leaf formation
         if self._verbose:
-            print("\nStage 2: Leaf back-projection...")
+            logger.info("Stage 2: Leaf back-projection")
         leaves = self.form_leaves(rc)
 
         # Stage 3: Binary-tree merge
         if self._verbose:
-            print("\nStage 3: Binary-tree merge...")
+            logger.info("Stage 3: Binary-tree merge")
         root = self.merge_tree(leaves)
 
         # Stage 4: Polar → rectangular
         if self._verbose:
-            print("\nStage 4: Polar to rectangular...")
+            logger.info("Stage 4: Polar to rectangular")
         image = self.polar_to_rect(root)
 
         if self._verbose:
-            print(f"\nImage formed: {image.shape}, "
-                  f"dtype: {image.dtype}")
+            logger.info("Image formed: %s, dtype: %s",
+                        image.shape, image.dtype)
 
         return image
 

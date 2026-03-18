@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
 
 # Standard library
@@ -43,6 +43,7 @@ except ImportError:
     _HAS_PIL = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageWriter
 from grdl.IO.models import ImageMetadata
 
@@ -81,7 +82,7 @@ class PngWriter(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_PIL:
-            raise ImportError(
+            raise DependencyError(
                 "Pillow is required for PNG writing. "
                 "Install with: pip install Pillow"
             )

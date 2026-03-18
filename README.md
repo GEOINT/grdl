@@ -22,22 +22,13 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 
 | Task | Module | Not this |
 |------|--------|----------|
-| Load imagery from any format | `grdl.IO` (`SICDReader`, `NISARReader`, `VIIRSReader`, `Sentinel2Reader`, `EONITFReader`, ...) | Raw `rasterio.open()` / `h5py.File()` calls |
-| Write imagery to disk | `grdl.IO` (`GeoTIFFWriter`, `SICDWriter`, `SIDDWriter`, `NumpyWriter`, `PngWriter`) | Raw `rasterio` / `h5py` write calls |
-| Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
+| Load imagery from any format | `grdl.IO` (`SICDReader`, `VIIRSReader`, `ASTERReader`, ...) | Raw `rasterio.open()` / `h5py.File()` calls |
 | Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
 | Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
-| Transform pixel to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual interpolation of GCPs or affine math |
-| Coordinate system conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |
+| Transform pixel to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `GCPGeolocation`) | Manual interpolation of GCPs or affine math |
 | Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
-| Decompose polarimetric SAR | `grdl.image_processing` (`PauliDecomposition`, `DualPolHAlpha`) | Manual `(shh + svv) / sqrt(2)` arithmetic |
-| Sub-aperture dominance detection | `grdl.image_processing.sar.dominance` (`compute_dominance`) | Manual sublook power ratios |
-| CSI RGB composite | `grdl.image_processing.sar.CSIProcessor` | Ad-hoc HSV mapping |
-| CFAR target detection | `grdl.image_processing.detection.cfar` (CA, GO, SO, OS variants) | Manual threshold loops |
-| SAR image formation | `grdl.image_processing.sar.image_formation` (PFA, RDA, FFBP) | Custom FFT-based pipelines |
-| Interpolation / resampling | `grdl.interpolation` (`PolyphaseInterpolator`, `LanczosInterpolator`, ...) | Manual sinc convolution |
+| Decompose polarimetric SAR | `grdl.image_processing` (`PauliDecomposition`) | Manual `(shh + svv) / sqrt(2)` arithmetic |
 | Align two images | `grdl.coregistration` (`AffineCoRegistration`, ...) | Custom OpenCV `findHomography` wrappers |
-| Transform detection geometries | `grdl.transforms` (`transform_detection_set`) | Manual coordinate mapping |
 
 This matters because the library modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code typically misses. Compose them at the application level:
 
@@ -69,31 +60,23 @@ with SICDReader('image.nitf') as reader:
 | Domain | Description | Status |
 |--------|-------------|--------|
 | **I/O** | Readers and writers for geospatial imagery formats | Implemented |
-| | Base formats: GeoTIFF, HDF5, NITF, JPEG2000, NumPy, PNG | |
+| | Base formats: GeoTIFF, HDF5, NITF, JPEG2000 | |
 | | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS, Sentinel-1 SLC, TerraSAR-X, NISAR | |
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
-| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial) | |
-| | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG | |
-| | Generic: `GDALFallbackReader` (`open_any()`), `InvasiveProbeReader` | |
+| | EO: Sentinel-2 (L1C, L2A) | |
+| **Catalog & Download** | Remote query, download, and local SQLite cataloging | Implemented |
+| | ESA Copernicus (CDSE OData): Sentinel-1, Sentinel-2 | |
+| | NASA Earthdata (CMR): NISAR, ASTER, VIIRS | |
+| | ESA MAAP (STAC): BIOMASS | |
+| | Local-only: TerraSAR-X | |
 | **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
 | | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
-| | SAR: `SICDGeolocation` (native R/Rdot + sarpy), `SIDDGeolocation`, `GCPGeolocation`, `NISARGeolocation`, `Sentinel1SLCGeolocation` | |
-| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B), `RSMGeolocation` (RSMPCA) | |
-| | Projection: `COAProjection` (native R/Rdot engine), `image_to_ground_hae`, `image_to_ground_dem`, `ground_to_image` | |
+| | SAR: `SICDGeolocation` (SICD complex imagery via sarpy/sarkit), `GCPGeolocation` (BIOMASS GCPs) | |
 | | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
-| | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic` | |
-| **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, CSI, dominance features, detection models, CFAR detectors, image formation, processor versioning & metadata | Implemented |
-| | Ortho: `Orthorectifier`, `OutputGrid`, `ENUGrid`, accelerated resampling | |
-| | SAR: `SublookDecomposition`, `CSIProcessor`, `DominanceFeatures`, `compute_dominance`, `compute_sublook_entropy` | |
-| | Image Formation: `PolarFormatAlgorithm`, `RangeDopplerAlgorithm`, `FastBackProjection`, `StripmapPFA` | |
-| | Detection: `Detection`, `DetectionSet`, CFAR variants (CA, GO, SO, OS) | |
-| | Decomposition: `PauliDecomposition`, `DualPolHAlpha` | |
-| **Interpolation** | 1D bandwidth-preserving interpolation kernels for SAR image formation | Implemented |
-| | `LanczosInterpolator`, `KaiserSincInterpolator`, `LagrangeInterpolator`, `FarrowInterpolator`, `PolyphaseInterpolator`, `ThiranDelayFilter` | |
+| **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, detection models, processor versioning & metadata | Implemented |
 | **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
-| **Transforms** | Detection geometry transforms (apply coregistration to vector detections) | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
 
@@ -106,66 +89,51 @@ GRDL/
 │   ├── py.typed                     # PEP 561 type stub marker
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
-│   │   ├── geotiff.py               #   GeoTIFFReader, GeoTIFFWriter (rasterio)
-│   │   ├── hdf5.py                  #   HDF5Reader, HDF5Writer (h5py)
+│   │   ├── geotiff.py               #   GeoTIFFReader (rasterio), open_image()
+│   │   ├── hdf5.py                  #   HDF5Reader (h5py)
 │   │   ├── jpeg2000.py              #   JP2Reader (glymur)
-│   │   ├── nitf.py                  #   NITFReader, NITFWriter (rasterio/GDAL)
-│   │   ├── numpy_io.py              #   NumpyWriter (.npy / .npz)
-│   │   ├── png.py                   #   PngWriter
-│   │   ├── generic.py               #   GDALFallbackReader, open_any()
-│   │   ├── probe.py                 #   InvasiveProbeReader (format sniffing)
+│   │   ├── nitf.py                  #   NITFReader (rasterio/GDAL)
 │   │   ├── models/                  #   Typed metadata dataclasses
 │   │   │   ├── base.py              #     ImageMetadata base class
 │   │   │   ├── common.py            #     Shared primitives (XYZ, LatLonHAE, Poly2D, ...)
 │   │   │   ├── sicd.py              #     SICDMetadata (~35 nested dataclasses)
 │   │   │   ├── sidd.py              #     SIDDMetadata (~25 nested dataclasses)
-│   │   │   ├── cphd.py              #     CPHDMetadata
 │   │   │   ├── biomass.py           #     BIOMASSMetadata (flat typed fields)
 │   │   │   ├── viirs.py             #     VIIRSMetadata (flat typed fields)
-│   │   │   ├── aster.py             #     ASTERMetadata (flat typed fields)
-│   │   │   ├── sentinel1_slc.py     #     Sentinel1SLCMetadata
-│   │   │   ├── sentinel2.py         #     Sentinel2Metadata
-│   │   │   ├── terrasar.py          #     TerraSARMetadata
-│   │   │   ├── nisar.py             #     NISARMetadata
-│   │   │   └── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients
+│   │   │   └── aster.py             #     ASTERMetadata (flat typed fields)
 │   │   ├── sar/                     #   SAR-specific formats
 │   │   │   ├── _backend.py          #     sarkit/sarpy availability detection
 │   │   │   ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
-│   │   │   ├── sicd_writer.py       #     SICDWriter
 │   │   │   ├── cphd.py              #     CPHDReader (sarkit primary, sarpy fallback)
 │   │   │   ├── crsd.py              #     CRSDReader (sarkit only)
 │   │   │   ├── sidd.py              #     SIDDReader (sarkit only)
-│   │   │   ├── sidd_writer.py       #     SIDDWriter
 │   │   │   ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
-│   │   │   ├── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
-│   │   │   ├── sentinel1_slc.py     #     Sentinel1SLCReader
-│   │   │   ├── terrasar.py          #     TerraSARReader, open_terrasar()
-│   │   │   └── nisar.py             #     NISARReader, open_nisar()
+│   │   │   └── biomass_catalog.py   #     BIOMASSCatalog (MAAP STAC query & download)
 │   │   ├── ir/                      #   IR/thermal readers
 │   │   │   ├── _backend.py          #     rasterio/h5py availability detection
 │   │   │   └── aster.py             #     ASTERReader (L1T, GDEM)
 │   │   ├── multispectral/           #   Multispectral/hyperspectral readers
 │   │   │   ├── _backend.py          #     h5py/xarray/spectral availability detection
 │   │   │   └── viirs.py             #     VIIRSReader (nightlights, vegetation, reflectance)
-│   │   └── eo/                      #   EO readers
-│   │       ├── _backend.py          #     rasterio/glymur availability detection
-│   │       ├── sentinel2.py         #     Sentinel2Reader
-│   │       └── nitf.py              #     EONITFReader (RPC/RSM extraction)
+│   │   ├── eo/                      #   EO readers
+│   │   │   ├── _backend.py          #     rasterio/glymur availability detection
+│   │   │   └── sentinel2.py         #     Sentinel2Reader (L1C, L2A via JP2/GeoTIFF)
+│   │   └── catalog/                 #   Remote query, download & SQLite cataloging
+│   │       ├── remote_utils.py      #     Shared credentials, token auth, streaming download
+│   │       ├── sentinel1_catalog.py #     Sentinel1SLCCatalog (CDSE OData)
+│   │       ├── sentinel2_catalog.py #     Sentinel2Catalog (CDSE OData)
+│   │       ├── nisar_catalog.py     #     NISARCatalog (NASA CMR / ASF DAAC)
+│   │       ├── aster_catalog.py     #     ASTERCatalog (NASA CMR / LP DAAC)
+│   │       ├── viirs_catalog.py     #     VIIRSCatalog (NASA CMR / LAADS DAAC)
+│   │       └── terrasar_catalog.py  #     TerraSARCatalog (local discovery only)
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
-│   │   ├── coordinates.py           #   geodetic_to_ecef, ecef_to_geodetic, geodetic_to_enu, enu_to_geodetic
-│   │   ├── projection.py            #   COAProjection, image_to_ground_hae/dem, ground_to_image
 │   │   ├── sar/
 │   │   │   ├── gcp.py               #   GCPGeolocation (Delaunay interpolation)
-│   │   │   ├── sicd.py              #   SICDGeolocation (SICD imagery via sarpy/sarkit)
-│   │   │   ├── sidd.py              #   SIDDGeolocation (SIDD imagery)
-│   │   │   ├── nisar.py             #   NISARGeolocation
-│   │   │   └── sentinel1_slc.py     #   Sentinel1SLCGeolocation
+│   │   │   └── sicd.py              #   SICDGeolocation (SICD imagery via sarpy/sarkit)
 │   │   ├── eo/
-│   │   │   ├── affine.py            #   AffineGeolocation (geocoded rasters, affine + pyproj)
-│   │   │   ├── rpc.py               #   RPCGeolocation (RPC00B rational polynomials)
-│   │   │   └── rsm.py               #   RSMGeolocation (RSMPCA replacement sensor model)
+│   │   │   └── affine.py            #   AffineGeolocation (geocoded rasters, affine + pyproj)
 │   │   └── elevation/               #   Terrain elevation models
 │   │       ├── base.py              #   ElevationModel ABC
 │   │       ├── constant.py          #   ConstantElevation (fixed-height fallback)
@@ -178,102 +146,61 @@ GRDL/
 │   │   ├── versioning.py            #   @processor_version, @processor_tags, DetectionInputSpec
 │   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
-│   │   │   ├── ortho.py             #   Orthorectifier, OutputGrid, OrthoPipeline, OrthoResult
-│   │   │   ├── enu_grid.py          #   ENUGrid (local East-North-Up grid)
-│   │   │   └── accelerated.py       #   resample(), detect_backend() (accelerated resampling)
+│   │   │   └── ortho.py             #   Orthorectifier, OutputGrid
 │   │   ├── decomposition/
 │   │   │   ├── base.py              #   PolarimetricDecomposition ABC
-│   │   │   ├── pauli.py             #   PauliDecomposition (quad-pol)
-│   │   │   └── dual_pol.py          #   DualPolHAlpha (dual-pol H/Alpha)
+│   │   │   └── pauli.py             #   PauliDecomposition (quad-pol)
 │   │   ├── detection/
 │   │   │   ├── base.py              #   ImageDetector ABC
-│   │   │   ├── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
-│   │   │   ├── fields.py            #   Data dictionary (Fields.sar, Fields.physical, etc.)
-│   │   │   └── cfar/                #   CFAR detector variants
-│   │   │       ├── _base.py         #     CFARDetector ABC
-│   │   │       ├── ca.py            #     CACFARDetector (Cell-Averaging)
-│   │   │       ├── go.py            #     GOCFARDetector (Greatest-Of)
-│   │   │       ├── so.py            #     SOCFARDetector (Smallest-Of)
-│   │   │       └── os.py            #     OSCFARDetector (Ordered-Statistics)
+│   │   │   └── models.py            #   Detection, DetectionSet, Geometry, OutputSchema
 │   │   └── sar/                     #   SAR-specific transforms (metadata-dependent)
-│   │       ├── sublook.py           #   SublookDecomposition (sub-aperture splitting)
-│   │       ├── csi.py               #   CSIProcessor (Coherent Shape Index RGB composite)
-│   │       ├── dominance.py         #   DominanceFeatures, compute_dominance, compute_sublook_entropy
-│   │       └── image_formation/     #   SAR image formation algorithms
-│   │           ├── pfa.py           #     PolarFormatAlgorithm
-│   │           ├── rda.py           #     RangeDopplerAlgorithm
-│   │           ├── ffbp.py          #     FastBackProjection
-│   │           └── stripmap_pfa.py  #     StripmapPFA
-│   ├── interpolation/               # 1D bandwidth-preserving interpolation kernels
-│   │   ├── base.py                  #   Interpolator, KernelInterpolator ABCs
-│   │   ├── lanczos.py               #   LanczosInterpolator
-│   │   ├── windowed_sinc.py         #   KaiserSincInterpolator
-│   │   ├── lagrange.py              #   LagrangeInterpolator
-│   │   ├── farrow.py                #   FarrowInterpolator
-│   │   ├── polyphase.py             #   PolyphaseInterpolator
-│   │   └── thiran.py                #   ThiranDelayFilter (IIR allpass)
-│   ├── transforms/                  # Detection geometry transforms
-│   │   └── detection.py             #   transform_pixel_geometry, transform_detection, transform_detection_set
+│   │       └── sublook.py           #   SublookDecomposition (sub-aperture splitting)
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
+│   │   ├── __init__.py              #   Module exports (ChipBase, ChipRegion, ChipExtractor, Tiler, Normalizer)
 │   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
 │   │   ├── tiler.py                 #   Tiler (stride-based tile region computation)
 │   │   ├── chip_extractor.py        #   ChipExtractor (point-centered and whole-image chip regions)
 │   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
-│   ├── coregistration/              # Image alignment and registration
-│   │   ├── base.py                  #   Base coregistration classes
-│   │   ├── affine.py                #   Affine transform alignment
-│   │   ├── projective.py            #   Projective transform alignment
-│   │   ├── feature_match.py         #   Feature-based matching (OpenCV)
-│   │   └── utils.py                 #   Coregistration utilities
+│   └── coregistration/              # Image alignment and registration
+│       ├── __init__.py              #   Module exports
+│       ├── base.py                  #   Base coregistration classes
+│       ├── affine.py                #   Affine transform alignment
+│       ├── projective.py            #   Projective transform alignment
+│       ├── feature_match.py         #   Feature-based matching (OpenCV)
+│       └── utils.py                 #   Coregistration utilities
 │   └── example/                     # Example scripts
 │       ├── catalog/
 │       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
 │       │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
-│       ├── geolocation/
-│       │   └── geolocation_overlay.py   #   Geolocation overlay visualization
-│       ├── interpolation/
-│       │   ├── polyphaseinterpolation.py #   Polyphase interpolation demo
-│       │   └── lfm_polyphase.py         #   LFM chirp polyphase resampling
-│       ├── IO/
-│       │   ├── sar/
-│       │   │   └── view_sicd.py         #   SICD magnitude viewer (linear)
-│       │   ├── eo/
-│       │   │   └── view_sentinel2.py    #   Sentinel-2 viewer
-│       │   ├── HDF5/
-│       │   │   └── load_earthdata.py    #   HDF5 EarthData loader
-│       │   └── test_file_loading.py     #   Generic file loading test
 │       ├── ortho/
-│       │   ├── ortho_biomass.py         #   Orthorectification with Pauli RGB
-│       │   ├── ortho_combined.py        #   Combined ortho pipeline demo
-│       │   ├── ortho_sicd.py            #   SICD orthorectification
-│       │   └── ortho_sidd.py            #   SIDD orthorectification
+│       │   └── ortho_biomass.py         #   Orthorectification with Pauli RGB
+│       ├── sar/
+│       │   └── view_sicd.py             #   SICD magnitude viewer (linear)
 │       └── image_processing/
-│           ├── filtering/
-│           │   └── phase_gradient.py    #   Phase gradient filter demo
 │           └── sar/
-│               ├── sublook_compare.py       #   IO + data_prep + sublook integration
-│               ├── csi_detection_overlay.py #   CSI + dominance detection overlay
-│               ├── ifp_example.py           #   Image formation (PFA) example
-│               ├── ffbp_stripmap_example.py #   FFBP stripmap formation
-│               ├── rda_stripmap_example.py  #   RDA stripmap formation
-│               ├── dump_cphd_metadata.py    #   CPHD metadata inspector
-│               └── detection_workflow/
-│                   └── csi_detect_workflow.py #   Full CSI detection workflow
+│               └── sublook_compare.py   #   Full GRDL integration: IO + data_prep + image_processing
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
-├── tests/                           # Test suite (70 test files)
-│   ├── conftest.py                              #   Shared pytest fixtures
-│   ├── test_io_*.py                             #   IO reader/writer tests
-│   ├── test_geolocation_*.py                    #   Geolocation tests
-│   ├── test_image_processing_*.py               #   Image processing tests
-│   ├── test_interpolation*.py                   #   Interpolation tests
-│   ├── test_transforms_detection.py             #   Transform tests
+├── tests/                           # Test suite
+│   ├── conftest.py                              #   Shared pytest fixtures (synthetic images)
+│   ├── test_io_imports.py                       #   IO module import verification
+│   ├── test_io_biomass.py                       #   BIOMASS reader tests
+│   ├── test_io_geotiff.py                       #   GeoTIFF reader tests
+│   ├── test_io_hdf5.py                          #   HDF5 reader tests
+│   ├── test_io_ir_readers.py                    #   ASTER reader tests
+│   ├── test_io_multispectral_readers.py         #   VIIRS reader tests
+│   ├── test_io_models.py                        #   Metadata model tests
+│   ├── test_geolocation_biomass.py              #   Geolocation tests with interactive markers
+│   ├── test_image_processing_ortho.py           #   Orthorectification tests
+│   ├── test_image_processing_decomposition.py   #   Pauli decomposition tests
+│   ├── test_image_processing_detection.py       #   Detection models & geo-registration tests
+│   ├── test_image_processing_versioning.py      #   Processor versioning tests
+│   ├── test_image_processing_tunable.py         #   Tunable parameter tests
+│   ├── test_image_processing_sar_sublook.py     #   SAR sublook decomposition tests
 │   ├── test_coregistration.py                   #   Coregistration tests
-│   ├── test_integration.py                      #   Full integration tests
 │   └── test_benchmarks.py                       #   Performance benchmarks (pytest-benchmark)
 ├── example_images/                  # Small sample data for tests and demos
 ├── pyproject.toml                   # Package config, dependencies, and tool settings
-├── environment.yml                  # Conda environment specification (conda-forge)
 └── CLAUDE.md                        # Development standards and coding guide
 ```
 
@@ -302,24 +229,47 @@ with BIOMASSL1Reader('path/to/BIO_S3_SCS__1S_...') as reader:
     print(f"Center: ({lat:.6f}, {lon:.6f})")
 ```
 
-### Searching & Downloading from ESA MAAP
+### Catalog: Searching & Downloading Remote Data
+
+Every catalog follows the same pattern: **query** a remote archive (all parameters optional), then **download** by product ID. Results are indexed into a local SQLite database for offline filtering.
 
 ```python
-from grdl.IO import BIOMASSCatalog
+from grdl.IO.catalog import Sentinel1SLCCatalog
 
-catalog = BIOMASSCatalog('/data/biomass')
+catalog = Sentinel1SLCCatalog('/data/sentinel1')
 
-# Search the MAAP STAC catalog
-products = catalog.query_esa(
-    bbox=(115.5, -31.5, 116.8, -30.5),
-    product_type="S3_SCS__1S",
+# Query with no filters -- returns up to 50 most recent products
+results = catalog.query_cdse()
+
+# Or filter by date, geography, and sensor-specific params
+results = catalog.query_cdse(
+    start_date='2025-12-01',
+    end_date='2025-12-07',
+    bbox=(-5.0, 40.0, 0.0, 42.0),   # (west, south, east, north) in degrees
+    orbit_pass='ASCENDING',
+    polarization='VV+VH',
     max_results=10,
 )
 
 # Download a product (uses OAuth2 via ~/.config/geoint/credentials.json)
-catalog.download_product(products[0]['id'], extract=True)
-catalog.close()
+path = catalog.download_product(results[0]['Id'], extract=True)
 ```
+
+Available catalogs and their query methods:
+
+| Catalog | Query method | Remote API | Sensor-specific filters |
+|---------|-------------|------------|------------------------|
+| `Sentinel1SLCCatalog` | `query_cdse()` | ESA CDSE OData | `orbit_pass`, `polarization` |
+| `Sentinel2Catalog` | `query_cdse()` | ESA CDSE OData | `mgrs_tile_id`, `processing_level` |
+| `NISARCatalog` | `query_earthdata()` | NASA CMR / ASF | `product_type`, `radar_band` |
+| `ASTERCatalog` | `query_earthdata()` | NASA CMR / LP DAAC | `entity_id`, `cloud_cover_max` |
+| `VIIRSCatalog` | `query_earthdata()` | NASA CMR / LAADS | `product_short_name`, `satellite_name`, `day_night_flag` |
+| `BIOMASSCatalog` | `query_esa()` | ESA MAAP STAC | `orbit`, `product_type`, `collection` |
+| `TerraSARCatalog` | -- | Local only | -- |
+
+All query methods share these common optional parameters: `start_date`, `end_date`, `bbox`, `max_results` (default 50).
+
+Catalog databases are stored in `~/.config/geoint/catalogs/` by default (created automatically). Pass a custom `db_path` to the constructor to override.
 
 ### Geolocation Transforms
 
@@ -440,146 +390,6 @@ with SICDReader('image.nitf') as reader:
     import torch
     image_gpu = torch.from_numpy(image).cuda()
     looks_gpu = sublook.decompose(image_gpu)          # returns numpy
-```
-
-### CSI & Dominance Detection
-
-Coherent Shape Index (CSI) maps sub-aperture scattering behavior to an RGB composite. Dominance features detect pixels where a single sub-look dominates the aperture energy -- a signature of coherent man-made targets.
-
-```python
-from grdl.IO.sar import SICDReader
-from grdl.data_prep import ChipExtractor
-from grdl.image_processing.sar import SublookDecomposition, CSIProcessor
-from grdl.image_processing.sar.dominance import compute_dominance
-import numpy as np
-
-with SICDReader('image.nitf') as reader:
-    meta = reader.metadata
-    rows, cols = reader.get_shape()
-    extractor = ChipExtractor(rows, cols)
-    region = extractor.chip_at_point(rows // 2, cols // 2, 5000, 5000)
-    chip = reader.read_chip(region.row_start, region.row_end,
-                            region.col_start, region.col_end)
-
-# Sub-aperture decomposition
-sublook = SublookDecomposition(meta, num_looks=7, dimension='azimuth')
-looks = sublook.decompose(chip)                  # (7, rows, cols) complex
-
-# Dominance ratio: high values = single look dominates
-dominance = compute_dominance(looks, window_size=7, dom_window=3)
-
-# Threshold detections
-det_mask = dominance > (np.mean(dominance) + 3.0 * np.std(dominance))
-
-# CSI RGB composite
-csi = CSIProcessor(meta, dimension='azimuth', normalization='log')
-csi_rgb = csi.apply(chip)                        # (rows, cols, 3) float32 [0, 1]
-```
-
-See `grdl/example/image_processing/sar/csi_detection_overlay.py` for a full CLI example that overlays detection polygons on a CSI composite.
-
-### CFAR Detection
-
-Constant False Alarm Rate (CFAR) detectors for automatic target detection in SAR imagery:
-
-```python
-from grdl.image_processing.detection.cfar import (
-    CACFARDetector,   # Cell-Averaging
-    GOCFARDetector,   # Greatest-Of
-    SOCFARDetector,   # Smallest-Of
-    OSCFARDetector,   # Ordered-Statistics
-)
-
-detector = CACFARDetector(
-    guard_cells=2, background_cells=4, pfa=1e-6,
-)
-detection_set = detector.detect(image)
-
-for det in detection_set:
-    print(f"  {det.pixel_geometry.centroid}: conf={det.confidence:.2f}")
-```
-
-### Interpolation
-
-Bandwidth-preserving 1D interpolation kernels for SAR image formation and signal processing:
-
-```python
-from grdl.interpolation import (
-    LanczosInterpolator,      # Windowed sinc (Lanczos kernel)
-    KaiserSincInterpolator,   # Kaiser-windowed sinc
-    LagrangeInterpolator,     # Lagrange polynomial
-    FarrowInterpolator,       # Farrow structure (variable delay)
-    PolyphaseInterpolator,    # Polyphase FIR (efficient resampling)
-    ThiranDelayFilter,        # Thiran IIR allpass (fractional delay)
-)
-
-# Resample a signal by rational factor P/Q
-interp = PolyphaseInterpolator(up=4, down=3, num_taps=64)
-resampled = interp.resample(signal)
-
-# Fractional-sample delay
-delay = ThiranDelayFilter(delay=0.3, order=4)
-delayed = delay.apply(signal)
-```
-
-### SAR Image Formation
-
-Full image formation algorithms from phase history to focused imagery:
-
-```python
-from grdl.image_processing.sar.image_formation import (
-    PolarFormatAlgorithm,    # Spotlight PFA
-    RangeDopplerAlgorithm,   # Stripmap RDA
-    FastBackProjection,      # Time-domain backprojection (FFBP)
-    StripmapPFA,             # Stripmap PFA (subaperture)
-)
-```
-
-See `grdl/example/image_processing/sar/ifp_example.py` for a complete image formation example.
-
-### EO NITF Geolocation (RPC & RSM)
-
-Read EO NITF files (WorldView, GeoEye, Pleiades, aerial) and geolocate using RPC or RSM coefficients:
-
-```python
-from grdl.IO.eo.nitf import EONITFReader
-from grdl.geolocation.eo.rpc import RPCGeolocation
-from grdl.geolocation.eo.rsm import RSMGeolocation
-
-with EONITFReader('worldview.ntf') as reader:
-    print(f"RPC: {reader.has_rpc}, RSM: {reader.has_rsm}")
-
-    if reader.has_rpc:
-        geo = RPCGeolocation.from_reader(reader)
-        lat, lon, h = geo.image_to_latlon(2048, 2048, height=100.0)
-        row, col = geo.latlon_to_image(lat, lon, h)
-
-    if reader.has_rsm:
-        geo = RSMGeolocation.from_reader(reader)
-        lat, lon, h = geo.image_to_latlon(2048, 2048)
-```
-
-### Native R/Rdot Projection Engine
-
-Pure-numpy SICD Volume 3 projection — no sarpy required:
-
-```python
-from grdl.IO.sar import SICDReader
-from grdl.geolocation.sar.sicd import SICDGeolocation
-
-with SICDReader('image.nitf') as reader:
-    # Native backend (no sarpy dependency)
-    geo = SICDGeolocation(reader.metadata, backend='native')
-    lat, lon, h = geo.image_to_latlon(500, 1000)
-
-    # With calibration adjustments
-    import numpy as np
-    geo = SICDGeolocation(
-        reader.metadata,
-        backend='native',
-        range_bias=2.5,
-        delta_arp=np.array([0.1, -0.2, 0.05]),
-    )
 ```
 
 ### Orthorectification
@@ -767,21 +577,10 @@ except ProcessorError as e:
 
 ## Installation
 
-### Conda Environment (recommended)
-
 ```bash
 git clone https://github.com/geoint-org/GRDL.git
 cd GRDL
 
-# Create the full environment from environment.yml
-conda env create -f environment.yml
-conda activate grdl
-pip install -e .
-```
-
-### Pip Install (minimal)
-
-```bash
 # Install core library
 pip install -e .
 
@@ -789,6 +588,7 @@ pip install -e .
 pip install -e ".[sar]"         # SAR format readers (sarpy)
 pip install -e ".[eo]"          # EO format readers (rasterio)
 pip install -e ".[biomass]"     # BIOMASS catalog (rasterio + requests)
+pip install -e ".[remote]"     # Remote catalog queries & downloads (requests)
 pip install -e ".[coregistration]"  # Image alignment (opencv-python-headless)
 pip install -e ".[all]"         # Everything
 pip install -e ".[dev]"         # Development tools (pytest, ruff, mypy, etc.)
@@ -803,22 +603,56 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 - `sarkit` -- SICD / CPHD / CRSD / SIDD format support (primary SAR backend, `[sar]` extra)
 - `sarpy` -- SICD / CPHD fallback backend (`[sar]` extra)
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
-- `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
+- `requests` -- Remote catalog queries & downloads (`[remote]` / `[biomass]` extra)
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
 
 ## Credentials
 
-BIOMASS catalog access requires an ESA MAAP offline token. Store credentials in `~/.config/geoint/credentials.json`:
+All GRDL configuration lives under `~/.config/geoint/`:
+
+```
+~/.config/geoint/
+├── credentials.json          # API credentials (see below)
+└── catalogs/                 # SQLite catalog databases (auto-created)
+    ├── sentinel1_slc.db
+    ├── sentinel2.db
+    ├── nisar.db
+    ├── aster.db
+    ├── viirs.db
+    ├── biomass.db
+    └── terrasar.db
+```
+
+Remote catalog access requires credentials stored in `~/.config/geoint/credentials.json`:
 
 ```json
 {
+    "esa_copernicus": {
+        "username": "<copernicus-username>",
+        "password": "<copernicus-password>"
+    },
+    "nasa_earthdata": {
+        "username": "<earthdata-username>",
+        "password": "<earthdata-password>"
+    },
     "esa_maap": {
         "offline_token": "<your-offline-token>"
     }
 }
 ```
 
-Generate a token at [https://portal.maap.eo.esa.int/](https://portal.maap.eo.esa.int/) after creating an [EO Sign In](https://eoiam-idp.eo.esa.int/) account.
+Only include the providers you need:
+
+| Provider | Used by | Register at |
+|----------|---------|-------------|
+| `esa_copernicus` | Sentinel-1, Sentinel-2 | [dataspace.copernicus.eu](https://dataspace.copernicus.eu) |
+| `nasa_earthdata` | NISAR, ASTER, VIIRS | [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov) |
+| `esa_maap` | BIOMASS | [portal.maap.eo.esa.int](https://portal.maap.eo.esa.int/) |
+
+Environment variable fallbacks (alternative to JSON file):
+- `COPERNICUS_USERNAME` / `COPERNICUS_PASSWORD`
+- `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD`
+- `ESA_MAAP_OFFLINE_TOKEN`
 
 ## Contributing
 
@@ -831,6 +665,7 @@ GRDL grows one well-built module at a time. When adding a new module:
 5. List module-specific dependencies.
 6. Add sample data to `example_images/` if needed for demos.
 7. **For ImageProcessor subclasses**: add `@processor_version`, `@processor_tags`, and `Annotated` parameter declarations. This metadata is what makes your processor discoverable and configurable in grdl-runtime and grdk.
+8. **Logging**: Use `logging.getLogger(__name__)` for diagnostic output. Never use `print()` or `basicConfig()` in library code. Use lazy `%s` formatting, not f-strings. See [docs/logging_tutorial.md](docs/logging_tutorial.md).
 
 See [CLAUDE.md](CLAUDE.md) for full development standards, file header format, and coding conventions.
 
@@ -846,34 +681,16 @@ All dependencies are defined in `pyproject.toml`. Keep these files synchronized:
 
 ### Releasing a New Version
 
-The publish workflow triggers on **GitHub Release creation**, not on tag push alone.
+1. Update the `version` field in `pyproject.toml` (semantic versioning: `major.minor.patch`)
+2. Update `requirements.txt` if dependencies changed: `pip install -e ".[all,dev]" && pip freeze > requirements.txt`
+3. Commit both files
+4. Create a git tag: `git tag v0.2.0` (matches version in `pyproject.toml`)
+5. Push to GitHub: `git push && git push --tags`
+6. Create a GitHub Release from the tag — this triggers the publish workflow automatically
 
-```bash
-# 1. Bump version in pyproject.toml
-#    Edit: version = "X.Y.Z"
-
-# 2. Update requirements.txt if dependencies changed
-pip install -e ".[all,dev]" && pip freeze > requirements.txt
-
-# 3. Commit and push
-git add pyproject.toml requirements.txt
-git commit -m "Bump version to X.Y.Z"
-git push origin main
-
-# 4. Create and push a git tag
-git tag vX.Y.Z
-git push origin vX.Y.Z
-
-# 5. Create a GitHub Release (triggers the publish workflow)
-gh release create vX.Y.Z --title "vX.Y.Z" --notes "Release notes here"
-
-# 6. Verify the workflow succeeded
-gh run list --limit 1
-```
-
-The workflow (`.github/workflows/publish.yml`):
+The workflow:
 - Builds wheels and source distribution using `python -m build`
-- Publishes to PyPI with OIDC trusted publishing (no API keys)
+- Publishes to PyPI with OIDC authentication (secure, no API keys)
 - Artifacts are available at [pypi.org/p/grdl](https://pypi.org/p/grdl)
 
 See [CLAUDE.md](CLAUDE.md#dependency-management) for detailed dependency management guidelines.

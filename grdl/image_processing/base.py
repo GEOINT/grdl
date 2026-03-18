@@ -503,7 +503,12 @@ class BandwiseTransformMixin:
             Transformed image with same dimensionality as input.
         """
         if source.ndim == 3:
-            return np.stack(
+            try:
+                import cupy as _cp
+                _xp = _cp if isinstance(source, _cp.ndarray) else np
+            except ImportError:
+                _xp = np
+            return _xp.stack(
                 [self._apply_2d(source[b], **kwargs)
                  for b in range(source.shape[0])]
             )

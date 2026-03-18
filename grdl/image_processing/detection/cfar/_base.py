@@ -49,17 +49,32 @@ Modified
 """
 
 # Standard library
+import logging
 from abc import abstractmethod
 from typing import Annotated, Any, List, Optional, Tuple
 
 # Third-party
 import numpy as np
-from scipy.ndimage import find_objects, label, uniform_filter
+from scipy.ndimage import find_objects, label
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
 from scipy.special import erfinv
-from shapely.geometry import Point, box
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
+try:
+    from shapely.geometry import Point, box
+    _HAS_SHAPELY = True
+except ImportError:
+    _HAS_SHAPELY = False
 
 # GRDL internal
-from grdl.exceptions import ValidationError
+from grdl.exceptions import DependencyError, ValidationError
 from grdl.image_processing.detection.base import ImageDetector
 from grdl.image_processing.detection.models import Detection, DetectionSet
 from grdl.image_processing.detection.fields import Fields
@@ -69,6 +84,8 @@ from grdl.image_processing.detection.cfar._validation import (
     validate_cfar_window,
     validate_pfa,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -107,17 +124,22 @@ def _annular_stats(
     guard_count = guard_size * guard_size
     train_count = outer_count - guard_count
 
-    outer_mean = uniform_filter(image, size=outer_size, mode='reflect')
-    guard_mean = uniform_filter(image, size=guard_size, mode='reflect')
+    _is_gpu = _HAS_CUPY and isinstance(image, cp.ndarray)
+    xp = cp if _is_gpu else np
+    ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
+    outer_mean = ndi_uniform(image, size=outer_size, mode='reflect')
+    guard_mean = ndi_uniform(image, size=guard_size, mode='reflect')
     bg_mean = (outer_mean * outer_count - guard_mean * guard_count) / train_count
 
-    outer_sq = uniform_filter(image * image, size=outer_size, mode='reflect')
-    guard_sq = uniform_filter(image * image, size=guard_size, mode='reflect')
+    image_sq = image * image
+    outer_sq = ndi_uniform(image_sq, size=outer_size, mode='reflect')
+    guard_sq = ndi_uniform(image_sq, size=guard_size, mode='reflect')
     bg_sq_mean = (outer_sq * outer_count - guard_sq * guard_count) / train_count
 
     bg_var = bg_sq_mean - bg_mean * bg_mean
-    np.maximum(bg_var, 0.0, out=bg_var)
-    bg_std = np.sqrt(bg_var)
+    xp.maximum(bg_var, 0.0, out=bg_var)
+    bg_std = xp.sqrt(bg_var)
 
     return bg_mean, bg_std
 
@@ -161,11 +183,14 @@ def _quadrant_means(
     T = training_cells
     rows, cols = image.shape
 
+    _is_gpu = _HAS_CUPY and isinstance(image, cp.ndarray)
+    xp = cp if _is_gpu else np
+
     # Pad and build summed area table
-    padded = np.pad(image, T, mode='reflect').astype(np.float64)
+    padded = xp.pad(image, T, mode='reflect').astype(xp.float64)
     # SAT with a leading row/col of zeros for the standard rectangle formula
-    sat = np.cumsum(np.cumsum(padded, axis=0), axis=1)
-    sat = np.pad(sat, ((1, 0), (1, 0)), mode='constant', constant_values=0)
+    sat = xp.cumsum(xp.cumsum(padded, axis=0), axis=1)
+    sat = xp.pad(sat, ((1, 0), (1, 0)), mode='constant', constant_values=0)
 
     # In padded coordinates, pixel (r, c) in the original image is at
     # (r + T, c + T).  The SAT has an extra leading row/col of zeros,
@@ -182,12 +207,12 @@ def _quadrant_means(
         return s / area
 
     # Row/col index grids in padded coordinates
-    rr = np.arange(rows) + T  # padded row indices for original pixels
-    cc = np.arange(cols) + T
+    rr = xp.arange(rows) + T  # padded row indices for original pixels
+    cc = xp.arange(cols) + T
     # Broadcast to 2D: rr[:, None] and cc[None, :]
 
-    rr2d = rr[:, np.newaxis].astype(np.intp)
-    cc2d = cc[np.newaxis, :].astype(np.intp)
+    rr2d = rr[:, None].astype(xp.intp)
+    cc2d = cc[None, :].astype(xp.intp)
 
     # Quadrant boundaries in padded coordinates:
     # Q0 (upper-left): rows [r-T, r-G-1], cols [c-T, c-G-1]
@@ -255,6 +280,11 @@ class CFARDetector(ImageDetector):
         min_pixels: int = 9,
         assumption: str = 'gaussian',
     ) -> None:
+        if not _HAS_SHAPELY:
+            raise DependencyError(
+                "CFARDetector requires shapely. "
+                "Install with: pip install grdl[detection]"
+            )
         validate_cfar_window(guard_cells, training_cells)
         validate_pfa(pfa)
         validate_assumption(assumption)
@@ -504,24 +534,47 @@ class CFARDetector(ImageDetector):
                 f"CFAR detector requires 2D input, got shape {source.shape}"
             )
 
-        img = source.astype(np.float64)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        img = source.astype(xp.float64)
 
-        # Step 1: Background estimation (abstract hook)
+        # Step 1: Background estimation (abstract hook) — runs on GPU if img is cupy
         bg_mean, bg_std = self._estimate_background(img, guard, train)
+        logger.debug(
+            "Background stats: mean=[%.4f, %.4f], std=[%.4f, %.4f]",
+            float(np.min(bg_mean)), float(np.max(bg_mean)),
+            float(np.min(bg_std)), float(np.max(bg_std)),
+        )
 
-        # Step 2: Adaptive threshold
+        # Step 2: Adaptive threshold — erfinv is scalar CPU; result stays on device
         threshold = self._compute_threshold(
             bg_mean, bg_std, pfa, train, guard, assumption,
         )
+        logger.debug(
+            "Threshold distribution: min=%.4f, median=%.4f, max=%.4f",
+            float(np.min(threshold)),
+            float(np.median(threshold)),
+            float(np.max(threshold)),
+        )
 
-        # Step 3: Binary mask and connected components
+        # Step 3: Binary mask (on device), then transfer to CPU for label()
         detection_mask = img > threshold
-        labeled_arr, n_components = label(detection_mask)
+        if _is_gpu:
+            mask_cpu = cp.asnumpy(detection_mask)
+            img_cpu = cp.asnumpy(img)
+            thr_cpu = cp.asnumpy(threshold)
+        else:
+            mask_cpu, img_cpu, thr_cpu = detection_mask, img, threshold
+        labeled_arr, n_components = label(mask_cpu)
 
         # Step 4: Build detections
         detections = self._build_detections(
-            img, threshold, labeled_arr, n_components,
+            img_cpu, thr_cpu, labeled_arr, n_components,
             min_px, assumption, geolocation,
+        )
+        logger.info(
+            "CFAR: %d detections from %d components",
+            len(detections), n_components,
         )
 
         return DetectionSet(

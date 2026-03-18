@@ -23,8 +23,11 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-03-10
 """
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 _HAS_SARKIT = False
 _HAS_SARPY = False
@@ -64,7 +67,7 @@ def require_sar_backend(format_name: str) -> str:
         return 'sarkit'
     if _HAS_SARPY:
         return 'sarpy'
-    raise ImportError(
+    raise DependencyError(
         f"Reading {format_name} files requires sarkit or sarpy. "
         f"Install with: pip install sarkit"
     )
@@ -87,7 +90,7 @@ def require_sarkit(format_name: str) -> None:
         If sarkit is not installed.
     """
     if not _HAS_SARKIT:
-        raise ImportError(
+        raise DependencyError(
             f"Reading {format_name} files requires sarkit. "
             f"Install with: pip install sarkit"
         )
