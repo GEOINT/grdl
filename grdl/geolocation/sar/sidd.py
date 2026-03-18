@@ -440,7 +440,7 @@ class SIDDGeolocation(Geolocation):
         """
         if self.has_rdot:
             h = height if height != 0.0 else self._default_hae
-            return self._image_to_latlon_rdot(rows, cols, h)
+            return self._image_to_latlon_rdot_fwd(rows, cols, h)
 
         if self.projection_type == 'PlaneProjection':
             return self._plane_to_latlon(rows, cols)
@@ -495,7 +495,7 @@ class SIDDGeolocation(Geolocation):
         h = height if height != 0.0 else self._default_hae
         rows = np.array([float(row)])
         cols = np.array([float(col)])
-        lats, lons, heights = self._image_to_latlon_rdot(
+        lats, lons, heights = self._image_to_latlon_rdot_fwd(
             rows, cols, h)
         return float(lats[0]), float(lons[0]), float(heights[0])
 
@@ -545,7 +545,7 @@ class SIDDGeolocation(Geolocation):
             else:
                 h = height if height != 0.0 else self._default_hae
                 h_arr = np.full_like(lats, float(h))
-            return self._latlon_to_image_rdot_newton(lats, lons, h_arr)
+            return self._latlon_to_image_rdot(lats, lons, h_arr)
 
         # Fast vectorized grid inverse
         if self.projection_type == 'PlaneProjection':
@@ -559,147 +559,138 @@ class SIDDGeolocation(Geolocation):
             f"{self.projection_type!r}"
         )
 
-    def _latlon_to_image_rdot_newton(
+    def _latlon_to_image_rdot(
         self,
         lats: np.ndarray,
         lons: np.ndarray,
         heights: np.ndarray,
         max_iter: int = 10,
-        tol: float = 0.5,
+        tol: float = 1e-2,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """R/Rdot inverse: fully vectorized Newton iteration.
+        """R/Rdot scene-to-image per SICD Volume 3, Section 6.
 
-        All N points are updated simultaneously per iteration using
-        batch R/Rdot forward evaluations.  Three forward calls per
-        iteration (center, +dr, +dc) — no Python per-point loops.
+        Fully vectorized iterative projection following the same
+        algorithm as sarpy's ``_ground_to_image``:
+
+        1. Project ECF ground points onto the image plane.
+        2. Convert to pixel coordinates.
+        3. Forward-project those pixels back to the ground plane
+           containing the original scene points via R/Rdot.
+        4. Compute displacement between original and re-projected.
+        5. Adjust ground points by the displacement and repeat.
+
+        All N points are processed simultaneously — one R/Rdot forward
+        call per iteration, no per-point loops.
 
         Parameters
         ----------
         lats, lons, heights : np.ndarray
-            Target coordinates, each shape ``(N,)``.
+            Target geodetic coordinates, each shape ``(N,)``.
         max_iter : int
-            Maximum Newton iterations.
+            Maximum iterations.
         tol : float
-            Convergence tolerance in meters.
+            Ground plane displacement tolerance (meters).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
-        # Grid inverse as initial guess
-        gr, gc = self._latlon_to_plane(lats, lons, heights)
-        cur_r = np.asarray(gr, dtype=np.float64).ravel()
-        cur_c = np.asarray(gc, dtype=np.float64).ravel()
+        from grdl.geolocation.projection import image_to_ground_plane
 
-        # Use mean height for the batch R/Rdot forward (heights vary
-        # per-point but the R/Rdot sensitivity to height is handled
-        # by the initial grid guess which already accounts for height)
-        mean_h = float(np.mean(heights))
-        dp = 1.0
-        cos_lat = np.cos(np.radians(lats))
+        # Convert target geodetic to ECF
+        x, y, z = _geodetic_to_ecef(lats, lons, heights)
+        coords = np.column_stack([x, y, z])  # (N, 3) target ECF
+
+        # Image plane parameters
+        ref_point = self._srp                # (3,) ECF
+        ref_pixel = np.array([self._r0, self._c0])
+        u_row = self._row_vec                # (3,) unit vector
+        u_col = self._col_vec                # (3,) unit vector
+        row_ss = self._dr
+        col_ss = self._dc
+
+        # Image Plane Normal
+        u_ipn = np.cross(u_row, u_col)
+        u_ipn = u_ipn / np.linalg.norm(u_ipn)
+
+        # Ground Plane Normal (WGS-84 ellipsoid normal at reference)
+        from grdl.geolocation.projection import wgs84_norm
+        u_gpn = wgs84_norm(ref_point)
+
+        # Slant Plane Normal: for SIDD PGD the image plane IS the
+        # slant plane, so uSPN = uIPN.  Scale factor for projection.
+        u_spn = u_ipn
+        sf = float(np.dot(u_spn, u_ipn))
+
+        # Handle non-orthogonal row/col (general case)
+        cos_theta = np.dot(u_row, u_col)
+        sin_theta = np.sqrt(max(1.0 - cos_theta * cos_theta, 1e-30))
+        ipp_transform = np.array(
+            [[1, -cos_theta], [-cos_theta, 1]],
+            dtype=np.float64) / (sin_theta * sin_theta)
+        row_col_transform = np.column_stack([u_row, u_col])  # (3, 2)
+        matrix_transform = row_col_transform @ ipp_transform  # (3, 2)
+
+        n = coords.shape[0]
+        g_n = coords.copy()  # current ground point estimates
+        im_points = np.zeros((n, 2), dtype=np.float64)
 
         for _it in range(max_iter):
-            # Batch R/Rdot forward: all N points at once
-            p_lats, p_lons, _ = self._image_to_latlon_rdot(
-                cur_r, cur_c, mean_h)
+            # Step 1: Project ground points onto image plane
+            dist_n = np.dot(ref_point - g_n, u_ipn) / sf  # (N,)
+            i_n = g_n + np.outer(dist_n, u_spn)  # (N, 3)
 
-            dlat = lats - p_lats
-            dlon = lons - p_lons
-            err = np.sqrt((dlat * 111320) ** 2
-                          + (dlon * 111320 * cos_lat) ** 2)
+            # Step 2: Convert image plane points to pixel coordinates
+            delta_ipp = i_n - ref_point  # (N, 3)
+            ip_iter = delta_ipp @ matrix_transform  # (N, 2)
+            im_points[:, 0] = ip_iter[:, 0] / row_ss + ref_pixel[0]
+            im_points[:, 1] = ip_iter[:, 1] / col_ss + ref_pixel[1]
 
-            if np.max(err) < tol:
+            # Step 3: R/Rdot forward — project pixels to ground plane
+            #         containing the scene points
+            r, rdot, t_coa, arp_coa, varp_coa = \
+                self._coa_proj.projection(im_points)
+            p_n = image_to_ground_plane(
+                r, rdot, arp_coa, varp_coa, g_n, u_gpn)
+
+            # Step 4: Displacement between original and re-projected
+            diff_n = coords - p_n
+            delta_gpn = np.linalg.norm(diff_n, axis=1)
+
+            # Step 5: Adjust ground point estimates
+            g_n += diff_n
+
+            if np.all(delta_gpn < tol):
                 break
 
-            # Batch Jacobian: 2 more forward calls (all N points)
-            lr, llr, _ = self._image_to_latlon_rdot(
-                cur_r + dp, cur_c, mean_h)
-            lc, llc, _ = self._image_to_latlon_rdot(
-                cur_r, cur_c + dp, mean_h)
-
-            dlat_dr = (lr - p_lats) / dp
-            dlon_dr = (llr - p_lons) / dp
-            dlat_dc = (lc - p_lats) / dp
-            dlon_dc = (llc - p_lons) / dp
-
-            # Vectorized 2x2 inverse Jacobian solve
-            det = dlat_dr * dlon_dc - dlon_dr * dlat_dc
-            det = np.where(np.abs(det) < 1e-30, 1e-30, det)
-
-            cur_r += (dlon_dc * dlat - dlat_dc * dlon) / det
-            cur_c += (-dlon_dr * dlat + dlat_dr * dlon) / det
-
-        return cur_r, cur_c
+        return im_points[:, 0], im_points[:, 1]
 
     # ------------------------------------------------------------------
     # R/Rdot refined projection
     # ------------------------------------------------------------------
 
-    def _image_to_latlon_rdot(
+    def _image_to_latlon_rdot_fwd(
         self,
         rows: np.ndarray,
         cols: np.ndarray,
         height: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """R/Rdot refined forward projection: pixel → geodetic.
+        """R/Rdot forward projection: pixel → geodetic at constant HAE.
 
-        Uses the native R/Rdot engine (``COAProjection`` +
-        ``image_to_ground_hae``) for precise projection.
+        Fully vectorized — projects all N points to the same HAE
+        surface in a single batch call.
         """
         from grdl.geolocation.projection import image_to_ground_hae
 
+        rows = np.atleast_1d(np.asarray(rows, dtype=np.float64))
+        cols = np.atleast_1d(np.asarray(cols, dtype=np.float64))
         im_points = np.column_stack([rows, cols])
         gpp = image_to_ground_hae(
-            self._coa_proj,
-            im_points,
-            hae=height,
+            self._coa_proj, im_points, hae=height,
             scp_ecf=self._scp_ecf,
         )
         return _ecef_to_geodetic(gpp[:, 0], gpp[:, 1], gpp[:, 2])
-
-    def _latlon_to_image_rdot(
-        self,
-        lats: np.ndarray,
-        lons: np.ndarray,
-        height: Union[float, np.ndarray] = 0.0,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """R/Rdot refined inverse projection: geodetic → pixel.
-
-        Uses the native R/Rdot engine (``ground_to_image``) for
-        precise inverse projection.
-        """
-        from grdl.geolocation.projection import ground_to_image
-
-        if np.ndim(height) == 0:
-            h = np.full_like(lats, float(height))
-        else:
-            h = np.asarray(height, dtype=np.float64)
-
-        x, y, z = _geodetic_to_ecef(lats, lons, h)
-        ground_ecf = np.column_stack([x, y, z])
-
-        # Use grid parameters for the image plane
-        pp = self.metadata.measurement.plane_projection
-        plane = pp.product_plane
-        u_row = np.array(
-            [plane.row_unit_vector.x, plane.row_unit_vector.y,
-             plane.row_unit_vector.z], dtype=np.float64)
-        u_col = np.array(
-            [plane.col_unit_vector.x, plane.col_unit_vector.y,
-             plane.col_unit_vector.z], dtype=np.float64)
-
-        im_points = ground_to_image(
-            self._coa_proj,
-            ground_ecf,
-            scp_ecf=self._scp_ecf,
-            u_row=u_row,
-            u_col=u_col,
-            row_ss=self._dr,
-            col_ss=self._dc,
-            scp_pixel=(self._r0, self._c0),
-        )
-        return im_points[:, 0], im_points[:, 1]
 
     # ------------------------------------------------------------------
     # PGD (PlaneProjection)  — Section 3.2 / 3.3

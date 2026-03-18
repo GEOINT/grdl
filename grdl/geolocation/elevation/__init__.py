@@ -54,6 +54,7 @@ Modified
 
 from grdl.geolocation.elevation.base import ElevationModel
 from grdl.geolocation.elevation.constant import ConstantElevation
+from grdl.geolocation.elevation.open_elevation import open_elevation
 
 # Optional: may fail if rasterio not available
 try:
@@ -74,6 +75,7 @@ except ImportError:
 __all__ = [
     'ElevationModel',
     'ConstantElevation',
+    'open_elevation',
     'DTEDElevation',
     'GeoTIFFDEM',
     'GeoidCorrection',

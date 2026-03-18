@@ -190,40 +190,66 @@ class GeoTIFFDEM(ElevationModel):
         px_cols = np.asarray(px_cols, dtype=np.float64)
         px_rows = np.asarray(px_rows, dtype=np.float64)
 
-        # Nearest-neighbor sampling
-        col_idx = np.round(px_cols).astype(np.intp)
-        row_idx = np.round(px_rows).astype(np.intp)
+        # Bilinear interpolation between the 4 surrounding DEM pixels.
+        # Floor to get the top-left pixel of the interpolation cell.
+        col_f = np.floor(px_cols).astype(np.intp)
+        row_f = np.floor(px_rows).astype(np.intp)
 
-        # Bounds check
+        # Fractional offsets within the cell [0, 1)
+        dc = px_cols - col_f
+        dr = px_rows - row_f
+
+        # Bounds check (need the +1 neighbor to exist)
         valid = (
-            (row_idx >= 0) & (row_idx < self._nrows)
-            & (col_idx >= 0) & (col_idx < self._ncols)
+            (row_f >= 0) & (row_f < self._nrows - 1)
+            & (col_f >= 0) & (col_f < self._ncols - 1)
         )
 
         if not np.any(valid):
             return heights
 
-        valid_rows = row_idx[valid]
-        valid_cols = col_idx[valid]
+        v_row = row_f[valid]
+        v_col = col_f[valid]
+        v_dr = dr[valid]
+        v_dc = dc[valid]
 
-        # Windowed read: only fetch the bounding box of needed pixels
+        # Windowed read: bounding box of needed pixels (+1 for interp)
         from rasterio.windows import Window
 
-        r_min, r_max = int(valid_rows.min()), int(valid_rows.max())
-        c_min, c_max = int(valid_cols.min()), int(valid_cols.max())
+        r_min, r_max = int(v_row.min()), int(v_row.max()) + 1
+        c_min, c_max = int(v_col.min()), int(v_col.max()) + 1
         window = Window(
             col_off=c_min, row_off=r_min,
             width=c_max - c_min + 1, height=r_max - r_min + 1,
         )
-        data = self._dataset.read(1, window=window)
-        sampled = data[
-            valid_rows - r_min, valid_cols - c_min
-        ].astype(np.float64)
+        data = self._dataset.read(1, window=window).astype(np.float64)
 
-        # Mask nodata values
+        # Local pixel indices within the window
+        lr = v_row - r_min
+        lc = v_col - c_min
+
+        # Four corners of each interpolation cell
+        z00 = data[lr, lc]
+        z01 = data[lr, lc + 1]
+        z10 = data[lr + 1, lc]
+        z11 = data[lr + 1, lc + 1]
+
+        # Mask nodata in any corner → NaN for that point
         if self._nodata is not None:
-            nodata_mask = np.isclose(sampled, float(self._nodata), atol=0.5)
-            sampled[nodata_mask] = np.nan
+            nd = float(self._nodata)
+            nodata_mask = (
+                np.isclose(z00, nd, atol=0.5)
+                | np.isclose(z01, nd, atol=0.5)
+                | np.isclose(z10, nd, atol=0.5)
+                | np.isclose(z11, nd, atol=0.5)
+            )
+            z00[nodata_mask] = np.nan
+
+        # Bilinear interpolation
+        sampled = (z00 * (1 - v_dc) * (1 - v_dr)
+                   + z01 * v_dc * (1 - v_dr)
+                   + z10 * (1 - v_dc) * v_dr
+                   + z11 * v_dc * v_dr)
 
         heights[valid] = sampled
         return heights
