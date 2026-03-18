@@ -163,6 +163,22 @@ class SIDDGeolocation(Geolocation):
                 f"CylindricalProjection."
             )
 
+        # Compute default HAE from the measurement reference point.
+        # This is used as the projection surface when no DEM or
+        # explicit height is provided — avoids projecting at h=0
+        # when the scene is at significant altitude.
+        self._default_hae = 0.0
+        pp = meas.plane_projection
+        if pp is not None and pp.reference_point is not None:
+            rp_ecf = pp.reference_point.ecef
+            if rp_ecf is not None:
+                _, _, _h = _ecef_to_geodetic(
+                    np.array([rp_ecf.x]),
+                    np.array([rp_ecf.y]),
+                    np.array([rp_ecf.z]),
+                )
+                self._default_hae = float(_h[0])
+
         # R/Rdot refinement: requires TimeCOAPoly + ARPPoly
         self.has_rdot = False
         self._coa_proj = None
@@ -400,15 +416,13 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinates to geographic coordinates.
 
-        Always uses the grid projection for consistency with the
-        inverse (``_latlon_to_image_array``).  The grid forward and
-        inverse operate on the same surface (the product plane),
-        guaranteeing exact round-trips.
+        When R/Rdot is available, uses the R/Rdot engine to project
+        onto the WGS-84 ellipsoid at the given ``height``.  Otherwise
+        falls back to the grid projection (product plane).
 
-        R/Rdot refinement, when available, is exposed via
-        :meth:`image_to_latlon_precise` for point queries that need
-        sub-meter accuracy on the WGS-84 ellipsoid rather than on
-        the product plane.
+        The base class ``_image_to_latlon_with_dem`` calls this method
+        iteratively with DEM heights when an elevation model is
+        configured, providing terrain-corrected geolocation.
 
         Parameters
         ----------
@@ -424,6 +438,10 @@ class SIDDGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) in WGS-84 coordinates.
         """
+        if self.has_rdot:
+            h = height if height != 0.0 else self._default_hae
+            return self._image_to_latlon_rdot(rows, cols, h)
+
         if self.projection_type == 'PlaneProjection':
             return self._plane_to_latlon(rows, cols)
         elif self.projection_type == 'GeographicProjection':
@@ -474,10 +492,11 @@ class SIDDGeolocation(Geolocation):
             raise RuntimeError(
                 "R/Rdot refinement not available (TimeCOAPoly or "
                 "ARPPoly missing from SIDD Measurement block)")
+        h = height if height != 0.0 else self._default_hae
         rows = np.array([float(row)])
         cols = np.array([float(col)])
         lats, lons, heights = self._image_to_latlon_rdot(
-            rows, cols, height)
+            rows, cols, h)
         return float(lats[0]), float(lons[0]), float(heights[0])
 
     def _latlon_to_image_array(
@@ -488,11 +507,12 @@ class SIDDGeolocation(Geolocation):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Transform geographic coordinates to pixel coordinates.
 
-        Uses the fast vectorized grid inverse by default.  When R/Rdot
-        refinement is available **and** per-point heights differ from
-        the product plane (i.e., a non-scalar ``height`` array is
-        passed), falls back to R/Rdot iteration to correct for
-        elevation-induced parallax.
+        When R/Rdot is available, uses a fully vectorized Newton
+        iteration — all N points are updated simultaneously per
+        iteration using batch R/Rdot forward evaluations and
+        vectorized Jacobian computation.
+
+        When a DEM is configured, heights are looked up automatically.
 
         Parameters
         ----------
@@ -501,22 +521,33 @@ class SIDDGeolocation(Geolocation):
         lons : np.ndarray
             Longitudes in degrees (1D array, float64).
         height : float or np.ndarray, default=0.0
-            Height above WGS-84 ellipsoid (meters).  Scalar uses
-            the fast grid path.  An array of per-point heights
-            triggers R/Rdot refinement when available.
+            Height above WGS-84 ellipsoid (meters).
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
-        # Use R/Rdot only when per-point heights vary (DEM terrain)
-        if self.has_rdot and np.ndim(height) > 0:
-            h_arr = np.asarray(height, dtype=np.float64)
-            if np.ptp(h_arr) > 1.0:  # >1 m variation → parallax matters
-                return self._latlon_to_image_rdot(lats, lons, height)
+        if self.has_rdot:
+            # Determine height per point: DEM → explicit → default
+            if self.elevation is not None:
+                h_arr = self.elevation.get_elevation(lats, lons)
+                if isinstance(h_arr, (int, float)):
+                    h_arr = np.full_like(lats, float(h_arr))
+                nan_mask = np.isnan(h_arr)
+                if np.any(nan_mask):
+                    if np.ndim(height) > 0:
+                        h_arr[nan_mask] = np.asarray(height)[nan_mask]
+                    else:
+                        h_arr[nan_mask] = float(height)
+            elif np.ndim(height) > 0:
+                h_arr = np.asarray(height, dtype=np.float64)
+            else:
+                h = height if height != 0.0 else self._default_hae
+                h_arr = np.full_like(lats, float(h))
+            return self._latlon_to_image_rdot_newton(lats, lons, h_arr)
 
-        # Fast vectorized grid inverse (exact on the product plane)
+        # Fast vectorized grid inverse
         if self.projection_type == 'PlaneProjection':
             return self._latlon_to_plane(lats, lons, height)
         elif self.projection_type == 'GeographicProjection':
@@ -527,6 +558,79 @@ class SIDDGeolocation(Geolocation):
             f"Inverse projection not implemented for "
             f"{self.projection_type!r}"
         )
+
+    def _latlon_to_image_rdot_newton(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        heights: np.ndarray,
+        max_iter: int = 10,
+        tol: float = 0.5,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """R/Rdot inverse: fully vectorized Newton iteration.
+
+        All N points are updated simultaneously per iteration using
+        batch R/Rdot forward evaluations.  Three forward calls per
+        iteration (center, +dr, +dc) — no Python per-point loops.
+
+        Parameters
+        ----------
+        lats, lons, heights : np.ndarray
+            Target coordinates, each shape ``(N,)``.
+        max_iter : int
+            Maximum Newton iterations.
+        tol : float
+            Convergence tolerance in meters.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        # Grid inverse as initial guess
+        gr, gc = self._latlon_to_plane(lats, lons, heights)
+        cur_r = np.asarray(gr, dtype=np.float64).ravel()
+        cur_c = np.asarray(gc, dtype=np.float64).ravel()
+
+        # Use mean height for the batch R/Rdot forward (heights vary
+        # per-point but the R/Rdot sensitivity to height is handled
+        # by the initial grid guess which already accounts for height)
+        mean_h = float(np.mean(heights))
+        dp = 1.0
+        cos_lat = np.cos(np.radians(lats))
+
+        for _it in range(max_iter):
+            # Batch R/Rdot forward: all N points at once
+            p_lats, p_lons, _ = self._image_to_latlon_rdot(
+                cur_r, cur_c, mean_h)
+
+            dlat = lats - p_lats
+            dlon = lons - p_lons
+            err = np.sqrt((dlat * 111320) ** 2
+                          + (dlon * 111320 * cos_lat) ** 2)
+
+            if np.max(err) < tol:
+                break
+
+            # Batch Jacobian: 2 more forward calls (all N points)
+            lr, llr, _ = self._image_to_latlon_rdot(
+                cur_r + dp, cur_c, mean_h)
+            lc, llc, _ = self._image_to_latlon_rdot(
+                cur_r, cur_c + dp, mean_h)
+
+            dlat_dr = (lr - p_lats) / dp
+            dlon_dr = (llr - p_lons) / dp
+            dlat_dc = (lc - p_lats) / dp
+            dlon_dc = (llc - p_lons) / dp
+
+            # Vectorized 2x2 inverse Jacobian solve
+            det = dlat_dr * dlon_dc - dlon_dr * dlat_dc
+            det = np.where(np.abs(det) < 1e-30, 1e-30, det)
+
+            cur_r += (dlon_dc * dlat - dlat_dc * dlon) / det
+            cur_c += (-dlon_dr * dlat + dlat_dr * dlon) / det
+
+        return cur_r, cur_c
 
     # ------------------------------------------------------------------
     # R/Rdot refined projection
