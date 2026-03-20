@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.2.1"
+version = "0.3.0"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -102,6 +102,9 @@ Repository = "https://github.com/geoint-org/GRDL"
 
 [tool.setuptools.packages.find]
 include = ["grdl*"]
+
+[tool.setuptools.package-data]
+grdl = ["**/*.md", "py.typed"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:faulthandler"
