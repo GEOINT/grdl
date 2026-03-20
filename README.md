@@ -185,7 +185,8 @@ GRDL/
 │   │   │   ├── ortho.py             #   OutputGridProtocol, OutputGrid, Orthorectifier
 │   │   │   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult
 │   │   │   ├── enu_grid.py          #   ENUGrid (local East-North-Up grid)
-│   │   │   └── accelerated.py       #   resample(), detect_backend() (accelerated resampling)
+│   │   │   ├── accelerated.py       #   resample(), detect_backend() (accelerated resampling)
+│   │   │   └── resolution.py        #   compute_output_resolution (auto pixel spacing)
 │   │   ├── decomposition/
 │   │   │   ├── base.py              #   PolarimetricDecomposition ABC
 │   │   │   ├── pauli.py             #   PauliDecomposition (quad-pol)
@@ -248,8 +249,10 @@ GRDL/
 │       │   │   └── load_earthdata.py    #   HDF5 EarthData loader
 │       │   └── test_file_loading.py     #   Generic file loading test
 │       ├── ortho/
+│       │   ├── chip_ortho.py            #   Ground-extent chip + ENU ortho
+│       │   ├── compare_sidd_ortho.py    #   Dual-SIDD ortho comparison + coregistration
 │       │   ├── ortho_biomass.py         #   Orthorectification with Pauli RGB
-│       │   ├── ortho_combined.py        #   Combined ortho pipeline demo
+│       │   ├── ortho_combined.py        #   Combined SICD/SIDD auto-detect ortho
 │       │   ├── ortho_sicd.py            #   SICD orthorectification
 │       │   └── ortho_sidd.py            #   SIDD orthorectification
 │       └── image_processing/
@@ -590,14 +593,29 @@ with SICDReader('image.nitf') as reader:
 ### Orthorectification
 
 ```python
-from grdl.image_processing import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho import OrthoBuilder, ENUGrid
 
-geo = GCPGeolocation(reader.metadata['gcps'], (rows, cols))
+# Recommended: OrthoBuilder handles mapping, chip reading, and resampling
+result = (
+    OrthoBuilder()
+    .with_reader(reader)
+    .with_geolocation(geo)
+    .with_elevation(dem)
+    .with_enu_grid(pixel_size_m=1.0)       # or .with_resolution(0.001, 0.001)
+    .with_interpolation('bilinear')
+    .run()
+)
+ortho = result.data                         # ndarray
+result.save_geotiff('ortho.tif')            # georeferenced output
+
+# Direct control: Orthorectifier for custom workflows
+from grdl.image_processing.ortho import Orthorectifier, OutputGrid
+
 grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
                                    pixel_size_lon=0.001)
-ortho = Orthorectifier(geo, grid, interpolation='nearest')
+ortho = Orthorectifier(geo, grid, interpolation='nearest', elevation=dem)
 ortho.compute_mapping()
-result = ortho.apply(hh_db, nodata=np.nan)
+result = ortho.apply(image, nodata=np.nan)
 ```
 
 ### Detection Data Models

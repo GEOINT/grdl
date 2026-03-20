@@ -637,7 +637,12 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 See `grdl/example/` for working workflows:
 - `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
+- `ortho/chip_ortho.py` - Ground-extent chip extraction and ENU orthorectification
+- `ortho/compare_sidd_ortho.py` - Dual-SIDD ortho comparison with PCA, NCC, and coregistration
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
+- `ortho/ortho_combined.py` - Combined SICD/SIDD auto-detect orthorectification
+- `ortho/ortho_sicd.py` - SICD orthorectification with DEM and ENU grids
+- `ortho/ortho_sidd.py` - SIDD orthorectification with DEM and ENU grids
 - `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - `image_processing/sar/sublook_compare.py` - **Full GRDL integration**: IO + data_prep + image_processing
 

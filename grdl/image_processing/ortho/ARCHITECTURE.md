@@ -231,3 +231,18 @@ All paths convert meters to degrees via `spacing_m / 111320` (lat) and
 7. **Single mapping core.** `_compute_strip()` is the only place that implements grid→latlon→DEM→source-pixel logic. Sequential mapping calls it once for the full grid; parallel mapping calls it per row-chunk in a thread pool. `_finalize_mapping()` handles validation and caching. Changes to the mapping algorithm (e.g., DEM handling) need to be made in one place only.
 
 8. **Shared validation.** `validate_sub_grid_indices()` centralises the bounds-checking logic used by both `OutputGrid.sub_grid()` and `ENUGrid.sub_grid()`, preventing drift between the two implementations.
+
+## Examples
+
+See `grdl/example/ortho/` for working scripts:
+
+| Script | Description |
+|--------|-------------|
+| `chip_ortho.py` | Ground-extent chip extraction + ENU ortho. CLI with lat/lon or pixel center. |
+| `compare_sidd_ortho.py` | Dual-SIDD comparison: ortho to shared ENU grid, PCA decomposition, NCC alignment, feature matching, red/blue difference overlay. |
+| `ortho_biomass.py` | BIOMASS L1A ortho with Pauli RGB composite (quad-pol). |
+| `ortho_combined.py` | Auto-detects SICD/SIDD, orthos to WGS-84 and ENU grids. |
+| `ortho_sicd.py` | SICD complex SAR ortho with DEM and ENU output. |
+| `ortho_sidd.py` | SIDD derived product ortho with DEM and ENU output. |
+
+All examples use `OrthoBuilder` as the recommended entry point.

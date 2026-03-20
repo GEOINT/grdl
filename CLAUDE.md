@@ -300,10 +300,11 @@ GRDL/
       versioning.py          # @processor_version, @processor_tags
       pipeline.py            # Pipeline (sequential transform composition)
       ortho/                 # Orthorectification
-        ortho.py             # OutputGridProtocol, OutputGrid, Orthorectifier
+        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, OutputGrid, Orthorectifier
         ortho_builder.py     # OrthoBuilder, OrthoResult
         enu_grid.py          # ENUGrid (local East-North-Up grid)
         accelerated.py       # resample(), detect_backend()
+        resolution.py        # compute_output_resolution (auto pixel spacing from metadata)
       decomposition/         # Polarimetric decomposition
         base.py              # PolarimetricDecomposition ABC
         pauli.py             # PauliDecomposition (quad-pol)
