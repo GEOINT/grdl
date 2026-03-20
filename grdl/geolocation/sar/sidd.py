@@ -168,16 +168,25 @@ class SIDDGeolocation(Geolocation):
         # explicit height is provided — avoids projecting at h=0
         # when the scene is at significant altitude.
         self._default_hae = 0.0
-        pp = meas.plane_projection
-        if pp is not None and pp.reference_point is not None:
-            rp_ecf = pp.reference_point.ecef
-            if rp_ecf is not None:
-                _, _, _h = _ecef_to_geodetic(
-                    np.array([rp_ecf.x]),
-                    np.array([rp_ecf.y]),
-                    np.array([rp_ecf.z]),
-                )
-                self._default_hae = float(_h[0])
+        if self.projection_type == 'PlaneProjection' and hasattr(self, '_srp'):
+            # _srp is guaranteed set by _init_plane; derive HAE from it
+            _, _, _h = _ecef_to_geodetic(
+                np.array([self._srp[0]]),
+                np.array([self._srp[1]]),
+                np.array([self._srp[2]]),
+            )
+            self._default_hae = float(_h[0])
+        else:
+            pp = meas.plane_projection
+            if pp is not None and pp.reference_point is not None:
+                rp_ecf = pp.reference_point.ecef
+                if rp_ecf is not None:
+                    _, _, _h = _ecef_to_geodetic(
+                        np.array([rp_ecf.x]),
+                        np.array([rp_ecf.y]),
+                        np.array([rp_ecf.z]),
+                    )
+                    self._default_hae = float(_h[0])
 
         # R/Rdot refinement: requires TimeCOAPoly + ARPPoly
         self.has_rdot = False
@@ -471,12 +480,15 @@ class SIDDGeolocation(Geolocation):
                 h_arr = np.full_like(lats, float(h))
             return self._latlon_to_image_rdot(lats, lons, h_arr)
 
+        # Grid-only path: use _default_hae when no explicit height given
+        h = height if (np.ndim(height) > 0 or height != 0.0) \
+            else self._default_hae
         if self.projection_type == 'PlaneProjection':
-            return self._latlon_to_plane(lats, lons, height)
+            return self._latlon_to_plane(lats, lons, h)
         elif self.projection_type == 'GeographicProjection':
             return self._latlon_to_geographic(lats, lons)
         elif self.projection_type == 'CylindricalProjection':
-            return self._latlon_to_cylindrical(lats, lons, height)
+            return self._latlon_to_cylindrical(lats, lons, h)
         raise NotImplementedError(
             f"Inverse projection not implemented for "
             f"{self.projection_type!r}"

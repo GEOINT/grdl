@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-03-17
+2026-03-19
 """
 
 # Standard library
@@ -59,15 +59,22 @@ from grdl.IO.models.common import XYZ
 
 
 def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
-    """Parse an RSMPCA TRE string into RSMCoefficients.
+    """Parse an RSMPCA TRE CEDATA string into RSMCoefficients.
 
-    The RSMPCA TRE is a fixed-format ASCII string with normalization
-    parameters followed by polynomial coefficients.
+    Field layout per STDI-0002 Vol 1 Appendix U, Table 4 (RSMPCA)::
+
+        IID(80) EDITION(40) RSN(3) CSN(3) RFEP(21) CFEP(21)
+        RNRMO(21) CNRMO(21) XNRMO(21) YNRMO(21) ZNRMO(21)
+        RNRMSF(21) CNRMSF(21) XNRMSF(21) YNRMSF(21) ZNRMSF(21)
+        RNPWRX(1) RNPWRY(1) RNPWRZ(1) RNTRMS(3) RNPCF(21)×RNTRMS
+        RDPWRX(1) RDPWRY(1) RDPWRZ(1) RDTRMS(3) RDPCF(21)×RDTRMS
+        CNPWRX(1) CNPWRY(1) CNPWRZ(1) CNTRMS(3) CNPCF(21)×CNTRMS
+        CDPWRX(1) CDPWRY(1) CDPWRZ(1) CDTRMS(3) CDPCF(21)×CDTRMS
 
     Parameters
     ----------
     tre_value : str
-        Raw TRE value string from GDAL metadata.
+        Raw CEDATA string from GDAL TRE metadata.
 
     Returns
     -------
@@ -76,10 +83,17 @@ def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
     """
     try:
         v = tre_value.strip()
-        if len(v) < 200:
+        # Minimum RSMPCA size is 486 bytes (per spec CEL range)
+        if len(v) < 486:
             return None
 
         pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
 
         def read_float(n: int = 21) -> float:
             nonlocal pos
@@ -93,55 +107,61 @@ def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
             pos += n
             return val
 
-        def read_int3() -> int:
-            nonlocal pos
-            val = int(v[pos:pos + 3].strip())
-            pos += 3
-            return val
+        # --- Image Information (skipped, not stored) ---
+        _iid = read_str(80)       # IID
+        _edition = read_str(40)   # EDITION
 
-        # Normalization parameters (5 × 21 bytes)
-        row_norm_sf = read_float()
-        col_norm_sf = read_float()
-        x_norm_sf = read_float()
-        y_norm_sf = read_float()
-        z_norm_sf = read_float()
+        # --- Section identification ---
+        _rsn = read_int(3)        # RSN (row section number)
+        _csn = read_int(3)        # CSN (column section number)
 
-        # Row/col and ground offsets (5 × 21 bytes)
-        row_off = read_float()
-        col_off = read_float()
-        x_off = read_float()
-        y_off = read_float()
-        z_off = read_float()
+        # --- Fitting errors (optional, skipped) ---
+        _rfep = read_str(21)      # RFEP
+        _cfep = read_str(21)      # CFEP
 
-        # Row numerator polynomial structure
-        rnpwrx = read_int()
-        rnpwry = read_int()
-        rnpwrz = read_int()
-        rntms = read_int3()
+        # --- Normalization offsets (5 × 21 bytes) ---
+        row_off = read_float()     # RNRMO
+        col_off = read_float()     # CNRMO
+        x_off = read_float()       # XNRMO
+        y_off = read_float()       # YNRMO
+        z_off = read_float()       # ZNRMO
+
+        # --- Normalization scale factors (5 × 21 bytes) ---
+        row_norm_sf = read_float()  # RNRMSF
+        col_norm_sf = read_float()  # CNRMSF
+        x_norm_sf = read_float()    # XNRMSF
+        y_norm_sf = read_float()    # YNRMSF
+        z_norm_sf = read_float()    # ZNRMSF
+
+        # --- Row numerator polynomial ---
+        rnpwrx = read_int()         # RNPWRX
+        rnpwry = read_int()         # RNPWRY
+        rnpwrz = read_int()         # RNPWRZ
+        rntms = read_int(3)         # RNTRMS
         row_num_coefs = np.array(
             [read_float() for _ in range(rntms)])
 
-        # Row denominator polynomial structure
+        # --- Row denominator polynomial ---
         rdpwrx = read_int()
         rdpwry = read_int()
         rdpwrz = read_int()
-        rdtms = read_int3()
+        rdtms = read_int(3)
         row_den_coefs = np.array(
             [read_float() for _ in range(rdtms)])
 
-        # Column numerator polynomial structure
+        # --- Column numerator polynomial ---
         cnpwrx = read_int()
         cnpwry = read_int()
         cnpwrz = read_int()
-        cntms = read_int3()
+        cntms = read_int(3)
         col_num_coefs = np.array(
             [read_float() for _ in range(cntms)])
 
-        # Column denominator polynomial structure
+        # --- Column denominator polynomial ---
         cdpwrx = read_int()
         cdpwry = read_int()
         cdpwrz = read_int()
-        cdtms = read_int3()
+        cdtms = read_int(3)
         col_den_coefs = np.array(
             [read_float() for _ in range(cdtms)])
 
@@ -170,12 +190,26 @@ def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
 
 
 def _parse_rsmida_tre(tre_value: str) -> Optional[RSMIdentification]:
-    """Parse an RSMIDA TRE string into RSMIdentification.
+    """Parse an RSMIDA TRE CEDATA string into RSMIdentification.
+
+    Field layout per STDI-0002 Vol 1 Appendix U, Table 2 (RSMIDA)::
+
+        IID(80) EDITION(40) ISID(40) SID(40) STID(40)
+        YEAR(4) MONTH(2) DAY(2) HOUR(2) MINUTE(2) SECOND(9)
+        NRG(8) NCG(8) TRG(21) TCG(21) GRNDD(1)
+        XUOR(21) YUOR(21) ZUOR(21)
+        XUXR(21)..ZUZR(21)  [9 unit-vector components]
+        V1X(21)..V8Z(21)    [24 ground domain vertices]
+        GRPX(21) GRPY(21) GRPZ(21)
+        FULLR(8) FULLC(8) MINR(8) MAXR(8) MINC(8) MAXC(8)
+        [illumination and trajectory fields follow]
+
+    Total CEDATA length: 1628 bytes.
 
     Parameters
     ----------
     tre_value : str
-        Raw TRE value string from GDAL metadata.
+        Raw CEDATA string from GDAL TRE metadata.
 
     Returns
     -------
@@ -184,46 +218,77 @@ def _parse_rsmida_tre(tre_value: str) -> Optional[RSMIdentification]:
     """
     try:
         v = tre_value.strip()
-        if len(v) < 200:
+        # RSMIDA CEDATA is fixed at 1628 bytes
+        if len(v) < 500:
             return None
 
-        image_id = v[0:80].strip()
-        edition = v[80:120].strip()
+        pos = 0
 
-        # Skip to sensor fields
-        pos = 120
-        # ISID (80), SID (40), STID (40)
-        isid = v[pos:pos + 80].strip()
-        pos += 80
-        sensor_id = v[pos:pos + 40].strip()
-        pos += 40
-        sensor_type_id = v[pos:pos + 40].strip()
-        pos += 40
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
 
-        # Skip date/time fields to reach ground domain
-        # YEAR(4) MONTH(2) DAY(2) HOUR(2) MINUTE(2) SECOND(9) = 21 bytes
-        pos += 21
+        def read_float(n: int = 21) -> float:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            if not raw:
+                return 0.0
+            return float(raw)
 
-        # NRG(3), NCG(3)
-        nrg = int(v[pos:pos + 3].strip() or '0')
-        pos += 3
-        ncg = int(v[pos:pos + 3].strip() or '0')
-        pos += 3
+        def read_int(n: int) -> int:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            if not raw:
+                return 0
+            return int(raw)
 
-        # TRG(5), TCG(5)
-        pos += 10
+        # --- Image Information ---
+        image_id = read_str(80)     # IID
+        edition = read_str(40)      # EDITION
 
-        # GRNDD(1) — ground domain type
-        grndd = v[pos:pos + 1].strip()
-        pos += 1
+        # --- Sensor identification ---
+        _isid = read_str(40)        # ISID (40 bytes, not 80)
+        sensor_id = read_str(40)    # SID
+        sensor_type_id = read_str(40)  # STID
 
-        # Ground reference point (3 × 21 bytes)
-        grpx = float(v[pos:pos + 21].strip() or '0')
-        pos += 21
-        grpy = float(v[pos:pos + 21].strip() or '0')
-        pos += 21
-        grpz = float(v[pos:pos + 21].strip() or '0')
-        pos += 21
+        # --- Date/time ---
+        _year = read_str(4)         # YEAR
+        _month = read_str(2)        # MONTH
+        _day = read_str(2)          # DAY
+        _hour = read_str(2)         # HOUR
+        _minute = read_str(2)       # MINUTE
+        _second = read_str(9)       # SECOND
+
+        # --- Time-of-image model ---
+        nrg = read_int(8)           # NRG (8 bytes)
+        ncg = read_int(8)           # NCG (8 bytes)
+        _trg = read_str(21)         # TRG (21 bytes)
+        _tcg = read_str(21)         # TCG (21 bytes)
+
+        # --- Ground coordinate system ---
+        grndd = read_str(1)         # GRNDD
+
+        # --- Rectangular coordinate origin (3 × 21) ---
+        _xuor = read_str(21)        # XUOR
+        _yuor = read_str(21)        # YUOR
+        _zuor = read_str(21)        # ZUOR
+
+        # --- Rectangular unit vectors (9 × 21) ---
+        for _ in range(9):
+            read_str(21)            # XUXR..ZUZR
+
+        # --- Ground domain vertices (24 × 21 = 504 bytes) ---
+        for _ in range(24):
+            read_str(21)            # V1X..V8Z
+
+        # --- Ground reference point (3 × 21) ---
+        grpx = read_float(21)       # GRPX
+        grpy = read_float(21)       # GRPY
+        grpz = read_float(21)       # GRPZ
 
         return RSMIdentification(
             image_id=image_id,

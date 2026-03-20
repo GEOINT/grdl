@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-03-17
+2026-03-19
 """
 
 # Standard library
@@ -70,9 +70,13 @@ def _build_monomial_exponents(
     """
     px, py, pz = int(max_powers[0]), int(max_powers[1]), int(max_powers[2])
     exponents = []
-    for i in range(px + 1):
+    # Per RSMPCA spec (STDI-0002 Vol 1 App U, Section 7.2, Table 4):
+    # coefficients are ordered with x varying fastest, then y, then z.
+    # Summation: Σ_{k=0}^{pz} Σ_{j=0}^{py} Σ_{i=0}^{px} a_{ijk} x^i y^j z^k
+    # First entry = a_{000}, second = a_{100}, etc.
+    for k in range(pz + 1):
         for j in range(py + 1):
-            for k in range(pz + 1):
+            for i in range(px + 1):
                 exponents.append([i, j, k])
     return np.array(exponents, dtype=np.int32)
 
@@ -139,14 +143,16 @@ def _rsm_evaluate(
     rows, cols : np.ndarray
         Image pixel coordinates, each shape ``(N,)``.
     """
-    if ground_domain_type in ('C', 'R'):
-        # Cartographic/relative: convert to ECEF first
+    if ground_domain_type == 'R':
+        # Rectangular: convert to ECEF first
         ex, ey, ez = geodetic_to_ecef(lats, lons, heights)
         x_raw, y_raw, z_raw = ex, ey, ez
     else:
-        # Geodetic: use lat/lon/hae directly
-        x_raw = lats
-        y_raw = lons
+        # Geodetic (G or H): per RSMIDA spec (STDI-0002 Vol 1 App U,
+        # Section 5.3), x=longitude, y=latitude, z=height.
+        # Units: radians for x and y, meters for z.
+        x_raw = np.deg2rad(lons)
+        y_raw = np.deg2rad(lats)
         z_raw = heights
 
     # Normalize ground coordinates
@@ -289,7 +295,7 @@ class RSMGeolocation(Geolocation):
         hae = float(height)
 
         # Initial guess from RSM normalization center
-        if self._ground_domain in ('C', 'R'):
+        if self._ground_domain == 'R':
             # ECEF center — convert to geodetic for initial guess
             init_lats, init_lons, init_h = ecef_to_geodetic(
                 np.array([rsm.x_off]),
@@ -299,14 +305,21 @@ class RSMGeolocation(Geolocation):
             lats = np.full(n, float(init_lats[0]))
             lons = np.full(n, float(init_lons[0]))
         else:
-            lats = np.full(n, rsm.x_off)
-            lons = np.full(n, rsm.y_off)
+            # Geodetic (G or H): x_off = longitude (radians),
+            # y_off = latitude (radians). Convert to degrees.
+            lats = np.full(n, np.rad2deg(rsm.y_off))
+            lons = np.full(n, np.rad2deg(rsm.x_off))
 
         h_arr = np.full(n, hae)
 
-        # Finite difference steps
-        dlat = max(abs(rsm.x_norm_sf) * 1e-6, 1e-8)
-        dlon = max(abs(rsm.y_norm_sf) * 1e-6, 1e-8)
+        # Finite difference steps (degrees)
+        if self._ground_domain == 'R':
+            dlat = max(abs(rsm.y_norm_sf) * 1e-6, 1e-8)
+            dlon = max(abs(rsm.x_norm_sf) * 1e-6, 1e-8)
+        else:
+            # Geodetic: norm_sf is in radians, convert to degree scale
+            dlat = max(np.rad2deg(abs(rsm.y_norm_sf)) * 1e-6, 1e-8)
+            dlon = max(np.rad2deg(abs(rsm.x_norm_sf)) * 1e-6, 1e-8)
 
         max_iter = 20
         tol = 1e-8  # pixels

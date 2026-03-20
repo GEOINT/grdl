@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
 from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
-from grdl.image_processing.ortho.ortho_pipeline import OrthoPipeline, OrthoResult
+from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ class TestPipelineROI:
     def test_roi_restricts_output_bounds(self, geo, source_2d):
         """ROI bounds should control the output grid."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -226,7 +226,7 @@ class TestPipelineROI:
     def test_roi_smaller_than_footprint(self, geo, source_2d):
         """ROI grid should be smaller than full footprint grid."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -234,7 +234,7 @@ class TestPipelineROI:
             .run()
         )
         result_roi = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -249,7 +249,7 @@ class TestPipelineROI:
         """ROI should work with reader path."""
         reader = MockReader(source_2d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -263,7 +263,7 @@ class TestPipelineROI:
     def test_roi_outside_footprint_all_nodata(self, geo, source_2d):
         """ROI outside source coverage → all nodata."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -278,7 +278,7 @@ class TestPipelineROI:
         """ROI + DEM should not error."""
         elev = ConstantElevation(height=100.0)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_elevation(elev)
@@ -305,7 +305,7 @@ class TestPipelineTiled:
         is ambiguous between the two arithmetic paths.
         """
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -313,7 +313,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -326,7 +326,7 @@ class TestPipelineTiled:
     def test_tiled_output_dimensions(self, geo, source_2d):
         """Tiled output shape should match full grid dimensions."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -341,7 +341,7 @@ class TestPipelineTiled:
         """Tiled path should work with reader."""
         reader = MockReader(source_2d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -355,7 +355,7 @@ class TestPipelineTiled:
     def test_tiled_larger_than_output(self, geo, source_2d):
         """Tile larger than output → one tile, matches full result."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -363,7 +363,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -376,7 +376,7 @@ class TestPipelineTiled:
     def test_tiled_with_roi(self, geo, source_2d):
         """ROI + tiling should compose correctly."""
         result_roi = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -385,7 +385,7 @@ class TestPipelineTiled:
             .run()
         )
         result_roi_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -402,7 +402,7 @@ class TestPipelineTiled:
         """Tiling + DEM should match non-tiled + DEM."""
         elev = ConstantElevation(height=0.0)
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_elevation(elev)
@@ -411,7 +411,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_elevation(elev)
@@ -425,7 +425,7 @@ class TestPipelineTiled:
     def test_tiled_multiband(self, geo, source_3d):
         """Tiling should work with multi-band source arrays."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_3d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -433,7 +433,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_3d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -449,7 +449,7 @@ class TestPipelineTiled:
         """Nodata value should be correctly applied in tiled path."""
         big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_output_grid(big_grid)
@@ -463,7 +463,7 @@ class TestPipelineTiled:
 
     def test_builder_returns_self(self, geo):
         """with_roi and with_tile_size should return self."""
-        p = OrthoPipeline()
+        p = OrthoBuilder()
         assert p.with_roi(0, 1, 0, 1) is p
         assert p.with_tile_size(256) is p
 

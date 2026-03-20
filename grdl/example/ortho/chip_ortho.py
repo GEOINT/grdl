@@ -12,7 +12,7 @@ Demonstrates full GRDL integration:
   - ``grdl.data_prep.ChipExtractor`` for pixel-domain chip planning
   - ``grdl.geolocation`` for pixel ↔ ground transforms
   - ``grdl.geolocation.coordinates.enu_to_geodetic`` for meter → pixel
-  - ``grdl.image_processing.ortho.OrthoPipeline`` with ENU grid output
+  - ``grdl.image_processing.ortho.OrthoBuilder`` with ENU grid output
 
 Usage
 -----
@@ -24,7 +24,7 @@ Usage
 
 Dependencies
 ------------
-matplotlib
+plotly
 sarpy or sarkit
 
 Author
@@ -308,14 +308,14 @@ def main() -> None:
         geo, region.row_start, region.col_start, chip_rows, chip_cols)
 
     # ── Orthorectify ─────────────────────────────────────────
-    from grdl.image_processing.ortho import OrthoPipeline
+    from grdl.image_processing.ortho import OrthoBuilder
     from grdl.geolocation.elevation.constant import ConstantElevation
 
     scene_elev = ConstantElevation(height=center_h)
 
     print(f"Orthorectifying to ENU grid ({args.pixel_size:.1f} m)...")
     pipeline = (
-        OrthoPipeline()
+        OrthoBuilder()
         .with_source_array(img)
         .with_metadata(meta)
         .with_geolocation(chip_geo)
@@ -340,47 +340,66 @@ def main() -> None:
     print(f"  Valid:  {100 * np.sum(valid) / ortho.size:.1f}%")
 
     # ── Plot ─────────────────────────────────────────────────
-    import matplotlib
-    matplotlib.use("QtAgg")
-    import matplotlib.pyplot as plt
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-
-    # Left: chip
     vmin = np.percentile(img[img > 0], 2) if np.any(img > 0) else 0
     vmax = np.percentile(img[img > 0], 99) if np.any(img > 0) else 1
-    axes[0].imshow(img, cmap='gray', aspect='auto',
-                   vmin=vmin, vmax=vmax)
-    # Mark target point
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=[
+            f"{fmt} Chip  ({chip_rows} x {chip_cols} px)<br>"
+            f"{extent_m:.0f} m x {extent_m:.0f} m ground",
+            f"Orthorectified ENU  ({ortho.shape[0]} x "
+            f"{ortho.shape[1]} px)<br>"
+            f"{args.pixel_size:.1f} m pixels, {args.interp}",
+        ],
+    )
+
+    # Left: chip
+    fig.add_trace(
+        go.Heatmap(z=img, zmin=vmin, zmax=vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=1,
+    )
     mr, mc = chip_geo.latlon_to_image(center_lat, center_lon, center_h)
     mr = float(np.asarray(mr).ravel()[0])
     mc = float(np.asarray(mc).ravel()[0])
-    axes[0].plot(mc, mr, 'r+', markersize=14, markeredgewidth=2)
-    axes[0].set_title(f"{fmt} Chip  ({chip_rows} x {chip_cols} px)\n"
-                      f"{extent_m:.0f} m x {extent_m:.0f} m ground",
-                      fontsize=11)
-    axes[0].set_xlabel("Column")
-    axes[0].set_ylabel("Row")
+    fig.add_trace(
+        go.Scatter(x=[mc], y=[mr], mode='markers',
+                   marker=dict(symbol='cross', size=16,
+                               color='red', line=dict(width=3, color='red')),
+                   showlegend=False),
+        row=1, col=1,
+    )
+    fig.update_xaxes(title_text="Column", row=1, col=1)
+    fig.update_yaxes(title_text="Row", autorange='reversed', row=1, col=1)
 
-    # Right: ortho
-    extent_enu = [grid.min_east, grid.max_east,
-                  grid.min_north, grid.max_north]
-    axes[1].imshow(ortho, cmap='gray', aspect='equal',
-                   vmin=vmin, vmax=vmax,
-                   extent=extent_enu, origin='upper')
-    axes[1].plot(0.0, 0.0, 'r+', markersize=14, markeredgewidth=2)
-    axes[1].set_title(f"Orthorectified ENU  ({ortho.shape[0]} x "
-                      f"{ortho.shape[1]} px)\n"
-                      f"{args.pixel_size:.1f} m pixels, {args.interp}",
-                      fontsize=11)
-    axes[1].set_xlabel("East (m)")
-    axes[1].set_ylabel("North (m)")
+    # Right: ortho (north-up: flipud so z[0] = south at bottom)
+    fig.add_trace(
+        go.Heatmap(z=np.flipud(ortho), zmin=vmin, zmax=vmax,
+                   x0=grid.min_east, dx=grid.pixel_size_east,
+                   y0=grid.min_north, dy=grid.pixel_size_north,
+                   colorscale='Gray', showscale=False),
+        row=1, col=2,
+    )
+    fig.add_trace(
+        go.Scatter(x=[0.0], y=[0.0], mode='markers',
+                   marker=dict(symbol='cross', size=16,
+                               color='red', line=dict(width=3, color='red')),
+                   showlegend=False),
+        row=1, col=2,
+    )
+    fig.update_xaxes(title_text="East (m)", row=1, col=2)
+    fig.update_yaxes(title_text="North (m)", row=1, col=2)
 
-    fig.suptitle(f"{filepath.name}  |  "
-                 f"({center_lat:.4f}, {center_lon:.4f})",
-                 fontsize=12)
-    plt.tight_layout()
-    plt.show()
+    fig.update_layout(
+        title_text=(f"{filepath.name}  |  "
+                    f"({center_lat:.4f}, {center_lon:.4f})"),
+        width=1400, height=650,
+    )
+    fig.show()
 
 
 if __name__ == "__main__":

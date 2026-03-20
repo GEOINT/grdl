@@ -4,7 +4,7 @@ SIDD Orthorectification Example — Accelerated Center Chip.
 
 Loads a SIDD (Sensor Independent Derived Data) image, extracts a center
 chip using ``data_prep.ChipExtractor``, then orthorectifies to WGS-84
-and optionally ENU grids via the accelerated ``OrthoPipeline``.
+and optionally ENU grids via the accelerated ``OrthoBuilder``.
 
 SIDD products are already detected/projected imagery (not complex SAR),
 so no magnitude computation is needed — the pixel data is used directly.
@@ -23,7 +23,7 @@ Usage:
 
 Dependencies
 ------------
-matplotlib
+plotly
 scipy
 sarkit (or sarpy)
 
@@ -56,18 +56,13 @@ from typing import Optional, Tuple, Union
 # Third-party
 import numpy as np
 
-# Matplotlib -- set backend before importing pyplot
-import matplotlib
-matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt  # noqa: E402
-
 # GRDL
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.IO.sar import SIDDReader
 from grdl.data_prep import ChipExtractor
 from grdl.geolocation.sar.sidd import SIDDGeolocation
-from grdl.image_processing.ortho import OrthoPipeline, detect_backend
+from grdl.image_processing.ortho import OrthoBuilder, detect_backend
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +270,7 @@ def ortho_sidd(
     # Build and run WGS-84 pipeline
     # ------------------------------------------------------------------
     pipeline = (
-        OrthoPipeline()
+        OrthoBuilder()
         .with_source_array(source)
         .with_geolocation(geo)
         .with_interpolation(interpolation)
@@ -328,7 +323,7 @@ def ortho_sidd(
         print()
         print(f"Running ENU ortho pipeline ({enu_pixel_m:.1f} m)...")
         enu_pipeline = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_interpolation(interpolation)
@@ -362,84 +357,87 @@ def ortho_sidd(
     # ------------------------------------------------------------------
     # Plot
     # ------------------------------------------------------------------
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
     n_panels = 3 if result_enu is not None else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 8))
-    if n_panels == 2:
-        ax_src, ax_ortho = axes
-        ax_enu = None
-    else:
-        ax_src, ax_ortho, ax_enu = axes
 
     # Percentile stretch
-    src_vmin = np.nanpercentile(source, 2)
-    src_vmax = np.nanpercentile(source, 98)
+    src_vmin = float(np.nanpercentile(source, 2))
+    src_vmax = float(np.nanpercentile(source, 98))
     valid_mask = np.isfinite(result.data)
     if np.any(valid_mask):
-        ortho_vmin = np.nanpercentile(result.data[valid_mask], 2)
-        ortho_vmax = np.nanpercentile(result.data[valid_mask], 98)
+        ortho_vmin = float(np.nanpercentile(result.data[valid_mask], 2))
+        ortho_vmax = float(np.nanpercentile(result.data[valid_mask], 98))
     else:
         ortho_vmin, ortho_vmax = src_vmin, src_vmax
 
-    # Panel 1: Source chip
-    ax_src.imshow(
-        source, cmap='gray', vmin=src_vmin, vmax=src_vmax,
-        aspect='auto', interpolation='nearest',
-    )
-    ax_src.set_title(
-        f"SIDD Source (chip {chip_rows}x{chip_cols})\n{meta.dtype}",
-        fontsize=10,
-    )
-    ax_src.set_xlabel("Column")
-    ax_src.set_ylabel("Row")
+    titles = [
+        f"SIDD Source (chip {chip_rows}x{chip_cols})<br>{meta.dtype}",
+        "Orthorectified (WGS-84)",
+    ]
+    if result_enu is not None:
+        titles.append(f"Orthorectified (ENU {enu_pixel_m:.1f} m)")
 
-    # Panel 2: WGS-84 ortho
-    extent = [grid.min_lon, grid.max_lon, grid.min_lat, grid.max_lat]
-    ax_ortho.imshow(
-        result.data, cmap='gray', vmin=ortho_vmin, vmax=ortho_vmax,
-        aspect='auto', interpolation='nearest', extent=extent,
+    fig = make_subplots(rows=1, cols=n_panels, subplot_titles=titles)
+
+    # Panel 1: Source chip
+    fig.add_trace(
+        go.Heatmap(z=source, zmin=src_vmin, zmax=src_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=1,
     )
-    ax_ortho.set_title("Orthorectified (WGS-84)", fontsize=10)
-    ax_ortho.set_xlabel("Longitude (deg)")
-    ax_ortho.set_ylabel("Latitude (deg)")
+    fig.update_xaxes(title_text="Column", row=1, col=1)
+    fig.update_yaxes(title_text="Row", autorange='reversed', row=1, col=1)
+
+    # Panel 2: WGS-84 ortho (north-up)
+    fig.add_trace(
+        go.Heatmap(z=np.flipud(result.data),
+                   x0=grid.min_lon, dx=grid.pixel_size_lon,
+                   y0=grid.min_lat, dy=grid.pixel_size_lat,
+                   zmin=ortho_vmin, zmax=ortho_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=2,
+    )
+    fig.update_xaxes(title_text="Longitude (deg)", row=1, col=2)
+    fig.update_yaxes(title_text="Latitude (deg)", row=1, col=2)
 
     # Panel 3: ENU ortho
-    if ax_enu is not None and result_enu is not None:
+    if result_enu is not None:
         eg = result_enu.output_grid
-        enu_extent = [eg.min_east, eg.max_east, eg.min_north, eg.max_north]
         enu_valid = np.isfinite(result_enu.data)
         if np.any(enu_valid):
-            enu_vmin = np.nanpercentile(result_enu.data[enu_valid], 2)
-            enu_vmax = np.nanpercentile(result_enu.data[enu_valid], 98)
+            enu_vmin = float(np.nanpercentile(result_enu.data[enu_valid], 2))
+            enu_vmax = float(np.nanpercentile(result_enu.data[enu_valid], 98))
         else:
             enu_vmin, enu_vmax = ortho_vmin, ortho_vmax
 
-        ax_enu.imshow(
-            result_enu.data, cmap='gray',
-            vmin=enu_vmin, vmax=enu_vmax,
-            aspect='auto', interpolation='nearest', extent=enu_extent,
+        fig.add_trace(
+            go.Heatmap(z=np.flipud(result_enu.data),
+                       x0=eg.min_east, dx=eg.pixel_size_east,
+                       y0=eg.min_north, dy=eg.pixel_size_north,
+                       zmin=enu_vmin, zmax=enu_vmax,
+                       colorscale='Gray', showscale=False),
+            row=1, col=3,
         )
-        ax_enu.set_title(
-            f"Orthorectified (ENU {enu_pixel_m:.1f} m)", fontsize=10,
-        )
-        ax_enu.set_xlabel("East (m)")
-        ax_enu.set_ylabel("North (m)")
+        fig.update_xaxes(title_text="East (m)", row=1, col=3)
+        fig.update_yaxes(title_text="North (m)", row=1, col=3)
 
     title = (
-        f"SIDD Ortho  |  {filepath.name}\n"
+        f"SIDD Ortho  |  {filepath.name}  |  "
         f"Chip {chip_rows}x{chip_cols}  |  "
         f"Grid {grid.rows}x{grid.cols}  |  "
         f"{interpolation}  |  {detect_backend()}"
     )
     if dem_path:
         title += "  |  DEM"
-    fig.suptitle(title, fontsize=10, fontweight="bold")
-    plt.tight_layout()
+    fig.update_layout(title_text=title, width=700 * n_panels, height=700)
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.write_image(str(save_path), scale=2)
         print(f"Saved to {save_path}")
     else:
-        plt.show()
+        fig.show()
 
 
 # ---------------------------------------------------------------------------

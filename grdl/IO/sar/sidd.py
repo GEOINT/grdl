@@ -1026,6 +1026,7 @@ def _extract_measurement_sarpy(sm: Any) -> Optional[SIDDMeasurement]:
         plane_projection=plane_proj,
         pixel_footprint=pixel_footprint,
         arp_flag=_safe_get(meas, 'ARPFlag'),
+        arp_poly=_sarpy_xyzpoly(_safe_get(meas, 'ARPPoly')),
     )
 
 

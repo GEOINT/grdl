@@ -36,11 +36,14 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-03-19
 """
 
 import logging
-from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import (
+    Annotated, Any, Dict, List, Optional, Protocol, Tuple,
+    TYPE_CHECKING, Union, runtime_checkable,
+)
 
 from grdl.exceptions import DependencyError
 from grdl.image_processing.params import Desc, Options
@@ -73,6 +76,99 @@ _INTERPOLATION_ORDERS = {
 
 # Pixel count above which compute_mapping parallelises across threads
 _PARALLEL_THRESHOLD = 1_000_000
+
+
+@runtime_checkable
+class OutputGridProtocol(Protocol):
+    """Contract for output grid objects used by ``Orthorectifier``.
+
+    Both ``OutputGrid`` (WGS-84 degrees) and ``ENUGrid`` (ENU meters)
+    satisfy this protocol.  Any custom grid that implements these
+    attributes and methods can be used as a drop-in replacement.
+
+    Attributes
+    ----------
+    rows : int
+        Number of output rows.
+    cols : int
+        Number of output columns.
+    """
+
+    rows: int
+    cols: int
+
+    def image_to_latlon(
+        self,
+        row: Union[float, np.ndarray],
+        col: Union[float, np.ndarray],
+    ) -> Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]:
+        """Convert grid pixel coordinates to lat/lon."""
+        ...
+
+    def latlon_to_image(
+        self,
+        lat: Union[float, np.ndarray],
+        lon: Union[float, np.ndarray],
+    ) -> Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]:
+        """Convert lat/lon to grid pixel coordinates."""
+        ...
+
+    def sub_grid(
+        self,
+        row_start: int,
+        col_start: int,
+        row_end: int,
+        col_end: int,
+    ) -> 'OutputGridProtocol':
+        """Extract a sub-grid covering a rectangular tile."""
+        ...
+
+
+def validate_sub_grid_indices(
+    rows: int,
+    cols: int,
+    row_start: int,
+    col_start: int,
+    row_end: int,
+    col_end: int,
+) -> None:
+    """Validate sub-grid indices against parent grid dimensions.
+
+    Parameters
+    ----------
+    rows : int
+        Parent grid row count.
+    cols : int
+        Parent grid column count.
+    row_start : int
+        First row (inclusive).
+    col_start : int
+        First column (inclusive).
+    row_end : int
+        Last row (exclusive).
+    col_end : int
+        Last column (exclusive).
+
+    Raises
+    ------
+    ValueError
+        If indices are negative, exceed bounds, or produce an empty region.
+    """
+    if row_start < 0 or col_start < 0:
+        raise ValueError(
+            f"Indices must be non-negative, got "
+            f"row_start={row_start}, col_start={col_start}"
+        )
+    if row_end > rows or col_end > cols:
+        raise ValueError(
+            f"Indices exceed grid dimensions ({rows}x{cols}), "
+            f"got row_end={row_end}, col_end={col_end}"
+        )
+    if row_end <= row_start or col_end <= col_start:
+        raise ValueError(
+            f"Empty region: row [{row_start}, {row_end}), "
+            f"col [{col_start}, {col_end})"
+        )
 
 
 class OutputGrid:
@@ -307,21 +403,9 @@ class OutputGrid:
         ValueError
             If indices are out of range or produce an empty region.
         """
-        if row_start < 0 or col_start < 0:
-            raise ValueError(
-                f"Indices must be non-negative, got "
-                f"row_start={row_start}, col_start={col_start}"
-            )
-        if row_end > self.rows or col_end > self.cols:
-            raise ValueError(
-                f"Indices exceed grid dimensions ({self.rows}x{self.cols}), "
-                f"got row_end={row_end}, col_end={col_end}"
-            )
-        if row_end <= row_start or col_end <= col_start:
-            raise ValueError(
-                f"Empty region: row [{row_start}, {row_end}), "
-                f"col [{col_start}, {col_end})"
-            )
+        validate_sub_grid_indices(
+            self.rows, self.cols, row_start, col_start, row_end, col_end,
+        )
 
         tile_rows = row_end - row_start
         tile_cols = col_end - col_start
@@ -406,7 +490,7 @@ class Orthorectifier(ImageTransform):
     def __init__(
         self,
         geolocation: 'Geolocation',
-        output_grid: OutputGrid,
+        output_grid: OutputGridProtocol,
         interpolation: str = 'bilinear',
         elevation: Optional['ElevationModel'] = None,
     ) -> None:
@@ -418,8 +502,10 @@ class Orthorectifier(ImageTransform):
         geolocation : Geolocation
             Geolocation for the source image. Must support
             ``latlon_to_image()`` for inverse mapping.
-        output_grid : OutputGrid
+        output_grid : OutputGridProtocol
             Output grid specification defining bounds and resolution.
+            Any object satisfying ``OutputGridProtocol`` (e.g.
+            ``OutputGrid``, ``ENUGrid``).
         interpolation : str, default='bilinear'
             Resampling method. One of 'nearest', 'bilinear', 'bicubic'.
         elevation : ElevationModel, optional
@@ -495,86 +581,107 @@ class Orthorectifier(ImageTransform):
         For large grids (>1M pixels), computation is parallelized by
         row-chunks across a thread pool.
         """
-        import os
-
         grid = self.output_grid
         total_pixels = grid.rows * grid.cols
-
-        if total_pixels > _PARALLEL_THRESHOLD and grid.rows > 1:
-            logger.info(
-                "Computing %dx%d mapping (parallel)", grid.rows, grid.cols,
-            )
-            return self._compute_mapping_parallel(num_workers)
-
-        logger.info(
-            "Computing %dx%d mapping (sequential)", grid.rows, grid.cols,
-        )
-        return self._compute_mapping_sequential()
-
-    def _compute_mapping_sequential(
-        self,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute mapping in a single vectorized pass."""
-        grid = self.output_grid
 
         if self.elevation is not None:
             logger.debug("Using DEM for terrain-corrected mapping")
         else:
             logger.debug("No DEM provided, using flat-earth mapping")
 
-        out_rows = np.arange(grid.rows, dtype=np.float64) + 0.5
         out_cols = np.arange(grid.cols, dtype=np.float64) + 0.5
-        col_grid, row_grid = np.meshgrid(out_cols, out_rows)
-        lat_grid, lon_grid = grid.image_to_latlon(
-            row_grid.ravel(), col_grid.ravel(),
-        )
-        lats_flat = np.asarray(lat_grid).ravel()
-        lons_flat = np.asarray(lon_grid).ravel()
 
-        if self.elevation is not None:
-            heights_flat = self.elevation.get_elevation(lats_flat, lons_flat)
-            heights_flat = np.where(
-                np.isfinite(heights_flat), heights_flat, 0.0
+        if total_pixels > _PARALLEL_THRESHOLD and grid.rows > 1:
+            logger.info(
+                "Computing %dx%d mapping (parallel)", grid.rows, grid.cols,
+            )
+            source_rows, source_cols = self._compute_mapping_parallel(
+                out_cols, num_workers,
             )
         else:
-            heights_flat = 0.0
+            logger.info(
+                "Computing %dx%d mapping (sequential)", grid.rows, grid.cols,
+            )
+            source_rows, source_cols = self._compute_strip(
+                0, grid.rows, out_cols,
+            )
 
-        src_rows_flat, src_cols_flat = self.geolocation.latlon_to_image(
-            lats_flat, lons_flat, height=heights_flat
+        return self._finalize_mapping(source_rows, source_cols)
+
+    def _compute_strip(
+        self,
+        row_start: int,
+        row_end: int,
+        out_cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute source pixel mapping for a contiguous row range.
+
+        This is the single implementation of the inverse-geolocation
+        core: grid pixel → lat/lon → (optional DEM) → source pixel.
+        Both sequential and parallel paths call this method.
+
+        Parameters
+        ----------
+        row_start : int
+            First output row (inclusive).
+        row_end : int
+            Last output row (exclusive).
+        out_cols : np.ndarray
+            Pre-computed column centre coordinates (shared across strips).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (source_rows, source_cols) with shape
+            ``(row_end - row_start, grid.cols)``.
+        """
+        grid = self.output_grid
+        n_rows = row_end - row_start
+
+        strip_rows = np.arange(row_start, row_end, dtype=np.float64) + 0.5
+        col_g, row_g = np.meshgrid(out_cols, strip_rows)
+
+        lats, lons = grid.image_to_latlon(row_g.ravel(), col_g.ravel())
+        lats_flat = np.asarray(lats).ravel()
+        lons_flat = np.asarray(lons).ravel()
+
+        if self.elevation is not None:
+            heights = self.elevation.get_elevation(lats_flat, lons_flat)
+            heights = np.where(np.isfinite(heights), heights, 0.0)
+        else:
+            heights = 0.0
+
+        sr, sc = self.geolocation.latlon_to_image(
+            lats_flat, lons_flat, height=heights,
         )
-
-        source_rows = src_rows_flat.reshape(grid.rows, grid.cols)
-        source_cols = src_cols_flat.reshape(grid.rows, grid.cols)
-
-        src_shape = self.geolocation.shape
-        valid = (
-            np.isfinite(source_rows) &
-            np.isfinite(source_cols) &
-            (source_rows >= 0) &
-            (source_rows < src_shape[0]) &
-            (source_cols >= 0) &
-            (source_cols < src_shape[1])
+        return (
+            sr.reshape(n_rows, grid.cols),
+            sc.reshape(n_rows, grid.cols),
         )
-
-        self._source_rows = source_rows
-        self._source_cols = source_cols
-        self._valid_mask = valid
-
-        valid_pct = 100.0 * np.count_nonzero(valid) / valid.size
-        logger.debug("Valid pixel coverage: %.1f%%", valid_pct)
-
-        return source_rows, source_cols, valid
 
     def _compute_mapping_parallel(
         self,
+        out_cols: np.ndarray,
         num_workers: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Compute mapping in parallel row-chunks using threads.
 
-        For large output grids (>1M pixels), distributes row-strips
-        across a thread pool.  Each strip independently computes
-        grid→latlon→source coordinates.  NumPy releases the GIL
-        during array operations, enabling true multi-threading.
+        Distributes row-strips across a thread pool, each calling
+        ``_compute_strip``.  NumPy releases the GIL during array
+        operations, enabling true multi-threading.
+
+        Parameters
+        ----------
+        out_cols : np.ndarray
+            Pre-computed column centre coordinates.
+        num_workers : int, optional
+            Thread count.  Defaults to ``os.cpu_count() - 1``.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (source_rows, source_cols) with shape
+            ``(grid.rows, grid.cols)``.
         """
         import os
         from concurrent.futures import ThreadPoolExecutor
@@ -586,48 +693,40 @@ class Orthorectifier(ImageTransform):
         source_rows = np.empty((grid.rows, grid.cols), dtype=np.float64)
         source_cols = np.empty((grid.rows, grid.cols), dtype=np.float64)
 
-        # Row-strip chunking
         chunk_h = max(1, grid.rows // num_workers)
         row_slices = []
         for s in range(0, grid.rows, chunk_h):
             row_slices.append(slice(s, min(s + chunk_h, grid.rows)))
 
-        out_cols = np.arange(grid.cols, dtype=np.float64) + 0.5
-
         def _process_strip(rs: slice) -> None:
-            strip_rows = np.arange(
-                rs.start, rs.stop, dtype=np.float64,
-            ) + 0.5
-            col_g, row_g = np.meshgrid(out_cols, strip_rows)
-            lats, lons = grid.image_to_latlon(
-                row_g.ravel(), col_g.ravel(),
-            )
-            lats_f = np.asarray(lats).ravel()
-            lons_f = np.asarray(lons).ravel()
-
-            if self.elevation is not None:
-                heights = self.elevation.get_elevation(lats_f, lons_f)
-                heights = np.where(
-                    np.isfinite(heights), heights, 0.0,
-                )
-            else:
-                heights = 0.0
-
-            sr, sc = self.geolocation.latlon_to_image(
-                lats_f, lons_f, height=heights,
-            )
-            n_strip_rows = rs.stop - rs.start
-            source_rows[rs] = sr.reshape(n_strip_rows, grid.cols)
-            source_cols[rs] = sc.reshape(n_strip_rows, grid.cols)
-
-        if self.elevation is not None:
-            logger.debug("Using DEM for terrain-corrected mapping")
-        else:
-            logger.debug("No DEM provided, using flat-earth mapping")
+            sr, sc = self._compute_strip(rs.start, rs.stop, out_cols)
+            source_rows[rs] = sr
+            source_cols[rs] = sc
 
         with ThreadPoolExecutor(max_workers=num_workers) as pool:
             list(pool.map(_process_strip, row_slices))
 
+        return source_rows, source_cols
+
+    def _finalize_mapping(
+        self,
+        source_rows: np.ndarray,
+        source_cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate mapping bounds, cache results, and return.
+
+        Parameters
+        ----------
+        source_rows : np.ndarray
+            Fractional source row coordinates, shape ``(OH, OW)``.
+        source_cols : np.ndarray
+            Fractional source column coordinates, shape ``(OH, OW)``.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            ``(source_rows, source_cols, valid_mask)``.
+        """
         src_shape = self.geolocation.shape
         valid = (
             np.isfinite(source_rows) &
@@ -779,14 +878,14 @@ class Orthorectifier(ImageTransform):
         chip_cols = source_cols - col_min
 
         # Update valid mask for chip bounds
+        chip_h = source_chip.shape[-2] if source_chip.ndim == 3 else source_chip.shape[0]
+        chip_w = source_chip.shape[-1] if source_chip.ndim == 3 else source_chip.shape[1]
         chip_valid = (
             valid &
             (chip_rows >= 0) &
-            (chip_rows < source_chip.shape[-2] if source_chip.ndim == 3
-             else source_chip.shape[0]) &
+            (chip_rows < chip_h) &
             (chip_cols >= 0) &
-            (chip_cols < source_chip.shape[-1] if source_chip.ndim == 3
-             else source_chip.shape[1])
+            (chip_cols < chip_w)
         )
 
         from grdl.image_processing.ortho.accelerated import resample

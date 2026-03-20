@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-19
 """
 
 import logging
@@ -37,6 +37,7 @@ from grdl.geolocation.coordinates import (
     geodetic_to_enu,
     enu_to_geodetic,
 )
+from grdl.image_processing.ortho.ortho import validate_sub_grid_indices
 
 logger = logging.getLogger(__name__)
 
@@ -333,22 +334,9 @@ class ENUGrid:
         ValueError
             If indices are out of range or produce an empty region.
         """
-        if row_start < 0 or col_start < 0:
-            raise ValueError(
-                f"Indices must be non-negative, got "
-                f"row_start={row_start}, col_start={col_start}"
-            )
-        if row_end > self.rows or col_end > self.cols:
-            raise ValueError(
-                f"Indices exceed grid dimensions "
-                f"({self.rows}x{self.cols}), "
-                f"got row_end={row_end}, col_end={col_end}"
-            )
-        if row_end <= row_start or col_end <= col_start:
-            raise ValueError(
-                f"Empty region: row [{row_start}, {row_end}), "
-                f"col [{col_start}, {col_end})"
-            )
+        validate_sub_grid_indices(
+            self.rows, self.cols, row_start, col_start, row_end, col_end,
+        )
 
         tile_rows = row_end - row_start
         tile_cols = col_end - col_start

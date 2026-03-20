@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Ortho Pipeline Tests - Tests for OrthoPipeline and OrthoResult.
+Ortho Pipeline Tests - Tests for OrthoBuilder and OrthoResult.
 
 Dependencies
 ------------
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
 from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
-from grdl.image_processing.ortho.ortho_pipeline import OrthoPipeline, OrthoResult
+from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 
 
 # ---------------------------------------------------------------------------
@@ -160,27 +160,27 @@ def source_3d():
 
 
 # ---------------------------------------------------------------------------
-# Tests: OrthoPipeline — validation
+# Tests: OrthoBuilder — validation
 # ---------------------------------------------------------------------------
 
 class TestPipelineValidation:
 
     def test_missing_geolocation_raises(self, source_2d):
         """Pipeline should fail without geolocation."""
-        pipeline = OrthoPipeline().with_source_array(source_2d)
+        pipeline = OrthoBuilder().with_source_array(source_2d)
         with pytest.raises(ValueError, match="Geolocation"):
             pipeline.run()
 
     def test_missing_reader_and_source_raises(self, geo):
         """Pipeline should fail without reader or source array."""
-        pipeline = OrthoPipeline().with_geolocation(geo)
+        pipeline = OrthoBuilder().with_geolocation(geo)
         with pytest.raises(ValueError, match="reader"):
             pipeline.run()
 
     def test_missing_resolution_without_reader_raises(self, geo, source_2d):
         """Auto-resolution needs a reader with metadata."""
         pipeline = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_geolocation(geo)
             .with_source_array(source_2d)
         )
@@ -189,7 +189,7 @@ class TestPipelineValidation:
 
 
 # ---------------------------------------------------------------------------
-# Tests: OrthoPipeline — source array path
+# Tests: OrthoBuilder — source array path
 # ---------------------------------------------------------------------------
 
 class TestPipelineSourceArray:
@@ -197,7 +197,7 @@ class TestPipelineSourceArray:
     def test_explicit_resolution_2d(self, geo, source_2d):
         """Pipeline with source array and explicit resolution."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -212,7 +212,7 @@ class TestPipelineSourceArray:
     def test_explicit_resolution_3d(self, geo, source_3d):
         """Pipeline with multi-band source array."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_3d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -227,7 +227,7 @@ class TestPipelineSourceArray:
         # Make grid extend beyond source coverage
         big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_output_grid(big_grid)
@@ -242,7 +242,7 @@ class TestPipelineSourceArray:
         """Pipeline with explicit OutputGrid (skips resolution)."""
         grid = OutputGrid.from_geolocation(geo, 0.01, 0.005)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_output_grid(grid)
@@ -254,7 +254,7 @@ class TestPipelineSourceArray:
 
 
 # ---------------------------------------------------------------------------
-# Tests: OrthoPipeline — reader path
+# Tests: OrthoBuilder — reader path
 # ---------------------------------------------------------------------------
 
 class TestPipelineReader:
@@ -263,7 +263,7 @@ class TestPipelineReader:
         """Pipeline with mock reader and explicit resolution."""
         reader = MockReader(source_2d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -277,7 +277,7 @@ class TestPipelineReader:
         """Pipeline with multi-band reader."""
         reader = MockReader(source_3d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -290,7 +290,7 @@ class TestPipelineReader:
         """Pipeline with band selection via reader."""
         reader = MockReader(source_3d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -303,7 +303,7 @@ class TestPipelineReader:
 
 
 # ---------------------------------------------------------------------------
-# Tests: OrthoPipeline — DEM elevation
+# Tests: OrthoBuilder — DEM elevation
 # ---------------------------------------------------------------------------
 
 class TestPipelineElevation:
@@ -312,7 +312,7 @@ class TestPipelineElevation:
         """Pipeline should accept ConstantElevation without error."""
         elev = ConstantElevation(height=500.0)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_elevation(elev)
@@ -329,7 +329,7 @@ class TestPipelineElevation:
         # doesn't change the mapping. This test verifies the DEM plumbing
         # executes without error and doesn't corrupt the result.
         result_no_dem = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -338,7 +338,7 @@ class TestPipelineElevation:
         )
         elev = ConstantElevation(height=0.0)
         result_dem = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_elevation(elev)
@@ -358,7 +358,7 @@ class TestOrthoResult:
     def test_shape_property(self, geo, source_2d):
         """OrthoResult.shape should match data.shape."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -370,7 +370,7 @@ class TestOrthoResult:
     def test_geolocation_metadata_keys(self, geo, source_2d):
         """OrthoResult should have standard geolocation metadata."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -388,7 +388,7 @@ class TestOrthoResult:
     def test_orthorectifier_cached(self, geo, source_2d):
         """OrthoResult should hold the configured Orthorectifier."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -408,7 +408,7 @@ class TestBuilderChaining:
 
     def test_all_builder_methods_return_self(self, geo, source_2d):
         """Every with_*() method should return the pipeline for chaining."""
-        p = OrthoPipeline()
+        p = OrthoBuilder()
         assert p.with_geolocation(geo) is p
         assert p.with_source_array(source_2d) is p
         assert p.with_resolution(0.01, 0.005) is p
@@ -429,7 +429,7 @@ class TestBuilderChaining:
     def test_margin_expands_grid(self, geo, source_2d):
         """Margin should produce a larger output grid."""
         result_no_margin = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -437,7 +437,7 @@ class TestBuilderChaining:
             .run()
         )
         result_margin = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)

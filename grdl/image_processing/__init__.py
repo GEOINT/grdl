@@ -20,7 +20,7 @@ intensity.py
     Radiometric transforms -- ``ToDecibels``, ``PercentileStretch``.
 ortho/
     Orthorectification from native acquisition geometry to geographic grids.
-    ``OrthoPipeline`` builder with ROI, tiled processing, auto-resolution,
+    ``OrthoBuilder`` builder with ROI, tiled processing, auto-resolution,
     and DEM terrain correction. ``compute_output_resolution`` dispatches
     on metadata type (SICD, BIOMASS).
 decomposition/
@@ -55,8 +55,8 @@ Intensity:
     ``ToDecibels``, ``PercentileStretch``
 
 Ortho:
-    ``OrthoPipeline`` (recommended), ``OrthoResult``, ``Orthorectifier``,
-    ``OutputGrid``, ``compute_output_resolution``
+    ``OrthoBuilder`` (recommended), ``OrthoResult``, ``Orthorectifier``,
+    ``OutputGrid``, ``OutputGridProtocol``, ``compute_output_resolution``
 
 Decomposition:
     ``PolarimetricDecomposition`` (ABC), ``PauliDecomposition``,
@@ -74,16 +74,16 @@ SAR:
 
 Usage
 -----
-Orthorectify a SICD image via OrthoPipeline (recommended):
+Orthorectify a SICD image via OrthoBuilder (recommended):
 
     >>> from grdl.IO.sar import SICDReader
     >>> from grdl.geolocation.sar.sicd import SICDGeolocation
-    >>> from grdl.image_processing import OrthoPipeline
+    >>> from grdl.image_processing import OrthoBuilder
     >>>
     >>> with SICDReader('image.nitf') as reader:
     ...     geo = SICDGeolocation.from_reader(reader)
     ...     result = (
-    ...         OrthoPipeline()
+    ...         OrthoBuilder()
     ...         .with_reader(reader)
     ...         .with_geolocation(geo)
     ...         .with_metadata(reader.metadata)       # auto-resolution
@@ -95,7 +95,7 @@ Orthorectify a SICD image via OrthoPipeline (recommended):
 Ortho with ROI (geographic sub-region) and tiling (memory-efficient):
 
     >>> result = (
-    ...     OrthoPipeline()
+    ...     OrthoBuilder()
     ...     .with_source_array(mag)
     ...     .with_geolocation(geo)
     ...     .with_resolution(0.001, 0.001)
@@ -171,7 +171,8 @@ Modified
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
 from grdl.image_processing.ortho import (
-    Orthorectifier, OutputGrid, OrthoPipeline, OrthoResult,
+    Orthorectifier, OutputGrid, OutputGridProtocol,
+    OrthoBuilder, OrthoResult,
     compute_output_resolution,
 )
 from grdl.image_processing.decomposition import (
@@ -226,7 +227,8 @@ __all__ = [
     'BandwiseTransformMixin',
     'Orthorectifier',
     'OutputGrid',
-    'OrthoPipeline',
+    'OutputGridProtocol',
+    'OrthoBuilder',
     'OrthoResult',
     'compute_output_resolution',
     'PolarimetricDecomposition',

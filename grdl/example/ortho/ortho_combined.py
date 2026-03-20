@@ -22,7 +22,7 @@ Usage:
 
 Dependencies
 ------------
-matplotlib
+plotly
 scipy
 sarkit (or sarpy)
 
@@ -55,16 +55,11 @@ from typing import Optional, Tuple, Union
 # Third-party
 import numpy as np
 
-# Matplotlib -- set backend before importing pyplot
-import matplotlib
-matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt  # noqa: E402
-
 # GRDL
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.data_prep import ChipExtractor
-from grdl.image_processing.ortho import OrthoPipeline, detect_backend
+from grdl.image_processing.ortho import OrthoBuilder, detect_backend
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +331,7 @@ def ortho_combined(
     # WGS-84 ortho
     # ------------------------------------------------------------------
     wgs_pipeline = (
-        OrthoPipeline()
+        OrthoBuilder()
         .with_source_array(source)
         .with_geolocation(geo)
         .with_interpolation(interpolation)
@@ -367,7 +362,7 @@ def ortho_combined(
     # ENU ortho
     # ------------------------------------------------------------------
     enu_pipeline = (
-        OrthoPipeline()
+        OrthoBuilder()
         .with_source_array(source)
         .with_geolocation(geo)
         .with_interpolation(interpolation)
@@ -396,130 +391,108 @@ def ortho_combined(
     print(f"  {'TOTAL':<16s} {total:6.2f} s")
 
     # ------------------------------------------------------------------
-    # Plot: 4 panels
+    # Plot: 3 image panels + info annotation
     # ------------------------------------------------------------------
-    fig = plt.figure(figsize=(22, 10))
-    gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 1])
-    ax_src = fig.add_subplot(gs[0, 0])
-    ax_wgs = fig.add_subplot(gs[0, 1])
-    ax_enu = fig.add_subplot(gs[0, 2])
-    ax_info = fig.add_subplot(gs[1, :])
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
 
     # Percentile stretch
-    src_vmin = np.nanpercentile(source, 2)
-    src_vmax = np.nanpercentile(source, 98)
+    src_vmin = float(np.nanpercentile(source, 2))
+    src_vmax = float(np.nanpercentile(source, 98))
 
     wgs_valid = np.isfinite(result_wgs.data)
     if np.any(wgs_valid):
-        wgs_vmin = np.nanpercentile(result_wgs.data[wgs_valid], 2)
-        wgs_vmax = np.nanpercentile(result_wgs.data[wgs_valid], 98)
+        wgs_vmin = float(np.nanpercentile(result_wgs.data[wgs_valid], 2))
+        wgs_vmax = float(np.nanpercentile(result_wgs.data[wgs_valid], 98))
     else:
         wgs_vmin, wgs_vmax = src_vmin, src_vmax
 
     enu_valid = np.isfinite(result_enu.data)
     if np.any(enu_valid):
-        enu_vmin = np.nanpercentile(result_enu.data[enu_valid], 2)
-        enu_vmax = np.nanpercentile(result_enu.data[enu_valid], 98)
+        enu_vmin = float(np.nanpercentile(result_enu.data[enu_valid], 2))
+        enu_vmax = float(np.nanpercentile(result_enu.data[enu_valid], 98))
     else:
         enu_vmin, enu_vmax = src_vmin, src_vmax
 
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=[
+            f"{label} Source<br>(chip {chip_rows}x{chip_cols})",
+            f"WGS-84 ({grid.rows}x{grid.cols})<br>"
+            f"{grid.pixel_size_lat:.6f}\u00b0",
+            f"ENU ({eg.rows}x{eg.cols})<br>{enu_pixel_m:.1f} m/px",
+        ],
+    )
+
     # Panel 1: Source
-    ax_src.imshow(
-        source, cmap='gray', vmin=src_vmin, vmax=src_vmax,
-        aspect='auto', interpolation='nearest',
+    fig.add_trace(
+        go.Heatmap(z=source, zmin=src_vmin, zmax=src_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=1,
     )
-    ax_src.set_title(
-        f"{label} Source\n(chip {chip_rows}x{chip_cols})", fontsize=10,
-    )
-    ax_src.set_xlabel("Column")
-    ax_src.set_ylabel("Row")
+    fig.update_xaxes(title_text="Column", row=1, col=1)
+    fig.update_yaxes(title_text="Row", autorange='reversed', row=1, col=1)
 
-    # Panel 2: WGS-84
-    wgs_extent = [
-        grid.min_lon, grid.max_lon, grid.min_lat, grid.max_lat,
-    ]
-    ax_wgs.imshow(
-        result_wgs.data, cmap='gray',
-        vmin=wgs_vmin, vmax=wgs_vmax,
-        aspect='auto', interpolation='nearest', extent=wgs_extent,
+    # Panel 2: WGS-84 (north-up)
+    fig.add_trace(
+        go.Heatmap(z=np.flipud(result_wgs.data),
+                   x0=grid.min_lon, dx=grid.pixel_size_lon,
+                   y0=grid.min_lat, dy=grid.pixel_size_lat,
+                   zmin=wgs_vmin, zmax=wgs_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=2,
     )
-    ax_wgs.set_title(
-        f"WGS-84 ({grid.rows}x{grid.cols})\n"
-        f"{grid.pixel_size_lat:.6f}\u00b0",
-        fontsize=10,
-    )
-    ax_wgs.set_xlabel("Longitude (deg)")
-    ax_wgs.set_ylabel("Latitude (deg)")
+    fig.update_xaxes(title_text="Longitude (deg)", row=1, col=2)
+    fig.update_yaxes(title_text="Latitude (deg)", row=1, col=2)
 
-    # Panel 3: ENU
-    enu_extent = [
-        eg.min_east, eg.max_east, eg.min_north, eg.max_north,
-    ]
-    ax_enu.imshow(
-        result_enu.data, cmap='gray',
-        vmin=enu_vmin, vmax=enu_vmax,
-        aspect='auto', interpolation='nearest', extent=enu_extent,
+    # Panel 3: ENU (north-up)
+    fig.add_trace(
+        go.Heatmap(z=np.flipud(result_enu.data),
+                   x0=eg.min_east, dx=eg.pixel_size_east,
+                   y0=eg.min_north, dy=eg.pixel_size_north,
+                   zmin=enu_vmin, zmax=enu_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=3,
     )
-    ax_enu.set_title(
-        f"ENU ({eg.rows}x{eg.cols})\n{enu_pixel_m:.1f} m/px",
-        fontsize=10,
-    )
-    ax_enu.set_xlabel("East (m)")
-    ax_enu.set_ylabel("North (m)")
+    fig.update_xaxes(title_text="East (m)", row=1, col=3)
+    fig.update_yaxes(title_text="North (m)", row=1, col=3)
 
-    # Panel 4: Info text
-    ax_info.axis('off')
-    min_lon, min_lat, max_lon, max_lat = geo.get_bounds()
-    n_wgs = np.sum(wgs_valid)
-    n_enu = np.sum(enu_valid)
-
+    # Info annotation
+    n_wgs = int(np.sum(wgs_valid))
+    n_enu = int(np.sum(enu_valid))
     info_lines = [
-        f"File:          {filepath.name}",
-        f"Format:        {label}",
-        f"Chip:          {chip_rows} x {chip_cols}",
-        f"Backend:       {backend}",
-        f"Interpolation: {interpolation}",
-        f"DEM:           {'yes' if elev else 'none'}",
-        "",
-        f"WGS-84 Grid:   {grid.rows} x {grid.cols}  "
-        f"({grid.pixel_size_lat:.6f}\u00b0 x {grid.pixel_size_lon:.6f}\u00b0)",
-        f"  Lat:         [{grid.min_lat:.6f}, {grid.max_lat:.6f}]",
-        f"  Lon:         [{grid.min_lon:.6f}, {grid.max_lon:.6f}]",
-        f"  Valid:       {n_wgs:,} / {grid.rows * grid.cols:,} "
-        f"({100 * n_wgs / max(1, grid.rows * grid.cols):.1f}%)",
-        "",
-        f"ENU Grid:      {eg.rows} x {eg.cols}  "
-        f"({enu_pixel_m:.1f} m/px)",
-        f"  Ref point:   ({eg.ref_lat:.6f}, {eg.ref_lon:.6f})",
-        f"  East:        [{eg.min_east:.1f}, {eg.max_east:.1f}] m",
-        f"  North:       [{eg.min_north:.1f}, {eg.max_north:.1f}] m",
-        f"  Valid:       {n_enu:,} / {eg.rows * eg.cols:,} "
-        f"({100 * n_enu / max(1, eg.rows * eg.cols):.1f}%)",
-        "",
-        "Timing:",
+        f"File: {filepath.name}  |  Format: {label}  |  "
+        f"Backend: {backend}  |  Interp: {interpolation}  |  "
+        f"DEM: {'yes' if elev else 'none'}",
+        f"WGS-84: {grid.rows}x{grid.cols} "
+        f"({grid.pixel_size_lat:.6f}\u00b0) "
+        f"Valid: {100 * n_wgs / max(1, grid.rows * grid.cols):.1f}%  |  "
+        f"ENU: {eg.rows}x{eg.cols} ({enu_pixel_m:.1f} m/px) "
+        f"Valid: {100 * n_enu / max(1, eg.rows * eg.cols):.1f}%  |  "
+        f"Total: {total:.2f} s",
     ]
-    for stage, dt in timings.items():
-        info_lines.append(f"  {stage:<16s} {dt:6.2f} s")
-    info_lines.append(f"  {'TOTAL':<16s} {total:6.2f} s")
 
-    ax_info.text(
-        0.02, 0.98, "\n".join(info_lines),
-        transform=ax_info.transAxes,
-        fontsize=8, fontfamily='monospace',
-        verticalalignment='top',
+    fig.update_layout(
+        title_text=(
+            f"Combined Ortho: {filepath.name}  |  {label}  |  {backend}"
+        ),
+        width=2100, height=700,
     )
 
-    fig.suptitle(
-        f"Combined Ortho: {filepath.name}  |  {label}  |  {backend}",
-        fontsize=11, fontweight="bold",
+    # Add info as annotation below plots
+    fig.add_annotation(
+        text="<br>".join(info_lines),
+        xref="paper", yref="paper",
+        x=0.0, y=-0.08, showarrow=False,
+        font=dict(size=10, family="monospace"),
+        align="left",
     )
-    plt.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.write_image(str(save_path), scale=2)
         print(f"\nSaved to {save_path}")
     else:
-        plt.show()
+        fig.show()
 
 
 # ---------------------------------------------------------------------------
