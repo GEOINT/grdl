@@ -3,7 +3,8 @@
 Tests for grdl.geolocation.eo.rsm — RSM geolocation.
 
 Uses synthetic RSM coefficients to verify forward/inverse projection
-round-trips with geodetic ground domain.
+round-trips with geodetic ground domain.  Monomial ordering and
+coordinate conventions follow STDI-0002 Vol 1 Appendix U.
 
 Author
 ------
@@ -22,7 +23,7 @@ Created
 
 Modified
 --------
-2026-03-17
+2026-03-19
 """
 
 # Third-party
@@ -47,21 +48,27 @@ from grdl.geolocation.eo.rsm import (
 def linear_rsm():
     """Simple linear RSM (order 1 in each axis) for testing.
 
-    row ≈ lat, col ≈ lon in normalized coordinates.
+    Monomial ordering per RSMPCA spec (x varies fastest):
+      k=0, j=0: i=0,1 → (0,0,0), (1,0,0)  [indices 0, 1]
+      k=0, j=1: i=0,1 → (0,1,0), (1,1,0)  [indices 2, 3]
+      k=1, j=0: i=0,1 → (0,0,1), (1,0,1)  [indices 4, 5]
+      k=1, j=1: i=0,1 → (0,1,1), (1,1,1)  [indices 6, 7]
+
+    For Geodetic (GRNDD='G'): x=longitude, y=latitude, z=height.
+    Row dominated by y (latitude), col dominated by x (longitude).
+    Normalization offsets in radians per RSMIDA spec.
     """
-    # Max powers [1, 1, 1] → 8 terms
-    # Ordering: (0,0,0)=1, (0,0,1)=z, (0,1,0)=y, (0,1,1)=yz,
-    #           (1,0,0)=x, (1,0,1)=xz, (1,1,0)=xy, (1,1,1)=xyz
+    # 8 terms for max_powers [1, 1, 1]
     row_num = np.zeros(8)
     row_num[0] = 0.0   # constant
-    row_num[4] = 1.0   # x (lat) dominant — index 4 = (1,0,0)
+    row_num[2] = 1.0   # y (latitude) dominant — index 2 = (0,1,0)
 
     row_den = np.zeros(8)
-    row_den[0] = 1.0
+    row_den[0] = 1.0   # constant denominator
 
     col_num = np.zeros(8)
     col_num[0] = 0.0
-    col_num[2] = 1.0   # y (lon) dominant — index 2 = (0,1,0)
+    col_num[1] = 1.0   # x (longitude) dominant — index 1 = (1,0,0)
 
     col_den = np.zeros(8)
     col_den[0] = 1.0
@@ -71,11 +78,12 @@ def linear_rsm():
         col_off=2048.0,
         row_norm_sf=2048.0,
         col_norm_sf=2048.0,
-        x_off=38.0,
-        y_off=-77.0,
+        # Normalization offsets in radians (per RSMIDA spec for Geodetic)
+        x_off=np.deg2rad(-77.0),    # longitude center
+        y_off=np.deg2rad(38.0),     # latitude center
         z_off=100.0,
-        x_norm_sf=0.5,
-        y_norm_sf=0.5,
+        x_norm_sf=np.deg2rad(0.5),  # longitude half-range
+        y_norm_sf=np.deg2rad(0.5),  # latitude half-range
         z_norm_sf=500.0,
         row_num_powers=np.array([1, 1, 1]),
         row_den_powers=np.array([1, 1, 1]),
@@ -92,26 +100,30 @@ def linear_rsm():
 def quadratic_rsm():
     """Quadratic RSM with cross-terms for round-trip testing.
 
-    Monomial ordering for max_powers [2,2,1] is:
-    idx 0: (0,0,0)=1, idx 1: (0,0,1)=z, idx 2: (0,1,0)=y,
-    idx 6: (1,0,0)=x, idx 12: (2,0,0)=x².
+    Monomial ordering for max_powers [2,2,1] (x varies fastest):
+      k=0, j=0: i=0,1,2 → (0,0,0), (1,0,0), (2,0,0)   [0,1,2]
+      k=0, j=1: i=0,1,2 → (0,1,0), (1,1,0), (2,1,0)   [3,4,5]
+      k=0, j=2: i=0,1,2 → (0,2,0), (1,2,0), (2,2,0)   [6,7,8]
+      k=1, j=0: i=0,1,2 → (0,0,1), (1,0,1), (2,0,1)   [9,10,11]
+      k=1, j=1: i=0,1,2 → (0,1,1), (1,1,1), (2,1,1)   [12,13,14]
+      k=1, j=2: i=0,1,2 → (0,2,1), (1,2,1), (2,2,1)   [15,16,17]
     """
-    # Max powers [2, 2, 1] → 18 terms
+    # 18 terms for max_powers [2, 2, 1]
     row_num = np.zeros(18)
-    row_num[0] = 0.001   # constant
-    row_num[6] = 0.95    # x (lat)
-    row_num[2] = 0.03    # y (lon)
-    row_num[1] = -0.001  # z (height)
-    row_num[12] = 0.005  # x²
+    row_num[0] = 0.001    # constant (0,0,0)
+    row_num[3] = 0.95     # y (latitude)  (0,1,0) — dominant
+    row_num[1] = 0.03     # x (longitude) (1,0,0)
+    row_num[9] = -0.001   # z (height)    (0,0,1)
+    row_num[6] = 0.005    # y²            (0,2,0)
 
     row_den = np.zeros(18)
     row_den[0] = 1.0
 
     col_num = np.zeros(18)
     col_num[0] = -0.001
-    col_num[6] = 0.04    # x (lat)
-    col_num[2] = 0.94    # y (lon)
-    col_num[1] = 0.001   # z (height)
+    col_num[3] = 0.04     # y (latitude)  (0,1,0)
+    col_num[1] = 0.94     # x (longitude) (1,0,0) — dominant
+    col_num[9] = 0.001    # z (height)    (0,0,1)
 
     col_den = np.zeros(18)
     col_den[0] = 1.0
@@ -121,11 +133,11 @@ def quadratic_rsm():
         col_off=5000.0,
         row_norm_sf=5000.0,
         col_norm_sf=5000.0,
-        x_off=38.0,
-        y_off=-77.0,
+        x_off=np.deg2rad(-77.0),
+        y_off=np.deg2rad(38.0),
         z_off=200.0,
-        x_norm_sf=0.5,
-        y_norm_sf=0.5,
+        x_norm_sf=np.deg2rad(0.5),
+        y_norm_sf=np.deg2rad(0.5),
         z_norm_sf=500.0,
         row_num_powers=np.array([2, 2, 1]),
         row_den_powers=np.array([2, 2, 1]),
@@ -156,6 +168,25 @@ class TestMonomialExponents:
         exp = _build_monomial_exponents(np.array([0, 0, 0]))
         assert exp.shape == (1, 3)
         np.testing.assert_array_equal(exp[0], [0, 0, 0])
+
+    def test_x_varies_fastest(self):
+        """Verify coefficient ordering: x varies fastest per RSMPCA spec.
+
+        For max_powers [2,1,1], the ordering should be:
+        a_000, a_100, a_200, a_010, a_110, a_210,
+        a_001, a_101, a_201, a_011, a_111, a_211
+        """
+        exp = _build_monomial_exponents(np.array([2, 1, 1]))
+        # First three entries: x varies 0→1→2 with j=0, k=0
+        np.testing.assert_array_equal(exp[0], [0, 0, 0])
+        np.testing.assert_array_equal(exp[1], [1, 0, 0])
+        np.testing.assert_array_equal(exp[2], [2, 0, 0])
+        # Next three: x varies 0→1→2 with j=1, k=0
+        np.testing.assert_array_equal(exp[3], [0, 1, 0])
+        np.testing.assert_array_equal(exp[4], [1, 1, 0])
+        np.testing.assert_array_equal(exp[5], [2, 1, 0])
+        # Next three: x varies 0→1→2 with j=0, k=1
+        np.testing.assert_array_equal(exp[6], [0, 0, 1])
 
 
 # ── RSM evaluation ──────────────────────────────────────────────────
@@ -230,7 +261,27 @@ class TestRSMGeolocation:
         rsm_id = RSMIdentification(
             image_id='TEST_IMAGE',
             ground_domain_type='G',
-            ground_ref_point=XYZ(38.0, -77.0, 100.0),
+            ground_ref_point=XYZ(
+                np.deg2rad(-77.0), np.deg2rad(38.0), 100.0),
         )
         geo = RSMGeolocation(linear_rsm, rsm_id=rsm_id, shape=(4096, 4096))
         assert geo._ground_domain == 'G'
+
+    def test_lat_lon_sensitivity(self, linear_rsm):
+        """Row tracks latitude, column tracks longitude."""
+        geo = RSMGeolocation(linear_rsm, shape=(4096, 4096))
+        # Vary latitude, hold longitude fixed
+        row_a, col_a = geo.latlon_to_image(37.8, -77.0, 100.0)
+        row_b, col_b = geo.latlon_to_image(38.2, -77.0, 100.0)
+        # Row should change significantly
+        assert abs(row_b - row_a) > 100
+        # Col should stay approximately constant
+        assert abs(col_b - col_a) < 10
+
+        # Vary longitude, hold latitude fixed
+        row_c, col_c = geo.latlon_to_image(38.0, -77.2, 100.0)
+        row_d, col_d = geo.latlon_to_image(38.0, -76.8, 100.0)
+        # Col should change significantly
+        assert abs(col_d - col_c) > 100
+        # Row should stay approximately constant
+        assert abs(row_d - row_c) < 10

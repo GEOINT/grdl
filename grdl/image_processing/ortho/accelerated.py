@@ -232,6 +232,8 @@ def _resample_torch(
     Handles 2D/3D (bands-first), real/complex.
     """
     in_dtype = image.dtype
+    if np.isnan(nodata) and np.issubdtype(in_dtype, np.integer):
+        in_dtype = np.float32
     is_complex = np.iscomplexobj(image)
     is_multiband = image.ndim == 3
 
@@ -455,6 +457,10 @@ def _resample_numba(
 ) -> np.ndarray:
     """Resample using numba-compiled kernels with prange."""
     in_dtype = image.dtype
+    # Promote integer dtypes to float32 when nodata is NaN, since
+    # integer types cannot represent NaN.
+    if np.isnan(nodata) and np.issubdtype(in_dtype, np.integer):
+        in_dtype = np.float32
     is_complex = np.iscomplexobj(image)
     is_multiband = image.ndim == 3
 
@@ -517,6 +523,8 @@ def _resample_scipy_parallel(
         num_workers = max(1, (os.cpu_count() or 1) - 1)
 
     in_dtype = image.dtype
+    if np.isnan(nodata) and np.issubdtype(in_dtype, np.integer):
+        in_dtype = np.float32
     is_complex = np.iscomplexobj(image)
     is_multiband = image.ndim == 3
     OH, OW = row_map.shape
@@ -599,6 +607,8 @@ def _resample_scipy(
     from scipy.ndimage import map_coordinates
 
     in_dtype = image.dtype
+    if np.isnan(nodata) and np.issubdtype(in_dtype, np.integer):
+        in_dtype = np.float32
     is_complex = np.iscomplexobj(image)
     is_multiband = image.ndim == 3
     OH, OW = row_map.shape

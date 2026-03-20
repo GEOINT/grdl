@@ -5,7 +5,7 @@ BIOMASS Orthorectification Example — Accelerated Center Chip.
 Loads a BIOMASS L1A SCS product (slant range geometry), extracts a center
 chip using ``data_prep.ChipExtractor``, computes magnitude and Pauli
 decomposition in slant range, then orthorectifies to a WGS-84 grid
-using the accelerated ``OrthoPipeline``.
+using the accelerated ``OrthoBuilder``.
 
 Key processing choices:
   - Center chip extracted via ``ChipExtractor`` (default 4096x4096).
@@ -30,7 +30,7 @@ Usage:
 
 Dependencies
 ------------
-matplotlib
+plotly
 rasterio
 scipy
 
@@ -63,11 +63,6 @@ from typing import Optional, Tuple, Union
 # Third-party
 import numpy as np
 
-# Matplotlib -- set backend before importing pyplot
-import matplotlib
-matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt  # noqa: E402
-
 # GRDL
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -75,7 +70,7 @@ from grdl.IO import BIOMASSL1Reader
 from grdl.data_prep import ChipExtractor
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.image_processing import PauliDecomposition
-from grdl.image_processing.ortho import OrthoPipeline, detect_backend
+from grdl.image_processing.ortho import OrthoBuilder, detect_backend
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +271,7 @@ def ortho_biomass(
     # Build and run ortho pipeline — HH dB
     # ------------------------------------------------------------------
     pipeline = (
-        OrthoPipeline()
+        OrthoBuilder()
         .with_source_array(hh_slant_db)
         .with_metadata(reader.metadata)
         .with_geolocation(geo)
@@ -306,7 +301,7 @@ def ortho_biomass(
 
     def _ortho_band(data):
         p = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(data)
             .with_geolocation(geo)
             .with_interpolation(interpolation)
@@ -341,78 +336,84 @@ def ortho_biomass(
     # ------------------------------------------------------------------
     # Plot
     # ------------------------------------------------------------------
-    slant_vmin = np.nanpercentile(hh_slant_db, 2)
-    slant_vmax = np.nanpercentile(hh_slant_db, 98)
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    slant_vmin = float(np.nanpercentile(hh_slant_db, 2))
+    slant_vmax = float(np.nanpercentile(hh_slant_db, 98))
 
     valid_mask = np.isfinite(result_hh.data)
     if np.any(valid_mask):
-        ortho_vmin = np.nanpercentile(result_hh.data[valid_mask], 2)
-        ortho_vmax = np.nanpercentile(result_hh.data[valid_mask], 98)
+        ortho_vmin = float(np.nanpercentile(result_hh.data[valid_mask], 2))
+        ortho_vmax = float(np.nanpercentile(result_hh.data[valid_mask], 98))
     else:
         ortho_vmin, ortho_vmax = slant_vmin, slant_vmax
 
+    # Build Pauli RGB as uint8 for go.Image
     pauli_rgb = np.dstack([
         _normalize(pauli_r_ortho, valid_mask),
         _normalize(pauli_g_ortho, valid_mask),
         _normalize(pauli_b_ortho, valid_mask),
     ])
     pauli_rgb[~valid_mask] = 0
+    pauli_rgb_u8 = (pauli_rgb * 255).astype(np.uint8)
 
-    fig, (ax_slant, ax_ortho, ax_pauli) = plt.subplots(
-        1, 3, figsize=(21, 8),
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=[
+            f"Slant Range (chip {chip_rows}x{chip_cols})<br>HH Magnitude (dB)",
+            "Orthorectified<br>HH Magnitude (dB)",
+            "Orthorectified Pauli RGB (quad-pol)<br>"
+            "R=double-bounce  G=volume  B=surface",
+        ],
     )
 
     # Panel 1: Slant range HH dB
-    ax_slant.imshow(
-        hh_slant_db, cmap="gray", vmin=slant_vmin, vmax=slant_vmax,
-        aspect="auto", interpolation="nearest",
+    fig.add_trace(
+        go.Heatmap(z=hh_slant_db, zmin=slant_vmin, zmax=slant_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=1,
     )
-    ax_slant.set_title(
-        f"Slant Range (chip {chip_rows}x{chip_cols})\nHH Magnitude (dB)",
-        fontsize=9,
-    )
-    ax_slant.set_xlabel("Column (range)")
-    ax_slant.set_ylabel("Row (azimuth)")
+    fig.update_xaxes(title_text="Column (range)", row=1, col=1)
+    fig.update_yaxes(title_text="Row (azimuth)", autorange='reversed',
+                     row=1, col=1)
 
-    # Panel 2: Ortho HH dB
-    extent = [grid.min_lon, grid.max_lon, grid.min_lat, grid.max_lat]
-    ax_ortho.imshow(
-        result_hh.data, cmap="gray", vmin=ortho_vmin, vmax=ortho_vmax,
-        aspect="auto", interpolation="nearest", extent=extent,
+    # Panel 2: Ortho HH dB (north-up)
+    fig.add_trace(
+        go.Heatmap(z=np.flipud(result_hh.data),
+                   x0=grid.min_lon, dx=grid.pixel_size_lon,
+                   y0=grid.min_lat, dy=grid.pixel_size_lat,
+                   zmin=ortho_vmin, zmax=ortho_vmax,
+                   colorscale='Gray', showscale=False),
+        row=1, col=2,
     )
-    ax_ortho.set_title("Orthorectified\nHH Magnitude (dB)", fontsize=9)
-    ax_ortho.set_xlabel("Longitude (deg)")
-    ax_ortho.set_ylabel("Latitude (deg)")
+    fig.update_xaxes(title_text="Longitude (deg)", row=1, col=2)
+    fig.update_yaxes(title_text="Latitude (deg)", row=1, col=2)
 
-    # Panel 3: Ortho Pauli RGB
-    ax_pauli.imshow(
-        pauli_rgb, aspect="auto", interpolation="nearest", extent=extent,
+    # Panel 3: Ortho Pauli RGB (north-up)
+    # Use go.Image with geographic axis mapping
+    fig.add_trace(
+        go.Image(z=np.flipud(pauli_rgb_u8)),
+        row=1, col=3,
     )
-    ax_pauli.set_title(
-        "Orthorectified Pauli RGB (quad-pol)\n"
-        "R=double-bounce  G=volume  B=surface",
-        fontsize=9,
-    )
-    ax_pauli.set_xlabel("Longitude (deg)")
-    ax_pauli.set_ylabel("Latitude (deg)")
+    fig.update_xaxes(title_text="Longitude (deg)", row=1, col=3)
+    fig.update_yaxes(title_text="Latitude (deg)", row=1, col=3)
 
-    fig.suptitle(
-        f"BIOMASS Ortho  |  {product_path.name}\n"
+    title = (
+        f"BIOMASS Ortho  |  {product_path.name}  |  "
         f"Orbit {reader.metadata.get('orbit_number', '?')}  |  "
         f"Chip {chip_rows}x{chip_cols}  |  "
         f"Grid {grid.rows}x{grid.cols} @ "
         f"{grid.pixel_size_lat:.6f}\u00b0  |  "
-        f"{interpolation}  |  {backend}",
-        fontsize=10, fontweight="bold",
+        f"{interpolation}  |  {backend}"
     )
-
-    plt.tight_layout()
+    fig.update_layout(title_text=title, width=2100, height=700)
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        fig.write_image(str(save_path), scale=2)
         print(f"Saved to {save_path}")
     else:
-        plt.show()
+        fig.show()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Orthorectification Pipeline - Universal pipeline for orthorectifying imagery.
+Orthorectification Builder - Universal builder for orthorectifying imagery.
 
 Orchestrates reader, geolocation, resolution computation, output grid
 construction, terrain-corrected orthorectification, and optional GeoTIFF
@@ -176,7 +176,7 @@ class OrthoResult:
         writer.write(self.data, geolocation=geolocation)
 
 
-class OrthoPipeline:
+class OrthoBuilder:
     """Universal orthorectification pipeline.
 
     Wires together reader, geolocation, resolution, elevation, grid,
@@ -193,12 +193,12 @@ class OrthoPipeline:
         from grdl.IO.sar import SICDReader
         from grdl.geolocation.sar.sicd import SICDGeolocation
         from grdl.geolocation.elevation import DTEDElevation
-        from grdl.image_processing.ortho import OrthoPipeline
+        from grdl.image_processing.ortho import OrthoBuilder
 
         with SICDReader('image.nitf') as reader:
             geo = SICDGeolocation.from_reader(reader)
             elev = DTEDElevation('/path/to/dted')
-            result = (OrthoPipeline()
+            result = (OrthoBuilder()
                       .with_reader(reader)
                       .with_geolocation(geo)
                       .with_elevation(elev)
@@ -208,7 +208,7 @@ class OrthoPipeline:
     Pre-processed source array (SAR magnitude computed in slant range)::
 
         mag_db = 20.0 * np.log10(np.abs(reader.read_full()) + 1e-10)
-        result = (OrthoPipeline()
+        result = (OrthoBuilder()
                   .with_source_array(mag_db)
                   .with_metadata(reader.metadata)
                   .with_geolocation(geo)
@@ -238,7 +238,7 @@ class OrthoPipeline:
     # Builder methods
     # ------------------------------------------------------------------
 
-    def with_reader(self, reader: 'ImageReader') -> 'OrthoPipeline':
+    def with_reader(self, reader: 'ImageReader') -> 'OrthoBuilder':
         """Set the source imagery reader.
 
         Parameters
@@ -248,13 +248,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._reader = reader
         return self
 
-    def with_metadata(self, metadata: Any) -> 'OrthoPipeline':
+    def with_metadata(self, metadata: Any) -> 'OrthoBuilder':
         """Set metadata for auto-resolution computation.
 
         Use when working with a pre-loaded source array instead of a
@@ -268,7 +268,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._metadata = metadata
@@ -276,7 +276,7 @@ class OrthoPipeline:
 
     def with_geolocation(
         self, geolocation: 'Geolocation'
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Set the source geolocation.
 
         Parameters
@@ -286,7 +286,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._geolocation = geolocation
@@ -294,7 +294,7 @@ class OrthoPipeline:
 
     def with_elevation(
         self, elevation: 'ElevationModel'
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Set the elevation model for terrain correction.
 
         Parameters
@@ -304,13 +304,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._elevation = elevation
         return self
 
-    def with_output_grid(self, grid: OutputGrid) -> 'OrthoPipeline':
+    def with_output_grid(self, grid: OutputGrid) -> 'OrthoBuilder':
         """Set an explicit output grid (overrides auto-computation).
 
         Parameters
@@ -320,7 +320,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._output_grid = grid
@@ -328,7 +328,7 @@ class OrthoPipeline:
 
     def with_resolution(
         self, pixel_size_lat: float, pixel_size_lon: float
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Set explicit output resolution in degrees.
 
         Parameters
@@ -340,14 +340,14 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._pixel_size_lat = pixel_size_lat
         self._pixel_size_lon = pixel_size_lon
         return self
 
-    def with_interpolation(self, method: str) -> 'OrthoPipeline':
+    def with_interpolation(self, method: str) -> 'OrthoBuilder':
         """Set resampling interpolation method.
 
         Parameters
@@ -357,13 +357,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._interpolation = method
         return self
 
-    def with_bands(self, bands: List[int]) -> 'OrthoPipeline':
+    def with_bands(self, bands: List[int]) -> 'OrthoBuilder':
         """Set which bands to orthorectify (reader mode only).
 
         Parameters
@@ -373,13 +373,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._bands = bands
         return self
 
-    def with_nodata(self, nodata: float) -> 'OrthoPipeline':
+    def with_nodata(self, nodata: float) -> 'OrthoBuilder':
         """Set nodata fill value for pixels without source coverage.
 
         Parameters
@@ -389,13 +389,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._nodata = nodata
         return self
 
-    def with_margin(self, margin: float) -> 'OrthoPipeline':
+    def with_margin(self, margin: float) -> 'OrthoBuilder':
         """Set margin around the footprint bounds (degrees).
 
         Parameters
@@ -405,13 +405,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._margin = margin
         return self
 
-    def with_scale_factor(self, factor: float) -> 'OrthoPipeline':
+    def with_scale_factor(self, factor: float) -> 'OrthoBuilder':
         """Set resolution scale factor for auto-computed resolution.
 
         Parameters
@@ -421,13 +421,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._scale_factor = factor
         return self
 
-    def with_source_array(self, array: np.ndarray) -> 'OrthoPipeline':
+    def with_source_array(self, array: np.ndarray) -> 'OrthoBuilder':
         """Use a pre-loaded source array instead of reading from reader.
 
         This is the recommended path for SAR: compute magnitude or other
@@ -441,7 +441,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._source_array = array
@@ -453,7 +453,7 @@ class OrthoPipeline:
         max_lat: float,
         min_lon: float,
         max_lon: float,
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Restrict output to a geographic region of interest.
 
         Only the specified bounding box is orthorectified, rather than
@@ -472,7 +472,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._roi_bounds = (min_lat, max_lat, min_lon, max_lon)
@@ -480,7 +480,7 @@ class OrthoPipeline:
 
     def with_tile_size(
         self, tile_size: Union[int, Tuple[int, int]]
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Enable tiled processing with the given tile dimensions.
 
         When set, the output grid is partitioned into tiles of the
@@ -497,7 +497,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._tile_size = tile_size
@@ -510,7 +510,7 @@ class OrthoPipeline:
         ref_lon: Optional[float] = None,
         ref_alt: float = 0.0,
         margin_m: float = 0.0,
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Configure ENU (East-North-Up) output in meters.
 
         When set, the output grid is defined in local ENU meters
@@ -533,7 +533,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._enu_params = {

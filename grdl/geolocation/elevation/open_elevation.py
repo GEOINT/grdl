@@ -133,7 +133,9 @@ def open_elevation(
         logger.warning("No usable DEM found in %s", dem_path)
 
     else:
-        logger.warning("DEM path does not exist: %s", dem_path)
+        raise FileNotFoundError(
+            f"DEM path does not exist: {dem_path}"
+        )
 
     # ── Fallback ─────────────────────────────────────────────────
     logger.info("Using constant elevation fallback: %.1f m",

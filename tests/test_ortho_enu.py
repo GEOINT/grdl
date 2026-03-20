@@ -3,7 +3,7 @@
 Tests for ENUGrid and ENU orthorectification integration.
 
 Verifies ENUGrid construction, coordinate transforms, sub_grid extraction,
-and integration with Orthorectifier and OrthoPipeline.
+and integration with Orthorectifier and OrthoBuilder.
 
 Author
 ------
@@ -30,7 +30,7 @@ import pytest
 
 from grdl.image_processing.ortho.enu_grid import ENUGrid
 from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
-from grdl.image_processing.ortho.ortho_pipeline import OrthoPipeline, OrthoResult
+from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 from grdl.geolocation.coordinates import geodetic_to_enu, enu_to_geodetic
 
 
@@ -350,18 +350,18 @@ class TestOrthorectifierENU:
 
 
 # ===================================================================
-# OrthoPipeline with ENU
+# OrthoBuilder with ENU
 # ===================================================================
 
-class TestOrthoPipelineENU:
-    """Tests for OrthoPipeline.with_enu_grid()."""
+class TestOrthoBuilderENU:
+    """Tests for OrthoBuilder.with_enu_grid()."""
 
     def test_pipeline_enu_basic(self):
         """Pipeline with .with_enu_grid() produces ENU result."""
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(pixel_size_m=50.0)
@@ -377,7 +377,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(pixel_size_m=50.0)
@@ -394,7 +394,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(
@@ -412,7 +412,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(pixel_size_m=25.0)
@@ -429,7 +429,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(pixel_size_m=50.0)
@@ -447,7 +447,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_resolution(0.001, 0.001)
@@ -464,7 +464,7 @@ class TestOrthoPipelineENU:
         geo = MockGeolocation(nrows=100, ncols=100)
         source = np.random.rand(100, 100).astype(np.float32)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source)
             .with_geolocation(geo)
             .with_enu_grid(pixel_size_m=50.0)

@@ -31,8 +31,11 @@ image_processing/
 │   └── phase.py             #   PhaseGradientFilter
 │
 ├── ortho/                   # Geometric correction / orthorectification
-│   ├── ortho.py             #   Orthorectifier, OutputGrid
-│   ├── ortho_pipeline.py    #   OrthoPipeline, OrthoResult (builder + ROI + tiling)
+│   ├── ortho.py             #   OutputGridProtocol, validate_sub_grid_indices,
+│   │                        #   OutputGrid, Orthorectifier
+│   ├── enu_grid.py          #   ENUGrid (satisfies OutputGridProtocol)
+│   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult (builder + ROI + tiling)
+│   ├── accelerated.py       #   resample(), detect_backend() (multi-backend dispatch)
 │   └── resolution.py        #   compute_output_resolution (SICD, BIOMASS dispatch)
 │
 ├── decomposition/           # Polarimetric decompositions
@@ -88,7 +91,7 @@ ImageProcessor (ABC)
 │   ├── Orthorectifier          [GEOM_CORRECT]
 │   └── Pipeline                (sequential composition)
 │
-├── OrthoPipeline ── builder orchestrator (ROI, tiling, auto-resolution)
+├── OrthoBuilder ── builder orchestrator (ROI, tiling, auto-resolution)
 │   └── OrthoResult ── output container (data, grid, geo metadata)
 │
 ├── ImageDetector (ABC) ── raster → DetectionSet
@@ -182,20 +185,20 @@ generic utilities at the application level.
 
 | Need | Use |
 |------|-----|
-| Full ortho (recommended) | `OrthoPipeline` — builder API, auto-resolution, DEM |
-| Ortho a geographic sub-region | `OrthoPipeline` + `.with_roi(min_lat, max_lat, min_lon, max_lon)` |
-| Memory-efficient large output | `OrthoPipeline` + `.with_tile_size(2048)` |
+| Full ortho (recommended) | `OrthoBuilder` — builder API, auto-resolution, DEM |
+| Ortho a geographic sub-region | `OrthoBuilder` + `.with_roi(min_lat, max_lat, min_lon, max_lon)` |
+| Memory-efficient large output | `OrthoBuilder` + `.with_tile_size(2048)` |
 | ROI + tiling (composable) | `.with_roi(...)` + `.with_tile_size(...)` |
 | Low-level mapping + resample | `Orthorectifier` + `OutputGrid` (compute_mapping / apply) |
 | Auto-compute output resolution | `compute_output_resolution(metadata)` |
 
-**OrthoPipeline** is the recommended entry point. It handles resolution
+**OrthoBuilder** is the recommended entry point. It handles resolution
 computation, output grid construction, DEM integration, ROI restriction,
 and tiled processing via a fluent builder API:
 
 ```python
 result = (
-    OrthoPipeline()
+    OrthoBuilder()
     .with_reader(reader)
     .with_geolocation(geo)
     .with_metadata(reader.metadata)        # auto-resolution from SICD/BIOMASS
@@ -325,7 +328,7 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `ToDecibels` | 1.0.0 | ENHANCE | all | floor_db |
 | `PercentileStretch` | 1.0.0 | ENHANCE | all | plow, phigh |
 | `Orthorectifier` | 0.1.0 | GEOM_CORRECT | all | interpolation |
-| `OrthoPipeline` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, elevation, nodata |
+| `OrthoBuilder` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, elevation, nodata |
 | `OutputGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` |
 | `PauliDecomposition` | 0.1.0 | — | SAR | — |
 | `DualPolHAlpha` | 1.0.0 | — | SAR | window_size |

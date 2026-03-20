@@ -182,7 +182,8 @@ GRDL/
 │   │   ├── versioning.py            #   @processor_version, @processor_tags, DetectionInputSpec
 │   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
-│   │   │   ├── ortho.py             #   Orthorectifier, OutputGrid, OrthoPipeline, OrthoResult
+│   │   │   ├── ortho.py             #   OutputGridProtocol, OutputGrid, Orthorectifier
+│   │   │   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult
 │   │   │   ├── enu_grid.py          #   ENUGrid (local East-North-Up grid)
 │   │   │   └── accelerated.py       #   resample(), detect_backend() (accelerated resampling)
 │   │   ├── decomposition/

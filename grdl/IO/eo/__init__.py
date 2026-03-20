@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-19
 """
 
 # Standard library
@@ -132,10 +132,20 @@ def open_eo(filepath: Union[str, Path]) -> ImageReader:
                 f"Failed to open EO file {filepath}: {e}"
             ) from e
 
+    # EO NITF
+    if filepath.suffix.lower() in ('.ntf', '.nitf'):
+        try:
+            from grdl.IO.eo.nitf import EONITFReader
+            return EONITFReader(filepath)
+        except (ValueError, ImportError) as e:
+            raise ValueError(
+                f"Failed to open EO NITF file {filepath}: {e}"
+            ) from e
+
     raise ValueError(
         f"Could not determine EO format for {filepath}. "
-        "Ensure file is a valid GeoTIFF or JPEG2000 and the required "
-        "library (rasterio, glymur) is installed."
+        "Ensure file is a valid GeoTIFF, JPEG2000, or NITF and the "
+        "required library (rasterio, glymur) is installed."
     )
 
 
