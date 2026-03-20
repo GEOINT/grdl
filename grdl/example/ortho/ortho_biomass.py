@@ -70,7 +70,7 @@ from grdl.IO import BIOMASSL1Reader
 from grdl.data_prep import ChipExtractor
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.image_processing import PauliDecomposition
-from grdl.image_processing.ortho import OrthoBuilder, detect_backend
+from grdl.image_processing.ortho import orthorectify, detect_backend
 
 
 # ---------------------------------------------------------------------------
@@ -270,17 +270,15 @@ def ortho_biomass(
     # ------------------------------------------------------------------
     # Build and run ortho pipeline — HH dB
     # ------------------------------------------------------------------
-    pipeline = (
-        OrthoBuilder()
-        .with_source_array(hh_slant_db)
-        .with_metadata(reader.metadata)
-        .with_geolocation(geo)
-        .with_interpolation(interpolation)
-        .with_nodata(np.nan)
+    hh_kwargs = dict(
+        geolocation=geo,
+        source_array=hh_slant_db,
+        metadata=reader.metadata,
+        interpolation=interpolation,
+        nodata=np.nan,
     )
-
     if resolution is not None:
-        pipeline = pipeline.with_resolution(resolution, resolution)
+        hh_kwargs['resolution'] = (resolution, resolution)
         print(f"  Resolution: {resolution:.6f} deg (user)")
     else:
         print("  Resolution: auto (from BIOMASS spacing)")
@@ -288,7 +286,7 @@ def ortho_biomass(
     print()
     print("Running ortho pipeline (HH dB)...")
     t0 = time.perf_counter()
-    result_hh = pipeline.run()
+    result_hh = orthorectify(**hh_kwargs)
     timings['ortho_hh'] = time.perf_counter() - t0
     grid = result_hh.output_grid
     print(f"  {grid.rows}x{grid.cols} in {timings['ortho_hh']:.2f} s")
@@ -300,15 +298,13 @@ def ortho_biomass(
     t0 = time.perf_counter()
 
     def _ortho_band(data):
-        p = (
-            OrthoBuilder()
-            .with_source_array(data)
-            .with_geolocation(geo)
-            .with_interpolation(interpolation)
-            .with_nodata(np.nan)
-            .with_output_grid(grid)
-        )
-        return p.run().data
+        return orthorectify(
+            geolocation=geo,
+            source_array=data,
+            interpolation=interpolation,
+            nodata=np.nan,
+            output_grid=grid,
+        ).data
 
     pauli_r_ortho = _ortho_band(pauli_r_slant)
     pauli_g_ortho = _ortho_band(pauli_g_slant)

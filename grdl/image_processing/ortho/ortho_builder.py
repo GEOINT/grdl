@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-03-20
 """
 
 # Standard library
@@ -790,3 +790,133 @@ class OrthoBuilder:
             geolocation_metadata=geo_meta,
             orthorectifier=meta_ortho,
         )
+
+
+# ── Public function API ──────────────────────────────────────────────
+
+
+def orthorectify(
+    geolocation: 'Geolocation',
+    *,
+    reader: Optional['ImageReader'] = None,
+    source_array: Optional[np.ndarray] = None,
+    metadata: Optional[Any] = None,
+    elevation: Optional['ElevationModel'] = None,
+    output_grid: Optional['OutputGrid'] = None,
+    resolution: Optional[Tuple[float, float]] = None,
+    interpolation: str = 'bilinear',
+    bands: Optional[List[int]] = None,
+    nodata: float = 0.0,
+    margin: float = 0.0,
+    scale_factor: float = 1.0,
+    roi: Optional[Tuple[float, float, float, float]] = None,
+    tile_size: Optional[Union[int, Tuple[int, int]]] = None,
+    enu_grid: Optional[Dict[str, Any]] = None,
+) -> OrthoResult:
+    """Orthorectify imagery to a geographic or ENU grid.
+
+    Convenience function wrapping ``OrthoBuilder`` with keyword arguments.
+    Provide either ``reader`` (reads pixels on demand) or ``source_array``
+    (pre-loaded data).
+
+    Parameters
+    ----------
+    geolocation : Geolocation
+        Source image geolocation (required).
+    reader : ImageReader, optional
+        Open imagery reader.  Mutually exclusive with ``source_array``.
+    source_array : np.ndarray, optional
+        Pre-loaded source array.  Mutually exclusive with ``reader``.
+    metadata : Any, optional
+        Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
+    elevation : ElevationModel, optional
+        DEM for terrain correction.
+    output_grid : OutputGrid or ENUGrid, optional
+        Explicit output grid.  Overrides auto-computation.
+    resolution : (float, float), optional
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+    interpolation : str, default='bilinear'
+        Resampling method: ``'nearest'``, ``'bilinear'``, ``'bicubic'``.
+    bands : list of int, optional
+        Band indices to orthorectify (reader mode only).
+    nodata : float, default=0.0
+        Fill value for pixels without source coverage.
+    margin : float, default=0.0
+        Margin around footprint bounds in degrees.
+    scale_factor : float, default=1.0
+        Multiplier for auto-computed resolution.
+    roi : (min_lat, max_lat, min_lon, max_lon), optional
+        Restrict output to a geographic region of interest.
+    tile_size : int or (int, int), optional
+        Enable tiled processing with this tile dimension.
+    enu_grid : dict, optional
+        ENU grid parameters passed to ``with_enu_grid()``.  Keys:
+        ``pixel_size_m``, ``ref_lat``, ``ref_lon``, ``ref_alt``,
+        ``margin_m``.
+
+    Returns
+    -------
+    OrthoResult
+        Container with ``data``, ``output_grid``, and
+        ``geolocation_metadata``.
+
+    Raises
+    ------
+    ValueError
+        If neither ``reader`` nor ``source_array`` is provided, or if
+        resolution cannot be determined.
+
+    Examples
+    --------
+    From a reader::
+
+        result = orthorectify(
+            geolocation=geo,
+            reader=reader,
+            elevation=dem,
+            interpolation='bilinear',
+        )
+
+    From a pre-loaded array with explicit grid::
+
+        result = orthorectify(
+            geolocation=geo,
+            source_array=mag,
+            output_grid=enu_grid,
+            interpolation='nearest',
+            nodata=np.nan,
+        )
+    """
+    builder = OrthoBuilder()
+
+    if reader is not None:
+        builder.with_reader(reader)
+    if source_array is not None:
+        builder.with_source_array(source_array)
+    if metadata is not None:
+        builder.with_metadata(metadata)
+
+    builder.with_geolocation(geolocation)
+    builder.with_interpolation(interpolation)
+    builder.with_nodata(nodata)
+
+    if elevation is not None:
+        builder.with_elevation(elevation)
+    if output_grid is not None:
+        builder.with_output_grid(output_grid)
+    if resolution is not None:
+        builder.with_resolution(resolution[0], resolution[1])
+    if bands is not None:
+        builder.with_bands(bands)
+    if margin != 0.0:
+        builder.with_margin(margin)
+    if scale_factor != 1.0:
+        builder.with_scale_factor(scale_factor)
+    if roi is not None:
+        builder.with_roi(roi[0], roi[1], roi[2], roi[3])
+    if tile_size is not None:
+        builder.with_tile_size(tile_size)
+    if enu_grid is not None:
+        builder.with_enu_grid(**enu_grid)
+
+    return builder.run()

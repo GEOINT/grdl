@@ -95,7 +95,11 @@ from grdl.image_processing.ortho.ortho import (
     validate_sub_grid_indices,
 )
 from grdl.image_processing.ortho.enu_grid import ENUGrid
-from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
+from grdl.image_processing.ortho.ortho_builder import (
+    OrthoBuilder,
+    OrthoResult,
+    orthorectify,
+)
 from grdl.image_processing.ortho.resolution import compute_output_resolution
 from grdl.image_processing.ortho.accelerated import resample, detect_backend
 
@@ -107,6 +111,7 @@ __all__ = [
     'ENUGrid',
     'OrthoBuilder',
     'OrthoResult',
+    'orthorectify',
     'compute_output_resolution',
     'resample',
     'detect_backend',

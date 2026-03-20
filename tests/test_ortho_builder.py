@@ -39,7 +39,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
 from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
-from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
+from grdl.image_processing.ortho.ortho_builder import (
+    OrthoBuilder, OrthoResult, orthorectify,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -195,14 +197,12 @@ class TestPipelineValidation:
 class TestPipelineSourceArray:
 
     def test_explicit_resolution_2d(self, geo, source_2d):
-        """Pipeline with source array and explicit resolution."""
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        """orthorectify with source array and explicit resolution."""
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert isinstance(result, OrthoResult)
         assert result.data.ndim == 2
@@ -210,44 +210,37 @@ class TestPipelineSourceArray:
         assert result.data.shape[1] > 0
 
     def test_explicit_resolution_3d(self, geo, source_3d):
-        """Pipeline with multi-band source array."""
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_3d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        """orthorectify with multi-band source array."""
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_3d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert result.data.ndim == 3
         assert result.data.shape[0] == 3
 
     def test_nodata_value(self, geo, source_2d):
-        """Pipeline should honor nodata fill value."""
-        # Make grid extend beyond source coverage
+        """orthorectify should honor nodata fill value."""
         big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_output_grid(big_grid)
-            .with_interpolation('nearest')
-            .with_nodata(-999.0)
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            output_grid=big_grid,
+            interpolation='nearest',
+            nodata=-999.0,
         )
         assert np.any(result.data == -999.0)
         assert np.any(result.data != -999.0)
 
     def test_explicit_output_grid(self, geo, source_2d):
-        """Pipeline with explicit OutputGrid (skips resolution)."""
+        """orthorectify with explicit OutputGrid (skips resolution)."""
         grid = OutputGrid.from_geolocation(geo, 0.01, 0.005)
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_output_grid(grid)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            output_grid=grid,
+            interpolation='nearest',
         )
         assert result.output_grid is grid
         assert result.data.shape == (grid.rows, grid.cols)
@@ -260,43 +253,37 @@ class TestPipelineSourceArray:
 class TestPipelineReader:
 
     def test_reader_basic(self, geo, source_2d):
-        """Pipeline with mock reader and explicit resolution."""
+        """orthorectify with mock reader and explicit resolution."""
         reader = MockReader(source_2d)
-        result = (
-            OrthoBuilder()
-            .with_reader(reader)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            reader=reader,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert isinstance(result, OrthoResult)
         assert result.data.ndim == 2
 
     def test_reader_multiband(self, geo, source_3d):
-        """Pipeline with multi-band reader."""
+        """orthorectify with multi-band reader."""
         reader = MockReader(source_3d)
-        result = (
-            OrthoBuilder()
-            .with_reader(reader)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            reader=reader,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert result.data.ndim == 3
 
     def test_reader_band_selection(self, geo, source_3d):
-        """Pipeline with band selection via reader."""
+        """orthorectify with band selection via reader."""
         reader = MockReader(source_3d)
-        result = (
-            OrthoBuilder()
-            .with_reader(reader)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .with_bands([0])
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            reader=reader,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
+            bands=[0],
         )
         # Single band selected
         assert result.data.ndim == 2 or result.data.shape[0] == 1
@@ -309,42 +296,33 @@ class TestPipelineReader:
 class TestPipelineElevation:
 
     def test_constant_elevation_accepted(self, geo, source_2d):
-        """Pipeline should accept ConstantElevation without error."""
+        """orthorectify should accept ConstantElevation without error."""
         elev = ConstantElevation(height=500.0)
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_elevation(elev)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            elevation=elev,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert isinstance(result, OrthoResult)
         assert result.data.shape[0] > 0
 
     def test_elevation_vs_no_elevation(self, geo, source_2d):
         """With flat affine geo, constant elevation should not change result."""
-        # For a simple affine geolocation that ignores height, DEM height
-        # doesn't change the mapping. This test verifies the DEM plumbing
-        # executes without error and doesn't corrupt the result.
-        result_no_dem = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result_no_dem = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         elev = ConstantElevation(height=0.0)
-        result_dem = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_elevation(elev)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result_dem = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            elevation=elev,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         np.testing.assert_array_equal(result_no_dem.data, result_dem.data)
 
@@ -357,25 +335,21 @@ class TestOrthoResult:
 
     def test_shape_property(self, geo, source_2d):
         """OrthoResult.shape should match data.shape."""
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert result.shape == result.data.shape
 
     def test_geolocation_metadata_keys(self, geo, source_2d):
         """OrthoResult should have standard geolocation metadata."""
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         meta = result.geolocation_metadata
         assert 'crs' in meta
@@ -387,16 +361,13 @@ class TestOrthoResult:
 
     def test_orthorectifier_cached(self, geo, source_2d):
         """OrthoResult should hold the configured Orthorectifier."""
-        result = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
         assert isinstance(result.orthorectifier, Orthorectifier)
-        # Mapping should be computed
         assert result.orthorectifier._source_rows is not None
 
 
@@ -428,22 +399,18 @@ class TestBuilderChaining:
 
     def test_margin_expands_grid(self, geo, source_2d):
         """Margin should produce a larger output grid."""
-        result_no_margin = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .run()
+        result_no_margin = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
         )
-        result_margin = (
-            OrthoBuilder()
-            .with_source_array(source_2d)
-            .with_geolocation(geo)
-            .with_resolution(0.01, 0.005)
-            .with_interpolation('nearest')
-            .with_margin(0.1)
-            .run()
+        result_margin = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
+            margin=0.1,
         )
         assert result_margin.output_grid.rows > result_no_margin.output_grid.rows
         assert result_margin.output_grid.cols > result_no_margin.output_grid.cols

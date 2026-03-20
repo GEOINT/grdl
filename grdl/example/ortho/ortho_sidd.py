@@ -62,7 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from grdl.IO.sar import SIDDReader
 from grdl.data_prep import ChipExtractor
 from grdl.geolocation.sar.sidd import SIDDGeolocation
-from grdl.image_processing.ortho import OrthoBuilder, detect_backend
+from grdl.image_processing.ortho import orthorectify, detect_backend
 
 
 # ---------------------------------------------------------------------------
@@ -269,19 +269,16 @@ def ortho_sidd(
     # ------------------------------------------------------------------
     # Build and run WGS-84 pipeline
     # ------------------------------------------------------------------
-    pipeline = (
-        OrthoBuilder()
-        .with_source_array(source)
-        .with_geolocation(geo)
-        .with_interpolation(interpolation)
-        .with_nodata(np.nan)
+    wgs_kwargs = dict(
+        geolocation=geo,
+        source_array=source,
+        interpolation=interpolation,
+        nodata=np.nan,
     )
-
     if elev is not None:
-        pipeline = pipeline.with_elevation(elev)
-
+        wgs_kwargs['elevation'] = elev
     if resolution is not None:
-        pipeline = pipeline.with_resolution(resolution, resolution)
+        wgs_kwargs['resolution'] = (resolution, resolution)
         print(f"  Resolution: {resolution:.6f} deg (user)")
     else:
         # SIDD doesn't have SICD-style grid metadata for auto-resolution,
@@ -291,17 +288,16 @@ def ortho_sidd(
         lon_span = max_lon - min_lon
         auto_lat = lat_span / chip_rows
         auto_lon = lon_span / chip_cols
-        pipeline = pipeline.with_resolution(auto_lat, auto_lon)
+        wgs_kwargs['resolution'] = (auto_lat, auto_lon)
         print(f"  Resolution: {auto_lat:.6f} x {auto_lon:.6f} deg (auto)")
-
     if tile_size is not None:
-        pipeline = pipeline.with_tile_size(tile_size)
+        wgs_kwargs['tile_size'] = tile_size
         print(f"  Tile size:  {tile_size}")
 
     print()
     print("Running WGS-84 ortho pipeline...")
     t_pipe0 = time.perf_counter()
-    result = pipeline.run()
+    result = orthorectify(**wgs_kwargs)
     timings['ortho_wgs84'] = time.perf_counter() - t_pipe0
     print(f"  Completed in {timings['ortho_wgs84']:.2f} s")
 
@@ -322,19 +318,18 @@ def ortho_sidd(
     if enu_pixel_m is not None:
         print()
         print(f"Running ENU ortho pipeline ({enu_pixel_m:.1f} m)...")
-        enu_pipeline = (
-            OrthoBuilder()
-            .with_source_array(source)
-            .with_geolocation(geo)
-            .with_interpolation(interpolation)
-            .with_nodata(np.nan)
-            .with_enu_grid(pixel_size_m=enu_pixel_m)
+        enu_kwargs = dict(
+            geolocation=geo,
+            source_array=source,
+            interpolation=interpolation,
+            nodata=np.nan,
+            enu_grid=dict(pixel_size_m=enu_pixel_m),
         )
         if elev is not None:
-            enu_pipeline = enu_pipeline.with_elevation(elev)
+            enu_kwargs['elevation'] = elev
 
         t_enu0 = time.perf_counter()
-        result_enu = enu_pipeline.run()
+        result_enu = orthorectify(**enu_kwargs)
         timings['ortho_enu'] = time.perf_counter() - t_enu0
         eg = result_enu.output_grid
         print(f"  Completed in {timings['ortho_enu']:.2f} s")
