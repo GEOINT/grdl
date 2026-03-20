@@ -1,0 +1,4 @@
+include CLAUDE.md
+include README.md
+include LICENSE
+recursive-include grdl *.md *.typed
