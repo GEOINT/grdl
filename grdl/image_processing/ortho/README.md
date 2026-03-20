@@ -5,14 +5,12 @@ Geometric reprojection from native acquisition geometry to ground-referenced geo
 ## Quick Start
 
 ```python
-from grdl.image_processing.ortho import OrthoBuilder
+from grdl.image_processing.ortho import orthorectify
 
-result = (
-    OrthoBuilder()
-    .with_source_array(image)
-    .with_geolocation(geo)
-    .with_enu_grid(pixel_size_m=1.0, ref_lat=36.0, ref_lon=-75.5)
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    source_array=image,
+    enu_grid=dict(pixel_size_m=1.0, ref_lat=36.0, ref_lon=-75.5),
 )
 
 ortho = result.data          # ndarray, shape (rows, cols)
@@ -22,38 +20,44 @@ result.save_geotiff('ortho.tif')
 
 ## Two Ways to Orthorectify
 
-### OrthoBuilder (recommended)
+### orthorectify() (recommended)
 
-Builder-pattern API that auto-resolves resolution, elevation, and grid bounds. Supports tiled processing for memory-constrained scenarios.
+Keyword-argument function that auto-resolves resolution, elevation, and grid bounds. Provide either ``reader`` or ``source_array``.
 
 ```python
+from grdl.image_processing.ortho import orthorectify
+
 # From a reader (handles large files, reads only needed pixels)
-result = (
-    OrthoBuilder()
-    .with_reader(reader)
-    .with_geolocation(geo)
-    .with_elevation(dem)
-    .with_interpolation('bicubic')
-    .with_nodata(np.nan)
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    elevation=dem,
+    interpolation='bicubic',
+    nodata=np.nan,
 )
 
 # With explicit WGS-84 grid
-result = (
-    OrthoBuilder()
-    .with_source_array(image)
-    .with_geolocation(geo)
-    .with_output_grid(grid)
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    source_array=image,
+    output_grid=grid,
 )
 
 # Tiled processing (constant peak memory)
-result = (
-    OrthoBuilder()
-    .with_reader(reader)
-    .with_geolocation(geo)
-    .with_tile_size(1024)
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    tile_size=1024,
+)
+
+# Geographic sub-region with DEM
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    metadata=reader.metadata,
+    elevation=dem,
+    roi=(36.0, 36.1, -75.8, -75.7),
+    tile_size=2048,
 )
 ```
 
@@ -145,19 +149,19 @@ assert isinstance(MyGrid(...), OutputGridProtocol)  # runtime check
 
 Pass an `ElevationModel` to inject terrain heights into the geolocation inverse. Without a DEM, all points project to a constant height surface.
 
+`GeoTIFFDEM` defaults to **bicubic** (order=3) interpolation, producing C1-continuous height fields. This eliminates the derivative kinks at DEM cell boundaries that cause visible line distortion in sub-meter orthorectified imagery. Use `interpolation=1` for faster bilinear, or `interpolation=5` for quintic.
+
 ```python
 from grdl.geolocation.elevation import open_elevation
 
 dem = open_elevation('/data/srtm/', geoid_path='/data/egm96.tif',
                      location=(36.0, -75.5))
 
-result = (
-    OrthoBuilder()
-    .with_source_array(image)
-    .with_geolocation(geo)
-    .with_elevation(dem)
-    .with_enu_grid(pixel_size_m=1.0)
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    source_array=image,
+    elevation=dem,
+    enu_grid=dict(pixel_size_m=1.0),
 )
 ```
 
@@ -187,7 +191,7 @@ ortho.apply(image, backend='numba')
 
 ## Auto-Resolution
 
-When no explicit grid or resolution is provided, `OrthoBuilder` auto-computes pixel spacing from metadata:
+When no explicit grid or resolution is provided, `orthorectify()` auto-computes pixel spacing from metadata:
 
 | Format | Source of Ground Spacing |
 |--------|------------------------|
@@ -199,7 +203,7 @@ When no explicit grid or resolution is provided, `OrthoBuilder` auto-computes pi
 
 ## OrthoResult
 
-Returned by `OrthoBuilder.run()`:
+Returned by `orthorectify()`:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|

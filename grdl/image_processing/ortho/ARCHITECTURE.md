@@ -43,8 +43,11 @@ ImageTransform (ABC, grdl.image_processing.base)
         ├── apply()              Resample from array
         └── apply_from_reader()  Resample from reader (large files)
 
-OrthoBuilder                  Builder-pattern orchestrator
-  ├── with_*()                 14 fluent builder methods
+orthorectify()                Keyword-argument function (recommended entry point)
+                              Wraps OrthoBuilder with all params as kwargs
+
+OrthoBuilder                  Builder-pattern orchestrator (advanced use)
+  ├── with_*()                 15 fluent builder methods
   ├── run()                    Execute → OrthoResult
   └── _run_tiled()             Tiled execution for large grids
 
@@ -245,4 +248,4 @@ See `grdl/example/ortho/` for working scripts:
 | `ortho_sicd.py` | SICD complex SAR ortho with DEM and ENU output. |
 | `ortho_sidd.py` | SIDD derived product ortho with DEM and ENU output. |
 
-All examples use `OrthoBuilder` as the recommended entry point.
+All examples use `orthorectify()` as the recommended entry point. `OrthoBuilder` is available for advanced cases requiring partial configuration or builder reuse.
