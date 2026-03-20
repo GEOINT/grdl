@@ -51,6 +51,42 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
+### API Style: Functions and Constructors over Fluent Chaining
+
+GRDL targets scientific Python developers who expect the NumPy/SciPy calling convention. **Prefer plain functions and constructors with keyword arguments** over fluent builder / method-chaining patterns.
+
+**Good (keyword arguments — Pythonic, debuggable, clear required vs optional):**
+```python
+result = orthorectify(
+    reader=reader,
+    geolocation=geo,
+    elevation=ortho_elev,
+    interpolation='bilinear',
+    output_grid=grid,
+)
+```
+
+**Avoid (fluent chaining — enterprise Java pattern, hard to debug, hides requirements):**
+```python
+result = (
+    OrthoBuilder()
+    .with_reader(reader)
+    .with_geolocation(geo)
+    .with_elevation(ortho_elev)
+    .with_interpolation('bilinear')
+    .with_output_grid(grid)
+    .run()
+)
+```
+
+**When fluent builders are acceptable:** Only when construction is genuinely complex — conditional configuration across multiple steps, reuse of partially-configured builders, or validation that must happen across parameters before execution. Even then, provide a simple function entry point for the common case.
+
+**Why this matters:**
+- Stack traces point to the exact failing argument, not a collapsed chain
+- Autocomplete shows all parameters in one signature
+- Required vs optional is explicit in the function signature
+- Easier to set breakpoints and inspect intermediate state
+
 ### Fail Fast
 
 - All imports at the top of the file. If a dependency is missing, the module fails on import -- not buried in a runtime call.

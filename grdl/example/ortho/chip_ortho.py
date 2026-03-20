@@ -308,28 +308,26 @@ def main() -> None:
         geo, region.row_start, region.col_start, chip_rows, chip_cols)
 
     # ── Orthorectify ─────────────────────────────────────────
-    from grdl.image_processing.ortho import OrthoBuilder
+    from grdl.image_processing.ortho import orthorectify
     from grdl.geolocation.elevation.constant import ConstantElevation
 
     scene_elev = ConstantElevation(height=center_h)
 
     print(f"Orthorectifying to ENU grid ({args.pixel_size:.1f} m)...")
-    pipeline = (
-        OrthoBuilder()
-        .with_source_array(img)
-        .with_metadata(meta)
-        .with_geolocation(chip_geo)
-        .with_elevation(scene_elev)
-        .with_interpolation(args.interp)
-        .with_nodata(np.nan)
-        .with_enu_grid(
+    result = orthorectify(
+        geolocation=chip_geo,
+        source_array=img,
+        metadata=meta,
+        elevation=scene_elev,
+        interpolation=args.interp,
+        nodata=np.nan,
+        enu_grid=dict(
             pixel_size_m=args.pixel_size,
             ref_lat=center_lat,
             ref_lon=center_lon,
             ref_alt=center_h,
-        )
+        ),
     )
-    result = pipeline.run()
 
     ortho = result.data
     grid = result.output_grid

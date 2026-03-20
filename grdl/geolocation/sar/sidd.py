@@ -463,18 +463,19 @@ class SIDDGeolocation(Geolocation):
         - **Grid only**: Fast vectorized plane inverse.
         """
         if self.has_rdot:
-            # Height chain: DEM → explicit → SCP HAE
-            if self.elevation is not None:
+            # Height chain: explicit array → DEM → SCP HAE.
+            # When the caller passes a per-pixel height array (e.g.
+            # from Orthorectifier's DEM lookup), use it directly.
+            # Only fall back to self.elevation when height is scalar 0.
+            if np.ndim(height) > 0:
+                h_arr = np.asarray(height, dtype=np.float64)
+            elif self.elevation is not None and height == 0.0:
                 h_arr = self.elevation.get_elevation(lats, lons)
                 if isinstance(h_arr, (int, float)):
                     h_arr = np.full_like(lats, float(h_arr))
                 nan_mask = np.isnan(h_arr)
                 if np.any(nan_mask):
-                    fill = float(height) if height != 0.0 \
-                        else self._default_hae
-                    h_arr[nan_mask] = fill
-            elif np.ndim(height) > 0:
-                h_arr = np.asarray(height, dtype=np.float64)
+                    h_arr[nan_mask] = self._default_hae
             else:
                 h = height if height != 0.0 else self._default_hae
                 h_arr = np.full_like(lats, float(h))

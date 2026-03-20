@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-03-20
 """
 
 # Standard library
@@ -65,6 +65,16 @@ class GeoTIFFDEM(ElevationModel):
         Path to the GeoTIFF DEM file. Must exist and be a file.
     geoid_path : str or Path, optional
         Path to geoid model file for MSL-to-HAE correction.
+    interpolation : int, default=3
+        Spline interpolation order for DEM sampling:
+
+        - ``1`` — bilinear (C0, fast, derivative discontinuities at cell edges)
+        - ``3`` — bicubic (C1, smooth derivatives, recommended for ortho)
+        - ``5`` — quintic (C2, very smooth, slower)
+
+        Higher orders produce smoother height fields, eliminating
+        the kinks at DEM cell boundaries that cause visible
+        distortion in sub-meter orthorectified imagery.
 
     Raises
     ------
@@ -85,6 +95,7 @@ class GeoTIFFDEM(ElevationModel):
         self,
         dem_path: str,
         geoid_path: Optional[str] = None,
+        interpolation: int = 3,
     ) -> None:
         """Initialize GeoTIFF DEM elevation model.
 
@@ -94,6 +105,8 @@ class GeoTIFFDEM(ElevationModel):
             Path to the GeoTIFF DEM file.
         geoid_path : str or Path, optional
             Path to geoid model file for MSL-to-HAE correction.
+        interpolation : int, default=3
+            Spline interpolation order (1=bilinear, 3=bicubic, 5=quintic).
 
         Raises
         ------
@@ -123,6 +136,7 @@ class GeoTIFFDEM(ElevationModel):
         self._nrows = self._dataset.height
         self._ncols = self._dataset.width
         self._nodata = self._dataset.nodata
+        self._interp_order = interpolation
 
         # Build CRS transformer if the DEM is not in geographic coordinates
         self._transformer = None
@@ -190,66 +204,103 @@ class GeoTIFFDEM(ElevationModel):
         px_cols = np.asarray(px_cols, dtype=np.float64)
         px_rows = np.asarray(px_rows, dtype=np.float64)
 
-        # Bilinear interpolation between the 4 surrounding DEM pixels.
-        # Floor to get the top-left pixel of the interpolation cell.
-        col_f = np.floor(px_cols).astype(np.intp)
-        row_f = np.floor(px_rows).astype(np.intp)
+        # Margin needed around each query point for interpolation kernel.
+        # Bilinear needs +1, bicubic needs +2, quintic needs +3.
+        margin = max(1, (self._interp_order + 1) // 2)
 
-        # Fractional offsets within the cell [0, 1)
-        dc = px_cols - col_f
-        dr = px_rows - row_f
-
-        # Bounds check (need the +1 neighbor to exist)
+        # Bounds check: query points must have enough neighbors
         valid = (
-            (row_f >= 0) & (row_f < self._nrows - 1)
-            & (col_f >= 0) & (col_f < self._ncols - 1)
+            (px_rows >= margin) & (px_rows < self._nrows - margin)
+            & (px_cols >= margin) & (px_cols < self._ncols - margin)
         )
 
         if not np.any(valid):
             return heights
 
-        v_row = row_f[valid]
-        v_col = col_f[valid]
-        v_dr = dr[valid]
-        v_dc = dc[valid]
+        v_rows = px_rows[valid]
+        v_cols = px_cols[valid]
 
-        # Windowed read: bounding box of needed pixels (+1 for interp)
+        # Windowed read: bounding box of needed pixels + margin
         from rasterio.windows import Window
 
-        r_min, r_max = int(v_row.min()), int(v_row.max()) + 1
-        c_min, c_max = int(v_col.min()), int(v_col.max()) + 1
+        r_min = int(np.floor(v_rows.min())) - margin
+        r_max = int(np.ceil(v_rows.max())) + margin
+        c_min = int(np.floor(v_cols.min())) - margin
+        c_max = int(np.ceil(v_cols.max())) + margin
+        r_min = max(0, r_min)
+        c_min = max(0, c_min)
+        r_max = min(self._nrows - 1, r_max)
+        c_max = min(self._ncols - 1, c_max)
+
         window = Window(
             col_off=c_min, row_off=r_min,
             width=c_max - c_min + 1, height=r_max - r_min + 1,
         )
         data = self._dataset.read(1, window=window).astype(np.float64)
 
-        # Local pixel indices within the window
-        lr = v_row - r_min
-        lc = v_col - c_min
-
-        # Four corners of each interpolation cell
-        z00 = data[lr, lc]
-        z01 = data[lr, lc + 1]
-        z10 = data[lr + 1, lc]
-        z11 = data[lr + 1, lc + 1]
-
-        # Mask nodata in any corner → NaN for that point
+        # Replace nodata with NaN before interpolation
         if self._nodata is not None:
-            nd = float(self._nodata)
-            nodata_mask = (
-                np.isclose(z00, nd, atol=0.5)
-                | np.isclose(z01, nd, atol=0.5)
-                | np.isclose(z10, nd, atol=0.5)
-                | np.isclose(z11, nd, atol=0.5)
-            )
-            z00[nodata_mask] = np.nan
+            nodata_mask = np.isclose(data, float(self._nodata), atol=0.5)
+            data[nodata_mask] = np.nan
 
-        # Bilinear interpolation
-        sampled = (z00 * (1 - v_dc) * (1 - v_dr)
-                   + z01 * v_dc * (1 - v_dr)
-                   + z10 * (1 - v_dc) * v_dr
-                   + z11 * v_dc * v_dr)
+        # Local coordinates within the window
+        local_rows = v_rows - r_min
+        local_cols = v_cols - c_min
+
+        if self._interp_order == 1:
+            # Fast bilinear path (no scipy dependency for simple case)
+            row_f = np.floor(local_rows).astype(np.intp)
+            col_f = np.floor(local_cols).astype(np.intp)
+            dr = local_rows - row_f
+            dc = local_cols - col_f
+
+            z00 = data[row_f, col_f]
+            z01 = data[row_f, col_f + 1]
+            z10 = data[row_f + 1, col_f]
+            z11 = data[row_f + 1, col_f + 1]
+
+            sampled = (z00 * (1 - dc) * (1 - dr)
+                       + z01 * dc * (1 - dr)
+                       + z10 * (1 - dc) * dr
+                       + z11 * dc * dr)
+        else:
+            # Higher-order spline via scipy.ndimage.map_coordinates.
+            # Produces C1 (cubic) or C2 (quintic) continuous surfaces
+            # that eliminate derivative discontinuities at DEM cell edges.
+            from scipy.ndimage import map_coordinates
+
+            # map_coordinates doesn't handle NaN; fill with nearest
+            # valid value before interpolation, then re-mask.
+            nan_mask = np.isnan(data)
+            if np.any(nan_mask):
+                from scipy.ndimage import distance_transform_edt
+                _, nearest_idx = distance_transform_edt(
+                    nan_mask, return_distances=True, return_indices=True,
+                )
+                data_filled = data.copy()
+                data_filled[nan_mask] = data[
+                    nearest_idx[0][nan_mask], nearest_idx[1][nan_mask]
+                ]
+            else:
+                data_filled = data
+
+            coords = np.vstack([local_rows, local_cols])
+            sampled = map_coordinates(
+                data_filled, coords,
+                order=self._interp_order, mode='nearest',
+            )
+
+            # Re-apply NaN where any input was nodata (check nearest cells)
+            if np.any(nan_mask):
+                row_nn = np.clip(
+                    np.round(local_rows).astype(np.intp),
+                    0, data.shape[0] - 1,
+                )
+                col_nn = np.clip(
+                    np.round(local_cols).astype(np.intp),
+                    0, data.shape[1] - 1,
+                )
+                sampled[nan_mask[row_nn, col_nn]] = np.nan
 
         heights[valid] = sampled
         return heights
