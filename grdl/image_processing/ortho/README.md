@@ -242,3 +242,14 @@ Must implement:
 
 Must implement:
 - `read_chip(row_start, row_end, col_start, col_end) -> ndarray`
+
+## Examples
+
+See `grdl/example/ortho/` for working scripts:
+
+- `chip_ortho.py` — Ground-extent chip extraction + ENU ortho (CLI)
+- `compare_sidd_ortho.py` — Dual-SIDD ortho comparison with PCA, NCC, coregistration
+- `ortho_biomass.py` — BIOMASS ortho with Pauli RGB
+- `ortho_combined.py` — Auto-detect SICD/SIDD, WGS-84 + ENU output
+- `ortho_sicd.py` — SICD ortho with DEM and ENU
+- `ortho_sidd.py` — SIDD ortho with DEM and ENU
