@@ -7,23 +7,26 @@ Provides orthorectification for imagery in native acquisition geometry
 in either WGS-84 geographic coordinates or local ENU (East-North-Up)
 meters.
 
-``OrthoBuilder`` is the recommended entry point.  It provides a fluent
-builder API for configuring source data, geolocation, resolution (explicit
+``orthorectify()`` is the recommended entry point — a keyword-argument
+function for configuring source data, geolocation, resolution (explicit
 or auto-computed from metadata), DEM terrain correction, geographic ROI
 restriction, ENU output mode, and memory-efficient tiled processing.
+``OrthoBuilder`` provides the underlying fluent builder for advanced use.
 
 Resampling is accelerated via a multi-backend dispatch chain:
 numba (JIT parallel) > torch GPU > torch CPU > scipy parallel > scipy.
 The ``resample()`` function and ``detect_backend()`` are exposed for
 direct use outside the pipeline.
 
-Key Classes
------------
+Key Functions / Classes
+-----------------------
+orthorectify
+    Keyword-argument function (recommended).  Wraps ``OrthoBuilder``
+    with all parameters as kwargs.
 OrthoBuilder
-    Builder-pattern orchestrator.  Accepts source arrays or readers,
-    resolves output grid (from geolocation footprint, explicit bounds,
-    ROI, or ENU specification), and dispatches to full-grid or tiled
-    execution.
+    Fluent builder for advanced use (partial configuration, reuse).
+    Accepts source arrays or readers, resolves output grid, and
+    dispatches to full-grid or tiled execution.
 OrthoResult
     Output container holding orthorectified data, output grid, and
     geolocation metadata for downstream writers.
@@ -85,7 +88,7 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-03-20
 """
 
 from grdl.image_processing.ortho.ortho import (

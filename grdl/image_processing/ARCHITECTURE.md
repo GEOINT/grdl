@@ -185,28 +185,27 @@ generic utilities at the application level.
 
 | Need | Use |
 |------|-----|
-| Full ortho (recommended) | `OrthoBuilder` — builder API, auto-resolution, DEM |
-| Ortho a geographic sub-region | `OrthoBuilder` + `.with_roi(min_lat, max_lat, min_lon, max_lon)` |
-| Memory-efficient large output | `OrthoBuilder` + `.with_tile_size(2048)` |
-| ROI + tiling (composable) | `.with_roi(...)` + `.with_tile_size(...)` |
+| Full ortho (recommended) | `orthorectify()` — keyword-argument function, auto-resolution, DEM |
+| Ortho a geographic sub-region | `orthorectify(roi=(min_lat, max_lat, min_lon, max_lon))` |
+| Memory-efficient large output | `orthorectify(tile_size=2048)` |
+| ROI + tiling (composable) | `orthorectify(roi=(...), tile_size=2048)` |
+| ENU output in meters | `orthorectify(enu_grid=dict(pixel_size_m=1.0))` |
 | Low-level mapping + resample | `Orthorectifier` + `OutputGrid` (compute_mapping / apply) |
 | Auto-compute output resolution | `compute_output_resolution(metadata)` |
 
-**OrthoBuilder** is the recommended entry point. It handles resolution
+**`orthorectify()`** is the recommended entry point. It handles resolution
 computation, output grid construction, DEM integration, ROI restriction,
-and tiled processing via a fluent builder API:
+and tiled processing via keyword arguments:
 
 ```python
-result = (
-    OrthoBuilder()
-    .with_reader(reader)
-    .with_geolocation(geo)
-    .with_metadata(reader.metadata)        # auto-resolution from SICD/BIOMASS
-    .with_roi(36.0, 36.1, -75.8, -75.7)   # geographic sub-region
-    .with_tile_size(2048)                  # memory-efficient tiling
-    .with_interpolation('nearest')
-    .with_elevation(dem)                   # DEM terrain correction
-    .run()
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    metadata=reader.metadata,        # auto-resolution from SICD/BIOMASS
+    elevation=dem,                   # DEM terrain correction
+    roi=(36.0, 36.1, -75.8, -75.7), # geographic sub-region
+    tile_size=2048,                  # memory-efficient tiling
+    interpolation='nearest',
 )
 # result.data, result.output_grid, result.geolocation_metadata
 ```
@@ -215,6 +214,9 @@ result = (
 processes each tile independently (bounded mapping memory), and
 assembles into the full output array. Each tile's `OutputGrid` is
 extracted via `OutputGrid.sub_grid()`.
+
+`OrthoBuilder` (fluent builder) is still available for advanced cases
+requiring partial configuration or builder reuse.
 
 ### Composition
 
