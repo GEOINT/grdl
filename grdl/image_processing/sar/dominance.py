@@ -117,10 +117,12 @@ def compute_dominance(
     Returns
     -------
     np.ndarray or cupy.ndarray
-        Dominance ratio, shape ``(rows, cols)``, values in
-        ``[dom_window / n_looks, 1.0]``.  High values indicate power
-        concentrated in a contiguous aperture block.  Return type
-        matches the input array type.
+        Dominance ratio, shape ``(rows, cols)``, values in ``[0, 1]``.
+        High values indicate power concentrated in a contiguous
+        aperture block.  When power is perfectly uniform across looks,
+        dominance equals ``dom_window / n_looks`` exactly.  Non-uniform
+        power distributions can produce values below that ratio.
+        Return type matches the input array type.
 
     Raises
     ------

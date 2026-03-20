@@ -388,16 +388,20 @@ class SIDDGeolocation(Geolocation):
         meas : SIDDMeasurement
             Measurement section.
         """
-        # Check for required parameters
-        pp = meas.plane_projection
-        if pp is None or pp.time_coa_poly is None:
+        # Check for required parameters — use getattr to tolerate
+        # duck-typed metadata objects that may omit optional fields.
+        pp = getattr(meas, 'plane_projection', None)
+        if pp is None:
             return
-        if pp.time_coa_poly.coefs is None:
+        time_coa = getattr(pp, 'time_coa_poly', None)
+        if time_coa is None or getattr(time_coa, 'coefs', None) is None:
             return
-        if meas.arp_poly is None:
+        arp = getattr(meas, 'arp_poly', None)
+        if arp is None:
             return
-        if (meas.arp_poly.x is None or meas.arp_poly.y is None
-                or meas.arp_poly.z is None):
+        if (getattr(arp, 'x', None) is None
+                or getattr(arp, 'y', None) is None
+                or getattr(arp, 'z', None) is None):
             return
 
         try:
