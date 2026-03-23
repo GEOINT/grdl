@@ -333,7 +333,7 @@ catalog.close()
 
 ### Geolocation Transforms
 
-All geolocation classes share the same `Geolocation` ABC and support three input forms: scalar, separate arrays, or `(2, N)` stacked ndarray. The ABC constructor accepts optional `dem_path` and `geoid_path` parameters for DEM integration.
+All geolocation classes share the same `Geolocation` ABC and return stacked ndarrays: scalar calls return a 1-D array (e.g., `(3,)` for `[lat, lon, h]`) that supports tuple unpacking, and batch calls accept an `(N, 2)` stacked ndarray and return `(N, 3)`. The ABC constructor accepts optional `dem_path` and `geoid_path` parameters for DEM integration.
 
 ```python
 from grdl.geolocation.sar.gcp import GCPGeolocation
@@ -350,15 +350,14 @@ with open_biomass('path/to/product') as reader:
         (reader.metadata['rows'], reader.metadata['cols']),
     )
 
-    # Single pixel (returns scalars)
+    # Single pixel — returns (3,) ndarray [lat, lon, h]; tuple unpacking works
     lat, lon, height = geo.image_to_latlon(500, 1000)
 
-    # Array of pixels (returns arrays, vectorized)
-    rows = np.array([100, 200, 300])
-    cols = np.array([400, 500, 600])
-    lats, lons, heights = geo.image_to_latlon(rows, cols)
+    # Batch of pixels — pass (N, 2) stacked array, returns (N, 3)
+    pixels = np.array([[100, 400], [200, 500], [300, 600]])
+    coords = geo.image_to_latlon(pixels)   # shape (3, 3) — each row is [lat, lon, h]
 
-    # Inverse: geographic to pixel (also accepts scalar or array)
+    # Inverse: geographic to pixel — scalar returns (2,) [row, col]
     row, col = geo.latlon_to_image(-31.05, 116.19)
 
 # --- AffineGeolocation (geocoded rasters: GeoTIFF, SAR GRD, etc.) ---
