@@ -316,8 +316,8 @@ class TestImageToGroundHAE:
                                    max_iter=15, tol=1.0)
 
         # Convert to lat/lon
-        lats, lons, heights = ecef_to_geodetic(
-            gpp[:, 0], gpp[:, 1], gpp[:, 2])
+        geo = ecef_to_geodetic(gpp)
+        lats, lons, heights = geo[:, 0], geo[:, 1], geo[:, 2]
 
         # Should be near (0, 0) for our synthetic geometry
         assert abs(lats[0]) < 5.0, f"Latitude off: {lats[0]:.2f}"

@@ -5,7 +5,7 @@ ENU Output Grid - Regular output grid in East-North-Up meters.
 Provides ``ENUGrid``, an output grid specification for orthorectification
 in local ENU (East-North-Up) coordinates centered on a WGS-84 reference
 point.  Compatible with ``Orthorectifier`` as a drop-in alternative to
-``OutputGrid``: both provide ``rows``, ``cols``, ``image_to_latlon()``,
+``GeographicGrid``: both provide ``rows``, ``cols``, ``image_to_latlon()``,
 ``latlon_to_image()``, and ``sub_grid()``.
 
 Author
@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-03-22
 """
 
 import logging
@@ -54,7 +54,7 @@ class ENUGrid:
 
     Row 0 is the north edge (max_north), row increases southward.
     Column 0 is the west edge (min_east), column increases eastward.
-    This matches the ``OutputGrid`` convention.
+    This matches the ``GeographicGrid`` convention.
 
     Attributes
     ----------
@@ -210,13 +210,11 @@ class ENUGrid:
 
         # Auto-compute reference point from image center
         if ref_lat is None or ref_lon is None:
-            center_lat, center_lon, _ = geolocation.image_to_latlon(
-                rows / 2.0, cols / 2.0,
-            )
+            _center = geolocation.image_to_latlon(rows / 2.0, cols / 2.0)
             if ref_lat is None:
-                ref_lat = float(center_lat)
+                ref_lat = float(_center[0])
             if ref_lon is None:
-                ref_lon = float(center_lon)
+                ref_lon = float(_center[1])
             logger.debug(
                 "Auto-selected reference point: lat=%.6f, lon=%.6f",
                 ref_lat, ref_lon,
@@ -229,10 +227,11 @@ class ENUGrid:
         corner_lons = np.array([min_lon, max_lon, min_lon, max_lon])
         corner_heights = np.full(4, ref_alt)
 
-        east, north, _ = geodetic_to_enu(
-            corner_lats, corner_lons, corner_heights,
-            ref_lat, ref_lon, ref_alt,
+        enu = geodetic_to_enu(
+            np.column_stack([corner_lats, corner_lons, corner_heights]),
+            np.array([ref_lat, ref_lon, ref_alt]),
         )
+        east, north = enu[:, 0], enu[:, 1]
 
         return cls(
             ref_lat=ref_lat,
@@ -269,10 +268,19 @@ class ENUGrid:
         east = self.min_east + np.asarray(col) * self.pixel_size_east
         up = np.zeros_like(east)
 
-        lats, lons, _ = enu_to_geodetic(
-            east, north, up,
-            self.ref_lat, self.ref_lon, self.ref_alt,
+        scalar = np.ndim(east) == 0
+        east_flat = np.atleast_1d(east)
+        north_flat = np.atleast_1d(north)
+        up_flat = np.atleast_1d(up)
+
+        geo = enu_to_geodetic(
+            np.column_stack([east_flat, north_flat, up_flat]),
+            np.array([self.ref_lat, self.ref_lon, self.ref_alt]),
         )
+        lats, lons = geo[:, 0], geo[:, 1]
+
+        if scalar:
+            return float(lats[0]), float(lons[0])
         return lats, lons
 
     def latlon_to_image(
@@ -294,14 +302,22 @@ class ENUGrid:
         Tuple[float or np.ndarray, float or np.ndarray]
             (row, col) pixel coordinates.
         """
-        east, north, _ = geodetic_to_enu(
-            np.asarray(lat, dtype=np.float64),
-            np.asarray(lon, dtype=np.float64),
-            np.full_like(np.asarray(lat, dtype=np.float64), self.ref_alt),
-            self.ref_lat, self.ref_lon, self.ref_alt,
+        lat_arr = np.atleast_1d(np.asarray(lat, dtype=np.float64))
+        lon_arr = np.atleast_1d(np.asarray(lon, dtype=np.float64))
+        h_arr = np.full_like(lat_arr, self.ref_alt)
+
+        enu = geodetic_to_enu(
+            np.column_stack([lat_arr, lon_arr, h_arr]),
+            np.array([self.ref_lat, self.ref_lon, self.ref_alt]),
         )
+        east, north = enu[:, 0], enu[:, 1]
+
         row = (self.max_north - north) / self.pixel_size_north
         col = (east - self.min_east) / self.pixel_size_east
+
+        scalar = np.ndim(lat) == 0 and np.ndim(lon) == 0
+        if scalar:
+            return float(row[0]), float(col[0])
         return row, col
 
     def sub_grid(

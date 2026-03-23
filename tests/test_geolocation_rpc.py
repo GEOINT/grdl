@@ -235,8 +235,15 @@ class TestRPCGeolocation:
         lons = np.array([-77.2, -77.0, -76.8])
         heights = np.full(3, 100.0)
 
-        rows, cols = geo.latlon_to_image(lats, lons, heights)
-        lats2, lons2, h2 = geo.image_to_latlon(rows, cols, 100.0)
+        inv_result = geo.latlon_to_image(
+            np.column_stack([lats, lons, heights]))
+        assert inv_result.shape == (3, 2)
+        rows, cols = inv_result[:, 0], inv_result[:, 1]
+
+        fwd_result = geo.image_to_latlon(
+            np.column_stack([rows, cols]), height=100.0)
+        assert fwd_result.shape == (3, 3)
+        lats2, lons2 = fwd_result[:, 0], fwd_result[:, 1]
 
         np.testing.assert_allclose(lats2, lats, atol=1e-5)
         np.testing.assert_allclose(lons2, lons, atol=1e-5)

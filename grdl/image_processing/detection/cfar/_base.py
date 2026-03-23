@@ -460,10 +460,10 @@ class CFARDetector(ImageDetector):
             if geolocation is not None:
                 center_row = (row_min + row_max) / 2.0
                 center_col = (col_min + col_max) / 2.0
-                lat, lon, _ = geolocation.image_to_latlon(
+                _geo_result = geolocation.image_to_latlon(
                     center_row, center_col,
                 )
-                geo_geom = Point(float(lon), float(lat))
+                geo_geom = Point(float(_geo_result[1]), float(_geo_result[0]))
 
             properties = {
                 Fields.sar.SIGMA0: round(mean_val, 2),

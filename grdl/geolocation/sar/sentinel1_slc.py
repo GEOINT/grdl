@@ -192,7 +192,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel arrays to geographic arrays.
 
@@ -202,7 +202,7 @@ class Sentinel1SLCGeolocation(Geolocation):
             Row (line) coordinates, 1D float64.
         cols : np.ndarray
             Column (pixel) coordinates, 1D float64.
-        height : float
+        height : float or np.ndarray
             Not used (heights come from the grid).
 
         Returns

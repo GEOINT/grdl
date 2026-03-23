@@ -5,7 +5,7 @@ Orthorectification - Reproject imagery to ground-referenced geographic grids.
 Transforms imagery from its native acquisition geometry (slant range for SAR,
 oblique for EO) to a regular geographic or ENU grid using inverse geolocation
 and accelerated resampling. Works with any Geolocation subclass from
-grdl.geolocation and accepts both ``OutputGrid`` (WGS-84) and ``ENUGrid``
+grdl.geolocation and accepts both ``GeographicGrid`` (WGS-84) and ``ENUGrid``
 (local meters) as output specifications.
 
 The coordinate mapping step (``compute_mapping``) parallelises across threads
@@ -82,7 +82,7 @@ _PARALLEL_THRESHOLD = 1_000_000
 class OutputGridProtocol(Protocol):
     """Contract for output grid objects used by ``Orthorectifier``.
 
-    Both ``OutputGrid`` (WGS-84 degrees) and ``ENUGrid`` (ENU meters)
+    Both ``GeographicGrid`` (WGS-84 degrees) and ``ENUGrid`` (ENU meters)
     satisfy this protocol.  Any custom grid that implements these
     attributes and methods can be used as a drop-in replacement.
 
@@ -171,7 +171,7 @@ def validate_sub_grid_indices(
         )
 
 
-class OutputGrid:
+class GeographicGrid:
     """
     Specification for an orthorectified output grid.
 
@@ -206,13 +206,13 @@ class OutputGrid:
     --------
     Create a grid covering a region at ~100m resolution:
 
-    >>> grid = OutputGrid(-31.5, -30.5, 115.5, 116.5, 0.001, 0.001)
+    >>> grid = GeographicGrid(-31.5, -30.5, 115.5, 116.5, 0.001, 0.001)
     >>> print(f"{grid.rows} x {grid.cols}")
     1000 x 1000
 
     Create from a Geolocation object's footprint:
 
-    >>> grid = OutputGrid.from_geolocation(geo, 0.001, 0.001)
+    >>> grid = GeographicGrid.from_geolocation(geo, 0.001, 0.001)
     """
 
     def __init__(
@@ -281,7 +281,7 @@ class OutputGrid:
         pixel_size_lat: float,
         pixel_size_lon: float,
         margin: float = 0.0
-    ) -> 'OutputGrid':
+    ) -> 'GeographicGrid':
         """
         Create grid from a Geolocation object's footprint bounds.
 
@@ -298,7 +298,7 @@ class OutputGrid:
 
         Returns
         -------
-        OutputGrid
+        GeographicGrid
             Grid covering the geolocation footprint.
 
         Raises
@@ -375,10 +375,10 @@ class OutputGrid:
         col_start: int,
         row_end: int,
         col_end: int,
-    ) -> 'OutputGrid':
+    ) -> 'GeographicGrid':
         """Extract a sub-grid covering a rectangular tile of this grid.
 
-        Creates a new ``OutputGrid`` whose geographic bounds correspond to
+        Creates a new ``GeographicGrid`` whose geographic bounds correspond to
         the pixel region ``[row_start:row_end, col_start:col_end]`` of this
         grid.  Pixel sizes are preserved.
 
@@ -395,7 +395,7 @@ class OutputGrid:
 
         Returns
         -------
-        OutputGrid
+        GeographicGrid
             Sub-grid with geographic bounds matching the tile region.
 
         Raises
@@ -417,7 +417,7 @@ class OutputGrid:
         tile_min_lon = self.min_lon + col_start * self.pixel_size_lon
         tile_max_lon = tile_min_lon + tile_cols * self.pixel_size_lon
 
-        sub = OutputGrid(
+        sub = GeographicGrid(
             tile_min_lat, tile_max_lat,
             tile_min_lon, tile_max_lon,
             self.pixel_size_lat, self.pixel_size_lon,
@@ -430,11 +430,15 @@ class OutputGrid:
 
     def __repr__(self) -> str:
         return (
-            f"OutputGrid(lat=[{self.min_lat:.4f}, {self.max_lat:.4f}], "
+            f"GeographicGrid(lat=[{self.min_lat:.4f}, {self.max_lat:.4f}], "
             f"lon=[{self.min_lon:.4f}, {self.max_lon:.4f}], "
             f"size={self.rows}x{self.cols}, "
             f"res=({self.pixel_size_lat:.6f}, {self.pixel_size_lon:.6f}))"
         )
+
+
+# Backwards-compatible alias
+OutputGrid = GeographicGrid
 
 
 @processor_version('0.1.0')
@@ -448,7 +452,7 @@ class Orthorectifier(ImageTransform):
 
     Algorithm
     ---------
-    1. Define output grid (``OutputGrid``) with geographic bounds and resolution.
+    1. Define output grid (``GeographicGrid``) with geographic bounds and resolution.
     2. For each output pixel, compute the corresponding source pixel location
        via ``geolocation.latlon_to_image()`` (inverse transform).
     3. Resample source data at those fractional pixel locations using
@@ -461,7 +465,7 @@ class Orthorectifier(ImageTransform):
     ----------
     geolocation : Geolocation
         Source image geolocation (provides latlon_to_image).
-    output_grid : OutputGrid
+    output_grid : GeographicGrid
         Specification of the output geographic grid.
     interpolation : str
         Resampling method: 'nearest', 'bilinear', or 'bicubic'.
@@ -472,14 +476,14 @@ class Orthorectifier(ImageTransform):
 
     >>> from grdl.IO import BIOMASSL1Reader
     >>> from grdl.geolocation.sar.gcp import GCPGeolocation
-    >>> from grdl.image_processing import Orthorectifier, OutputGrid
+    >>> from grdl.image_processing import Orthorectifier, GeographicGrid
     >>>
     >>> with BIOMASSL1Reader('product_dir') as reader:
     ...     geo = GCPGeolocation(
     ...         reader.metadata['gcps'],
     ...         (reader.metadata['rows'], reader.metadata['cols']),
     ...     )
-    ...     grid = OutputGrid.from_geolocation(geo, 0.001, 0.001)
+    ...     grid = GeographicGrid.from_geolocation(geo, 0.001, 0.001)
     ...     ortho = Orthorectifier(geo, grid)
     ...     result = ortho.apply_from_reader(reader, bands=[0])
     """
@@ -505,7 +509,7 @@ class Orthorectifier(ImageTransform):
         output_grid : OutputGridProtocol
             Output grid specification defining bounds and resolution.
             Any object satisfying ``OutputGridProtocol`` (e.g.
-            ``OutputGrid``, ``ENUGrid``).
+            ``GeographicGrid``, ``ENUGrid``).
         interpolation : str, default='bilinear'
             Resampling method. One of 'nearest', 'bilinear', 'bicubic'.
         elevation : ElevationModel, optional
@@ -648,15 +652,15 @@ class Orthorectifier(ImageTransform):
         if self.elevation is not None:
             heights = self.elevation.get_elevation(lats_flat, lons_flat)
             heights = np.where(np.isfinite(heights), heights, 0.0)
+            coords = np.column_stack([lats_flat, lons_flat, heights])
         else:
-            heights = 0.0
-
-        sr, sc = self.geolocation.latlon_to_image(
-            lats_flat, lons_flat, height=heights,
-        )
+            # No ortho-level DEM — pass (N, 2) so the geolocation
+            # object uses its own DEM / default HAE internally.
+            coords = np.column_stack([lats_flat, lons_flat])
+        src_px = self.geolocation.latlon_to_image(coords)
         return (
-            sr.reshape(n_rows, grid.cols),
-            sc.reshape(n_rows, grid.cols),
+            src_px[:, 0].reshape(n_rows, grid.cols),
+            src_px[:, 1].reshape(n_rows, grid.cols),
         )
 
     def _compute_mapping_parallel(
@@ -751,6 +755,7 @@ class Orthorectifier(ImageTransform):
         source: np.ndarray,
         nodata: float = 0.0,
         backend: str = 'auto',
+        source_origin: Optional[Tuple[int, int]] = None,
     ) -> np.ndarray:
         """
         Orthorectify a source image array.
@@ -770,6 +775,13 @@ class Orthorectifier(ImageTransform):
             Resampling backend: ``'auto'``, ``'torch_gpu'``,
             ``'torch'``, ``'numba'``, ``'scipy_parallel'``,
             ``'scipy'``.
+        source_origin : tuple[int, int], optional
+            ``(row_start, col_start)`` pixel offset of *source* within
+            the full image coordinate system used by the geolocation.
+            When provided, the cached mapping coordinates are shifted
+            to chip-relative indices and the valid mask is recomputed
+            against the chip dimensions.  This allows orthorectifying a
+            pre-read chip without re-reading from a reader.
 
         Returns
         -------
@@ -787,13 +799,32 @@ class Orthorectifier(ImageTransform):
         if self._source_rows is None:
             self.compute_mapping()
 
+        source_rows = self._source_rows
+        source_cols = self._source_cols
+        valid_mask = self._valid_mask
+
+        if source_origin is not None:
+            row_off, col_off = source_origin
+            source_rows = source_rows - row_off
+            source_cols = source_cols - col_off
+
+            chip_h = source.shape[-2] if source.ndim == 3 else source.shape[0]
+            chip_w = source.shape[-1] if source.ndim == 3 else source.shape[1]
+            valid_mask = (
+                valid_mask
+                & (source_rows >= 0)
+                & (source_rows < chip_h)
+                & (source_cols >= 0)
+                & (source_cols < chip_w)
+            )
+
         from grdl.image_processing.ortho.accelerated import resample
 
         return resample(
             source,
-            self._source_rows,
-            self._source_cols,
-            self._valid_mask,
+            source_rows,
+            source_cols,
+            valid_mask,
             order=self._order,
             nodata=nodata,
             backend=backend,

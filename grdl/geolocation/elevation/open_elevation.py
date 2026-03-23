@@ -37,7 +37,6 @@ Modified
 """
 
 # Standard library
-import glob
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
@@ -172,41 +171,40 @@ def _try_tiled_geotiff(
     geoid_path: Optional[str],
     location: Optional[Tuple[float, float]],
 ) -> Optional[ElevationModel]:
-    """Scan a directory for a GeoTIFF tile covering the location."""
-    if location is None:
-        logger.debug("No location given — cannot find tiled GeoTIFF")
+    """Scan a directory for GeoTIFF tiles and load as TiledGeoTIFFDEM.
+
+    Uses ``TiledGeoTIFFDEM`` which indexes all tiles in the directory
+    and seamlessly queries across tile boundaries with cross-tile
+    interpolation.
+    """
+    # Quick check: any .tif files present?
+    tif_files = list(dem_dir.rglob('*.tif'))
+    if not tif_files:
+        tif_files = list(dem_dir.rglob('*.tiff'))
+    if not tif_files:
         return None
 
-    lat, lon = location
-    lat_i = int(np.floor(lat))
-    lon_i = int(np.floor(lon))
+    try:
+        from grdl.geolocation.elevation.tiled_geotiff_dem import (
+            TiledGeoTIFFDEM,
+        )
+        model = TiledGeoTIFFDEM(str(dem_dir), geoid_path=geoid_path)
+        if model.tile_count == 0:
+            return None
 
-    # Build search patterns for common tile naming conventions:
-    # FABDEM: S27E029_FABDEM_V1-2.tif
-    # SRTM:  S27E029.tif, S27E029.hgt
-    # Copernicus: Copernicus_DSM_10_S27_00_E029_00.tif
-    ns = 'S' if lat_i < 0 else 'N'
-    ew = 'W' if lon_i < 0 else 'E'
-    lat_abs = abs(lat_i)
-    lon_abs = abs(lon_i)
+        # Verify coverage if location given
+        if location is not None:
+            h = model.get_elevation(location[0], location[1])
+            if np.isnan(h):
+                logger.debug(
+                    "TiledGeoTIFFDEM has no coverage at (%.2f, %.2f)",
+                    location[0], location[1])
+                return None
 
-    patterns = [
-        f"**/{ns}{lat_abs:02d}{ew}{lon_abs:03d}*.tif",
-        f"**/{ns}{lat_abs:02d}{ew}{lon_abs:03d}*.hgt",
-        f"**/Copernicus*{ns}{lat_abs:02d}*{ew}{lon_abs:03d}*.tif",
-    ]
-
-    for pattern in patterns:
-        matches = sorted(glob.glob(str(dem_dir / pattern), recursive=True))
-        if matches:
-            try:
-                from grdl.geolocation.elevation.geotiff_dem import GeoTIFFDEM
-                model = GeoTIFFDEM(matches[0], geoid_path=geoid_path)
-                logger.info("Loaded tiled DEM: %s", Path(matches[0]).name)
-                return model
-            except Exception as e:
-                logger.debug("Failed to open %s: %s", matches[0], e)
-
-    logger.debug("No tiled GeoTIFF for (%d, %d) in %s",
-                 lat_i, lon_i, dem_dir)
-    return None
+        logger.info("Loaded TiledGeoTIFFDEM: %d tiles from %s",
+                     model.tile_count, dem_dir)
+        return model
+    except Exception as e:
+        logger.debug("Failed to load TiledGeoTIFFDEM from %s: %s",
+                     dem_dir, e)
+        return None

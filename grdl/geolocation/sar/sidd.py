@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16  Add R/Rdot refinement via COAProjection when TimeCOAPoly
             and ARPPoly are available.
 2026-03-07
@@ -116,6 +117,8 @@ class SIDDGeolocation(Geolocation):
         ``'GeographicProjection'``, ``'CylindricalProjection'``).
     has_rdot : bool
         Whether R/Rdot refinement is active.
+    backend : str
+        Projection backend (always ``'native'`` for SIDD).
 
     Raises
     ------
@@ -140,6 +143,7 @@ class SIDDGeolocation(Geolocation):
         geoid_path: Optional[str] = None,
     ) -> None:
         self.metadata = metadata
+        self.backend = 'native'
 
         meas = metadata.measurement
         if meas is None:
@@ -170,23 +174,16 @@ class SIDDGeolocation(Geolocation):
         self._default_hae = 0.0
         if self.projection_type == 'PlaneProjection' and hasattr(self, '_srp'):
             # _srp is guaranteed set by _init_plane; derive HAE from it
-            _, _, _h = _ecef_to_geodetic(
-                np.array([self._srp[0]]),
-                np.array([self._srp[1]]),
-                np.array([self._srp[2]]),
-            )
-            self._default_hae = float(_h[0])
+            _geo = _ecef_to_geodetic(self._srp)
+            self._default_hae = float(_geo[2])
         else:
             pp = meas.plane_projection
             if pp is not None and pp.reference_point is not None:
                 rp_ecf = pp.reference_point.ecef
                 if rp_ecf is not None:
-                    _, _, _h = _ecef_to_geodetic(
-                        np.array([rp_ecf.x]),
-                        np.array([rp_ecf.y]),
-                        np.array([rp_ecf.z]),
-                    )
-                    self._default_hae = float(_h[0])
+                    _geo = _ecef_to_geodetic(
+                        np.array([rp_ecf.x, rp_ecf.y, rp_ecf.z]))
+                    self._default_hae = float(_geo[2])
 
         # R/Rdot refinement: requires TimeCOAPoly + ARPPoly
         self.has_rdot = False
@@ -195,10 +192,32 @@ class SIDDGeolocation(Geolocation):
         if refine:
             self._init_rdot_refinement(meas)
 
+        # When R/Rdot is active, _image_to_latlon_rdot_fwd passes
+        # self.elevation into image_to_ground_hae() which does per-point
+        # DEM iteration internally.  Also, _latlon_to_image_array handles
+        # DEM lookup when has_rdot is True.  Tell the base class not to
+        # add redundant DEM loops.
+        self._handles_dem_internally = self.has_rdot
+
         shape = (metadata.rows, metadata.cols)
         super().__init__(
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
         )
+
+    # ------------------------------------------------------------------
+    # Standardized public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def default_hae(self) -> float:
+        """Default height above ellipsoid from the measurement reference point.
+
+        Returns
+        -------
+        float
+            Reference point height above WGS-84 ellipsoid in meters.
+        """
+        return self._default_hae
 
     # ------------------------------------------------------------------
     # Initializers per projection type
@@ -290,14 +309,10 @@ class SIDDGeolocation(Geolocation):
 
         # Convert ECEF reference point to geodetic
         ecef = np.array([rp.ecef.x, rp.ecef.y, rp.ecef.z])
-        lat0, lon0, h0 = _ecef_to_geodetic(
-            np.array([ecef[0]]),
-            np.array([ecef[1]]),
-            np.array([ecef[2]]),
-        )
-        self._lat0 = float(lat0[0])
-        self._lon0 = float(lon0[0])
-        self._h0 = float(h0[0])
+        _geo = _ecef_to_geodetic(ecef)
+        self._lat0 = float(_geo[0])
+        self._lon0 = float(_geo[1])
+        self._h0 = float(_geo[2])
         self._r0 = float(rp.point.row)
         self._c0 = float(rp.point.col)
         # Sample spacing in arc-seconds
@@ -357,14 +372,10 @@ class SIDDGeolocation(Geolocation):
         # compute from inflated WGS-84 ellipsoid at reference point.
         # (Section 2.8: "If a cylinder radius is not supplied, then a
         #  radius is computed by an inflated ellipsoid.")
-        lat0, _, h0 = _ecef_to_geodetic(
-            np.array([self._srp[0]]),
-            np.array([self._srp[1]]),
-            np.array([self._srp[2]]),
-        )
-        sin_lat = np.sin(np.radians(lat0[0]))
+        _geo_cyl = _ecef_to_geodetic(self._srp)
+        sin_lat = np.sin(np.radians(_geo_cyl[0]))
         rc = _WGS84_A / np.sqrt(1.0 - _WGS84_E1_SQ * sin_lat ** 2)
-        self._rs = rc + float(h0[0])
+        self._rs = rc + float(_geo_cyl[2])
 
         # U' = Z_PGD = row_vec × col_vec (normal to the plane)
         self._u_prime = np.cross(self._row_vec, self._col_vec)
@@ -421,7 +432,7 @@ class SIDDGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinates to geographic coordinates.
 
@@ -433,7 +444,12 @@ class SIDDGeolocation(Geolocation):
         - **Grid only**: PlaneProjection / GGD / CGD (no R/Rdot).
         """
         if self.has_rdot:
-            hae = height if height != 0.0 else self._default_hae
+            if np.ndim(height) > 0:
+                h_arr = np.asarray(height, dtype=np.float64)
+                hae = float(np.mean(h_arr)) if np.any(h_arr != 0.0) \
+                    else self._default_hae
+            else:
+                hae = float(height) if height != 0.0 else self._default_hae
             return self._image_to_latlon_rdot_fwd(rows, cols, hae)
 
         if self.projection_type == 'PlaneProjection':
@@ -481,9 +497,22 @@ class SIDDGeolocation(Geolocation):
                 h_arr = np.full_like(lats, float(h))
             return self._latlon_to_image_rdot(lats, lons, h_arr)
 
-        # Grid-only path: use _default_hae when no explicit height given
-        h = height if (np.ndim(height) > 0 or height != 0.0) \
-            else self._default_hae
+        # Grid-only path: DEM → explicit height → _default_hae.
+        # Terrain height matters for PlaneProjection — a ground point
+        # at a different height than the reference plane projects to a
+        # different pixel.  Error scales with
+        # (h_terrain - h_plane) * tan(incidence_angle) / sample_spacing.
+        if np.ndim(height) > 0:
+            h = np.asarray(height, dtype=np.float64)
+        elif self.elevation is not None and height == 0.0:
+            h = self.elevation.get_elevation(lats, lons)
+            if isinstance(h, (int, float)):
+                h = np.full_like(lats, float(h))
+            nan_mask = np.isnan(h)
+            if np.any(nan_mask):
+                h[nan_mask] = self._default_hae
+        else:
+            h = height if height != 0.0 else self._default_hae
         if self.projection_type == 'PlaneProjection':
             return self._latlon_to_plane(lats, lons, h)
         elif self.projection_type == 'GeographicProjection':
@@ -535,8 +564,8 @@ class SIDDGeolocation(Geolocation):
         from grdl.geolocation.projection import image_to_ground_plane
 
         # Convert target geodetic to ECF
-        x, y, z = _geodetic_to_ecef(lats, lons, heights)
-        coords = np.column_stack([x, y, z])  # (N, 3) target ECF
+        coords = _geodetic_to_ecef(
+            np.column_stack([lats, lons, heights]))  # (N, 3) target ECF
 
         # Image plane parameters
         ref_point = self._srp                # (3,) ECF
@@ -628,7 +657,8 @@ class SIDDGeolocation(Geolocation):
             scp_ecf=self._scp_ecf,
             elevation_model=self.elevation,
         )
-        return _ecef_to_geodetic(gpp[:, 0], gpp[:, 1], gpp[:, 2])
+        geo = _ecef_to_geodetic(gpp)
+        return geo[:, 0], geo[:, 1], geo[:, 2]
 
     # ------------------------------------------------------------------
     # PGD (PlaneProjection)  — Section 3.2 / 3.3
@@ -654,7 +684,8 @@ class SIDDGeolocation(Geolocation):
         y = self._srp[1] + dr * self._row_vec[1] + dc * self._col_vec[1]
         z = self._srp[2] + dr * self._row_vec[2] + dc * self._col_vec[2]
 
-        return _ecef_to_geodetic(x, y, z)
+        geo = _ecef_to_geodetic(np.column_stack([x, y, z]))
+        return geo[:, 0], geo[:, 1], geo[:, 2]
 
     def _latlon_to_plane(
         self,
@@ -673,12 +704,12 @@ class SIDDGeolocation(Geolocation):
         else:
             h = np.asarray(height, dtype=np.float64)
 
-        x, y, z = _geodetic_to_ecef(lats, lons, h)
+        ecef = _geodetic_to_ecef(np.column_stack([lats, lons, h]))
 
         # Offset from reference point
-        dx = x - self._srp[0]
-        dy = y - self._srp[1]
-        dz = z - self._srp[2]
+        dx = ecef[:, 0] - self._srp[0]
+        dy = ecef[:, 1] - self._srp[1]
+        dz = ecef[:, 2] - self._srp[2]
 
         # Dot products with unit vectors
         dot_row = dx * self._row_vec[0] + dy * self._row_vec[1] + dz * self._row_vec[2]
@@ -767,7 +798,8 @@ class SIDDGeolocation(Geolocation):
              + self._rs * sin_t * self._col_vec[2]
              + self._rs * (cos_t - 1.0) * self._u_prime[2])
 
-        return _ecef_to_geodetic(x, y, z)
+        geo = _ecef_to_geodetic(np.column_stack([x, y, z]))
+        return geo[:, 0], geo[:, 1], geo[:, 2]
 
     def _latlon_to_cylindrical(
         self,
@@ -789,11 +821,11 @@ class SIDDGeolocation(Geolocation):
         else:
             h = np.asarray(height, dtype=np.float64)
 
-        x, y, z = _geodetic_to_ecef(lats, lons, h)
+        ecef = _geodetic_to_ecef(np.column_stack([lats, lons, h]))
 
-        dx = x - self._srp[0]
-        dy = y - self._srp[1]
-        dz = z - self._srp[2]
+        dx = ecef[:, 0] - self._srp[0]
+        dy = ecef[:, 1] - self._srp[1]
+        dz = ecef[:, 2] - self._srp[2]
 
         dot_row = dx * self._row_vec[0] + dy * self._row_vec[1] + dz * self._row_vec[2]
         cc = dx * self._col_vec[0] + dy * self._col_vec[1] + dz * self._col_vec[2]
@@ -811,13 +843,26 @@ class SIDDGeolocation(Geolocation):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_reader(cls, reader: object) -> 'SIDDGeolocation':
+    def from_reader(
+        cls,
+        reader: object,
+        refine: bool = True,
+        dem_path: Optional[str] = None,
+        geoid_path: Optional[str] = None,
+    ) -> 'SIDDGeolocation':
         """Create SIDDGeolocation from a SIDDReader.
 
         Parameters
         ----------
         reader : SIDDReader
             An open SIDD reader with populated metadata.
+        refine : bool, default=True
+            Enable R/Rdot refinement when TimeCOAPoly and ARPPoly
+            are available.
+        dem_path : str or Path, optional
+            Path to DEM/DTED data folder.
+        geoid_path : str or Path, optional
+            Path to geoid correction file (EGM96/EGM2008).
 
         Returns
         -------
@@ -844,4 +889,9 @@ class SIDDGeolocation(Geolocation):
             raise TypeError(
                 f"Expected SIDDReader, got {type(reader).__name__}"
             )
-        return cls(metadata=reader.metadata)
+        return cls(
+            metadata=reader.metadata,
+            refine=refine,
+            dem_path=dem_path,
+            geoid_path=geoid_path,
+        )

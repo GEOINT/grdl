@@ -182,7 +182,7 @@ class AffineGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinate arrays to WGS84 geographic coordinates.
 
@@ -195,9 +195,8 @@ class AffineGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid in meters. Applied uniformly to
-            all output points.
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid in meters.
 
         Returns
         -------
@@ -217,7 +216,10 @@ class AffineGeolocation(Geolocation):
             # pyproj with always_xy=True: input (x, y), output (lon, lat)
             lons, lats = self._to_wgs84.transform(xs, ys)
 
-        heights = np.full_like(lats, height)
+        if np.ndim(height) > 0:
+            heights = np.asarray(height, dtype=np.float64)
+        else:
+            heights = np.full_like(lats, float(height))
         return lats, lons, heights
 
     def _latlon_to_image_array(

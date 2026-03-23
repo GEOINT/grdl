@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 
 from grdl.image_processing.ortho.enu_grid import ENUGrid
-from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho.ortho import Orthorectifier, GeographicGrid
 from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 from grdl.geolocation.coordinates import geodetic_to_enu, enu_to_geodetic
 
@@ -44,6 +44,8 @@ class MockGeolocation:
     Maps pixel (row, col) to lat/lon via a simple affine:
         lat = center_lat + (nrows/2 - row) * pixel_deg
         lon = center_lon + (col - ncols/2) * pixel_deg
+
+    Supports both scalar (row, col) and stacked (N, 2) ndarray API.
     """
 
     def __init__(
@@ -61,20 +63,46 @@ class MockGeolocation:
         self.pixel_deg = pixel_deg
         self.shape = (nrows, ncols)
 
-    def image_to_latlon(self, row, col, height=0.0):
-        row = np.asarray(row, dtype=np.float64)
-        col = np.asarray(col, dtype=np.float64)
-        lat = self.center_lat + (self.nrows / 2.0 - row) * self.pixel_deg
-        lon = self.center_lon + (col - self.ncols / 2.0) * self.pixel_deg
-        h = np.full_like(lat, height if np.isscalar(height) else 0.0)
-        return lat, lon, h
+    def image_to_latlon(self, row_or_points, col=None, height=0.0):
+        if col is not None:
+            row = np.asarray(row_or_points, dtype=np.float64)
+            col = np.asarray(col, dtype=np.float64)
+            lat = self.center_lat + (self.nrows / 2.0 - row) * self.pixel_deg
+            lon = self.center_lon + (col - self.ncols / 2.0) * self.pixel_deg
+            h = np.full_like(lat, height if np.isscalar(height) else 0.0)
+            scalar = np.ndim(row) == 0
+            result = np.column_stack([np.atleast_1d(lat),
+                                      np.atleast_1d(lon),
+                                      np.atleast_1d(h)])
+            return result[0] if scalar else result
+        else:
+            pts = np.asarray(row_or_points, dtype=np.float64)
+            if pts.ndim == 1:
+                pts = pts.reshape(1, -1)
+            rows, cols = pts[:, 0], pts[:, 1]
+            lats = self.center_lat + (self.nrows / 2.0 - rows) * self.pixel_deg
+            lons = self.center_lon + (cols - self.ncols / 2.0) * self.pixel_deg
+            hs = np.full_like(lats, height)
+            return np.column_stack([lats, lons, hs])
 
-    def latlon_to_image(self, lat, lon, height=0.0):
-        lat = np.asarray(lat, dtype=np.float64)
-        lon = np.asarray(lon, dtype=np.float64)
-        row = self.nrows / 2.0 - (lat - self.center_lat) / self.pixel_deg
-        col = (lon - self.center_lon) / self.pixel_deg + self.ncols / 2.0
-        return row, col
+    def latlon_to_image(self, lat_or_points, lon=None, height=0.0):
+        if lon is not None:
+            lat = np.asarray(lat_or_points, dtype=np.float64)
+            lon = np.asarray(lon, dtype=np.float64)
+            row = self.nrows / 2.0 - (lat - self.center_lat) / self.pixel_deg
+            col = (lon - self.center_lon) / self.pixel_deg + self.ncols / 2.0
+            scalar = np.ndim(lat) == 0
+            result = np.column_stack([np.atleast_1d(row),
+                                      np.atleast_1d(col)])
+            return result[0] if scalar else result
+        else:
+            pts = np.asarray(lat_or_points, dtype=np.float64)
+            if pts.ndim == 1:
+                pts = pts.reshape(1, -1)
+            lats, lons = pts[:, 0], pts[:, 1]
+            rows = self.nrows / 2.0 - (lats - self.center_lat) / self.pixel_deg
+            cols = (lons - self.center_lon) / self.pixel_deg + self.ncols / 2.0
+            return np.column_stack([rows, cols])
 
     def get_bounds(self):
         """Return (min_lon, min_lat, max_lon, max_lat)."""
@@ -338,9 +366,9 @@ class TestOrthorectifierENU:
         )
 
     def test_metadata_latlon_grid(self):
-        """get_output_geolocation_metadata returns WGS84 for OutputGrid."""
+        """get_output_geolocation_metadata returns WGS84 for GeographicGrid."""
         geo = MockGeolocation(nrows=100, ncols=100)
-        grid = OutputGrid.from_geolocation(geo, 0.001, 0.001)
+        grid = GeographicGrid.from_geolocation(geo, 0.001, 0.001)
         ortho = Orthorectifier(
             geolocation=geo, output_grid=grid, interpolation='nearest',
         )

@@ -159,10 +159,10 @@ class TestRPCWithDEM:
 
         rows = np.array([4000.0, 5000.0, 6000.0])
         cols = np.array([4000.0, 5000.0, 6000.0])
-        lats, lons, heights = geo.image_to_latlon(rows, cols)
+        result = geo.image_to_latlon(np.column_stack([rows, cols]))
 
-        assert lats.shape == (3,)
-        np.testing.assert_allclose(heights, 200.0, atol=1.0)
+        assert result.shape == (3, 3)
+        np.testing.assert_allclose(result[:, 2], 200.0, atol=1.0)
 
 
 # ── RSM + DEM ────────────────────────────────────────────────────────
@@ -230,3 +230,40 @@ class TestBaseClassDEMDispatch:
             np.array([5000.0]), np.array([5000.0]), 0.0)
 
         assert heights[0] == pytest.approx(750.0, abs=1.0)
+
+    def test_handles_dem_internally_bypass(self, rpc_with_dem):
+        """When _handles_dem_internally is True, base class skips DEM loop."""
+        geo = RPCGeolocation(rpc_with_dem, shape=(10000, 10000))
+        dem = ConstantElevation(height=500.0)
+        geo.elevation = dem
+
+        # Simulate a subclass that handles DEM internally
+        geo._handles_dem_internally = True
+
+        # _image_to_latlon_with_dem should bypass DEM iteration
+        # and call _image_to_latlon_array directly with height=0
+        lats, lons, heights = geo._image_to_latlon_with_dem(
+            np.array([5000.0]), np.array([5000.0]), 0.0)
+
+        # Heights should NOT be 500 (DEM was bypassed)
+        lats2, lons2, h2 = geo._image_to_latlon_array(
+            np.array([5000.0]), np.array([5000.0]), 0.0)
+        np.testing.assert_allclose(lats, lats2)
+        np.testing.assert_allclose(lons, lons2)
+
+    def test_latlon_to_image_with_dem(self, rpc_with_dem):
+        """latlon_to_image should use DEM heights when elevation is set."""
+        geo = RPCGeolocation(rpc_with_dem, shape=(10000, 10000))
+        dem = ConstantElevation(height=400.0)
+        geo.elevation = dem
+
+        # Forward project to get a valid (lat, lon)
+        lat, lon, h = geo.image_to_latlon(5000, 5000)
+
+        # Inverse with DEM should use the DEM height
+        row, col = geo.latlon_to_image(lat, lon)
+
+        # Compare with explicit height=400
+        row_h, col_h = geo.latlon_to_image(lat, lon, 400.0)
+        assert row == pytest.approx(row_h, abs=0.5)
+        assert col == pytest.approx(col_h, abs=0.5)

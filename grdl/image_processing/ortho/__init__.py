@@ -39,10 +39,10 @@ Orthorectifier
 OutputGridProtocol
     ``@runtime_checkable`` ``Protocol`` defining the grid contract:
     ``rows``, ``cols``, ``image_to_latlon()``, ``latlon_to_image()``,
-    ``sub_grid()``.  Both ``OutputGrid`` and ``ENUGrid`` satisfy it.
-    Custom grids are accepted by ``Orthorectifier`` if they implement
-    this protocol.
-OutputGrid
+    ``sub_grid()``.  ``GeographicGrid``, ``ENUGrid``, ``UTMGrid``, and
+    ``WebMercatorGrid`` satisfy it.  Custom grids are accepted by
+    ``Orthorectifier`` if they implement this protocol.
+GeographicGrid
     WGS-84 geographic grid specification (bounds, pixel sizes, row/col
     counts).  Satisfies ``OutputGridProtocol``.  Supports
     ``from_geolocation()`` construction and ``sub_grid()`` extraction
@@ -93,7 +93,8 @@ Modified
 
 from grdl.image_processing.ortho.ortho import (
     Orthorectifier,
-    OutputGrid,
+    GeographicGrid,
+    OutputGrid,  # backwards-compatible alias
     OutputGridProtocol,
     validate_sub_grid_indices,
 )
@@ -106,12 +107,25 @@ from grdl.image_processing.ortho.ortho_builder import (
 from grdl.image_processing.ortho.resolution import compute_output_resolution
 from grdl.image_processing.ortho.accelerated import resample, detect_backend
 
+try:
+    from grdl.image_processing.ortho.utm_grid import UTMGrid
+except ImportError:
+    pass
+
+try:
+    from grdl.image_processing.ortho.web_mercator_grid import WebMercatorGrid
+except ImportError:
+    pass
+
 __all__ = [
     'Orthorectifier',
+    'GeographicGrid',
     'OutputGrid',
     'OutputGridProtocol',
     'validate_sub_grid_indices',
     'ENUGrid',
+    'UTMGrid',
+    'WebMercatorGrid',
     'OrthoBuilder',
     'OrthoResult',
     'orthorectify',

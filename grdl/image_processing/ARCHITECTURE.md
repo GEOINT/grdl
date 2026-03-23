@@ -32,8 +32,10 @@ image_processing/
 │
 ├── ortho/                   # Geometric correction / orthorectification
 │   ├── ortho.py             #   OutputGridProtocol, validate_sub_grid_indices,
-│   │                        #   OutputGrid, Orthorectifier
+│   │                        #   GeographicGrid (alias: OutputGrid), Orthorectifier
 │   ├── enu_grid.py          #   ENUGrid (satisfies OutputGridProtocol)
+│   ├── utm_grid.py          #   UTMGrid (satisfies OutputGridProtocol)
+│   ├── web_mercator_grid.py #   WebMercatorGrid (satisfies OutputGridProtocol)
 │   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult (builder + ROI + tiling)
 │   ├── accelerated.py       #   resample(), detect_backend() (multi-backend dispatch)
 │   └── resolution.py        #   compute_output_resolution (SICD, BIOMASS dispatch)
@@ -190,7 +192,7 @@ generic utilities at the application level.
 | Memory-efficient large output | `orthorectify(tile_size=2048)` |
 | ROI + tiling (composable) | `orthorectify(roi=(...), tile_size=2048)` |
 | ENU output in meters | `orthorectify(enu_grid=dict(pixel_size_m=1.0))` |
-| Low-level mapping + resample | `Orthorectifier` + `OutputGrid` (compute_mapping / apply) |
+| Low-level mapping + resample | `Orthorectifier` + `GeographicGrid` (compute_mapping / apply) |
 | Auto-compute output resolution | `compute_output_resolution(metadata)` |
 
 **`orthorectify()`** is the recommended entry point. It handles resolution
@@ -212,8 +214,8 @@ result = orthorectify(
 
 **Tiling** partitions the output grid using `grdl.data_prep.Tiler`,
 processes each tile independently (bounded mapping memory), and
-assembles into the full output array. Each tile's `OutputGrid` is
-extracted via `OutputGrid.sub_grid()`.
+assembles into the full output array. Each tile's `GeographicGrid` is
+extracted via `GeographicGrid.sub_grid()`.
 
 `OrthoBuilder` (fluent builder) is still available for advanced cases
 requiring partial configuration or builder reuse.
@@ -331,7 +333,7 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `PercentileStretch` | 1.0.0 | ENHANCE | all | plow, phigh |
 | `Orthorectifier` | 0.1.0 | GEOM_CORRECT | all | interpolation |
 | `OrthoBuilder` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, elevation, nodata |
-| `OutputGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` |
+| `GeographicGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` (alias: `OutputGrid`) |
 | `PauliDecomposition` | 0.1.0 | — | SAR | — |
 | `DualPolHAlpha` | 1.0.0 | — | SAR | window_size |
 | `CACFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |

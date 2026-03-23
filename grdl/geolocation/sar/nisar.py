@@ -209,12 +209,15 @@ class NISARGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel arrays to geographic arrays."""
         lats = self._lat_spline.ev(rows, cols)
         lons = self._lon_spline.ev(rows, cols)
-        heights = np.full_like(lats, height)
+        if np.ndim(height) > 0:
+            heights = np.asarray(height, dtype=np.float64)
+        else:
+            heights = np.full_like(lats, float(height))
         return lats, lons, heights
 
     def _latlon_to_image_array(

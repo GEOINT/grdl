@@ -84,7 +84,7 @@ with SICDReader('image.nitf') as reader:
 | | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
 | | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic` | |
 | **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, CSI, dominance features, detection models, CFAR detectors, image formation, processor versioning & metadata | Implemented |
-| | Ortho: `Orthorectifier`, `OutputGrid`, `ENUGrid`, accelerated resampling | |
+| | Ortho: `Orthorectifier`, `GeographicGrid`, `ENUGrid`, `UTMGrid`, `WebMercatorGrid`, accelerated resampling | |
 | | SAR: `SublookDecomposition`, `CSIProcessor`, `DominanceFeatures`, `compute_dominance`, `compute_sublook_entropy` | |
 | | Image Formation: `PolarFormatAlgorithm`, `RangeDopplerAlgorithm`, `FastBackProjection`, `StripmapPFA` | |
 | | Detection: `Detection`, `DetectionSet`, CFAR variants (CA, GO, SO, OS) | |
@@ -182,9 +182,11 @@ GRDL/
 │   │   ├── versioning.py            #   @processor_version, @processor_tags, DetectionInputSpec
 │   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
-│   │   │   ├── ortho.py             #   OutputGridProtocol, OutputGrid, Orthorectifier
+│   │   │   ├── ortho.py             #   OutputGridProtocol, GeographicGrid (alias: OutputGrid), Orthorectifier
 │   │   │   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult
 │   │   │   ├── enu_grid.py          #   ENUGrid (local East-North-Up grid)
+│   │   │   ├── utm_grid.py          #   UTMGrid (UTM projection grid)
+│   │   │   ├── web_mercator_grid.py #   WebMercatorGrid (Web Mercator projection grid)
 │   │   │   ├── accelerated.py       #   resample(), detect_backend() (accelerated resampling)
 │   │   │   └── resolution.py        #   compute_output_resolution (auto pixel spacing)
 │   │   ├── decomposition/
@@ -609,10 +611,10 @@ ortho = result.data                         # ndarray
 result.save_geotiff('ortho.tif')            # georeferenced output
 
 # Direct control: Orthorectifier for custom workflows
-from grdl.image_processing.ortho import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho import Orthorectifier, GeographicGrid
 
-grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001,
-                                   pixel_size_lon=0.001)
+grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001,
+                                       pixel_size_lon=0.001)
 ortho = Orthorectifier(geo, grid, interpolation='nearest', elevation=dem)
 ortho.compute_mapping()
 result = ortho.apply(image, nodata=np.nan)

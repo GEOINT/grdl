@@ -23,7 +23,9 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-22  Refactor public API to (N, M) stacked ndarray convention.
+            Add _handles_dem_internally bypass, _latlon_to_image_with_dem,
+            delegate _build_elevation_model to open_elevation.
 """
 
 from abc import ABC, abstractmethod
@@ -75,7 +77,21 @@ class Geolocation(ABC):
     Subclasses implement ``_image_to_latlon_array`` and ``_latlon_to_image_array``
     which operate on 1D numpy arrays. The public methods handle scalar/list/array
     dispatch automatically.
+
+    Subclasses whose sensor model already performs per-point DEM iteration
+    inside ``_image_to_latlon_array`` (e.g. SICD/SIDD R/Rdot via
+    ``image_to_ground_hae``) should set ``_handles_dem_internally = True``
+    so that the base-class wrapper does not add a redundant outer loop.
     """
+
+    _handles_dem_internally: bool = False
+    """If True, ``_image_to_latlon_array`` already queries ``self.elevation``
+    internally (e.g. via the R/Rdot projection engine).  The base-class
+    ``_image_to_latlon_with_dem`` wrapper will bypass its own DEM iteration
+    to avoid double lookups.  Subclasses that handle DEM in their own
+    projection loop should set this to True.  Subclasses that also handle
+    DEM in ``_latlon_to_image_array`` should also set this flag so that
+    ``_latlon_to_image_with_dem`` bypasses as well."""
 
     def __init__(
         self,
@@ -108,12 +124,28 @@ class Geolocation(ABC):
         if dem_path is not None:
             self.elevation = _build_elevation_model(dem_path, geoid_path)
 
+    @property
+    def default_hae(self) -> float:
+        """Default height above ellipsoid (meters) for this imagery.
+
+        Returns the scene reference height used when no explicit height
+        or DEM is provided.  Subclasses should override to return their
+        sensor-model-specific reference height (SCP HAE, reference
+        point height, average GCP height, etc.).
+
+        Returns
+        -------
+        float
+            Height above WGS-84 ellipsoid in meters.
+        """
+        return 0.0
+
     @abstractmethod
     def _image_to_latlon_array(
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Transform pixel coordinate arrays to geographic coordinate arrays.
@@ -127,8 +159,10 @@ class Geolocation(ABC):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters).  Scalar applies a
+            constant height to all points.  An array of shape ``(N,)``
+            provides per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -176,12 +210,13 @@ class Geolocation(ABC):
         max_iter: int = 5,
         tol: float = 0.5,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Project pixels to ground with iterative DEM refinement.
+        """Project pixels to ground with per-point iterative DEM refinement.
 
-        When an elevation model is configured, iterates:
-        project at current height → DEM lookup → re-project at DEM
-        height → converge.  This correctly handles height-dependent
-        projections (RPC, RSM, R/Rdot).
+        When an elevation model is configured, iterates per point:
+        project at current height → DEM lookup at that (lat, lon) →
+        re-project at DEM height → converge.  Each point tracks its
+        own height independently, correctly handling terrain variation
+        across the query.
 
         When no elevation model is configured, falls through to the
         subclass ``_image_to_latlon_array`` with the constant ``height``.
@@ -189,245 +224,254 @@ class Geolocation(ABC):
         Parameters
         ----------
         rows, cols : np.ndarray
-            Pixel coordinates (1D arrays).
+            Pixel coordinates (1D arrays of length N).
         height : float
-            Initial height above WGS-84 (meters).  Ignored when DEM
-            is configured.
+            Initial height above WGS-84 (meters).  Used as the starting
+            guess for all points when DEM is configured.
         max_iter : int
             Maximum DEM refinement iterations (default 5).
         tol : float
-            Height convergence tolerance (meters, default 0.5).
+            Height convergence tolerance in meters (default 0.5).
+            Iteration stops for a point once its height change is below
+            this threshold.
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) in WGS-84.
         """
-        if self.elevation is None:
+        if self.elevation is None or self._handles_dem_internally:
             return self._image_to_latlon_array(rows, cols, height)
 
-        # Iterative DEM refinement
-        current_h = height
+        n = len(rows)
+        h_arr = np.full(n, float(height))
+        converged = np.zeros(n, dtype=bool)
+
         for _ in range(max_iter):
-            lats, lons, heights = self._image_to_latlon_array(
-                rows, cols, current_h)
+            lats, lons, heights_out = self._image_to_latlon_array(
+                rows, cols, h_arr)
 
-            # Look up DEM heights at projected positions
-            dem_h = self.elevation.get_elevation(lats, lons)
+            # Per-point DEM lookup
+            dem_h = np.asarray(
+                self.elevation.get_elevation(lats, lons), dtype=np.float64)
+            if dem_h.ndim == 0:
+                dem_h = np.full(n, float(dem_h))
 
-            # Handle NaN DEM values (outside coverage)
-            if isinstance(dem_h, np.ndarray):
-                nan_mask = np.isnan(dem_h)
-                dem_h[nan_mask] = current_h
-                new_h = float(np.mean(dem_h))
-            else:
-                new_h = dem_h if not np.isnan(dem_h) else current_h
+            # Fill NaN (outside DEM coverage) with current height
+            nan_mask = np.isnan(dem_h)
+            dem_h[nan_mask] = h_arr[nan_mask]
 
-            if abs(new_h - current_h) < tol:
-                # Converged — final projection at DEM height
-                lats, lons, _ = self._image_to_latlon_array(
-                    rows, cols, new_h)
-                if isinstance(dem_h, np.ndarray):
-                    return lats, lons, dem_h
-                return lats, lons, np.full_like(lats, dem_h)
+            # Check per-point convergence
+            delta = np.abs(dem_h - h_arr)
+            newly_converged = delta < tol
+            converged |= newly_converged
 
-            current_h = new_h
+            h_arr = dem_h
 
-        # Return last iteration result with DEM heights
-        if isinstance(dem_h, np.ndarray):
-            return lats, lons, dem_h
-        return lats, lons, np.full_like(lats, dem_h)
+            if np.all(converged):
+                break
 
-    def image_to_latlon(
+        # Final projection at converged per-point heights
+        lats, lons, _ = self._image_to_latlon_array(rows, cols, h_arr)
+        return lats, lons, h_arr
+
+    def _latlon_to_image_with_dem(
         self,
-        row_or_points: Union[float, list, np.ndarray],
-        col: Optional[Union[float, list, np.ndarray]] = None,
-        height: float = 0.0
-    ) -> Union[Tuple[float, float, float],
-               Tuple[np.ndarray, np.ndarray, np.ndarray],
-               np.ndarray]:
-        """
-        Transform image coordinates to geographic coordinates.
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Project geographic coordinates to image with DEM height lookup.
 
-        Accepts three input forms:
-
-        - **Scalar:** ``image_to_latlon(row, col)`` returns ``(lat, lon, height)`` floats.
-        - **Separate arrays:** ``image_to_latlon(rows, cols)`` returns
-          ``(lats, lons, heights)`` tuple of arrays.
-        - **Stacked array:** ``image_to_latlon(points_2xN)`` returns ``(3, N)``
-          ndarray with rows ``[lats, lons, heights]``.
+        When an elevation model is configured (and the subclass does not
+        handle DEM internally), looks up the DEM height at each (lat, lon)
+        and passes per-point heights to the subclass.  No iteration is
+        needed because the caller already provides the ground position.
 
         Parameters
         ----------
-        row_or_points : float, list, np.ndarray
-            Row coordinate(s) when ``col`` is provided, or a ``(2, N)`` ndarray
-            of stacked ``[rows; cols]`` when ``col`` is None.
-        col : float, list, or np.ndarray, optional
-            Column coordinate(s). Omit to pass a ``(2, N)`` stacked array as
-            the first argument.
+        lats, lons : np.ndarray
+            Geographic coordinates (1D arrays of length N).
+        height : float or np.ndarray
+            Height above WGS-84 (meters).  Ignored when DEM is configured.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        if self.elevation is None or self._handles_dem_internally:
+            return self._latlon_to_image_array(lats, lons, height)
+
+        # Single DEM lookup — no iteration needed (lat/lon are known)
+        dem_h = np.asarray(
+            self.elevation.get_elevation(lats, lons), dtype=np.float64)
+        if dem_h.ndim == 0:
+            dem_h = np.full(len(lats), float(dem_h))
+
+        nan_mask = np.isnan(dem_h)
+        if np.any(nan_mask):
+            fill = (float(height) if np.ndim(height) == 0
+                    else self.default_hae)
+            dem_h[nan_mask] = fill
+
+        return self._latlon_to_image_array(lats, lons, dem_h)
+
+    def image_to_latlon(
+        self,
+        row_or_points: Union[float, np.ndarray],
+        col: Optional[float] = None,
+        height: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Transform image coordinates to geographic coordinates.
+
+        Parameters
+        ----------
+        row_or_points : float or np.ndarray
+            Scalar row when ``col`` is also provided, or an ``(N, 2)``
+            ndarray with columns ``[row, col]``.
+        col : float, optional
+            Scalar column.  Required when ``row_or_points`` is a scalar.
         height : float, default=0.0
             Height above WGS84 ellipsoid (meters). Ignored when a DEM
             elevation model is configured (``dem_path`` in constructor).
 
         Returns
         -------
-        Tuple[float, float, float]
-            ``(lat, lon, height)`` when scalar inputs are given.
-        Tuple[np.ndarray, np.ndarray, np.ndarray]
-            ``(lats, lons, heights)`` when separate array/list inputs are given.
         np.ndarray
-            Shape ``(3, N)`` when a ``(2, N)`` stacked array is given.
+            Shape ``(3,)`` for scalar input: ``[lat, lon, height]``.
+            Shape ``(N, 3)`` for array input: columns are
+            ``[lat, lon, height]``.
 
         Raises
         ------
         ValueError
-            If pixel coordinates are out of image bounds or input shape
-            is invalid.
+            If input shape is invalid.
         NotImplementedError
             If geolocation is not available.
 
         Examples
         --------
-        Single pixel:
+        Single pixel (returns shape ``(3,)``):
 
-        >>> lat, lon, h = geo.image_to_latlon(500, 1000)
+        >>> result = geo.image_to_latlon(500, 1000)
+        >>> lat, lon, h = result  # unpacking works
 
-        Separate arrays:
+        Stacked ``(N, 2)`` array (returns shape ``(N, 3)``):
 
-        >>> lats, lons, heights = geo.image_to_latlon(
-        ...     [100, 200, 300], [400, 500, 600]
-        ... )
-
-        Stacked (2, N) array:
-
-        >>> points = np.array([[100, 200, 300],   # rows
-        ...                    [400, 500, 600]])   # cols
-        >>> result = geo.image_to_latlon(points)   # (3, N)
+        >>> pixels = np.array([[100, 400],
+        ...                    [200, 500],
+        ...                    [300, 600]])
+        >>> result = geo.image_to_latlon(pixels)
+        >>> result[2]      # third point: [lat, lon, h]
+        >>> result[:, 0]   # all latitudes
         """
-        if col is None:
-            # (2, N) ndarray input
-            pts = np.asarray(row_or_points, dtype=np.float64)
-            if pts.ndim != 2 or pts.shape[0] != 2:
-                raise ValueError(
-                    f"Expected (2, N) array, got shape {pts.shape}"
-                )
-            rows_arr = pts[0]
-            cols_arr = pts[1]
-            lats, lons, heights = self._image_to_latlon_with_dem(
-                rows_arr, cols_arr, height
-            )
-            return np.vstack([lats, lons, heights])
-        elif _is_scalar(row_or_points) and _is_scalar(col):
-            # Scalar input
+        if col is not None:
+            # Scalar shorthand: image_to_latlon(row, col)
+            scalar = _is_scalar(row_or_points) and _is_scalar(col)
             rows_arr = _to_array(row_or_points)
             cols_arr = _to_array(col)
             lats, lons, heights = self._image_to_latlon_with_dem(
-                rows_arr, cols_arr, height
-            )
-            return (float(lats[0]), float(lons[0]), float(heights[0]))
+                rows_arr, cols_arr, height)
+            result = np.column_stack([lats, lons, heights])
+            return result[0] if scalar else result
         else:
-            # Separate array/list inputs
-            rows_arr = _to_array(row_or_points)
-            cols_arr = _to_array(col)
+            # Stacked (N, 2) array input
+            pts = np.asarray(row_or_points, dtype=np.float64)
+            if pts.ndim == 1:
+                pts = pts.reshape(1, -1)
+            if pts.ndim != 2 or pts.shape[1] < 2:
+                raise ValueError(
+                    f"Expected (N, 2) array, got shape {pts.shape}")
+            rows_arr = pts[:, 0]
+            cols_arr = pts[:, 1]
             lats, lons, heights = self._image_to_latlon_with_dem(
-                rows_arr, cols_arr, height
-            )
-            return lats, lons, heights
+                rows_arr, cols_arr, height)
+            return np.column_stack([lats, lons, heights])
 
     def latlon_to_image(
         self,
-        lat_or_points: Union[float, list, np.ndarray],
-        lon: Optional[Union[float, list, np.ndarray]] = None,
-        height: Union[float, np.ndarray] = 0.0
-    ) -> Union[Tuple[float, float], Tuple[np.ndarray, np.ndarray], np.ndarray]:
+        lat_or_points: Union[float, np.ndarray],
+        lon: Optional[float] = None,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> np.ndarray:
         """
         Transform geographic coordinates to image coordinates.
 
-        Accepts three input forms:
-
-        - **Scalar:** ``latlon_to_image(lat, lon)`` returns ``(row, col)`` floats.
-        - **Separate arrays:** ``latlon_to_image(lats, lons)`` returns
-          ``(rows, cols)`` tuple of arrays.
-        - **Stacked array:** ``latlon_to_image(points_2xN)`` returns ``(2, N)``
-          ndarray with rows ``[rows, cols]``.
-
         Parameters
         ----------
-        lat_or_points : float, list, np.ndarray
-            Latitude(s) when ``lon`` is provided, or a ``(2, N)`` ndarray
-            of stacked ``[lats; lons]`` when ``lon`` is None.
-        lon : float, list, or np.ndarray, optional
-            Longitude(s). Omit to pass a ``(2, N)`` stacked array as
-            the first argument.
+        lat_or_points : float or np.ndarray
+            Scalar latitude when ``lon`` is also provided, or an ndarray
+            of shape ``(N, 2)`` with columns ``[lat, lon]``, or
+            ``(N, 3)`` with columns ``[lat, lon, height]`` (height
+            column overrides the ``height`` parameter).
+        lon : float, optional
+            Scalar longitude.  Required when ``lat_or_points`` is a scalar.
         height : float or np.ndarray, default=0.0
-            Height above WGS84 ellipsoid (meters). Scalar applies a
-            constant height to all points. An array of shape ``(N,)``
-            provides per-point heights for terrain-corrected projection.
+            Height above WGS84 ellipsoid (meters). Ignored when
+            ``lat_or_points`` has 3 columns or when a DEM is configured.
 
         Returns
         -------
-        Tuple[float, float]
-            ``(row, col)`` when scalar inputs are given.
-        Tuple[np.ndarray, np.ndarray]
-            ``(rows, cols)`` when separate array/list inputs are given.
         np.ndarray
-            Shape ``(2, N)`` when a ``(2, N)`` stacked array is given.
+            Shape ``(2,)`` for scalar input: ``[row, col]``.
+            Shape ``(N, 2)`` for array input: columns are ``[row, col]``.
 
         Raises
         ------
         ValueError
-            If geographic coordinates are outside image footprint or input
-            shape is invalid.
+            If input shape is invalid.
         NotImplementedError
             If geolocation is not available.
 
         Examples
         --------
-        Single point:
+        Single point (returns shape ``(2,)``):
 
-        >>> row, col = geo.latlon_to_image(-31.05, 116.19)
+        >>> result = geo.latlon_to_image(-31.05, 116.19)
+        >>> row, col = result  # unpacking works
 
-        Separate arrays:
+        Stacked ``(N, 2)`` without height:
 
-        >>> rows, cols = geo.latlon_to_image(
-        ...     [-31.0, -31.1, -31.2], [116.1, 116.2, 116.3]
-        ... )
+        >>> coords = np.array([[-31.0, 116.1],
+        ...                    [-31.1, 116.2]])
+        >>> result = geo.latlon_to_image(coords)  # (N, 2)
 
-        Stacked (2, N) array:
+        Stacked ``(N, 3)`` with embedded height:
 
-        >>> coords = np.array([[-31.0, -31.1, -31.2],   # lats
-        ...                    [116.1, 116.2, 116.3]])   # lons
-        >>> result = geo.latlon_to_image(coords)          # (2, N)
+        >>> coords = np.array([[-31.0, 116.1, 500.0],
+        ...                    [-31.1, 116.2, 520.0]])
+        >>> result = geo.latlon_to_image(coords)  # (N, 2)
+
+        Round-trip with ``image_to_latlon`` output:
+
+        >>> geo_pts = geo.image_to_latlon(pixels)   # (N, 3)
+        >>> px_back = geo.latlon_to_image(geo_pts)   # (N, 2)
         """
-        if lon is None:
-            # (2, N) ndarray input
-            pts = np.asarray(lat_or_points, dtype=np.float64)
-            if pts.ndim != 2 or pts.shape[0] != 2:
-                raise ValueError(
-                    f"Expected (2, N) array, got shape {pts.shape}"
-                )
-            lats_arr = pts[0]
-            lons_arr = pts[1]
-            rows, cols = self._latlon_to_image_array(
-                lats_arr, lons_arr, height
-            )
-            return np.vstack([rows, cols])
-        elif _is_scalar(lat_or_points) and _is_scalar(lon):
-            # Scalar input
+        if lon is not None:
+            # Scalar shorthand: latlon_to_image(lat, lon)
+            scalar = _is_scalar(lat_or_points) and _is_scalar(lon)
             lats_arr = _to_array(lat_or_points)
             lons_arr = _to_array(lon)
-            rows, cols = self._latlon_to_image_array(
-                lats_arr, lons_arr, height
-            )
-            return (float(rows[0]), float(cols[0]))
+            rows, cols = self._latlon_to_image_with_dem(
+                lats_arr, lons_arr, height)
+            result = np.column_stack([rows, cols])
+            return result[0] if scalar else result
         else:
-            # Separate array/list inputs
-            lats_arr = _to_array(lat_or_points)
-            lons_arr = _to_array(lon)
-            rows, cols = self._latlon_to_image_array(
-                lats_arr, lons_arr, height
-            )
-            return rows, cols
+            # Stacked (N, 2) or (N, 3) array input
+            pts = np.asarray(lat_or_points, dtype=np.float64)
+            if pts.ndim == 1:
+                pts = pts.reshape(1, -1)
+            if pts.ndim != 2 or pts.shape[1] < 2:
+                raise ValueError(
+                    f"Expected (N, 2) or (N, 3) array, got shape {pts.shape}")
+            lats_arr = pts[:, 0]
+            lons_arr = pts[:, 1]
+            h = pts[:, 2] if pts.shape[1] >= 3 else height
+            rows, cols = self._latlon_to_image_with_dem(
+                lats_arr, lons_arr, h)
+            return np.column_stack([rows, cols])
 
     def get_footprint(self) -> Dict[str, Any]:
         """
@@ -454,7 +498,10 @@ class Geolocation(ABC):
                 self.shape, samples_per_edge=10
             )
 
-            lats, lons, _ = self.image_to_latlon(sample_rows, sample_cols)
+            result = self.image_to_latlon(
+                np.column_stack([sample_rows, sample_cols]))
+            lats = result[:, 0]
+            lons = result[:, 1]
 
             # Filter out any NaN values from outside coverage area
             valid = ~(np.isnan(lats) | np.isnan(lons))
@@ -537,7 +584,7 @@ class NoGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Raise NotImplementedError - no geolocation available."""
         raise NotImplementedError(
@@ -594,15 +641,9 @@ def _build_elevation_model(
     ImportError
         If required dependencies are not installed.
     """
-    from pathlib import Path
+    from grdl.geolocation.elevation.open_elevation import open_elevation
 
-    dem_path = Path(dem_path)
-    if not dem_path.exists():
-        raise FileNotFoundError(f"DEM path does not exist: {dem_path}")
-
-    if dem_path.is_dir():
-        from grdl.geolocation.elevation.dted import DTEDElevation
-        return DTEDElevation(dem_path, geoid_path)
-    else:
-        from grdl.geolocation.elevation.geotiff_dem import GeoTIFFDEM
-        return GeoTIFFDEM(dem_path, geoid_path)
+    return open_elevation(
+        str(dem_path),
+        geoid_path=str(geoid_path) if geoid_path else None,
+    )

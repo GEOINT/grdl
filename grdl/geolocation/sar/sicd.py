@@ -33,6 +33,7 @@ Created
 
 Modified
 --------
+2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16  Add native R/Rdot backend via COAProjection.
 2026-02-17  height param broadened to Union[float, np.ndarray] for DEM support.
 2026-02-11  Fixed from_reader() to prefer sarpy for projection even when
@@ -207,6 +208,12 @@ class SICDGeolocation(Geolocation):
         except (ValueError, AttributeError):
             pass  # Missing Grid/Position metadata — native unavailable
 
+        # When the native R/Rdot engine is available, it passes
+        # self.elevation directly into image_to_ground_hae() which does
+        # correct per-point DEM iteration.  Tell the base class not to
+        # add a redundant outer DEM loop.
+        self._handles_dem_internally = self._coa_proj is not None
+
         if backend == 'sarpy':
             self._sarpy_meta = raw_meta
         elif backend == 'sarkit':
@@ -219,11 +226,48 @@ class SICDGeolocation(Geolocation):
             return float(self.metadata.geo_data.scp.llh.hae)
         scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
         from grdl.geolocation.coordinates import ecef_to_geodetic
-        _, _, h = ecef_to_geodetic(
-            np.array([scp_ecf[0]]),
-            np.array([scp_ecf[1]]),
-            np.array([scp_ecf[2]]))
-        return float(h[0])
+        geo = ecef_to_geodetic(scp_ecf)
+        return float(geo[2])
+
+    # ------------------------------------------------------------------
+    # Standardized public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def default_hae(self) -> float:
+        """Default height above ellipsoid from the Scene Center Point.
+
+        Returns
+        -------
+        float
+            SCP height above WGS-84 ellipsoid in meters.
+        """
+        return self._get_scp_hae()
+
+    @property
+    def projection_type(self) -> str:
+        """Projection model type.
+
+        SICD always uses the R/Rdot (Range-Doppler) sensor model.
+
+        Returns
+        -------
+        str
+            ``'R/Rdot'``
+        """
+        return 'R/Rdot'
+
+    @property
+    def has_rdot(self) -> bool:
+        """Whether R/Rdot projection is active and functional.
+
+        Returns
+        -------
+        bool
+            True when the native COAProjection or sarpy backend is
+            available for R/Rdot geolocation.
+        """
+        return self._coa_proj is not None or self.backend == 'sarpy'
 
     # ------------------------------------------------------------------
     # Native R/Rdot backend
@@ -250,7 +294,7 @@ class SICDGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Project image coordinates to ground via native R/Rdot engine.
 
@@ -260,8 +304,10 @@ class SICDGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters).  When
+            ``self.elevation`` is set, this serves as the initial guess
+            for the R/Rdot DEM iteration.
 
         Returns
         -------
@@ -274,8 +320,16 @@ class SICDGeolocation(Geolocation):
         im_points = np.column_stack([rows, cols])
         scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
 
-        # Default HAE: SCP height (never 0 for real scenes)
-        hae = height if height != 0.0 else self._get_scp_hae()
+        # Default HAE: SCP height (never 0 for real scenes).
+        # When height is an array, use the mean as the initial HAE
+        # for the R/Rdot engine (it does its own per-point DEM
+        # iteration internally when self.elevation is set).
+        if np.ndim(height) > 0:
+            h_arr = np.asarray(height, dtype=np.float64)
+            hae = float(np.mean(h_arr)) if np.any(h_arr != 0.0) \
+                else self._get_scp_hae()
+        else:
+            hae = float(height) if height != 0.0 else self._get_scp_hae()
 
         gpp = image_to_ground_hae(
             self._coa_proj,
@@ -285,8 +339,8 @@ class SICDGeolocation(Geolocation):
             elevation_model=self.elevation,
         )
 
-        lats, lons, heights = ecef_to_geodetic(
-            gpp[:, 0], gpp[:, 1], gpp[:, 2])
+        geo = ecef_to_geodetic(gpp)
+        lats, lons, heights = geo[:, 0], geo[:, 1], geo[:, 2]
 
         return lats, lons, heights
 
@@ -339,8 +393,8 @@ class SICDGeolocation(Geolocation):
             heights_arr = np.full_like(lats, self._get_scp_hae())
 
         # Convert to ECF (height is embedded)
-        x, y, z = geodetic_to_ecef(lats, lons, heights_arr)
-        coords = np.column_stack([x, y, z])
+        coords = geodetic_to_ecef(
+            np.column_stack([lats, lons, heights_arr]))
 
         # Image plane parameters
         grid = self.metadata.grid
@@ -410,7 +464,7 @@ class SICDGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinate arrays to geographic coordinate arrays.
 
@@ -425,8 +479,12 @@ class SICDGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid (meters).
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid (meters).  Scalar applies a
+            constant height to all points.  An array of shape ``(N,)``
+            provides per-point heights.  When ``self.elevation`` is set,
+            the R/Rdot engine uses the DEM directly and this parameter
+            serves as the initial guess.
 
         Returns
         -------
@@ -480,7 +538,7 @@ class SICDGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Project image coordinates to ground via sarpy."""
         from sarpy.geometry.point_projection import image_to_ground_geo
@@ -524,7 +582,7 @@ class SICDGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Project image coordinates to ground via sarkit."""
         raise NotImplementedError(

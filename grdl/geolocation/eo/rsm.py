@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 """
 
 # Standard library
@@ -145,8 +145,8 @@ def _rsm_evaluate(
     """
     if ground_domain_type == 'R':
         # Rectangular: convert to ECEF first
-        ex, ey, ez = geodetic_to_ecef(lats, lons, heights)
-        x_raw, y_raw, z_raw = ex, ey, ez
+        ecef = geodetic_to_ecef(np.column_stack([lats, lons, heights]))
+        x_raw, y_raw, z_raw = ecef[:, 0], ecef[:, 1], ecef[:, 2]
     else:
         # Geodetic (G or H): per RSMIDA spec (STDI-0002 Vol 1 App U,
         # Section 5.3), x=longitude, y=latitude, z=height.
@@ -269,12 +269,11 @@ class RSMGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Image → ground: iterative Newton-Raphson inversion.
 
-        At a fixed HAE, finds (lat, lon) such that
-        ``RSM(lat, lon, hae) ≈ (row, col)``.
+        Finds (lat, lon) such that ``RSM(lat, lon, h) ≈ (row, col)``.
 
         Parameters
         ----------
@@ -282,8 +281,10 @@ class RSMGeolocation(Geolocation):
             Row pixel coordinates, shape ``(N,)``.
         cols : np.ndarray
             Column pixel coordinates, shape ``(N,)``.
-        height : float
-            Target height above WGS-84 (meters).
+        height : float or np.ndarray
+            Height above WGS-84 (meters).  Scalar applies a constant
+            height to all points.  An array of shape ``(N,)`` provides
+            per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -292,25 +293,24 @@ class RSMGeolocation(Geolocation):
         """
         n = len(rows)
         rsm = self.rsm
-        hae = float(height)
 
         # Initial guess from RSM normalization center
         if self._ground_domain == 'R':
             # ECEF center — convert to geodetic for initial guess
-            init_lats, init_lons, init_h = ecef_to_geodetic(
-                np.array([rsm.x_off]),
-                np.array([rsm.y_off]),
-                np.array([rsm.z_off]),
-            )
-            lats = np.full(n, float(init_lats[0]))
-            lons = np.full(n, float(init_lons[0]))
+            init_geo = ecef_to_geodetic(
+                np.array([rsm.x_off, rsm.y_off, rsm.z_off]))
+            lats = np.full(n, float(init_geo[0]))
+            lons = np.full(n, float(init_geo[1]))
         else:
             # Geodetic (G or H): x_off = longitude (radians),
             # y_off = latitude (radians). Convert to degrees.
             lats = np.full(n, np.rad2deg(rsm.y_off))
             lons = np.full(n, np.rad2deg(rsm.x_off))
 
-        h_arr = np.full(n, hae)
+        if np.ndim(height) > 0:
+            h_arr = np.asarray(height, dtype=np.float64)
+        else:
+            h_arr = np.full(n, float(height))
 
         # Finite difference steps (degrees)
         if self._ground_domain == 'R':
@@ -355,8 +355,7 @@ class RSMGeolocation(Geolocation):
             lats += d_lat
             lons += d_lon
 
-        heights = np.full(n, hae)
-        return lats, lons, heights
+        return lats, lons, h_arr.copy()
 
     @classmethod
     def from_reader(cls, reader: object) -> 'RSMGeolocation':

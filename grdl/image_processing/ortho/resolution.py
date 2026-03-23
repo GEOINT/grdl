@@ -41,8 +41,7 @@ if TYPE_CHECKING:
     from grdl.geolocation.base import Geolocation
 
 
-# Earth constant for latitude-to-meters conversion
-_METERS_PER_DEG_LAT = 111_320.0
+from grdl.geolocation.coordinates import meters_per_degree
 
 
 def compute_output_resolution(
@@ -409,7 +408,7 @@ def _get_center_latitude(
         try:
             center_row = geolocation.shape[0] // 2
             center_col = geolocation.shape[1] // 2
-            lat, _, _ = geolocation.image_to_latlon(center_row, center_col)
+            lat = geolocation.image_to_latlon(center_row, center_col)[0]
             return lat
         except (ValueError, NotImplementedError):
             pass
@@ -422,21 +421,24 @@ def _meters_to_degrees(
 ) -> Tuple[float, float]:
     """Convert a ground spacing in meters to ``(lat_deg, lon_deg)``.
 
+    Uses WGS-84 ellipsoidal radii of curvature for accurate conversion
+    at all latitudes.
+
     Parameters
     ----------
     spacing_m : float
         Ground spacing in meters.
     center_lat : float
-        Scene-center latitude for longitude scaling.
+        Scene-center latitude for latitude/longitude scaling.
 
     Returns
     -------
     Tuple[float, float]
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.
     """
-    pixel_size_lat = spacing_m / _METERS_PER_DEG_LAT
-    cos_lat = np.cos(np.radians(center_lat))
-    if cos_lat < 0.01:
-        cos_lat = 1.0  # near-pole guard
-    pixel_size_lon = spacing_m / (_METERS_PER_DEG_LAT * cos_lat)
+    m_lat, m_lon = meters_per_degree(center_lat)
+    pixel_size_lat = spacing_m / m_lat
+    if m_lon < m_lat * 0.01:
+        m_lon = m_lat  # near-pole guard
+    pixel_size_lon = spacing_m / m_lon
     return pixel_size_lat, pixel_size_lon

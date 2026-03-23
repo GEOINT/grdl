@@ -6,7 +6,7 @@ Orchestrates reader, geolocation, resolution computation, output grid
 construction, terrain-corrected orthorectification, and optional GeoTIFF
 output.  Works with any ``ImageReader`` and ``Geolocation`` subclass.
 
-Supports both WGS-84 geographic grids (``OutputGrid``) and local ENU
+Supports both WGS-84 geographic grids (``GeographicGrid``) and local ENU
 (East-North-Up) grids in meters (``ENUGrid``) via ``with_enu_grid()``.
 Tiled processing is available via ``with_tile_size()`` for memory-
 efficient handling of large output grids.
@@ -50,7 +50,7 @@ import numpy as np
 
 # GRDL internal
 from grdl.exceptions import DependencyError
-from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho.ortho import Orthorectifier, GeographicGrid
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class OrthoResult:
     data : np.ndarray
         Orthorectified image.  Shape ``(rows, cols)`` or
         ``(bands, rows, cols)``.
-    output_grid : OutputGrid
+    output_grid : GeographicGrid
         Grid specification for the output.
     geolocation_metadata : Dict[str, Any]
         CRS, affine transform, bounds, and pixel sizes.
@@ -83,7 +83,7 @@ class OrthoResult:
     def __init__(
         self,
         data: np.ndarray,
-        output_grid: OutputGrid,
+        output_grid: GeographicGrid,
         geolocation_metadata: Dict[str, Any],
         orthorectifier: Orthorectifier,
     ) -> None:
@@ -221,7 +221,7 @@ class OrthoBuilder:
         self._metadata: Optional[Any] = None
         self._geolocation: Optional['Geolocation'] = None
         self._elevation: Optional['ElevationModel'] = None
-        self._output_grid: Optional[OutputGrid] = None
+        self._output_grid: Optional[GeographicGrid] = None
         self._pixel_size_lat: Optional[float] = None
         self._pixel_size_lon: Optional[float] = None
         self._interpolation: str = 'bilinear'
@@ -310,12 +310,12 @@ class OrthoBuilder:
         self._elevation = elevation
         return self
 
-    def with_output_grid(self, grid: OutputGrid) -> 'OrthoBuilder':
+    def with_output_grid(self, grid: GeographicGrid) -> 'OrthoBuilder':
         """Set an explicit output grid (overrides auto-computation).
 
         Parameters
         ----------
-        grid : OutputGrid
+        grid : GeographicGrid
             Pre-built output grid.
 
         Returns
@@ -614,12 +614,12 @@ class OrthoBuilder:
             orthorectifier=ortho,
         )
 
-    def _resolve_output_grid(self) -> OutputGrid:
+    def _resolve_output_grid(self) -> GeographicGrid:
         """Determine the output grid from explicit or auto-computed settings.
 
         Returns
         -------
-        OutputGrid
+        GeographicGrid
             Resolved output grid.
 
         Raises
@@ -667,9 +667,9 @@ class OrthoBuilder:
 
         if self._roi_bounds is not None:
             min_lat, max_lat, min_lon, max_lon = self._roi_bounds
-            return OutputGrid(min_lat, max_lat, min_lon, max_lon, psl, psn)
+            return GeographicGrid(min_lat, max_lat, min_lon, max_lon, psl, psn)
 
-        return OutputGrid.from_geolocation(
+        return GeographicGrid.from_geolocation(
             self._geolocation,
             pixel_size_lat=psl,
             pixel_size_lon=psn,
@@ -802,7 +802,7 @@ def orthorectify(
     source_array: Optional[np.ndarray] = None,
     metadata: Optional[Any] = None,
     elevation: Optional['ElevationModel'] = None,
-    output_grid: Optional['OutputGrid'] = None,
+    output_grid: Optional['GeographicGrid'] = None,
     resolution: Optional[Tuple[float, float]] = None,
     interpolation: str = 'bilinear',
     bands: Optional[List[int]] = None,
@@ -831,7 +831,7 @@ def orthorectify(
         Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
     elevation : ElevationModel, optional
         DEM for terrain correction.
-    output_grid : OutputGrid or ENUGrid, optional
+    output_grid : GeographicGrid or ENUGrid, optional
         Explicit output grid.  Overrides auto-computation.
     resolution : (float, float), optional
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.

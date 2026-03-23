@@ -51,6 +51,48 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
+### DEM / Elevation Ownership
+
+**The geolocation object owns the DEM. The orthorectifier does not.**
+
+The `Geolocation` object (SICD, SIDD, RPC, etc.) is responsible for all coordinate transforms including terrain correction. Attach the DEM to `geo.elevation` and let the geolocation use it internally in its R/Rdot iteration. The orthorectifier maps coordinates *through* the geolocation object — it should not query DEM separately or pass a redundant `elevation=` parameter.
+
+```python
+# CORRECT: DEM lives on the geolocation object
+geo = SICDGeolocation.from_reader(reader, backend='native')
+geo.elevation = open_elevation(dted_path, geoid_path=geoid_path, ...)
+
+result = orthorectify(
+    geolocation=geo,       # geo.elevation handles terrain internally
+    reader=reader,
+    output_grid=grid,
+)
+```
+
+```python
+# WRONG: passing DEM to both geolocation AND orthorectifier
+geo.elevation = dem
+result = orthorectify(
+    geolocation=geo,
+    elevation=dem,         # DO NOT — creates double DEM lookup
+    ...
+)
+```
+
+```python
+# WRONG: passing DEM only to orthorectifier, not geolocation
+result = orthorectify(
+    geolocation=geo,       # geo.elevation is None — R/Rdot has no terrain
+    elevation=dem,         # orthorectifier queries DEM, but geolocation ignores it
+    ...
+)
+```
+
+**Why this matters:**
+- SICD's native R/Rdot inverse checks `self.elevation` first and queries DEM directly — it ignores explicit height arrays when its own DEM is set.
+- SIDD's R/Rdot inverse uses `self.elevation` when the caller passes `height=0.0`.
+- Passing DEM to both creates a double lookup (wasteful). Passing DEM only to the orthorectifier bypasses the geolocation's terrain-corrected R/Rdot iteration entirely.
+
 ### API Style: Functions and Constructors over Fluent Chaining
 
 GRDL targets scientific Python developers who expect the NumPy/SciPy calling convention. **Prefer plain functions and constructors with keyword arguments** over fluent builder / method-chaining patterns.
@@ -336,9 +378,11 @@ GRDL/
       versioning.py          # @processor_version, @processor_tags
       pipeline.py            # Pipeline (sequential transform composition)
       ortho/                 # Orthorectification
-        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, OutputGrid, Orthorectifier
+        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, GeographicGrid (alias: OutputGrid), Orthorectifier
         ortho_builder.py     # OrthoBuilder, OrthoResult
         enu_grid.py          # ENUGrid (local East-North-Up grid)
+        utm_grid.py          # UTMGrid (UTM projection grid)
+        web_mercator_grid.py # WebMercatorGrid (Web Mercator projection grid)
         accelerated.py       # resample(), detect_backend()
         resolution.py        # compute_output_resolution (auto pixel spacing from metadata)
       decomposition/         # Polarimetric decomposition
