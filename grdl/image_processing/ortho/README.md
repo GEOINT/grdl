@@ -66,9 +66,9 @@ result = orthorectify(
 Low-level class for custom workflows. Compute the mapping once, then resample multiple images or bands.
 
 ```python
-from grdl.image_processing.ortho import Orthorectifier, OutputGrid
+from grdl.image_processing.ortho import Orthorectifier, GeographicGrid
 
-grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001, pixel_size_lon=0.001)
+grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001, pixel_size_lon=0.001)
 ortho = Orthorectifier(geo, grid, interpolation='bilinear', elevation=dem)
 ortho.compute_mapping()
 
@@ -78,18 +78,18 @@ band2 = ortho.apply(image_band2, nodata=np.nan)
 
 ## Output Grids
 
-### OutputGrid (WGS-84 degrees)
+### GeographicGrid (WGS-84 degrees)
 
-Geographic grid with lat/lon bounds and degree-per-pixel spacing.
+Geographic grid with lat/lon bounds and degree-per-pixel spacing. (`OutputGrid` is a backwards-compatible alias.)
 
 ```python
-from grdl.image_processing.ortho import OutputGrid
+from grdl.image_processing.ortho import GeographicGrid
 
 # From geolocation footprint
-grid = OutputGrid.from_geolocation(geo, pixel_size_lat=0.001, pixel_size_lon=0.001)
+grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001, pixel_size_lon=0.001)
 
 # Explicit bounds
-grid = OutputGrid(
+grid = GeographicGrid(
     min_lat=36.0, max_lat=37.0,
     min_lon=-75.5, max_lon=-74.5,
     pixel_size_lat=0.001, pixel_size_lon=0.001,
@@ -105,7 +105,7 @@ tile = grid.sub_grid(row_start=0, col_start=0, row_end=512, col_end=512)
 
 ### ENUGrid (local meters)
 
-Local East-North-Up grid centered on a WGS-84 reference point. Bounds and pixel sizes in meters. Drop-in replacement for OutputGrid.
+Local East-North-Up grid centered on a WGS-84 reference point. Bounds and pixel sizes in meters. Drop-in replacement for GeographicGrid.
 
 ```python
 from grdl.image_processing.ortho import ENUGrid
@@ -121,16 +121,54 @@ grid = ENUGrid(
     pixel_size_east=1.0, pixel_size_north=1.0,
 )
 
-# Same interface as OutputGrid
+# Same interface as GeographicGrid
 lat, lon = grid.image_to_latlon(row, col)
 row, col = grid.latlon_to_image(lat, lon)
 ```
 
-**Grid convention (both types):** Row 0 = north edge (top), increases southward. Column 0 = west edge (left), increases eastward.
+### UTMGrid (UTM projection)
+
+UTM projection grid with automatic zone detection. Bounds and pixel sizes in meters within a UTM zone.
+
+```python
+from grdl.image_processing.ortho import UTMGrid
+
+# From geolocation footprint (auto-detects UTM zone)
+grid = UTMGrid.from_geolocation(geo, pixel_size_m=1.0)
+
+# Explicit bounds in UTM coordinates
+grid = UTMGrid(
+    zone=18, northern=True,
+    min_easting=300000, max_easting=310000,
+    min_northing=3990000, max_northing=4000000,
+    pixel_size_easting=1.0, pixel_size_northing=1.0,
+)
+
+# Same interface as GeographicGrid
+lat, lon = grid.image_to_latlon(row, col)
+row, col = grid.latlon_to_image(lat, lon)
+```
+
+### WebMercatorGrid (EPSG:3857)
+
+Web Mercator grid compatible with web mapping tile systems. Bounds and pixel sizes in Web Mercator meters.
+
+```python
+from grdl.image_processing.ortho import WebMercatorGrid
+
+# From geolocation footprint
+grid = WebMercatorGrid.from_geolocation(geo, pixel_size_m=1.0)
+
+# Same interface as GeographicGrid
+lat, lon = grid.image_to_latlon(row, col)
+row, col = grid.latlon_to_image(lat, lon)
+```
+
+**Grid convention (all grid types):** Row 0 = north edge (top), increases southward. Column 0 = west edge (left), increases eastward.
 
 ### OutputGridProtocol
 
-Both `OutputGrid` and `ENUGrid` satisfy `OutputGridProtocol`, a `@runtime_checkable` `Protocol` that formalises the grid contract. Custom grids are accepted by `Orthorectifier` as long as they implement:
+`GeographicGrid`, `ENUGrid`, `UTMGrid`, and `WebMercatorGrid` all satisfy `OutputGridProtocol`, a `@runtime_checkable` `Protocol` that formalises the grid contract. Custom grids are accepted by `Orthorectifier` as long as they implement:
 
 ```python
 from grdl.image_processing.ortho import OutputGridProtocol
@@ -208,7 +246,7 @@ Returned by `orthorectify()`:
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `data` | `np.ndarray` | Orthorectified image |
-| `output_grid` | `OutputGrid` or `ENUGrid` | The grid used |
+| `output_grid` | `GeographicGrid`, `ENUGrid`, `UTMGrid`, or `WebMercatorGrid` | The grid used |
 | `geolocation_metadata` | `dict` | CRS, affine transform, bounds |
 | `orthorectifier` | `Orthorectifier` | Cached mapping for reuse |
 
@@ -228,7 +266,7 @@ Must implement (see `OutputGridProtocol`):
 - `latlon_to_image(lat, lon) -> (row, col)` — geographic to pixel
 - `sub_grid(row_start, col_start, row_end, col_end) -> grid` — tile extraction
 
-Both `OutputGrid` and `ENUGrid` satisfy this protocol.
+All grid types (`GeographicGrid`, `ENUGrid`, `UTMGrid`, `WebMercatorGrid`) satisfy this protocol.
 
 ### Geolocation (required)
 

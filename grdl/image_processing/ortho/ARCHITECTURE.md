@@ -6,8 +6,10 @@
 ortho/
   __init__.py          Public API re-exports
   ortho.py             OutputGridProtocol, validate_sub_grid_indices,
-                       OutputGrid, Orthorectifier (core mapping + resampling)
+                       GeographicGrid (alias: OutputGrid), Orthorectifier (core mapping + resampling)
   enu_grid.py          ENUGrid (local meters grid, satisfies OutputGridProtocol)
+  utm_grid.py          UTMGrid (UTM projection grid, satisfies OutputGridProtocol)
+  web_mercator_grid.py WebMercatorGrid (Web Mercator projection grid, satisfies OutputGridProtocol)
   ortho_builder.py     OrthoBuilder (builder), OrthoResult (output container)
   accelerated.py       Multi-backend resampling dispatch (numba/torch/scipy)
   resolution.py        Auto-compute output pixel spacing from metadata
@@ -22,10 +24,23 @@ OutputGridProtocol (Protocol, runtime_checkable)
   ├── latlon_to_image(lat, lon)
   └── sub_grid(row_start, col_start, row_end, col_end)
 
-OutputGrid                     WGS-84 degree grid (satisfies OutputGridProtocol)
+GeographicGrid                 WGS-84 degree grid (satisfies OutputGridProtocol)
   ├── from_geolocation()       Factory from geolocation footprint
   ├── image_to_latlon()        Grid pixel → lat/lon
   ├── latlon_to_image()        lat/lon → grid pixel
+  └── sub_grid()               Tile extraction (via validate_sub_grid_indices)
+  (OutputGrid is a backwards-compatible alias for GeographicGrid)
+
+UTMGrid                        UTM projection grid (satisfies OutputGridProtocol)
+  ├── from_geolocation()       Factory from geolocation footprint
+  ├── image_to_latlon()        Grid pixel → UTM → geodetic
+  ├── latlon_to_image()        Geodetic → UTM → grid pixel
+  └── sub_grid()               Tile extraction (via validate_sub_grid_indices)
+
+WebMercatorGrid                Web Mercator grid (satisfies OutputGridProtocol)
+  ├── from_geolocation()       Factory from geolocation footprint
+  ├── image_to_latlon()        Grid pixel → Web Mercator → geodetic
+  ├── latlon_to_image()        Geodetic → Web Mercator → grid pixel
   └── sub_grid()               Tile extraction (via validate_sub_grid_indices)
 
 ENUGrid                        ENU meters grid (satisfies OutputGridProtocol)
@@ -53,7 +68,7 @@ OrthoBuilder                  Builder-pattern orchestrator (advanced use)
 
 OrthoResult                    Output container
   ├── data                     Orthorectified ndarray
-  ├── output_grid              Grid used (OutputGrid or ENUGrid)
+  ├── output_grid              Grid used (GeographicGrid, ENUGrid, UTMGrid, or WebMercatorGrid)
   └── save_geotiff()           Write georeferenced GeoTIFF
 
 validate_sub_grid_indices()    Shared bounds validation for sub_grid()
@@ -69,8 +84,8 @@ OrthoBuilder.run()
   ├── 1. Resolve output grid (any OutputGridProtocol)
   │     ├── Explicit grid? → use it
   │     ├── ENU params? → construct ENUGrid
-  │     ├── Explicit resolution? → OutputGrid.from_geolocation(geo, res)
-  │     └── Auto-resolve → compute_output_resolution(metadata) → OutputGrid
+  │     ├── Explicit resolution? → GeographicGrid.from_geolocation(geo, res)
+  │     └── Auto-resolve → compute_output_resolution(metadata) → GeographicGrid
   │
   ├── 2. Create Orthorectifier(geo, grid, interp, elevation)
   │
@@ -149,7 +164,7 @@ Fallback rules:
 
 ## Grid Interface Contract
 
-Both ``OutputGrid`` and ``ENUGrid`` satisfy ``OutputGridProtocol``
+``GeographicGrid``, ``ENUGrid``, ``UTMGrid``, and ``WebMercatorGrid`` all satisfy ``OutputGridProtocol``
 (a ``@runtime_checkable`` ``Protocol``).  ``Orthorectifier`` type-hints
 its ``output_grid`` parameter as ``OutputGridProtocol``, so any custom
 grid that implements the protocol is accepted.
@@ -168,8 +183,10 @@ Both grids delegate ``sub_grid`` validation to the shared
 ``validate_sub_grid_indices()`` helper (bounds checks, empty-region
 checks) to avoid duplicated logic.
 
-**OutputGrid** stores bounds in degrees and uses linear interpolation.
+**GeographicGrid** stores bounds in degrees and uses linear interpolation.
 **ENUGrid** stores bounds in meters and converts via `geodetic_to_enu` / `enu_to_geodetic`.
+**UTMGrid** stores bounds in UTM meters and converts via UTM projection.
+**WebMercatorGrid** stores bounds in Web Mercator meters and converts via EPSG:3857 projection.
 
 ## External Dependencies
 
@@ -223,17 +240,17 @@ All paths convert meters to degrees via `spacing_m / 111320` (lat) and
 
 2. **Mapping is cached.** `compute_mapping()` stores `source_rows`, `source_cols`, `valid_mask` on the Orthorectifier. Multiple calls to `apply()` reuse the same mapping (e.g., different bands, different images on the same grid).
 
-3. **Grid objects are value types.** OutputGrid and ENUGrid carry no mutable state. They define a coordinate system and can be shared freely.
+3. **Grid objects are value types.** GeographicGrid, ENUGrid, UTMGrid, and WebMercatorGrid carry no mutable state. They define a coordinate system and can be shared freely.
 
 4. **DEM integrates at mapping time, not resampling time.** Terrain heights are looked up once during `compute_mapping()` and baked into the source coordinates. The resampler sees only 2D fractional pixel coordinates.
 
 5. **Backend dispatch is transparent.** `resample()` auto-detects the best backend. User code is identical regardless of whether numba, torch, or scipy runs underneath.
 
-6. **Grid contract is a Protocol, not an ABC.** `OutputGridProtocol` formalises the shared interface (`rows`, `cols`, `image_to_latlon`, `latlon_to_image`, `sub_grid`) without requiring inheritance. Both `OutputGrid` and `ENUGrid` satisfy it structurally. Custom grids are accepted by `Orthorectifier` as long as they implement the protocol.
+6. **Grid contract is a Protocol, not an ABC.** `OutputGridProtocol` formalises the shared interface (`rows`, `cols`, `image_to_latlon`, `latlon_to_image`, `sub_grid`) without requiring inheritance. `GeographicGrid`, `ENUGrid`, `UTMGrid`, and `WebMercatorGrid` all satisfy it structurally. Custom grids are accepted by `Orthorectifier` as long as they implement the protocol.
 
 7. **Single mapping core.** `_compute_strip()` is the only place that implements grid→latlon→DEM→source-pixel logic. Sequential mapping calls it once for the full grid; parallel mapping calls it per row-chunk in a thread pool. `_finalize_mapping()` handles validation and caching. Changes to the mapping algorithm (e.g., DEM handling) need to be made in one place only.
 
-8. **Shared validation.** `validate_sub_grid_indices()` centralises the bounds-checking logic used by both `OutputGrid.sub_grid()` and `ENUGrid.sub_grid()`, preventing drift between the two implementations.
+8. **Shared validation.** `validate_sub_grid_indices()` centralises the bounds-checking logic used by `GeographicGrid.sub_grid()`, `ENUGrid.sub_grid()`, `UTMGrid.sub_grid()`, and `WebMercatorGrid.sub_grid()`, preventing drift between implementations.
 
 ## Examples
 

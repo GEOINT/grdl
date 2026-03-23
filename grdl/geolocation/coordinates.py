@@ -6,8 +6,9 @@ Provides vectorized NumPy-based coordinate conversions between geodetic
 (latitude, longitude, height), ECEF (Earth-Centered Earth-Fixed), and
 ENU (East-North-Up) coordinate systems on the WGS-84 ellipsoid.
 
-All functions accept scalar or array inputs and operate entirely in
-NumPy (no external geodesy libraries required).
+All functions accept stacked (N, 3) arrays and return stacked (N, 3)
+arrays.  Scalar inputs (1D arrays of length 3) return 1D arrays of
+length 3.
 
 Author
 ------
@@ -26,10 +27,10 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-22  Refactor to (N, M) stacked ndarray convention.
 """
 
-from typing import Tuple
+from typing import Union
 
 import numpy as np
 
@@ -50,26 +51,32 @@ WGS84_E2_SQ = (WGS84_A ** 2 - WGS84_B ** 2) / WGS84_B ** 2  # second ecc sq
 # ===================================================================
 
 def geodetic_to_ecef(
-    lats: np.ndarray,
-    lons: np.ndarray,
-    heights: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points: np.ndarray,
+) -> np.ndarray:
     """Convert geodetic (lat, lon, height) to ECEF (X, Y, Z).
 
     Parameters
     ----------
-    lats : np.ndarray
-        Latitudes in degrees.
-    lons : np.ndarray
-        Longitudes in degrees.
-    heights : np.ndarray
-        Heights above WGS-84 ellipsoid in meters.
+    points : np.ndarray
+        Geodetic coordinates.  Shape ``(N, 3)`` with columns
+        ``[lat_deg, lon_deg, height_m]``, or shape ``(3,)`` for a
+        single point.
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (X, Y, Z) ECEF coordinates in meters.
+    np.ndarray
+        ECEF coordinates in meters.  Shape ``(N, 3)`` with columns
+        ``[X, Y, Z]``, or shape ``(3,)`` for scalar input.
     """
+    pts = np.asarray(points, dtype=np.float64)
+    scalar = pts.ndim == 1
+    if scalar:
+        pts = pts.reshape(1, -1)
+
+    lats = pts[:, 0]
+    lons = pts[:, 1]
+    heights = pts[:, 2]
+
     lat_rad = np.radians(lats)
     lon_rad = np.radians(lons)
     sin_lat = np.sin(lat_rad)
@@ -84,24 +91,24 @@ def geodetic_to_ecef(
     y = (rc + heights) * cos_lat * sin_lon
     z = ((WGS84_B ** 2 / WGS84_A ** 2) * rc + heights) * sin_lat
 
-    return x, y, z
+    result = np.column_stack([x, y, z])
+    return result[0] if scalar else result
 
 
 def ecef_to_geodetic(
-    x: np.ndarray,
-    y: np.ndarray,
-    z: np.ndarray,
+    points: np.ndarray,
     max_iter: int = 10,
     tol: float = 1e-12,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> np.ndarray:
     """Convert ECEF (X, Y, Z) to geodetic (lat, lon, height).
 
     Uses the iterative method from SIDD standard Section 3.7.
 
     Parameters
     ----------
-    x, y, z : np.ndarray
-        ECEF coordinates in meters.
+    points : np.ndarray
+        ECEF coordinates in meters.  Shape ``(N, 3)`` with columns
+        ``[X, Y, Z]``, or shape ``(3,)`` for a single point.
     max_iter : int
         Maximum iterations for latitude convergence.
     tol : float
@@ -109,9 +116,20 @@ def ecef_to_geodetic(
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (lats, lons, heights) in degrees and meters.
+    np.ndarray
+        Geodetic coordinates.  Shape ``(N, 3)`` with columns
+        ``[lat_deg, lon_deg, height_m]``, or shape ``(3,)`` for
+        scalar input.
     """
+    pts = np.asarray(points, dtype=np.float64)
+    scalar = pts.ndim == 1
+    if scalar:
+        pts = pts.reshape(1, -1)
+
+    x = pts[:, 0]
+    y = pts[:, 1]
+    z = pts[:, 2]
+
     lon = np.arctan2(y, x)
 
     dxy = np.sqrt(x ** 2 + y ** 2)
@@ -148,7 +166,8 @@ def ecef_to_geodetic(
         ) - (WGS84_B ** 2 / WGS84_A ** 2) * rc
     height = np.where(np.abs(cos_lat) > 1e-10, h_equatorial, h_polar)
 
-    return np.degrees(lat), np.degrees(lon), height
+    result = np.column_stack([np.degrees(lat), np.degrees(lon), height])
+    return result[0] if scalar else result
 
 
 # ===================================================================
@@ -156,53 +175,44 @@ def ecef_to_geodetic(
 # ===================================================================
 
 def geodetic_to_enu(
-    lats: np.ndarray,
-    lons: np.ndarray,
-    heights: np.ndarray,
-    ref_lat: float,
-    ref_lon: float,
-    ref_alt: float = 0.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points: np.ndarray,
+    ref: np.ndarray,
+) -> np.ndarray:
     """Convert geodetic coordinates to ENU relative to a reference point.
 
     Parameters
     ----------
-    lats : np.ndarray
-        Target latitudes in degrees.
-    lons : np.ndarray
-        Target longitudes in degrees.
-    heights : np.ndarray
-        Target heights above WGS-84 ellipsoid in meters.
-    ref_lat : float
-        Reference point latitude in degrees.
-    ref_lon : float
-        Reference point longitude in degrees.
-    ref_alt : float
-        Reference point altitude in meters HAE.
+    points : np.ndarray
+        Target geodetic coordinates.  Shape ``(N, 3)`` with columns
+        ``[lat_deg, lon_deg, height_m]``, or shape ``(3,)`` for a
+        single point.
+    ref : np.ndarray
+        Reference point ``[lat_deg, lon_deg, alt_m]``, shape ``(3,)``.
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (east, north, up) in meters.
+    np.ndarray
+        ENU displacements in meters.  Shape ``(N, 3)`` with columns
+        ``[east, north, up]``, or shape ``(3,)`` for scalar input.
     """
-    lats = np.asarray(lats, dtype=np.float64)
-    lons = np.asarray(lons, dtype=np.float64)
-    heights = np.asarray(heights, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float64)
+    ref = np.asarray(ref, dtype=np.float64)
+    scalar = pts.ndim == 1
+    if scalar:
+        pts = pts.reshape(1, -1)
 
     # Convert to ECEF
-    tx, ty, tz = geodetic_to_ecef(lats, lons, heights)
-    rx, ry, rz = geodetic_to_ecef(
-        np.float64(ref_lat), np.float64(ref_lon), np.float64(ref_alt),
-    )
+    target_ecef = geodetic_to_ecef(pts)
+    ref_ecef = geodetic_to_ecef(ref)
 
     # Difference in ECEF
-    dx = tx - rx
-    dy = ty - ry
-    dz = tz - rz
+    dx = target_ecef[:, 0] - ref_ecef[0]
+    dy = target_ecef[:, 1] - ref_ecef[1]
+    dz = target_ecef[:, 2] - ref_ecef[2]
 
     # Rotation matrix from ECEF to ENU
-    lat_r = np.radians(ref_lat)
-    lon_r = np.radians(ref_lon)
+    lat_r = np.radians(ref[0])
+    lon_r = np.radians(ref[1])
     sin_lat = np.sin(lat_r)
     cos_lat = np.cos(lat_r)
     sin_lon = np.sin(lon_r)
@@ -212,46 +222,44 @@ def geodetic_to_enu(
     north = -sin_lat * cos_lon * dx - sin_lat * sin_lon * dy + cos_lat * dz
     up = cos_lat * cos_lon * dx + cos_lat * sin_lon * dy + sin_lat * dz
 
-    return east, north, up
+    result = np.column_stack([east, north, up])
+    return result[0] if scalar else result
 
 
 def enu_to_geodetic(
-    east: np.ndarray,
-    north: np.ndarray,
-    up: np.ndarray,
-    ref_lat: float,
-    ref_lon: float,
-    ref_alt: float = 0.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points: np.ndarray,
+    ref: np.ndarray,
+) -> np.ndarray:
     """Convert ENU coordinates to geodetic relative to a reference point.
 
     Parameters
     ----------
-    east : np.ndarray
-        East displacement in meters.
-    north : np.ndarray
-        North displacement in meters.
-    up : np.ndarray
-        Up displacement in meters.
-    ref_lat : float
-        Reference point latitude in degrees.
-    ref_lon : float
-        Reference point longitude in degrees.
-    ref_alt : float
-        Reference point altitude in meters HAE.
+    points : np.ndarray
+        ENU displacements in meters.  Shape ``(N, 3)`` with columns
+        ``[east, north, up]``, or shape ``(3,)`` for a single point.
+    ref : np.ndarray
+        Reference point ``[lat_deg, lon_deg, alt_m]``, shape ``(3,)``.
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        (lats, lons, heights) in degrees and meters.
+    np.ndarray
+        Geodetic coordinates.  Shape ``(N, 3)`` with columns
+        ``[lat_deg, lon_deg, height_m]``, or shape ``(3,)`` for
+        scalar input.
     """
-    east = np.asarray(east, dtype=np.float64)
-    north = np.asarray(north, dtype=np.float64)
-    up = np.asarray(up, dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float64)
+    ref = np.asarray(ref, dtype=np.float64)
+    scalar = pts.ndim == 1
+    if scalar:
+        pts = pts.reshape(1, -1)
+
+    east = pts[:, 0]
+    north = pts[:, 1]
+    up = pts[:, 2]
 
     # Inverse rotation: ENU -> ECEF difference
-    lat_r = np.radians(ref_lat)
-    lon_r = np.radians(ref_lon)
+    lat_r = np.radians(ref[0])
+    lon_r = np.radians(ref[1])
     sin_lat = np.sin(lat_r)
     cos_lat = np.cos(lat_r)
     sin_lon = np.sin(lon_r)
@@ -262,8 +270,51 @@ def enu_to_geodetic(
     dz = cos_lat * north + sin_lat * up
 
     # Add reference ECEF
-    rx, ry, rz = geodetic_to_ecef(
-        np.float64(ref_lat), np.float64(ref_lon), np.float64(ref_alt),
-    )
+    ref_ecef = geodetic_to_ecef(ref)
 
-    return ecef_to_geodetic(dx + rx, dy + ry, dz + rz)
+    ecef = np.column_stack([dx + ref_ecef[0], dy + ref_ecef[1],
+                            dz + ref_ecef[2]])
+    result = ecef_to_geodetic(ecef)
+    return result[0] if scalar else result
+
+
+# ===================================================================
+# Ellipsoidal meters-per-degree
+# ===================================================================
+
+def meters_per_degree(lat: Union[float, np.ndarray]) -> np.ndarray:
+    """WGS-84 ellipsoidal meters-per-degree at a given latitude.
+
+    Uses the meridional (M) and prime-vertical (N) radii of curvature
+    on the WGS-84 ellipsoid for exact conversion, replacing the common
+    spherical approximation of 111320 m/deg.
+
+    Parameters
+    ----------
+    lat : float or np.ndarray
+        Geodetic latitude(s) in degrees.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(2,)`` for scalar input: ``[meters_per_deg_lat,
+        meters_per_deg_lon]``.  Shape ``(N, 2)`` for array input.
+    """
+    lat_arr = np.asarray(lat, dtype=np.float64)
+    scalar = lat_arr.ndim == 0
+    lat_arr = np.atleast_1d(lat_arr)
+
+    lat_rad = np.radians(lat_arr)
+    sin2 = np.sin(lat_rad) ** 2
+    cos_lat = np.cos(lat_rad)
+
+    # Meridional radius of curvature (north-south)
+    M = WGS84_A * (1.0 - WGS84_E1_SQ) / (1.0 - WGS84_E1_SQ * sin2) ** 1.5
+    # Prime vertical radius of curvature (east-west)
+    N = WGS84_A / (1.0 - WGS84_E1_SQ * sin2) ** 0.5
+
+    m_lat = M * np.pi / 180.0
+    m_lon = N * cos_lat * np.pi / 180.0
+
+    result = np.column_stack([m_lat, m_lon])
+    return result[0] if scalar else result

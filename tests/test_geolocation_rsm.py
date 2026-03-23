@@ -246,9 +246,17 @@ class TestRSMGeolocation:
         geo = RSMGeolocation(quadratic_rsm, shape=(10000, 10000))
         lats = np.array([37.8, 38.0, 38.2])
         lons = np.array([-77.2, -77.0, -76.8])
+        heights = np.full(3, 200.0)
 
-        rows, cols = geo.latlon_to_image(lats, lons, 200.0)
-        lats2, lons2, _ = geo.image_to_latlon(rows, cols, 200.0)
+        inv_result = geo.latlon_to_image(
+            np.column_stack([lats, lons, heights]))
+        assert inv_result.shape == (3, 2)
+        rows, cols = inv_result[:, 0], inv_result[:, 1]
+
+        fwd_result = geo.image_to_latlon(
+            np.column_stack([rows, cols]), height=200.0)
+        assert fwd_result.shape == (3, 3)
+        lats2, lons2 = fwd_result[:, 0], fwd_result[:, 1]
 
         np.testing.assert_allclose(lats2, lats, atol=1e-4)
         np.testing.assert_allclose(lons2, lons, atol=1e-4)

@@ -20,21 +20,17 @@ class TestGeodeticECEF:
 
     def test_origin_on_equator_prime_meridian(self):
         """Lat=0, lon=0, h=0 → X=a, Y=0, Z=0."""
-        x, y, z = _geodetic_to_ecef(
-            np.array([0.0]), np.array([0.0]), np.array([0.0])
-        )
-        assert abs(x[0] - 6378137.0) < 0.01
-        assert abs(y[0]) < 0.01
-        assert abs(z[0]) < 0.01
+        ecef = _geodetic_to_ecef(np.array([0.0, 0.0, 0.0]))
+        assert abs(ecef[0] - 6378137.0) < 0.01
+        assert abs(ecef[1]) < 0.01
+        assert abs(ecef[2]) < 0.01
 
     def test_north_pole(self):
         """Lat=90, lon=0, h=0 → X≈0, Y=0, Z≈b."""
-        x, y, z = _geodetic_to_ecef(
-            np.array([90.0]), np.array([0.0]), np.array([0.0])
-        )
-        assert abs(x[0]) < 0.01
-        assert abs(y[0]) < 0.01
-        assert abs(z[0] - 6356752.314245179) < 0.01
+        ecef = _geodetic_to_ecef(np.array([90.0, 0.0, 0.0]))
+        assert abs(ecef[0]) < 0.01
+        assert abs(ecef[1]) < 0.01
+        assert abs(ecef[2] - 6356752.314245179) < 0.01
 
     def test_roundtrip(self):
         """geodetic → ECEF → geodetic should be identity."""
@@ -42,12 +38,12 @@ class TestGeodeticECEF:
         lons = np.array([-118.25, 115.86, 0.0, 45.0])
         heights = np.array([100.0, 50.0, 0.0, 3000.0])
 
-        x, y, z = _geodetic_to_ecef(lats, lons, heights)
-        lats2, lons2, heights2 = _ecef_to_geodetic(x, y, z)
+        ecef = _geodetic_to_ecef(np.column_stack([lats, lons, heights]))
+        geo = _ecef_to_geodetic(ecef)
 
-        np.testing.assert_allclose(lats2, lats, atol=1e-8)
-        np.testing.assert_allclose(lons2, lons, atol=1e-8)
-        np.testing.assert_allclose(heights2, heights, atol=1e-3)
+        np.testing.assert_allclose(geo[:, 0], lats, atol=1e-8)
+        np.testing.assert_allclose(geo[:, 1], lons, atol=1e-8)
+        np.testing.assert_allclose(geo[:, 2], heights, atol=1e-3)
 
     def test_vectorized(self):
         """Both functions accept arrays and return matching shapes."""
@@ -56,13 +52,13 @@ class TestGeodeticECEF:
         lons = np.random.uniform(-180, 180, n)
         heights = np.random.uniform(0, 10000, n)
 
-        x, y, z = _geodetic_to_ecef(lats, lons, heights)
-        assert x.shape == (n,)
+        ecef = _geodetic_to_ecef(np.column_stack([lats, lons, heights]))
+        assert ecef.shape == (n, 3)
 
-        lats2, lons2, h2 = _ecef_to_geodetic(x, y, z)
-        np.testing.assert_allclose(lats2, lats, atol=1e-8)
-        np.testing.assert_allclose(lons2, lons, atol=1e-8)
-        np.testing.assert_allclose(h2, heights, atol=1e-3)
+        geo = _ecef_to_geodetic(ecef)
+        np.testing.assert_allclose(geo[:, 0], lats, atol=1e-8)
+        np.testing.assert_allclose(geo[:, 1], lons, atol=1e-8)
+        np.testing.assert_allclose(geo[:, 2], heights, atol=1e-3)
 
 
 # ===================================================================
@@ -140,10 +136,8 @@ def _make_pgd_metadata(
     Row direction is local North, column direction is local East.
     """
     # Reference point ECEF
-    x0, y0, z0 = _geodetic_to_ecef(
-        np.array([lat0]), np.array([lon0]), np.array([h0])
-    )
-    ecef = _FakeXYZ(x0[0], y0[0], z0[0])
+    _ecef_pt = _geodetic_to_ecef(np.array([lat0, lon0, h0]))
+    ecef = _FakeXYZ(_ecef_pt[0], _ecef_pt[1], _ecef_pt[2])
     r0, c0 = rows / 2.0, cols / 2.0
     point = _FakeRowCol(r0, c0)
     ref = _FakeRefPoint(ecef, point)
@@ -202,19 +196,21 @@ class TestPlaneProjection:
             assert abs(c2 - c) < 0.1, f"Col error at ({r},{c}): {abs(c2-c)}"
 
     def test_array_input(self):
-        """Forward and inverse accept arrays."""
+        """Forward and inverse accept stacked arrays."""
         meta = _make_pgd_metadata()
         geo = SIDDGeolocation(meta)
 
         rows = np.array([0.0, 250.0, 500.0, 750.0, 999.0])
         cols = np.array([0.0, 250.0, 500.0, 750.0, 999.0])
 
-        lats, lons, heights = geo.image_to_latlon(rows, cols)
-        assert lats.shape == (5,)
+        result = geo.image_to_latlon(np.column_stack([rows, cols]))
+        assert result.shape == (5, 3)
+        lats, lons, heights = result[:, 0], result[:, 1], result[:, 2]
 
-        rows2, cols2 = geo.latlon_to_image(lats, lons, heights)
-        np.testing.assert_allclose(rows2, rows, atol=0.1)
-        np.testing.assert_allclose(cols2, cols, atol=0.1)
+        result2 = geo.latlon_to_image(np.column_stack([lats, lons, heights]))
+        assert result2.shape == (5, 2)
+        np.testing.assert_allclose(result2[:, 0], rows, atol=0.1)
+        np.testing.assert_allclose(result2[:, 1], cols, atol=0.1)
 
     def test_center_returns_reference_latlon(self):
         """Center pixel should geolocate near the reference lat/lon."""
@@ -270,10 +266,8 @@ class TestGeographicProjection:
     def _make_ggd_metadata(self):
         """Build synthetic GGD metadata (1 arc-sec spacing)."""
         lat0, lon0, h0 = 34.05, -118.25, 100.0
-        x0, y0, z0 = _geodetic_to_ecef(
-            np.array([lat0]), np.array([lon0]), np.array([h0])
-        )
-        ecef = _FakeXYZ(x0[0], y0[0], z0[0])
+        _ecef_pt = _geodetic_to_ecef(np.array([lat0, lon0, h0]))
+        ecef = _FakeXYZ(_ecef_pt[0], _ecef_pt[1], _ecef_pt[2])
         ref = _FakeRefPoint(ecef, _FakeRowCol(500.0, 500.0))
         # 1 arc-second spacing
         spacing = _FakeRowCol(1.0, 1.0)
@@ -361,3 +355,47 @@ class TestValidation:
     def test_from_reader_wrong_type(self):
         with pytest.raises(TypeError, match="Expected SIDDReader"):
             SIDDGeolocation.from_reader("not_a_reader")
+
+
+# ===================================================================
+# Standardized public properties
+# ===================================================================
+
+
+class TestStandardizedProperties:
+    """Test the standardized public API shared with SICDGeolocation."""
+
+    def test_default_hae(self):
+        """default_hae returns the reference point height."""
+        meta = _make_pgd_metadata(h0=250.0)
+        geo = SIDDGeolocation(meta)
+        assert isinstance(geo.default_hae, float)
+        assert geo.default_hae == pytest.approx(250.0, abs=1.0)
+
+    def test_projection_type(self):
+        """projection_type matches the measurement projection."""
+        meta = _make_pgd_metadata()
+        geo = SIDDGeolocation(meta)
+        assert geo.projection_type == 'PlaneProjection'
+
+    def test_has_rdot_default(self):
+        """has_rdot is False when no TimeCOAPoly/ARPPoly present."""
+        meta = _make_pgd_metadata()
+        geo = SIDDGeolocation(meta)
+        assert geo.has_rdot is False
+
+    def test_backend(self):
+        """backend is always 'native' for SIDD."""
+        meta = _make_pgd_metadata()
+        geo = SIDDGeolocation(meta)
+        assert geo.backend == 'native'
+
+    def test_from_reader_with_refine(self):
+        """from_reader passes refine kwarg through."""
+        from unittest.mock import MagicMock
+        mock_reader = MagicMock()
+        type(mock_reader).__name__ = 'SIDDReader'
+        mock_reader.metadata = _make_pgd_metadata()
+        geo = SIDDGeolocation.from_reader(mock_reader, refine=False)
+        assert geo.has_rdot is False
+        assert geo.backend == 'native'

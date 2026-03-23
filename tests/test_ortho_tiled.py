@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Tiled Ortho Tests - Tests for OutputGrid.sub_grid, ROI, and tiled processing.
+Tiled Ortho Tests - Tests for GeographicGrid.sub_grid, ROI, and tiled processing.
 
 Dependencies
 ------------
@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
-from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
+from grdl.image_processing.ortho.ortho import GeographicGrid, Orthorectifier
 from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 
 
@@ -132,14 +132,14 @@ def source_3d():
 
 
 # ---------------------------------------------------------------------------
-# Tests: OutputGrid.sub_grid
+# Tests: GeographicGrid.sub_grid
 # ---------------------------------------------------------------------------
 
 class TestSubGrid:
 
     def test_full_extent(self):
         """sub_grid covering entire grid returns equivalent grid."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(0, 0, grid.rows, grid.cols)
         assert sub.rows == grid.rows
         assert sub.cols == grid.cols
@@ -150,7 +150,7 @@ class TestSubGrid:
 
     def test_upper_left_tile(self):
         """First tile has correct northern/western bounds."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(0, 0, 50, 50)
         assert sub.rows == 50
         assert sub.cols == 50
@@ -161,7 +161,7 @@ class TestSubGrid:
 
     def test_lower_right_tile(self):
         """Last tile has correct southern/eastern bounds."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(50, 50, grid.rows, grid.cols)
         assert sub.rows == 50
         assert sub.cols == 50
@@ -172,30 +172,30 @@ class TestSubGrid:
 
     def test_pixel_sizes_preserved(self):
         """Sub-grid pixel sizes match parent."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.005)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.005)
         sub = grid.sub_grid(10, 20, 60, 80)
         assert sub.pixel_size_lat == grid.pixel_size_lat
         assert sub.pixel_size_lon == grid.pixel_size_lon
 
     def test_dimensions_match_tile(self):
         """Sub-grid rows/cols match tile extent."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(10, 20, 40, 70)
         assert sub.rows == 30
         assert sub.cols == 50
 
     def test_negative_index_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="non-negative"):
             grid.sub_grid(-1, 0, 50, 50)
 
     def test_exceeding_bounds_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="exceed"):
             grid.sub_grid(0, 0, grid.rows + 1, grid.cols)
 
     def test_empty_region_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="Empty"):
             grid.sub_grid(50, 50, 50, 100)
 
@@ -447,7 +447,7 @@ class TestPipelineTiled:
 
     def test_tiled_nodata_fill(self, geo, source_2d):
         """Nodata value should be correctly applied in tiled path."""
-        big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
+        big_grid = GeographicGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
         result = (
             OrthoBuilder()
             .with_source_array(source_2d)

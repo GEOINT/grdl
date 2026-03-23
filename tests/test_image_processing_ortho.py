@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Orthorectification Tests - Synthetic data tests for OutputGrid and Orthorectifier.
+Orthorectification Tests - Synthetic data tests for GeographicGrid and Orthorectifier.
 
 Tests the orthorectification pipeline using synthetic imagery with known
 affine geolocation, verifying pixel placement, round-trip accuracy, complex
@@ -41,7 +41,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from grdl.geolocation.base import Geolocation
-from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
+from grdl.image_processing.ortho.ortho import GeographicGrid, Orthorectifier
 
 
 # ---------------------------------------------------------------------------
@@ -146,15 +146,15 @@ def complex_source():
 
 
 # ---------------------------------------------------------------------------
-# OutputGrid tests
+# GeographicGrid tests
 # ---------------------------------------------------------------------------
 
-class TestOutputGrid:
-    """Tests for OutputGrid construction and coordinate transforms."""
+class TestGeographicGrid:
+    """Tests for GeographicGrid construction and coordinate transforms."""
 
     def test_basic_construction(self):
         """Test grid construction with valid parameters."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         assert grid.rows == 100
         assert grid.cols == 100
         assert grid.min_lat == -31.0
@@ -162,20 +162,20 @@ class TestOutputGrid:
 
     def test_non_square_grid(self):
         """Test grid with different lat/lon extents."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 117.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 117.0, 0.01, 0.01)
         assert grid.rows == 100
         assert grid.cols == 200
 
     def test_image_to_latlon_scalar(self):
         """Test pixel-to-latlon for scalar inputs."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         lat, lon = grid.image_to_latlon(0, 0)
         assert lat == pytest.approx(-30.0, abs=1e-10)
         assert lon == pytest.approx(115.0, abs=1e-10)
 
     def test_image_to_latlon_corner(self):
         """Test that last pixel maps to the grid's south-east corner."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         lat, lon = grid.image_to_latlon(grid.rows - 1, grid.cols - 1)
         # Last row is near min_lat, last col is near max_lon
         assert lat == pytest.approx(-30.99, abs=0.01)
@@ -183,7 +183,7 @@ class TestOutputGrid:
 
     def test_image_to_latlon_array(self):
         """Test pixel-to-latlon for array inputs."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         rows = np.array([0, 50, 99])
         cols = np.array([0, 50, 99])
         lats, lons = grid.image_to_latlon(rows, cols)
@@ -192,7 +192,7 @@ class TestOutputGrid:
 
     def test_latlon_to_image_roundtrip(self):
         """Test that pixel->latlon->pixel round-trips accurately."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         row_in, col_in = 42.0, 73.0
         lat, lon = grid.image_to_latlon(row_in, col_in)
         row_out, col_out = grid.latlon_to_image(lat, lon)
@@ -201,7 +201,7 @@ class TestOutputGrid:
 
     def test_from_geolocation(self, affine_geo):
         """Test grid creation from a Geolocation object."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         assert grid.rows > 0
         assert grid.cols > 0
         # Grid should cover the image footprint
@@ -213,8 +213,8 @@ class TestOutputGrid:
 
     def test_from_geolocation_with_margin(self, affine_geo):
         """Test that margin expands the grid."""
-        grid_no_margin = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
-        grid_with_margin = OutputGrid.from_geolocation(
+        grid_no_margin = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid_with_margin = GeographicGrid.from_geolocation(
             affine_geo, 0.01, 0.005, margin=0.1
         )
         assert grid_with_margin.rows > grid_no_margin.rows
@@ -223,18 +223,18 @@ class TestOutputGrid:
     def test_invalid_bounds(self):
         """Test that invalid bounds raise ValueError."""
         with pytest.raises(ValueError, match="max_lat"):
-            OutputGrid(-30.0, -31.0, 115.0, 116.0, 0.01, 0.01)
+            GeographicGrid(-30.0, -31.0, 115.0, 116.0, 0.01, 0.01)
 
     def test_invalid_pixel_size(self):
         """Test that non-positive pixel size raises ValueError."""
         with pytest.raises(ValueError, match="pixel_size_lat"):
-            OutputGrid(-31.0, -30.0, 115.0, 116.0, -0.01, 0.01)
+            GeographicGrid(-31.0, -30.0, 115.0, 116.0, -0.01, 0.01)
 
     def test_repr(self):
         """Test string representation."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         repr_str = repr(grid)
-        assert 'OutputGrid' in repr_str
+        assert 'GeographicGrid' in repr_str
         assert '100x100' in repr_str
 
 
@@ -247,20 +247,20 @@ class TestOrthorectifier:
 
     def test_basic_construction(self, affine_geo):
         """Test orthorectifier construction."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
         assert ortho.interpolation == 'bilinear'
         assert ortho.output_grid is grid
 
     def test_invalid_interpolation(self, affine_geo):
         """Test that invalid interpolation raises ValueError."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         with pytest.raises(ValueError, match="Unknown interpolation"):
             Orthorectifier(affine_geo, grid, interpolation='invalid')
 
     def test_compute_mapping_shape(self, affine_geo):
         """Test that compute_mapping returns correct shapes."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
         src_rows, src_cols, valid = ortho.compute_mapping()
 
@@ -271,14 +271,14 @@ class TestOrthorectifier:
 
     def test_compute_mapping_has_valid_pixels(self, affine_geo):
         """Test that some output pixels map to valid source pixels."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
         _, _, valid = ortho.compute_mapping()
         assert np.any(valid), "No valid pixels in mapping"
 
     def test_apply_single_band(self, affine_geo, source_image):
         """Test orthorectification of a single-band image."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         result = ortho.apply(source_image)
 
@@ -287,7 +287,7 @@ class TestOrthorectifier:
 
     def test_apply_multiband(self, affine_geo, multiband_source):
         """Test orthorectification of multi-band image."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         result = ortho.apply(multiband_source)
 
@@ -296,7 +296,7 @@ class TestOrthorectifier:
 
     def test_apply_complex(self, affine_geo, complex_source):
         """Test orthorectification preserves complex data."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         result = ortho.apply(complex_source)
 
@@ -306,7 +306,7 @@ class TestOrthorectifier:
     def test_nodata_fill(self, affine_geo, source_image):
         """Test that out-of-coverage pixels get nodata fill."""
         # Create a grid that extends beyond the source footprint
-        grid = OutputGrid(-32.0, -29.0, 114.0, 117.0, 0.01, 0.01)
+        grid = GeographicGrid(-32.0, -29.0, 114.0, 117.0, 0.01, 0.01)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         result = ortho.apply(source_image, nodata=-999.0)
 
@@ -321,7 +321,7 @@ class TestOrthorectifier:
         source = np.arange(100 * 200, dtype=np.float64).reshape(100, 200)
 
         # Use grid with same resolution as source (1:1 mapping)
-        grid = OutputGrid.from_geolocation(
+        grid = GeographicGrid.from_geolocation(
             affine_geo,
             affine_geo.pixel_size_lat,
             affine_geo.pixel_size_lon,
@@ -350,7 +350,7 @@ class TestOrthorectifier:
 
         # Output grid matches the source geometry exactly
         # Use pixel centers: source covers lat [0, -0.5), lon [0, 0.5)
-        grid = OutputGrid(
+        grid = GeographicGrid(
             min_lat=-0.5 + 0.005,  # half-pixel offset to align centers
             max_lat=0.0 - 0.005,
             min_lon=0.0 + 0.005,
@@ -374,21 +374,21 @@ class TestOrthorectifier:
 
     def test_interpolation_bilinear(self, affine_geo, source_image):
         """Test bilinear interpolation produces smooth output."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='bilinear')
         result = ortho.apply(source_image)
         assert result.shape == (grid.rows, grid.cols)
 
     def test_interpolation_bicubic(self, affine_geo, source_image):
         """Test bicubic interpolation produces output."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='bicubic')
         result = ortho.apply(source_image)
         assert result.shape == (grid.rows, grid.cols)
 
     def test_mapping_cached(self, affine_geo, source_image):
         """Test that compute_mapping is cached and reused."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
 
         # First call computes mapping
@@ -401,7 +401,7 @@ class TestOrthorectifier:
 
     def test_output_geolocation_metadata(self, affine_geo):
         """Test output geolocation metadata structure."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
         meta = ortho.get_output_geolocation_metadata()
 
@@ -415,7 +415,7 @@ class TestOrthorectifier:
 
     def test_repr(self, affine_geo):
         """Test string representation."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid)
         repr_str = repr(ortho)
         assert 'Orthorectifier' in repr_str
@@ -433,7 +433,7 @@ class TestOrthorectifierDEM:
         """Orthorectifier should accept ConstantElevation without error."""
         from grdl.geolocation.elevation.constant import ConstantElevation
 
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         elev = ConstantElevation(height=100.0)
         ortho = Orthorectifier(
             affine_geo, grid, interpolation='nearest', elevation=elev
@@ -443,7 +443,7 @@ class TestOrthorectifierDEM:
 
     def test_elevation_none_default(self, affine_geo, source_image):
         """Without elevation, Orthorectifier should work as before."""
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         assert ortho.elevation is None
         result = ortho.apply(source_image)
@@ -466,7 +466,7 @@ class TestOrthorectifierDEM:
             origin_lat=0.0, origin_lon=0.0,
             pixel_size_lat=0.01, pixel_size_lon=0.01,
         )
-        grid = OutputGrid.from_geolocation(geo, 0.01, 0.01)
+        grid = GeographicGrid.from_geolocation(geo, 0.01, 0.01)
         elev = ConstantElevation(height=500.0)
         ortho = Orthorectifier(
             geo, grid, interpolation='nearest', elevation=elev,
@@ -484,7 +484,7 @@ class TestOrthorectifierDEM:
         """ConstantElevation(0.0) should match no-DEM result."""
         from grdl.geolocation.elevation.constant import ConstantElevation
 
-        grid = OutputGrid.from_geolocation(affine_geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
 
         ortho_no_dem = Orthorectifier(
             affine_geo, grid, interpolation='nearest',

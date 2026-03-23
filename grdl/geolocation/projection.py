@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16
 """
 
@@ -769,13 +770,9 @@ def image_to_ground_hae(
         ref_ecf = np.asarray(scp_ecf, dtype=np.float64)
     else:
         ref_ecf = np.mean(arp_coa, axis=0)
-    lat0, lon0, _ = ecef_to_geodetic(
-        np.array([ref_ecf[0]]),
-        np.array([ref_ecf[1]]),
-        np.array([ref_ecf[2]]),
-    )
-    gref_x, gref_y, gref_z = geodetic_to_ecef(lat0, lon0, np.array([hae]))
-    gref = np.array([gref_x[0], gref_y[0], gref_z[0]])
+    geo0 = ecef_to_geodetic(ref_ecf)
+    lat0, lon0 = geo0[0], geo0[1]
+    gref = geodetic_to_ecef(np.array([lat0, lon0, hae]))
 
     # Per-point target heights — start with constant, update from DEM
     target_hae = np.full(n, hae, dtype=np.float64)
@@ -792,8 +789,8 @@ def image_to_ground_hae(
             break
 
         # Convert projected points to geodetic
-        lats, lons, heights = ecef_to_geodetic(
-            gpp[valid, 0], gpp[valid, 1], gpp[valid, 2])
+        geo_valid = ecef_to_geodetic(gpp[valid])
+        lats, lons, heights = geo_valid[:, 0], geo_valid[:, 1], geo_valid[:, 2]
 
         # Query DEM at projected positions to update target heights
         if elevation_model is not None:
@@ -814,15 +811,10 @@ def image_to_ground_hae(
         # Update ground reference: move to mean projected position
         # at the mean target height
         gref_mean = np.mean(gpp[valid], axis=0)
-        lat_m, lon_m, _ = ecef_to_geodetic(
-            np.array([gref_mean[0]]),
-            np.array([gref_mean[1]]),
-            np.array([gref_mean[2]]),
-        )
+        geo_mean = ecef_to_geodetic(gref_mean)
         mean_target_h = float(np.mean(target_hae[valid]))
-        gx, gy, gz = geodetic_to_ecef(
-            lat_m, lon_m, np.array([mean_target_h]))
-        gref = np.array([gx[0], gy[0], gz[0]])
+        gref = geodetic_to_ecef(
+            np.array([geo_mean[0], geo_mean[1], mean_target_h]))
 
     # Final projection with converged reference
     u_slant = wgs84_norm(gref)
@@ -889,16 +881,13 @@ def image_to_ground_dem(
         if not np.any(valid):
             break
 
-        lats, lons, heights = ecef_to_geodetic(
-            gpp[valid, 0], gpp[valid, 1], gpp[valid, 2])
+        geo_dem = ecef_to_geodetic(gpp[valid])
+        lats, lons, heights = geo_dem[:, 0], geo_dem[:, 1], geo_dem[:, 2]
 
-        # Look up DEM height at projected positions
-        dem_heights = elevation_model._get_elevation_array(lats, lons)
-
-        # Apply geoid correction if available
-        if hasattr(elevation_model, '_geoid') and elevation_model._geoid is not None:
-            dem_heights = dem_heights + elevation_model._geoid.get_undulation(
-                lats, lons)
+        # Look up DEM height at projected positions (public API handles
+        # geoid correction, scalar/array dispatch, and NaN transparently)
+        dem_heights = np.asarray(
+            elevation_model.get_elevation(lats, lons), dtype=np.float64)
 
         # Replace NaN DEM values with current HAE estimate
         nan_mask = np.isnan(dem_heights)

@@ -221,13 +221,12 @@ class RPCGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Image → ground: iterative Newton-Raphson inversion.
 
-        At a fixed HAE, finds (lat, lon) such that
-        ``RPC(lat, lon, hae) ≈ (row, col)`` using 2D Newton-Raphson
-        with analytical Jacobian via finite differences.
+        Finds (lat, lon) such that ``RPC(lat, lon, h) ≈ (row, col)``
+        using 2D Newton-Raphson with finite-difference Jacobian.
 
         Parameters
         ----------
@@ -235,8 +234,10 @@ class RPCGeolocation(Geolocation):
             Row pixel coordinates, shape ``(N,)``.
         cols : np.ndarray
             Column pixel coordinates, shape ``(N,)``.
-        height : float
-            Target height above WGS-84 (meters).
+        height : float or np.ndarray
+            Height above WGS-84 (meters).  Scalar applies a constant
+            height to all points.  An array of shape ``(N,)`` provides
+            per-point heights for terrain-corrected projection.
 
         Returns
         -------
@@ -245,12 +246,14 @@ class RPCGeolocation(Geolocation):
         """
         n = len(rows)
         rpc = self.rpc
-        hae = float(height)
 
         # Initial guess: RPC normalization center
         lats = np.full(n, rpc.lat_off)
         lons = np.full(n, rpc.long_off)
-        h_arr = np.full(n, hae)
+        if np.ndim(height) > 0:
+            h_arr = np.asarray(height, dtype=np.float64)
+        else:
+            h_arr = np.full(n, float(height))
 
         # Finite difference step for Jacobian (degrees)
         dlat = rpc.lat_scale * 1e-6
@@ -294,8 +297,7 @@ class RPCGeolocation(Geolocation):
             lats += d_lat
             lons += d_lon
 
-        heights = np.full(n, hae)
-        return lats, lons, heights
+        return lats, lons, h_arr.copy()
 
     @classmethod
     def from_coefficients(

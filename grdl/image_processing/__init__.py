@@ -171,7 +171,7 @@ Modified
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin
 from grdl.image_processing.ortho import (
-    Orthorectifier, OutputGrid, OutputGridProtocol,
+    Orthorectifier, GeographicGrid, OutputGrid, OutputGridProtocol,
     OrthoBuilder, OrthoResult,
     compute_output_resolution,
 )
@@ -226,6 +226,7 @@ __all__ = [
     'ImageTransform',
     'BandwiseTransformMixin',
     'Orthorectifier',
+    'GeographicGrid',
     'OutputGrid',
     'OutputGridProtocol',
     'OrthoBuilder',

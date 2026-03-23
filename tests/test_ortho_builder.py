@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
-from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
+from grdl.image_processing.ortho.ortho import GeographicGrid, Orthorectifier
 from grdl.image_processing.ortho.ortho_builder import (
     OrthoBuilder, OrthoResult, orthorectify,
 )
@@ -222,7 +222,7 @@ class TestPipelineSourceArray:
 
     def test_nodata_value(self, geo, source_2d):
         """orthorectify should honor nodata fill value."""
-        big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
+        big_grid = GeographicGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
         result = orthorectify(
             geolocation=geo,
             source_array=source_2d,
@@ -234,8 +234,8 @@ class TestPipelineSourceArray:
         assert np.any(result.data != -999.0)
 
     def test_explicit_output_grid(self, geo, source_2d):
-        """orthorectify with explicit OutputGrid (skips resolution)."""
-        grid = OutputGrid.from_geolocation(geo, 0.01, 0.005)
+        """orthorectify with explicit GeographicGrid (skips resolution)."""
+        grid = GeographicGrid.from_geolocation(geo, 0.01, 0.005)
         result = orthorectify(
             geolocation=geo,
             source_array=source_2d,
@@ -394,7 +394,7 @@ class TestBuilderChaining:
         elev = ConstantElevation(0.0)
         assert p.with_elevation(elev) is p
 
-        grid = OutputGrid.from_geolocation(geo, 0.01, 0.005)
+        grid = GeographicGrid.from_geolocation(geo, 0.01, 0.005)
         assert p.with_output_grid(grid) is p
 
     def test_margin_expands_grid(self, geo, source_2d):

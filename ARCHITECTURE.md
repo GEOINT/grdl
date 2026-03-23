@@ -50,7 +50,7 @@ grdl/                            ~60k lines, 152 files
 │   ├── versioning.py              @processor_version, @processor_tags
 │   ├── pipeline.py                Pipeline (sequential composition)
 │   ├── intensity.py               ToDecibels, PercentileStretch
-│   ├── ortho/                     Orthorectification (orthorectify(), OutputGrid, ENUGrid)
+│   ├── ortho/                     Orthorectification (orthorectify(), GeographicGrid, ENUGrid, UTMGrid, WebMercatorGrid)
 │   ├── filters/                   Spatial filters (mean, gaussian, median, Lee, phase)
 │   ├── decomposition/             Polarimetric (Pauli quad-pol, DualPolHAlpha)
 │   ├── detection/                 CFAR detectors (CA, GO, SO, OS)

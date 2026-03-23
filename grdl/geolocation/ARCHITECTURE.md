@@ -1,6 +1,6 @@
 # Geolocation Module — Architecture
 
-*Modified: 2026-03-19*
+*Modified: 2026-03-22*
 
 ## Overview
 
@@ -10,9 +10,14 @@ imagery type. It handles SAR slant-range geometry, EO rational polynomial
 models, geocoded raster affine transforms, and terrain elevation lookup.
 
 Every geolocation class inherits from `Geolocation`, which provides
-scalar/array dispatch, stacked-array input, DEM-iterative refinement,
-and footprint computation. Subclasses implement only the vectorized
+scalar/stacked-array dispatch, DEM-iterative refinement, and footprint
+computation. Subclasses implement only the vectorized
 `_image_to_latlon_array` and `_latlon_to_image_array` methods.
+
+All public methods use the **(N, M) stacked ndarray** convention: inputs
+are (N, 2) or (N, 3) arrays where each row is a point, and outputs are
+(N, M) arrays. Scalar inputs return (M,) arrays compatible with tuple
+unpacking.
 
 ---
 
@@ -49,6 +54,7 @@ geolocation/
     ├── constant.py          #   ConstantElevation (fixed-height fallback)
     ├── dted.py              #   DTEDElevation (DTED Level 0/1/2 tiles)
     ├── geotiff_dem.py       #   GeoTIFFDEM (single GeoTIFF DEM)
+    ├── tiled_geotiff_dem.py #   TiledGeoTIFFDEM (multi-tile: FABDEM, SRTM, Copernicus)
     ├── geoid.py             #   GeoidCorrection (EGM96 undulation lookup)
     └── open_elevation.py    #   open_elevation() factory (auto-detect format)
 ```
@@ -59,8 +65,8 @@ geolocation/
 
 ```
 Geolocation (ABC)                       ← base.py
-│  image_to_latlon()                      scalar/array/stacked dispatch
-│  latlon_to_image()                      scalar/array/stacked dispatch
+│  image_to_latlon()                      scalar/stacked dispatch → (N, 3)
+│  latlon_to_image()                      scalar/stacked dispatch → (N, 2)
 │  _image_to_latlon_with_dem()            iterative DEM refinement loop
 │  get_footprint()                        perimeter sampling → polygon
 │  get_bounds()                           bounding box from footprint
@@ -104,8 +110,12 @@ ElevationModel (ABC)                    ← elevation/base.py
 ├── DTEDElevation                       ← elevation/dted.py
 │     DTED Level 0/1/2 tiles via rasterio, spatial tile indexing
 │
-└── GeoTIFFDEM                          ← elevation/geotiff_dem.py
-      Single GeoTIFF DEM via rasterio, bilinear interpolation
+├── GeoTIFFDEM                          ← elevation/geotiff_dem.py
+│     Single GeoTIFF DEM via rasterio, bilinear/bicubic/quintic
+│
+└── TiledGeoTIFFDEM                     ← elevation/tiled_geotiff_dem.py
+      Multi-tile GeoTIFF (FABDEM, SRTM, Copernicus) with cross-tile
+      interpolation and LRU tile cache
 
 
 GeoidCorrection                         ← elevation/geoid.py
@@ -146,18 +156,20 @@ COAProjection                           ← projection.py
 | DEM source | Class | Notes |
 |-----------|-------|-------|
 | DTED folder (Level 0/1/2) | `DTEDElevation` | Auto-indexes `.dt0`/`.dt1`/`.dt2` tiles |
-| Single GeoTIFF DEM | `GeoTIFFDEM` | Any CRS, bilinear interpolation |
+| Single GeoTIFF DEM | `GeoTIFFDEM` | Any CRS, bilinear/bicubic/quintic interpolation |
+| Multi-tile GeoTIFF folder | `TiledGeoTIFFDEM` | FABDEM, SRTM, Copernicus; cross-tile interpolation |
 | No DEM available | `ConstantElevation` | Fixed height fallback |
-| Auto-detect format | `open_elevation()` | Factory: inspects path, returns model |
+| Auto-detect format | `open_elevation()` | Factory: inspects path, returns best model |
 
 ### Coordinate Conversions
 
-| Conversion | Function |
-|-----------|----------|
-| Geodetic → ECEF | `geodetic_to_ecef(lat, lon, alt)` |
-| ECEF → Geodetic | `ecef_to_geodetic(x, y, z)` |
-| Geodetic → Local ENU | `geodetic_to_enu(lat, lon, alt, ref_lat, ref_lon, ref_alt)` |
-| ENU → Geodetic | `enu_to_geodetic(e, n, u, ref_lat, ref_lon, ref_alt)` |
+| Conversion | Function | Input | Output |
+|-----------|----------|-------|--------|
+| Geodetic → ECEF | `geodetic_to_ecef(pts_Nx3)` | (N, 3) `[lat, lon, alt]` | (N, 3) `[x, y, z]` |
+| ECEF → Geodetic | `ecef_to_geodetic(pts_Nx3)` | (N, 3) `[x, y, z]` | (N, 3) `[lat, lon, alt]` |
+| Geodetic → Local ENU | `geodetic_to_enu(pts_Nx3, ref_3)` | (N, 3) + (3,) ref | (N, 3) `[e, n, u]` |
+| ENU → Geodetic | `enu_to_geodetic(pts_Nx3, ref_3)` | (N, 3) + (3,) ref | (N, 3) `[lat, lon, alt]` |
+| Meters per degree | `meters_per_degree(lat)` | scalar | (2,) `[m_lat, m_lon]` |
 
 ### Low-Level R/Rdot Projection (Advanced)
 
@@ -173,35 +185,64 @@ COAProjection                           ← projection.py
 
 ## Key Design Patterns
 
-### 1. Scalar/Array Dispatch
+### 1. Stacked (N, M) Array Convention
 
-All public methods accept three input forms and return matching types:
+All public methods use stacked ndarrays where each row is a point:
 
 ```
-geo.image_to_latlon(500, 1000)                  → (float, float, float)
-geo.image_to_latlon([100, 200], [300, 400])      → (ndarray, ndarray, ndarray)
-geo.image_to_latlon(np.array([[100, 200],
-                               [300, 400]]))     → ndarray shape (3, N)
+# Scalar → (M,) result (tuple-unpackable)
+lat, lon, h = geo.image_to_latlon(500, 1000)         → (3,)
+row, col = geo.latlon_to_image(34.0, -118.0)         → (2,)
+
+# (N, 2) input → (N, 3) or (N, 2) output
+geo.image_to_latlon(pixels_Nx2)                       → (N, 3)
+geo.latlon_to_image(coords_Nx2)                       → (N, 2)
+geo.latlon_to_image(coords_Nx3)                       → (N, 2)  # height in col 3
 ```
 
-Implemented via `_is_scalar()` and `_to_array()` helpers in `base.py`.
+Implemented via `_is_scalar()` and `_to_stacked()` helpers in `base.py`.
 Subclasses only implement the vectorized `_*_array()` methods — the
 ABC handles all dispatch logic.
 
+**Indexing conventions:**
+- `result[i]` — the i-th point (row vector)
+- `result[:, 0]` — first coordinate across all points (e.g., all latitudes)
+
 ### 2. Iterative DEM Refinement
 
-When a DEM is configured, `_image_to_latlon_with_dem()` iterates:
+When a DEM is configured, `_image_to_latlon_with_dem()` iterates
+**per point**:
 
 ```
-project at initial height
-  → DEM lookup at projected (lat, lon)
-  → re-project at DEM height
-  → repeat until height converges (< 0.5 m tolerance, max 5 iterations)
+for each point independently:
+  project at initial height
+    → DEM lookup at projected (lat, lon)
+    → re-project at DEM height
+    → repeat until height converges (< 0.5 m tolerance, max 5 iterations)
 ```
 
-This handles height-dependent projections (RPC, RSM, R/Rdot) where
-the ground position shifts with elevation. For affine geolocation
-(height-independent), a single iteration suffices.
+This handles height-dependent projections (RPC, RSM) where the ground
+position shifts with elevation. For affine geolocation (height-
+independent), a single iteration suffices.
+
+**`_handles_dem_internally` bypass:** Subclasses whose sensor model
+already performs per-point DEM iteration inside `_image_to_latlon_array`
+set `_handles_dem_internally = True`. The base class wrapper then passes
+through to the subclass directly, avoiding a redundant outer DEM loop.
+
+| Class | `_handles_dem_internally` | Why |
+|-------|--------------------------|-----|
+| `SICDGeolocation` (native) | `True` | R/Rdot engine passes `self.elevation` to `image_to_ground_hae()` which iterates per-point |
+| `SIDDGeolocation` (R/Rdot) | `True` | Same R/Rdot engine with DEM integration |
+| `SIDDGeolocation` (grid-only) | `False` | Grid projection is height-independent; base class provides DEM heights |
+| `RPCGeolocation` | `False` | Newton-Raphson at fixed HAE; base class iterates with DEM |
+| `RSMGeolocation` | `False` | Same pattern as RPC |
+| `AffineGeolocation` | `False` | Affine is 2D; base class provides DEM heights in output |
+| Grid-based (NISAR, S1) | `False` | Grid positions are fixed; base class provides DEM heights |
+
+The inverse path uses `_latlon_to_image_with_dem()` which does a
+single DEM lookup (no iteration needed since lat/lon are already known).
+The same `_handles_dem_internally` flag controls bypass.
 
 ### 3. Backend Selection (SAR)
 
@@ -267,34 +308,87 @@ dem = GeoTIFFDEM('/path/to/dem.tif', geoid=geoid)
 ### Image → Geographic (Forward)
 
 ```
-User: geo.image_to_latlon(row, col, height)
+User: geo.image_to_latlon(row, col)           → (3,)  [lat, lon, h]
+User: geo.image_to_latlon(pixels_Nx2)         → (N, 3) [lat, lon, h]
   │
-  ├─ Scalar? → _to_array() → 1D arrays
-  ├─ Stacked (2,N)? → split into row/col arrays
+  ├─ Scalar? → pack into (1, 2) array
+  ├─ Already (N, 2)? → use directly
   │
-  └─ _image_to_latlon_with_dem(rows, cols, height)
+  └─ _image_to_latlon_with_dem(pixels_Nx2)
        │
-       ├─ No DEM → _image_to_latlon_array(rows, cols, height)
-       │            └─ Subclass-specific projection
+       ├─ No DEM → _image_to_latlon_array(pixels_Nx2)
+       │            └─ Subclass-specific projection → (N, 3)
        │
-       └─ Has DEM → iterate:
+       ├─ _handles_dem_internally? → _image_to_latlon_array()
+       │   directly (subclass does its own DEM iteration)
+       │
+       └─ Base-class DEM loop → iterate per point:
             project → DEM lookup → update height → converge
+            → (N, 3) [lat, lon, dem_h]
 ```
 
 ### Geographic → Image (Inverse)
 
 ```
-User: geo.latlon_to_image(lat, lon, height)
+User: geo.latlon_to_image(lat, lon)            → (2,)  [row, col]
+User: geo.latlon_to_image(lat, lon, h)         → (2,)  [row, col]
+User: geo.latlon_to_image(coords_Nx2)          → (N, 2) [row, col]
+User: geo.latlon_to_image(coords_Nx3)          → (N, 2) [row, col]  (h in col 3)
   │
-  ├─ Dispatch (same as forward)
+  ├─ Scalar? → pack into (1, 2) or (1, 3) array
+  ├─ Already (N, 2) or (N, 3)? → use directly
   │
-  └─ _latlon_to_image_array(lats, lons, height)
+  └─ _latlon_to_image_with_dem(coords)
        │
-       ├─ SAR (SICD): ground_to_image() via COAProjection
-       ├─ SAR (grid): LinearNDInterpolator lookup
-       ├─ EO (affine): inverse affine + CRS transform
-       └─ EO (RPC/RSM): Newton-Raphson iteration
+       ├─ No DEM → _latlon_to_image_array(coords)
+       │
+       ├─ _handles_dem_internally? → _latlon_to_image_array()
+       │   directly (subclass queries DEM itself)
+       │
+       └─ Base-class DEM → single lookup at (lat, lon)
+            → pass per-point DEM heights to subclass
+       │
+       └─ _latlon_to_image_array(coords_with_dem_h)
+            │                                        → (N, 2)
+            ├─ SAR (SICD): ground_to_image() via COAProjection
+            ├─ SAR (grid): LinearNDInterpolator lookup
+            ├─ EO (affine): inverse affine + CRS transform
+            └─ EO (RPC/RSM): direct polynomial evaluation
 ```
+
+### Round-Trip Pattern
+
+```
+pixels (N, 2) [row, col]
+  → geo.image_to_latlon(pixels)        → geo_pts (N, 3) [lat, lon, h]
+  → geo.latlon_to_image(geo_pts)       → px_back (N, 2) [row, col]
+  → np.linalg.norm(px_back - pixels, axis=1)  → per-point error
+```
+
+---
+
+## API Summary
+
+### Geolocation Methods
+
+| Method | Input | Output |
+|--------|-------|--------|
+| `image_to_latlon(row, col)` | two scalars | (3,) `[lat, lon, h]` |
+| `image_to_latlon(pixels_Nx2)` | (N, 2) `[row, col]` | (N, 3) `[lat, lon, h]` |
+| `latlon_to_image(lat, lon)` | two scalars | (2,) `[row, col]` |
+| `latlon_to_image(lat, lon, h)` | three scalars | (2,) `[row, col]` |
+| `latlon_to_image(coords_Nx2)` | (N, 2) `[lat, lon]` | (N, 2) `[row, col]` |
+| `latlon_to_image(coords_Nx3)` | (N, 3) `[lat, lon, h]` | (N, 2) `[row, col]` |
+
+### Coordinate Functions
+
+| Function | Input | Output |
+|----------|-------|--------|
+| `geodetic_to_ecef(pts)` | (N, 3) or (3,) `[lat, lon, alt]` | (N, 3) or (3,) `[x, y, z]` |
+| `ecef_to_geodetic(pts)` | (N, 3) or (3,) `[x, y, z]` | (N, 3) or (3,) `[lat, lon, alt]` |
+| `geodetic_to_enu(pts, ref)` | (N, 3) + (3,) `[lat, lon, alt]` | (N, 3) `[e, n, u]` |
+| `enu_to_geodetic(pts, ref)` | (N, 3) + (3,) `[lat, lon, alt]` | (N, 3) `[lat, lon, alt]` |
+| `meters_per_degree(lat)` | scalar | (2,) `[m_lat, m_lon]` |
 
 ---
 

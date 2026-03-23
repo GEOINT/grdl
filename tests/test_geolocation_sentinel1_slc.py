@@ -129,23 +129,23 @@ class TestForwardTransform:
 
         rows = np.array([0.0, 200.0, 400.0])
         cols = np.array([0.0, 600.0, 1400.0])
-        lats, lons, heights = geo.image_to_latlon(rows, cols)
+        result = geo.image_to_latlon(np.column_stack([rows, cols]))
 
-        assert lats.shape == (3,)
-        assert lons.shape == (3,)
+        assert result.shape == (3, 3)
+        lats, lons, heights = result[:, 0], result[:, 1], result[:, 2]
         assert lats[0] == pytest.approx(_LAT_MIN, abs=1e-6)
         assert lons[0] == pytest.approx(_LON_MIN, abs=1e-6)
 
-    def test_scalar_returns_scalars(self):
-        """Scalar input returns scalar floats."""
+    def test_scalar_returns_ndarray(self):
+        """Scalar input returns (3,) ndarray."""
         meta = _build_synthetic_metadata()
         geo = Sentinel1SLCGeolocation(meta)
 
         result = geo.image_to_latlon(0.0, 0.0)
-        assert isinstance(result, tuple)
-        assert isinstance(result[0], float)
-        assert isinstance(result[1], float)
-        assert isinstance(result[2], float)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (3,)
+        # Tuple unpacking still works
+        lat, lon, h = result
 
     def test_corners(self):
         """Four corners of the grid produce expected lat/lon."""
@@ -200,9 +200,11 @@ class TestInverseTransform:
 
         lats = np.array([30.5, 30.75])
         lons = np.array([51.0, 51.5])
-        rows, cols = geo.latlon_to_image(lats, lons)
+        result = geo.latlon_to_image(
+            np.column_stack([lats, lons, np.full(2, _HEIGHT)]))
+        assert result.shape == (2, 2)
+        rows, cols = result[:, 0], result[:, 1]
         assert rows.shape == (2,)
-        assert cols.shape == (2,)
 
     def test_outside_convex_hull_returns_nan(self):
         """Points outside the grid area return NaN."""

@@ -259,7 +259,7 @@ def test_round_trip_grid(geo):
 # ---------------------------------------------------------------------------
 
 def test_array_image_to_latlon(geo):
-    """Test array pixel-to-latlon conversion (unified API accepts arrays)."""
+    """Test array pixel-to-latlon conversion (stacked ndarray API)."""
     rows, cols = geo.shape
     margin_r = int(rows * 0.1)
     margin_c = int(cols * 0.1)
@@ -267,12 +267,11 @@ def test_array_image_to_latlon(geo):
     sample_rows = np.linspace(margin_r, rows - 1 - margin_r, 10)
     sample_cols = np.linspace(margin_c, cols - 1 - margin_c, 10)
 
-    # Same method handles both scalars and arrays
-    lats, lons, heights = geo.image_to_latlon(sample_rows, sample_cols)
+    # Stacked (N, 2) input → (N, 3) output
+    result = geo.image_to_latlon(np.column_stack([sample_rows, sample_cols]))
 
-    assert lats.shape == (10,)
-    assert lons.shape == (10,)
-    assert heights.shape == (10,)
+    assert result.shape == (10, 3)
+    lats, lons, heights = result[:, 0], result[:, 1], result[:, 2]
 
     # Verify against individual scalar calls
     for i in range(len(sample_rows)):

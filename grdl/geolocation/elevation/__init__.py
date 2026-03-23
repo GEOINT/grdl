@@ -68,6 +68,11 @@ except ImportError:
     pass
 
 try:
+    from grdl.geolocation.elevation.tiled_geotiff_dem import TiledGeoTIFFDEM
+except ImportError:
+    pass
+
+try:
     from grdl.geolocation.elevation.geoid import GeoidCorrection
 except ImportError:
     pass
@@ -78,5 +83,6 @@ __all__ = [
     'open_elevation',
     'DTEDElevation',
     'GeoTIFFDEM',
+    'TiledGeoTIFFDEM',
     'GeoidCorrection',
 ]

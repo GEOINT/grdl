@@ -71,6 +71,7 @@ from grdl.geolocation.coordinates import (
     ecef_to_geodetic,
     geodetic_to_enu,
     enu_to_geodetic,
+    meters_per_degree,
 )
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.geolocation.sar.nisar import NISARGeolocation
@@ -98,6 +99,7 @@ __all__ = [
     'ecef_to_geodetic',
     'geodetic_to_enu',
     'enu_to_geodetic',
+    'meters_per_degree',
     'GCPGeolocation',
     'NISARGeolocation',
     'SICDGeolocation',

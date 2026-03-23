@@ -165,7 +165,7 @@ class GCPGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Transform pixel coordinate arrays to geographic coordinate arrays.
@@ -178,7 +178,7 @@ class GCPGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
+        height : float or np.ndarray, default=0.0
             Height parameter (not used in GCP interpolation, heights come
             from the GCP data itself).
 
@@ -267,6 +267,11 @@ class GCPGeolocation(Geolocation):
             try:
                 # Interpolate using other GCPs
                 interp_lat, interp_lon, _ = temp_geo.image_to_latlon(true_row, true_col)
+
+                # Skip if outside convex hull (LinearNDInterpolator
+                # returns NaN for extrapolated points)
+                if np.isnan(interp_lat) or np.isnan(interp_lon):
+                    continue
 
                 # Calculate error in meters
                 error_m = geographic_distance(true_lat, true_lon, interp_lat, interp_lon)
