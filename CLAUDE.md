@@ -635,26 +635,27 @@ Performance is critical for processing large geospatial imagery. Follow these gu
 **Bad (loops):**
 ```python
 def transform_pixels(geo, rows, cols):
-    lats = []
-    lons = []
+    results = []
     for i in range(len(rows)):
         lat, lon, _ = geo.image_to_latlon(rows[i], cols[i])
-        lats.append(lat)
-        lons.append(lon)
-    return np.array(lats), np.array(lons)
+        results.append([lat, lon])
+    return np.array(results)
 ```
 
-**Good (pass arrays directly -- the same method handles both):**
+**Good (pass stacked array directly -- the same method handles both):**
 ```python
-def transform_pixels(geo, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    lats, lons, _ = geo.image_to_latlon(rows, cols)
-    return lats, lons
+def transform_pixels(geo, pixels: np.ndarray) -> np.ndarray:
+    # pixels is (N, 2) with columns [row, col]
+    coords = geo.image_to_latlon(pixels)  # returns (N, 3) [lat, lon, h]
+    return coords[:, :2]                   # (N, 2) [lat, lon]
 ```
 
-### Unified Scalar/Array Methods
+### Stacked ndarray API (Unified Scalar/Array Methods)
 
-- Public methods should accept scalar, list, or ndarray inputs and return matching types.
-- Implement a single abstract method operating on arrays. The base class handles scalar/array dispatch.
+- Public methods return **stacked ndarrays**: `image_to_latlon` returns `(3,)` for scalar or `(N, 3)` for batch; `latlon_to_image` returns `(2,)` or `(N, 2)`.
+- Scalar tuple unpacking still works: `lat, lon, h = geo.image_to_latlon(500, 1000)`.
+- Batch input uses an `(N, 2)` stacked array (not separate row/col arrays).
+- The **internal** abstract method `_image_to_latlon_array` still operates on separate arrays and returns `Tuple[np.ndarray, np.ndarray, np.ndarray]` -- subclasses do not change.
 - Do not provide separate `*_batch()` methods. One method handles both cases.
 
 **Example:**
@@ -664,24 +665,39 @@ class Geolocation(ABC):
     def _image_to_latlon_array(
         self, rows: np.ndarray, cols: np.ndarray, height: float = 0.0
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Subclasses implement vectorized array transform."""
+        """Subclasses implement vectorized array transform.
+
+        INTERNAL contract: accepts separate 1-D arrays, returns separate
+        1-D arrays. The public method stacks the result.
+        """
         pass
 
     def image_to_latlon(
         self,
-        row: Union[float, list, np.ndarray],
-        col: Union[float, list, np.ndarray],
-        height: float = 0.0
-    ) -> Union[Tuple[float, float, float],
-               Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Public method: scalar in → scalar out, array in → array out."""
-        scalar = _is_scalar(row) and _is_scalar(col)
-        rows_arr = _to_array(row)
-        cols_arr = _to_array(col)
-        lats, lons, heights = self._image_to_latlon_array(rows_arr, cols_arr, height)
-        if scalar:
-            return (float(lats[0]), float(lons[0]), float(heights[0]))
-        return lats, lons, heights
+        row_or_pixels: Union[float, np.ndarray],
+        col: Optional[float] = None,
+        height: float = 0.0,
+    ) -> np.ndarray:
+        """Public method: returns stacked ndarray.
+
+        Scalar: geo.image_to_latlon(500, 1000) → (3,) [lat, lon, h]
+        Batch:  geo.image_to_latlon(pixels_Nx2) → (N, 3)
+        Tuple unpacking works: lat, lon, h = geo.image_to_latlon(r, c)
+        """
+        if col is not None:
+            # Scalar call
+            rows_arr = _to_array(row_or_pixels)
+            cols_arr = _to_array(col)
+            lats, lons, heights = self._image_to_latlon_array(
+                rows_arr, cols_arr, height,
+            )
+            return np.array([lats[0], lons[0], heights[0]])
+        # Stacked (N, 2) call
+        pixels = np.asarray(row_or_pixels)
+        lats, lons, heights = self._image_to_latlon_array(
+            pixels[:, 0], pixels[:, 1], height,
+        )
+        return np.column_stack([lats, lons, heights])
 ```
 
 ### NumPy Best Practices

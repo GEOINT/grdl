@@ -1,6 +1,6 @@
 # GRDL — Library Architecture
 
-*Modified: 2026-03-20*
+*Modified: 2026-03-23*
 
 ## Overview
 
@@ -185,16 +185,26 @@ exceptions.py, vocabulary.py              ← no deps (foundation layer)
 
 ## Key Design Patterns
 
-### 1. Scalar/Array Dispatch
+### 1. Stacked ndarray API (Scalar/Array Dispatch)
 
-All geolocation and elevation methods accept scalar, list, or ndarray
-inputs and return matching types. Subclasses implement only the
-vectorized `_*_array()` method; the base class handles dispatch.
+All geolocation and coordinate methods return stacked ndarrays.
+Subclasses implement only the vectorized `_*_array()` method; the
+base class handles dispatch and stacking.
 
 ```python
-lat, lon, h = geo.image_to_latlon(500, 1000)              # scalar
-lats, lons, hs = geo.image_to_latlon(rows_arr, cols_arr)   # array
-result = geo.image_to_latlon(points_2xN)                   # stacked
+# Scalar — returns (3,) ndarray [lat, lon, h]; tuple unpacking works
+lat, lon, h = geo.image_to_latlon(500, 1000)
+
+# Stacked (N, 2) input — returns (N, 3) ndarray
+result = geo.image_to_latlon(pixels_Nx2)
+
+# Inverse: scalar → (2,) [row, col]; stacked (N, 3) → (N, 2)
+row, col = geo.latlon_to_image(lat, lon)
+pixels = geo.latlon_to_image(coords_Nx3)
+
+# Coordinate functions: (N, 3) in → (N, 3) out
+ecef = geodetic_to_ecef(pts_Nx3)
+geo_pts = ecef_to_geodetic(ecef_Nx3)
 ```
 
 ### 2. Processor Metadata System
