@@ -274,7 +274,7 @@ class Sentinel2Catalog(CatalogInterface):
         Parameters
         ----------
         metadata : Sentinel2Metadata
-            Metadata object with crs and extras containing transform.
+            Metadata object with crs and transform attributes.
 
         Returns
         -------
@@ -282,7 +282,7 @@ class Sentinel2Catalog(CatalogInterface):
             JSON-encoded corner coordinates or None.
         """
         try:
-            transform = metadata.extras.get('transform') if metadata.extras else None
+            transform = getattr(metadata, 'transform', None)
             if transform is None or metadata.crs is None:
                 return None
 

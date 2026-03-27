@@ -173,7 +173,7 @@ GRDL/
 │   │   └── elevation/               #   Terrain elevation models
 │   │       ├── base.py              #   ElevationModel ABC
 │   │       ├── constant.py          #   ConstantElevation (fixed-height fallback)
-│   │       ├── dted.py              #   DTEDElevation (DTED tiles via rasterio)
+│   │       ├── dted.py              #   DTEDElevation (DTED tiles, bicubic, cross-tile stitching)
 │   │       ├── geotiff_dem.py       #   GeoTIFFDEM (GeoTIFF DEM via rasterio)
 │   │       └── geoid.py             #   GeoidCorrection (EGM96 geoid undulation)
 │   ├── image_processing/            # Image transforms module
@@ -182,7 +182,7 @@ GRDL/
 │   │   ├── versioning.py            #   @processor_version, @processor_tags, DetectionInputSpec
 │   │   ├── pipeline.py              #   Pipeline (sequential transform composition)
 │   │   ├── ortho/
-│   │   │   ├── ortho.py             #   OutputGridProtocol, GeographicGrid (alias: OutputGrid), Orthorectifier
+│   │   │   ├── ortho.py             #   OutputGridProtocol, GeographicGrid, Orthorectifier
 │   │   │   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult
 │   │   │   ├── enu_grid.py          #   ENUGrid (local East-North-Up grid)
 │   │   │   ├── utm_grid.py          #   UTMGrid (UTM projection grid)
@@ -372,6 +372,21 @@ with SICDReader('image.nitf') as reader:
     lat, lon, height = geo.image_to_latlon(500, 1000)
 ```
 
+#### Factory and Chip Adapter
+
+`create_geolocation()` auto-detects the reader type and returns the appropriate `Geolocation` subclass. `ChipGeolocation` wraps any geolocation to offset coordinates for a sub-region chip:
+
+```python
+from grdl.geolocation import create_geolocation, ChipGeolocation
+
+# Auto-detect geolocation from any supported reader
+geo = create_geolocation(reader)
+
+# Wrap for a chip starting at (row_offset, col_offset)
+chip_geo = ChipGeolocation(geo, row_offset=1000, col_offset=2000)
+lat, lon, h = chip_geo.image_to_latlon(0, 0)  # maps to (1000, 2000) in full image
+```
+
 #### Elevation Models
 
 Plug a DEM into any geolocation class for terrain-corrected transforms:
@@ -382,9 +397,10 @@ from grdl.geolocation.elevation import (
 )
 
 # DTED tiles (directory of .dt1/.dt2 files)
+# Default is bicubic interpolation with cross-tile boundary stitching
 dem = DTEDElevation('/data/dted/')
 
-# GeoTIFF DEM (single file)
+# GeoTIFF DEM (single file, bicubic default)
 dem = GeoTIFFDEM('/data/srtm_30m.tif')
 
 # Fixed-height fallback (e.g., sea-level for ocean scenes)
@@ -596,12 +612,14 @@ with SICDReader('image.nitf') as reader:
 ```python
 from grdl.image_processing.ortho import OrthoBuilder, ENUGrid
 
+# DEM belongs on the geolocation object
+geo.elevation = dem
+
 # Recommended: OrthoBuilder handles mapping, chip reading, and resampling
 result = (
     OrthoBuilder()
     .with_reader(reader)
     .with_geolocation(geo)
-    .with_elevation(dem)
     .with_enu_grid(pixel_size_m=1.0)       # or .with_resolution(0.001, 0.001)
     .with_interpolation('bilinear')
     .run()
@@ -612,9 +630,10 @@ result.save_geotiff('ortho.tif')            # georeferenced output
 # Direct control: Orthorectifier for custom workflows
 from grdl.image_processing.ortho import Orthorectifier, GeographicGrid
 
+geo.elevation = dem
 grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001,
                                        pixel_size_lon=0.001)
-ortho = Orthorectifier(geo, grid, interpolation='nearest', elevation=dem)
+ortho = Orthorectifier(geo, grid, interpolation='nearest')
 ortho.compute_mapping()
 result = ortho.apply(image, nodata=np.nan)
 ```

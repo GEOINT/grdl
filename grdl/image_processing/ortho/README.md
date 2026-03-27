@@ -28,10 +28,10 @@ Keyword-argument function that auto-resolves resolution, elevation, and grid bou
 from grdl.image_processing.ortho import orthorectify
 
 # From a reader (handles large files, reads only needed pixels)
+geo.elevation = dem
 result = orthorectify(
     geolocation=geo,
     reader=reader,
-    elevation=dem,
     interpolation='bicubic',
     nodata=np.nan,
 )
@@ -51,11 +51,11 @@ result = orthorectify(
 )
 
 # Geographic sub-region with DEM
+geo.elevation = dem
 result = orthorectify(
     geolocation=geo,
     reader=reader,
     metadata=reader.metadata,
-    elevation=dem,
     roi=(36.0, 36.1, -75.8, -75.7),
     tile_size=2048,
 )
@@ -69,7 +69,8 @@ Low-level class for custom workflows. Compute the mapping once, then resample mu
 from grdl.image_processing.ortho import Orthorectifier, GeographicGrid
 
 grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001, pixel_size_lon=0.001)
-ortho = Orthorectifier(geo, grid, interpolation='bilinear', elevation=dem)
+geo.elevation = dem
+ortho = Orthorectifier(geo, grid, interpolation='bilinear')
 ortho.compute_mapping()
 
 band1 = ortho.apply(image_band1, nodata=np.nan)
@@ -80,7 +81,7 @@ band2 = ortho.apply(image_band2, nodata=np.nan)
 
 ### GeographicGrid (WGS-84 degrees)
 
-Geographic grid with lat/lon bounds and degree-per-pixel spacing. (`OutputGrid` is a backwards-compatible alias.)
+Geographic grid with lat/lon bounds and degree-per-pixel spacing.
 
 ```python
 from grdl.image_processing.ortho import GeographicGrid
@@ -187,7 +188,7 @@ assert isinstance(MyGrid(...), OutputGridProtocol)  # runtime check
 
 Pass an `ElevationModel` to inject terrain heights into the geolocation inverse. Without a DEM, all points project to a constant height surface.
 
-`GeoTIFFDEM` defaults to **bicubic** (order=3) interpolation, producing C1-continuous height fields. This eliminates the derivative kinks at DEM cell boundaries that cause visible line distortion in sub-meter orthorectified imagery. Use `interpolation=1` for faster bilinear, or `interpolation=5` for quintic.
+Both `DTEDElevation` and `GeoTIFFDEM` default to **bicubic** (order=3) interpolation, producing C1-continuous height fields. This eliminates the derivative kinks at DEM cell boundaries that cause visible line distortion in sub-meter orthorectified imagery. `DTEDElevation` also performs cross-tile boundary stitching so interpolation kernels are seamless across 1-degree tile edges. Use `interpolation=1` for faster bilinear, or `interpolation=5` for quintic.
 
 ```python
 from grdl.geolocation.elevation import open_elevation
@@ -195,10 +196,10 @@ from grdl.geolocation.elevation import open_elevation
 dem = open_elevation('/data/srtm/', geoid_path='/data/egm96.tif',
                      location=(36.0, -75.5))
 
+geo.elevation = dem
 result = orthorectify(
     geolocation=geo,
     source_array=image,
-    elevation=dem,
     enu_grid=dict(pixel_size_m=1.0),
 )
 ```

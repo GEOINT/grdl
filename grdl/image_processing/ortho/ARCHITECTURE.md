@@ -6,7 +6,7 @@
 ortho/
   __init__.py          Public API re-exports
   ortho.py             OutputGridProtocol, validate_sub_grid_indices,
-                       GeographicGrid (alias: OutputGrid), Orthorectifier (core mapping + resampling)
+                       GeographicGrid, Orthorectifier (core mapping + resampling)
   enu_grid.py          ENUGrid (local meters grid, satisfies OutputGridProtocol)
   utm_grid.py          UTMGrid (UTM projection grid, satisfies OutputGridProtocol)
   web_mercator_grid.py WebMercatorGrid (Web Mercator projection grid, satisfies OutputGridProtocol)
@@ -29,7 +29,6 @@ GeographicGrid                 WGS-84 degree grid (satisfies OutputGridProtocol)
   ├── image_to_latlon()        Grid pixel → lat/lon
   ├── latlon_to_image()        lat/lon → grid pixel
   └── sub_grid()               Tile extraction (via validate_sub_grid_indices)
-  (OutputGrid is a backwards-compatible alias for GeographicGrid)
 
 UTMGrid                        UTM projection grid (satisfies OutputGridProtocol)
   ├── from_geolocation()       Factory from geolocation footprint
@@ -87,15 +86,15 @@ OrthoBuilder.run()
   │     ├── Explicit resolution? → GeographicGrid.from_geolocation(geo, res)
   │     └── Auto-resolve → compute_output_resolution(metadata) → GeographicGrid
   │
-  ├── 2. Create Orthorectifier(geo, grid, interp, elevation)
+  ├── 2. Create Orthorectifier(geo, grid, interp)
   │
   ├── 3. compute_mapping()
   │     │
   │     │  Core: _compute_strip(row_start, row_end, out_cols)
   │     │    For each output pixel in the strip:
   │     │      lat, lon = grid.image_to_latlon(i, j)
-  │     │      if DEM: h = elevation.get_elevation(lat, lon)
-  │     │      src_row, src_col = geo.latlon_to_image(lat, lon, height=h)
+  │     │      src_row, src_col = geo.latlon_to_image(lat, lon)
+  │     │      (geo.elevation handles DEM lookup internally)
   │     │
   │     ├── < 1M pixels → single _compute_strip(0, rows)
   │     └── >= 1M pixels → _compute_mapping_parallel (ThreadPool of strips)
@@ -227,7 +226,7 @@ metadata type          → resolution source
 SICDMetadata           → grid.row.ss / grid.col.ss, graze angle projection
 Sentinel1SLCMetadata   → range/azimuth spacing, incidence angle projection
 NISARMetadata          → scene_center_ground_range_spacing (RSLC) or grid spacing (GSLC)
-dict with 'transform'  → GeoTIFF affine pixel sizes
+metadata with transform → GeoTIFF affine pixel sizes
 dict with 'range_pixel_spacing' → BIOMASS range/azimuth spacing
 ```
 

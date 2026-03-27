@@ -110,8 +110,8 @@ def compute_output_resolution(
         if metadata.get('range_pixel_spacing') is not None:
             logger.debug("Matched metadata type: BIOMASS (dict-like)")
             return _resolution_from_biomass(metadata, geolocation, scale_factor)
-        if metadata.get('transform') is not None:
-            logger.debug("Matched metadata type: GeoTIFF (dict-like)")
+        if getattr(metadata, 'transform', None) is not None:
+            logger.debug("Matched metadata type: GeoTIFF/geocoded raster")
             return _resolution_from_geotiff(metadata, scale_factor)
 
     raise ValueError(
@@ -250,18 +250,18 @@ def _resolution_from_geotiff(
     Tuple[float, float]
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.
     """
-    resolution = metadata['resolution']
+    resolution = metadata.pixel_resolution
 
-    crs = str(metadata.get('crs', ''))
+    crs = str(getattr(metadata, 'crs', '') or '')
     if '4326' in crs or 'WGS' in crs.upper():
         # Already in degrees
         return (abs(resolution[0]) * scale_factor,
                 abs(resolution[1]) * scale_factor)
 
     # Projected CRS -- resolution is in meters
-    bounds = metadata.get('bounds')
+    bounds = metadata.bounds
     if bounds is not None:
-        center_lat = (bounds.bottom + bounds.top) / 2.0
+        center_lat = (bounds[1] + bounds[3]) / 2.0  # (minx, miny, maxx, maxy)
     else:
         center_lat = 0.0
 

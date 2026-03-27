@@ -90,9 +90,10 @@ def full_meta():
         bands=3,
         crs='EPSG:4326',
         nodata=-9999.0,
+        transform='affine_obj',
+        pixel_resolution=(10.0, 10.0),
         extras={
-            'transform': 'affine_obj',
-            'resolution': (10.0, 10.0),
+            'description': 'test image',
         },
     )
 
@@ -145,8 +146,7 @@ def test_dict_access_typed_field(full_meta):
 
 def test_dict_access_extras(full_meta):
     """Dict access resolves extras keys."""
-    assert full_meta['transform'] == 'affine_obj'
-    assert full_meta['resolution'] == (10.0, 10.0)
+    assert full_meta['description'] == 'test image'
 
 
 def test_dict_access_keyerror(basic_meta):
@@ -191,7 +191,7 @@ def test_contains_optional_none(basic_meta):
 
 def test_contains_extras(full_meta):
     """Contains checks extras dict."""
-    assert 'transform' in full_meta
+    assert 'description' in full_meta
     assert 'nonexistent' not in full_meta
 
 
@@ -206,7 +206,7 @@ def test_get_typed_field(full_meta):
 
 def test_get_extras(full_meta):
     """get() returns extras values."""
-    assert full_meta.get('transform') == 'affine_obj'
+    assert full_meta.get('description') == 'test image'
 
 
 def test_get_with_default(basic_meta):
@@ -240,7 +240,8 @@ def test_keys_with_extras(full_meta):
     assert 'format' in k
     assert 'bands' in k
     assert 'transform' in k
-    assert 'resolution' in k
+    assert 'pixel_resolution' in k
+    assert 'description' in k
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ def test_values(full_meta):
     v = full_meta.values()
     assert len(k) == len(v)
     assert v[0] == 'GeoTIFF'  # format
-    assert (10.0, 10.0) in v  # resolution from extras
+    assert (10.0, 10.0) in v  # pixel_resolution typed field
 
 
 def test_items(full_meta):
@@ -263,6 +264,7 @@ def test_items(full_meta):
     assert item_dict['format'] == 'GeoTIFF'
     assert item_dict['rows'] == 1024
     assert item_dict['transform'] == 'affine_obj'
+    assert item_dict['description'] == 'test image'
 
 
 def test_to_dict(full_meta):
@@ -306,7 +308,8 @@ def test_from_dict_roundtrip(full_meta):
     assert restored.format == full_meta.format
     assert restored.rows == full_meta.rows
     assert restored.bands == full_meta.bands
-    assert restored['transform'] == full_meta['transform']
+    assert restored.transform == full_meta.transform
+    assert restored['description'] == full_meta['description']
 
 
 # ---------------------------------------------------------------------------
@@ -325,12 +328,13 @@ def test_dict_conversion(full_meta):
     d = dict(full_meta)
     assert d['format'] == 'GeoTIFF'
     assert d['transform'] == 'affine_obj'
+    assert d['description'] == 'test image'
 
 
 def test_len(basic_meta, full_meta):
     """len() returns number of available keys."""
     assert len(basic_meta) == 4  # format, rows, cols, dtype
-    assert len(full_meta) == 9  # + bands, crs, nodata, transform, resolution
+    assert len(full_meta) == 10  # + bands, crs, nodata, transform, pixel_resolution, description
 
 
 # ---------------------------------------------------------------------------

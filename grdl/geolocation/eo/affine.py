@@ -279,9 +279,9 @@ class AffineGeolocation(Geolocation):
         """Create an AffineGeolocation from a GRDL imagery reader.
 
         Extracts the affine transform, CRS, and image shape from the
-        reader's metadata. Works with any reader that stores a rasterio
-        ``Affine`` transform in ``metadata['transform']`` and a CRS string
-        in ``metadata['crs']`` (e.g. ``GeoTIFFReader``).
+        reader's metadata.  Works with any reader whose metadata has
+        ``transform`` and ``crs`` attributes (e.g., ``GeoTIFFReader``,
+        ``Sentinel2Reader``).
 
         Parameters
         ----------
@@ -306,22 +306,23 @@ class AffineGeolocation(Geolocation):
         ...     geo = AffineGeolocation.from_reader(reader)
         ...     lat, lon, h = geo.image_to_latlon(0, 0)
         """
-        transform = reader.metadata.get('transform')
+        meta = reader.metadata
+        transform = getattr(meta, 'transform', None)
         if transform is None:
             raise ValueError(
                 "Reader metadata does not contain an affine transform. "
-                "AffineGeolocation requires metadata['transform'] to be a "
+                "AffineGeolocation requires metadata.transform to be a "
                 "rasterio.transform.Affine instance."
             )
 
-        crs = reader.metadata.get('crs')
+        crs = getattr(meta, 'crs', None)
         if crs is None:
             raise ValueError(
                 "Reader metadata does not contain a CRS. "
-                "AffineGeolocation requires metadata['crs'] to be a valid "
+                "AffineGeolocation requires metadata.crs to be a valid "
                 "coordinate reference system string (e.g. 'EPSG:4326')."
             )
 
-        shape = (reader.metadata['rows'], reader.metadata['cols'])
+        shape = (meta.rows, meta.cols)
 
         return cls(transform=transform, shape=shape, crs=crs)

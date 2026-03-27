@@ -430,22 +430,21 @@ class TestOrthorectifierDEM:
     """Tests for Orthorectifier with DEM elevation support."""
 
     def test_constant_elevation_accepted(self, affine_geo, source_image):
-        """Orthorectifier should accept ConstantElevation without error."""
+        """Orthorectifier should work with elevation on geolocation."""
         from grdl.geolocation.elevation.constant import ConstantElevation
 
         grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
-        elev = ConstantElevation(height=100.0)
-        ortho = Orthorectifier(
-            affine_geo, grid, interpolation='nearest', elevation=elev
-        )
+        affine_geo.elevation = ConstantElevation(height=100.0)
+        ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
         result = ortho.apply(source_image)
         assert result.shape == (grid.rows, grid.cols)
+        affine_geo.elevation = None  # clean up
 
     def test_elevation_none_default(self, affine_geo, source_image):
         """Without elevation, Orthorectifier should work as before."""
         grid = GeographicGrid.from_geolocation(affine_geo, 0.01, 0.005)
         ortho = Orthorectifier(affine_geo, grid, interpolation='nearest')
-        assert ortho.elevation is None
+        assert affine_geo.elevation is None
         result = ortho.apply(source_image)
         assert result.shape == (grid.rows, grid.cols)
 
@@ -467,10 +466,9 @@ class TestOrthorectifierDEM:
             pixel_size_lat=0.01, pixel_size_lon=0.01,
         )
         grid = GeographicGrid.from_geolocation(geo, 0.01, 0.01)
-        elev = ConstantElevation(height=500.0)
-        ortho = Orthorectifier(
-            geo, grid, interpolation='nearest', elevation=elev,
-        )
+        # DEM is attached to the geolocation — Orthorectifier delegates
+        geo.elevation = ConstantElevation(height=500.0)
+        ortho = Orthorectifier(geo, grid, interpolation='nearest')
         ortho.compute_mapping()
 
         h = received_heights['height']
@@ -491,11 +489,12 @@ class TestOrthorectifierDEM:
         )
         result_no_dem = ortho_no_dem.apply(source_image)
 
+        affine_geo.elevation = ConstantElevation(0.0)
         ortho_dem = Orthorectifier(
             affine_geo, grid, interpolation='nearest',
-            elevation=ConstantElevation(0.0),
         )
         result_dem = ortho_dem.apply(source_image)
+        affine_geo.elevation = None  # clean up
 
         np.testing.assert_array_equal(result_no_dem, result_dem)
 

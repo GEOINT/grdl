@@ -56,7 +56,7 @@ Intensity:
 
 Ortho:
     ``OrthoBuilder`` (recommended), ``OrthoResult``, ``Orthorectifier``,
-    ``OutputGrid``, ``OutputGridProtocol``, ``compute_output_resolution``
+    ``GeographicGrid``, ``OutputGridProtocol``, ``compute_output_resolution``
 
 Decomposition:
     ``PolarimetricDecomposition`` (ABC), ``PauliDecomposition``,
@@ -94,6 +94,7 @@ Orthorectify a SICD image via OrthoBuilder (recommended):
 
 Ortho with ROI (geographic sub-region) and tiling (memory-efficient):
 
+    >>> geo.elevation = dem                          # DEM on geolocation object
     >>> result = (
     ...     OrthoBuilder()
     ...     .with_source_array(mag)
@@ -101,7 +102,6 @@ Ortho with ROI (geographic sub-region) and tiling (memory-efficient):
     ...     .with_resolution(0.001, 0.001)
     ...     .with_roi(36.0, 36.1, -75.8, -75.7)    # geographic subset
     ...     .with_tile_size(2048)                    # bounded mapping memory
-    ...     .with_elevation(dem)                     # DEM terrain correction
     ...     .run()
     ... )
 
@@ -166,7 +166,7 @@ Created
 
 Modified
 --------
-2026-02-18
+2026-03-27
 """
 
 from grdl.image_processing.base import ImageProcessor, ImageTransform, BandwiseTransformMixin

@@ -44,14 +44,13 @@ Created
 
 Modified
 --------
-2026-03-18
+2026-03-27
 """
 
 # Standard library
 import argparse
 import sys
 from pathlib import Path
-from typing import Tuple, Union
 
 # Third-party
 import numpy as np
@@ -60,67 +59,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from grdl.data_prep import ChipExtractor
+from grdl.geolocation.chip import ChipGeolocation
 from grdl.geolocation.coordinates import enu_to_geodetic
-
-
-# ── Chip geolocation wrapper ─────────────────────────────────────────
-
-
-class _ChipGeolocationWrapper:
-    """Adapts full-image geolocation to chip-relative coordinates.
-
-    Parameters
-    ----------
-    geo : Geolocation
-        Full-image geolocation object.
-    row_off : int
-        Row offset of chip origin in the full image.
-    col_off : int
-        Column offset of chip origin in the full image.
-    nrows : int
-        Chip height in pixels.
-    ncols : int
-        Chip width in pixels.
-    """
-
-    def __init__(self, geo, row_off, col_off, nrows, ncols):
-        self._geo = geo
-        self._row_off = row_off
-        self._col_off = col_off
-        self.shape = (nrows, ncols)
-        self.crs = getattr(geo, 'crs', 'WGS84')
-        self.elevation = getattr(geo, 'elevation', None)
-
-    def image_to_latlon(
-        self,
-        row: Union[float, np.ndarray],
-        col: Union[float, np.ndarray],
-        height: float = 0.0,
-    ) -> Tuple:
-        return self._geo.image_to_latlon(
-            np.asarray(row, dtype=np.float64) + self._row_off,
-            np.asarray(col, dtype=np.float64) + self._col_off,
-            height=height,
-        )
-
-    def latlon_to_image(
-        self,
-        lat: Union[float, np.ndarray],
-        lon: Union[float, np.ndarray],
-        height: float = 0.0,
-    ) -> Tuple:
-        r, c = self._geo.latlon_to_image(lat, lon, height=height)
-        r = np.atleast_1d(np.asarray(r, dtype=np.float64)) - self._row_off
-        c = np.atleast_1d(np.asarray(c, dtype=np.float64)) - self._col_off
-        return r, c
-
-    def get_bounds(self):
-        nr, nc = self.shape
-        corners_r = np.array([0.0, 0.0, nr - 1.0, nr - 1.0])
-        corners_c = np.array([0.0, nc - 1.0, 0.0, nc - 1.0])
-        lats, lons, _ = self.image_to_latlon(corners_r, corners_c)
-        return (float(np.min(lons)), float(np.min(lats)),
-                float(np.max(lons)), float(np.max(lats)))
 
 
 # ── Format detection ─────────────────────────────────────────────────
@@ -304,21 +244,24 @@ def main() -> None:
         img = chip.astype(np.float32)
 
     # ── Wrap geolocation ─────────────────────────────────────
-    chip_geo = _ChipGeolocationWrapper(
-        geo, region.row_start, region.col_start, chip_rows, chip_cols)
+    chip_geo = ChipGeolocation(
+        geo,
+        row_offset=region.row_start,
+        col_offset=region.col_start,
+        shape=(chip_rows, chip_cols),
+    )
 
     # ── Orthorectify ─────────────────────────────────────────
     from grdl.image_processing.ortho import orthorectify
     from grdl.geolocation.elevation.constant import ConstantElevation
 
-    scene_elev = ConstantElevation(height=center_h)
+    chip_geo.elevation = ConstantElevation(height=center_h)
 
     print(f"Orthorectifying to ENU grid ({args.pixel_size:.1f} m)...")
     result = orthorectify(
         geolocation=chip_geo,
         source_array=img,
         metadata=meta,
-        elevation=scene_elev,
         interpolation=args.interp,
         nodata=np.nan,
         enu_grid=dict(

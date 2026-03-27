@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-27  Add transform, bounds, pixel_resolution as first-class fields.
 """
 
 # Standard library
@@ -94,6 +94,11 @@ class ImageMetadata:
     bands: Optional[int] = None
     crs: Optional[str] = None
     nodata: Optional[float] = None
+
+    # Geolocation fields (geocoded rasters — GeoTIFF, JP2, etc.)
+    transform: Optional[Any] = None
+    bounds: Optional[Any] = None
+    pixel_resolution: Optional[Any] = None
 
     # Format/sensor-specific catch-all
     extras: Dict[str, Any] = field(default_factory=dict)

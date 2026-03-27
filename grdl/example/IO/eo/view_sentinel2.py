@@ -155,10 +155,10 @@ def view_sentinel2(filepath: Path, cmap: str = "gray",
             print(f"  CRS:            {meta.crs}")
 
         # Print bounds if available
-        if meta.extras and 'bounds' in meta.extras:
-            bounds = meta.extras['bounds']
-            print(f"  Bounds:         ({bounds.left:.1f}, {bounds.bottom:.1f}, "
-                  f"{bounds.right:.1f}, {bounds.top:.1f})")
+        if meta.bounds is not None:
+            b = meta.bounds
+            print(f"  Bounds:         ({b[0]:.1f}, {b[1]:.1f}, "
+                  f"{b[2]:.1f}, {b[3]:.1f})")
 
         print()
 

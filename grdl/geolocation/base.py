@@ -64,7 +64,7 @@ class Geolocation(ABC):
 
     - **Scalar:** ``geo.image_to_latlon(500, 1000)``
     - **Separate arrays:** ``geo.image_to_latlon(rows_array, cols_array)``
-    - **Stacked (2, N) array:** ``geo.image_to_latlon(points_2xN)``
+    - **Stacked (N, 2) array:** ``geo.image_to_latlon(points_Nx2)``
 
     Coordinate Conventions
     ----------------------

@@ -52,7 +52,7 @@ geolocation/
     ├── _backend.py          #   rasterio availability probing
     ├── base.py              #   ElevationModel ABC
     ├── constant.py          #   ConstantElevation (fixed-height fallback)
-    ├── dted.py              #   DTEDElevation (DTED Level 0/1/2 tiles)
+    ├── dted.py              #   DTEDElevation (DTED Level 0/1/2, bicubic, cross-tile stitching)
     ├── geotiff_dem.py       #   GeoTIFFDEM (single GeoTIFF DEM)
     ├── tiled_geotiff_dem.py #   TiledGeoTIFFDEM (multi-tile: FABDEM, SRTM, Copernicus)
     ├── geoid.py             #   GeoidCorrection (EGM96 undulation lookup)
@@ -108,7 +108,8 @@ ElevationModel (ABC)                    ← elevation/base.py
 │     Returns a fixed height for all queries
 │
 ├── DTEDElevation                       ← elevation/dted.py
-│     DTED Level 0/1/2 tiles via rasterio, spatial tile indexing
+│     DTED Level 0/1/2 tiles via rasterio, bilinear/bicubic/quintic
+│     interpolation with cross-tile boundary stitching and void handling
 │
 ├── GeoTIFFDEM                          ← elevation/geotiff_dem.py
 │     Single GeoTIFF DEM via rasterio, bilinear/bicubic/quintic
@@ -155,7 +156,7 @@ COAProjection                           ← projection.py
 
 | DEM source | Class | Notes |
 |-----------|-------|-------|
-| DTED folder (Level 0/1/2) | `DTEDElevation` | Auto-indexes `.dt0`/`.dt1`/`.dt2` tiles |
+| DTED folder (Level 0/1/2) | `DTEDElevation` | Auto-indexes `.dt0`/`.dt1`/`.dt2` tiles; bicubic default, cross-tile stitching |
 | Single GeoTIFF DEM | `GeoTIFFDEM` | Any CRS, bilinear/bicubic/quintic interpolation |
 | Multi-tile GeoTIFF folder | `TiledGeoTIFFDEM` | FABDEM, SRTM, Copernicus; cross-tile interpolation |
 | No DEM available | `ConstantElevation` | Fixed height fallback |

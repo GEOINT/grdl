@@ -89,39 +89,37 @@ class TestConstruction:
 
     def test_from_reader(self):
         """Test from_reader factory with mock reader."""
+        from grdl.IO.models.base import ImageMetadata
         transform = Affine(0.01, 0.0, 116.0, 0.0, -0.01, -31.0)
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500,
-                'cols': 600,
-                'transform': transform,
-                'crs': 'EPSG:4326',
-            }
-        })()
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            crs='EPSG:4326', transform=transform,
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         geo = AffineGeolocation.from_reader(mock_reader)
         assert geo.shape == (500, 600)
         assert geo.native_crs == 'EPSG:4326'
 
     def test_from_reader_missing_transform(self):
         """Test from_reader raises ValueError when transform is missing."""
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500, 'cols': 600,
-                'crs': 'EPSG:4326',
-            }
-        })()
+        from grdl.IO.models.base import ImageMetadata
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            crs='EPSG:4326',
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         with pytest.raises(ValueError, match="affine transform"):
             AffineGeolocation.from_reader(mock_reader)
 
     def test_from_reader_missing_crs(self):
         """Test from_reader raises ValueError when CRS is missing."""
+        from grdl.IO.models.base import ImageMetadata
         transform = Affine(0.01, 0.0, 116.0, 0.0, -0.01, -31.0)
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500, 'cols': 600,
-                'transform': transform,
-            }
-        })()
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            transform=transform,
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         with pytest.raises(ValueError, match="CRS"):
             AffineGeolocation.from_reader(mock_reader)
 

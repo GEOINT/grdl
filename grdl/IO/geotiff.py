@@ -104,11 +104,7 @@ class GeoTIFFReader(ImageReader):
         try:
             self.dataset = rasterio.open(str(self.filepath))
 
-            extras: Dict[str, Any] = {
-                'transform': self.dataset.transform,
-                'bounds': self.dataset.bounds,
-                'resolution': self.dataset.res,
-            }
+            extras: Dict[str, Any] = {}
 
             if 'TIFFTAG_IMAGEDESCRIPTION' in self.dataset.tags():
                 extras['description'] = (
@@ -125,6 +121,9 @@ class GeoTIFFReader(ImageReader):
                 dtype=str(self.dataset.dtypes[0]),
                 crs=crs_str,
                 nodata=self.dataset.nodata,
+                transform=self.dataset.transform,
+                bounds=tuple(self.dataset.bounds),
+                pixel_resolution=self.dataset.res,
                 extras=extras,
             )
 
