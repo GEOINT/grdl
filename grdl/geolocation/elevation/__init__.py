@@ -11,8 +11,9 @@ Key Classes
 -----------
 - ElevationModel: Abstract base class for all elevation models
 - ConstantElevation: Returns a fixed height (default fallback)
-- DTEDElevation: Reads DTED Level 0/1/2 tiles via rasterio
-- GeoTIFFDEM: Reads a single GeoTIFF DEM file via rasterio
+- DTEDElevation: Reads DTED Level 0/1/2 tiles via rasterio, bicubic default,
+  cross-tile boundary stitching, nodata void handling
+- GeoTIFFDEM: Reads a single GeoTIFF DEM file via rasterio, bicubic default
 - GeoidCorrection: EGM96 geoid undulation lookup
 
 Usage
@@ -49,6 +50,7 @@ Created
 
 Modified
 --------
+2026-03-27  Update DTEDElevation description for interpolation/stitching.
 2026-02-11
 """
 

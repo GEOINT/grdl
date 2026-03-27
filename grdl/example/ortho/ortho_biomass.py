@@ -51,14 +51,14 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-27
 """
 
 # Standard library
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional
 
 # Third-party
 import numpy as np
@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.IO import BIOMASSL1Reader
 from grdl.data_prep import ChipExtractor
+from grdl.geolocation.chip import ChipGeolocation
 from grdl.geolocation.sar.gcp import GCPGeolocation
 from grdl.image_processing import PauliDecomposition
 from grdl.image_processing.ortho import orthorectify, detect_backend
@@ -78,41 +79,6 @@ from grdl.image_processing.ortho import orthorectify, detect_backend
 # ---------------------------------------------------------------------------
 
 DATA_DIR = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS")
-
-
-# ---------------------------------------------------------------------------
-# Chip geolocation wrapper
-# ---------------------------------------------------------------------------
-
-class _ChipGeolocationWrapper:
-    """Offset chip-local coords to full-image coords for geolocation."""
-
-    def __init__(self, geo, row_offset, col_offset, chip_rows, chip_cols):
-        self._geo = geo
-        self._row_off = row_offset
-        self._col_off = col_offset
-        self.shape = (chip_rows, chip_cols)
-
-    def image_to_latlon(self, row, col, height=0.0):
-        return self._geo.image_to_latlon(
-            row + self._row_off, col + self._col_off, height=height,
-        )
-
-    def latlon_to_image(self, lat, lon, height=0.0):
-        r, c = self._geo.latlon_to_image(lat, lon, height=height)
-        return r - self._row_off, c - self._col_off
-
-    def get_bounds(self):
-        corners_row = np.array([0.0, 0.0, self.shape[0], self.shape[0]])
-        corners_col = np.array([0.0, self.shape[1], 0.0, self.shape[1]])
-        lats, lons, _ = self.image_to_latlon(corners_row, corners_col)
-        return (
-            float(np.min(lons)), float(np.min(lats)),
-            float(np.max(lons)), float(np.max(lats)),
-        )
-
-    def get_footprint(self):
-        return self._geo.get_footprint()
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +192,11 @@ def ortho_biomass(
           f"({chip_rows} x {chip_cols})")
 
     # Wrap geolocation for chip
-    geo = _ChipGeolocationWrapper(
-        geo_full, region.row_start, region.col_start,
-        chip_rows, chip_cols,
+    geo = ChipGeolocation(
+        geo_full,
+        row_offset=region.row_start,
+        col_offset=region.col_start,
+        shape=(chip_rows, chip_cols),
     )
 
     # ------------------------------------------------------------------

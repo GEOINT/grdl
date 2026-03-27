@@ -106,7 +106,7 @@ Geolocation (ABC)                              geolocation/base.py
 
 ElevationModel (ABC)                           geolocation/elevation/base.py
 ├── ConstantElevation                             Fixed height
-├── DTEDElevation                                 DTED tiles (nearest neighbor)
+├── DTEDElevation                                 DTED tiles (bicubic default, cross-tile stitching)
 └── GeoTIFFDEM                                    GeoTIFF DEM (bicubic default)
 
 ImageProcessor (ABC)                           image_processing/base.py
@@ -239,10 +239,10 @@ Public APIs prefer **keyword-argument functions** over fluent builder
 patterns, following NumPy/SciPy conventions:
 
 ```python
+geo.elevation = dem
 result = orthorectify(
     geolocation=geo,
     reader=reader,
-    elevation=dem,
     interpolation='bilinear',
 )
 ```
@@ -258,9 +258,9 @@ Each module does one job. The application wires them together:
 # IO reads → geolocation transforms → image_processing orthorectifies
 with SICDReader(path) as reader:
     geo = SICDGeolocation.from_reader(reader)
-    dem = open_elevation('/data/dted/')
+    geo.elevation = open_elevation('/data/dted/')
     result = orthorectify(
-        geolocation=geo, reader=reader, elevation=dem,
+        geolocation=geo, reader=reader,
     )
 ```
 

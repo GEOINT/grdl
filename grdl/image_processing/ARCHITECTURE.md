@@ -32,7 +32,7 @@ image_processing/
 │
 ├── ortho/                   # Geometric correction / orthorectification
 │   ├── ortho.py             #   OutputGridProtocol, validate_sub_grid_indices,
-│   │                        #   GeographicGrid (alias: OutputGrid), Orthorectifier
+│   │                        #   GeographicGrid, Orthorectifier
 │   ├── enu_grid.py          #   ENUGrid (satisfies OutputGridProtocol)
 │   ├── utm_grid.py          #   UTMGrid (satisfies OutputGridProtocol)
 │   ├── web_mercator_grid.py #   WebMercatorGrid (satisfies OutputGridProtocol)
@@ -200,11 +200,12 @@ computation, output grid construction, DEM integration, ROI restriction,
 and tiled processing via keyword arguments:
 
 ```python
+geo.elevation = dem                          # DEM terrain correction (lives on geolocation)
+
 result = orthorectify(
     geolocation=geo,
     reader=reader,
     metadata=reader.metadata,        # auto-resolution from SICD/BIOMASS
-    elevation=dem,                   # DEM terrain correction
     roi=(36.0, 36.1, -75.8, -75.7), # geographic sub-region
     tile_size=2048,                  # memory-efficient tiling
     interpolation='nearest',
@@ -332,8 +333,8 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `ToDecibels` | 1.0.0 | ENHANCE | all | floor_db |
 | `PercentileStretch` | 1.0.0 | ENHANCE | all | plow, phigh |
 | `Orthorectifier` | 0.1.0 | GEOM_CORRECT | all | interpolation |
-| `OrthoBuilder` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, elevation, nodata |
-| `GeographicGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` (alias: `OutputGrid`) |
+| `OrthoBuilder` | — | — | all | source, geolocation, resolution, roi, tile_size, interpolation, nodata |
+| `GeographicGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` |
 | `PauliDecomposition` | 0.1.0 | — | SAR | — |
 | `DualPolHAlpha` | 1.0.0 | — | SAR | window_size |
 | `CACFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |

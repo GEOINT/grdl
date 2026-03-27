@@ -9,8 +9,10 @@ meters.
 
 ``orthorectify()`` is the recommended entry point — a keyword-argument
 function for configuring source data, geolocation, resolution (explicit
-or auto-computed from metadata), DEM terrain correction, geographic ROI
-restriction, ENU output mode, and memory-efficient tiled processing.
+or auto-computed from metadata), geographic ROI restriction, ENU output
+mode, and memory-efficient tiled processing.  DEM terrain correction is
+handled by attaching the DEM to the geolocation object
+(``geo.elevation = dem``) before calling ``orthorectify()``.
 ``OrthoBuilder`` provides the underlying fluent builder for advanced use.
 
 Resampling is accelerated via a multi-backend dispatch chain:
@@ -26,7 +28,8 @@ orthorectify
 OrthoBuilder
     Fluent builder for advanced use (partial configuration, reuse).
     Accepts source arrays or readers, resolves output grid, and
-    dispatches to full-grid or tiled execution.
+    dispatches to full-grid or tiled execution.  DEM terrain correction
+    is configured on the geolocation object, not on the builder.
 OrthoResult
     Output container holding orthorectified data, output grid, and
     geolocation metadata for downstream writers.
@@ -53,7 +56,7 @@ ENUGrid
     provides ``image_to_latlon()``, ``latlon_to_image()``, and
     ``sub_grid()``.
 validate_sub_grid_indices
-    Shared bounds-checking helper used by ``OutputGrid.sub_grid()``
+    Shared bounds-checking helper used by ``GeographicGrid.sub_grid()``
     and ``ENUGrid.sub_grid()`` to validate tile indices.
 compute_output_resolution
     Auto-compute output pixel size in degrees from sensor metadata.
@@ -88,13 +91,13 @@ Created
 
 Modified
 --------
-2026-03-20
+2026-03-27
 """
 
 from grdl.image_processing.ortho.ortho import (
     Orthorectifier,
     GeographicGrid,
-    OutputGrid,  # backwards-compatible alias
+    OutputGrid,
     OutputGridProtocol,
     validate_sub_grid_indices,
 )

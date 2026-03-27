@@ -33,6 +33,7 @@ Created
 
 Modified
 --------
+2026-03-27  Add interpolation parameter, pass through to all DEM backends.
 2026-03-18
 """
 
@@ -56,6 +57,7 @@ def open_elevation(
     geoid_path: Optional[str] = None,
     location: Optional[Tuple[float, float]] = None,
     fallback_height: float = 0.0,
+    interpolation: int = 3,
 ) -> ElevationModel:
     """Auto-detect DEM format and return an appropriate ElevationModel.
 
@@ -79,6 +81,12 @@ def open_elevation(
     fallback_height : float
         Height (meters HAE) to use if no DEM can be loaded.  Returns
         a ``ConstantElevation`` in this case.
+    interpolation : int, default=3
+        Spline interpolation order for DEM sampling:
+
+        - ``1`` — bilinear (C0, fast)
+        - ``3`` — bicubic (C1, recommended for ortho)
+        - ``5`` — quintic (C2, very smooth)
 
     Returns
     -------
@@ -107,7 +115,10 @@ def open_elevation(
         if dem_path.suffix.lower() in ('.tif', '.tiff', '.geotiff'):
             try:
                 from grdl.geolocation.elevation.geotiff_dem import GeoTIFFDEM
-                model = GeoTIFFDEM(str(dem_path), geoid_path=geoid_path)
+                model = GeoTIFFDEM(
+                    str(dem_path), geoid_path=geoid_path,
+                    interpolation=interpolation,
+                )
                 logger.info("Loaded GeoTIFF DEM: %s", dem_path.name)
                 return model
             except Exception as e:
@@ -120,12 +131,14 @@ def open_elevation(
     # ── Directory ────────────────────────────────────────────────
     elif dem_path.is_dir():
         # Try DTED first
-        model = _try_dted(dem_path, geoid_path, location)
+        model = _try_dted(dem_path, geoid_path, location, interpolation)
         if model is not None:
             return model
 
         # Try tiled GeoTIFF (FABDEM, Copernicus, etc.)
-        model = _try_tiled_geotiff(dem_path, geoid_path, location)
+        model = _try_tiled_geotiff(
+            dem_path, geoid_path, location, interpolation,
+        )
         if model is not None:
             return model
 
@@ -146,11 +159,15 @@ def _try_dted(
     dem_dir: Path,
     geoid_path: Optional[str],
     location: Optional[Tuple[float, float]],
+    interpolation: int = 3,
 ) -> Optional[ElevationModel]:
     """Try to open a DTED directory and verify coverage at location."""
     try:
         from grdl.geolocation.elevation.dted import DTEDElevation
-        dted = DTEDElevation(str(dem_dir), geoid_path=geoid_path)
+        dted = DTEDElevation(
+            str(dem_dir), geoid_path=geoid_path,
+            interpolation=interpolation,
+        )
 
         # Verify coverage if location is given
         if location is not None:
@@ -170,6 +187,7 @@ def _try_tiled_geotiff(
     dem_dir: Path,
     geoid_path: Optional[str],
     location: Optional[Tuple[float, float]],
+    interpolation: int = 3,
 ) -> Optional[ElevationModel]:
     """Scan a directory for GeoTIFF tiles and load as TiledGeoTIFFDEM.
 
@@ -188,7 +206,10 @@ def _try_tiled_geotiff(
         from grdl.geolocation.elevation.tiled_geotiff_dem import (
             TiledGeoTIFFDEM,
         )
-        model = TiledGeoTIFFDEM(str(dem_dir), geoid_path=geoid_path)
+        model = TiledGeoTIFFDEM(
+            str(dem_dir), geoid_path=geoid_path,
+            interpolation=interpolation,
+        )
         if model.tile_count == 0:
             return None
 

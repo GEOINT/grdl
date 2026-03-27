@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-27
 """
 
 # Base
@@ -139,7 +139,17 @@ from grdl.IO.models.viirs import VIIRSMetadata
 from grdl.IO.models.aster import ASTERMetadata
 
 # Sentinel-2
-from grdl.IO.models.sentinel2 import Sentinel2Metadata
+from grdl.IO.models.sentinel2 import (
+    Sentinel2Metadata,
+    S2ProductInfo,
+    S2QualityIndicators,
+    S2TileGeocoding,
+    S2AngleGrid,
+    S2MeanAngles,
+    S2RadiometricInfo,
+    S2SpectralBand,
+    S2Footprint,
+)
 
 # Sentinel-1 SLC
 from grdl.IO.models.sentinel1_slc import (
@@ -301,6 +311,14 @@ __all__ = [
     'ASTERMetadata',
     # Sentinel-2
     'Sentinel2Metadata',
+    'S2ProductInfo',
+    'S2QualityIndicators',
+    'S2TileGeocoding',
+    'S2AngleGrid',
+    'S2MeanAngles',
+    'S2RadiometricInfo',
+    'S2SpectralBand',
+    'S2Footprint',
     # Sentinel-1 SLC
     'Sentinel1SLCMetadata',
     'S1SLCProductInfo',

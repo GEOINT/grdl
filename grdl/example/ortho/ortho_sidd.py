@@ -44,14 +44,13 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-03-27
 """
 
 # Standard library
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union
 
 # Third-party
 import numpy as np
@@ -61,83 +60,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from grdl.IO.sar import SIDDReader
 from grdl.data_prep import ChipExtractor
+from grdl.geolocation.chip import ChipGeolocation
+from grdl.geolocation.elevation import open_elevation
 from grdl.geolocation.sar.sidd import SIDDGeolocation
 from grdl.image_processing.ortho import orthorectify, detect_backend
-
-
-# ---------------------------------------------------------------------------
-# Chip geolocation wrapper
-# ---------------------------------------------------------------------------
-
-class _ChipGeolocationWrapper:
-    """Offset chip-local coords to full-image coords for geolocation."""
-
-    def __init__(
-        self,
-        geo: SIDDGeolocation,
-        row_offset: int,
-        col_offset: int,
-        chip_rows: int,
-        chip_cols: int,
-    ) -> None:
-        self._geo = geo
-        self._row_off = row_offset
-        self._col_off = col_offset
-        self.shape = (chip_rows, chip_cols)
-
-    def image_to_latlon(
-        self,
-        row: Union[float, np.ndarray],
-        col: Union[float, np.ndarray],
-        height: float = 0.0,
-    ) -> Tuple:
-        return self._geo.image_to_latlon(
-            row + self._row_off, col + self._col_off, height=height,
-        )
-
-    def latlon_to_image(
-        self,
-        lat: Union[float, np.ndarray],
-        lon: Union[float, np.ndarray],
-        height: float = 0.0,
-    ) -> Tuple:
-        r, c = self._geo.latlon_to_image(lat, lon, height=height)
-        return r - self._row_off, c - self._col_off
-
-    def get_bounds(self) -> Tuple[float, float, float, float]:
-        corners_row = np.array([0.0, 0.0, self.shape[0], self.shape[0]])
-        corners_col = np.array([0.0, self.shape[1], 0.0, self.shape[1]])
-        lats, lons, _ = self.image_to_latlon(corners_row, corners_col)
-        return (
-            float(np.min(lons)), float(np.min(lats)),
-            float(np.max(lons)), float(np.max(lats)),
-        )
-
-    def get_footprint(self):
-        return self._geo.get_footprint()
-
-
-# ---------------------------------------------------------------------------
-# FABDEM tile finder
-# ---------------------------------------------------------------------------
-
-def _find_fabdem_tile(
-    lat: float, lon: float, fabdem_root: str,
-) -> Optional[str]:
-    """Find the FABDEM GeoTIFF tile covering the given lat/lon."""
-    fabdem = Path(fabdem_root)
-    if not fabdem.exists():
-        return None
-
-    lat_floor = int(np.floor(lat))
-    lon_floor = int(np.floor(lon))
-    ns = 'N' if lat_floor >= 0 else 'S'
-    ew = 'E' if lon_floor >= 0 else 'W'
-    tile_name = f"{ns}{abs(lat_floor):02d}{ew}{abs(lon_floor):03d}"
-
-    for tif in fabdem.rglob(f"{tile_name}*.tif"):
-        return str(tif)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -222,9 +148,11 @@ def ortho_sidd(
         # Create geolocation (full image), then wrap for chip
         # --------------------------------------------------------------
         geo_full = SIDDGeolocation.from_reader(reader)
-        geo = _ChipGeolocationWrapper(
-            geo_full, region.row_start, region.col_start,
-            chip_rows, chip_cols,
+        geo = ChipGeolocation(
+            geo_full,
+            row_offset=region.row_start,
+            col_offset=region.col_start,
+            shape=(chip_rows, chip_cols),
         )
 
         # --------------------------------------------------------------
@@ -248,23 +176,14 @@ def ortho_sidd(
     # ------------------------------------------------------------------
     elev = None
     if dem_path is not None:
-        dem_file = dem_path
-        if Path(dem_path).is_dir():
-            clat, clon, _ = geo.image_to_latlon(
-                chip_rows / 2.0, chip_cols / 2.0,
-            )
-            tile = _find_fabdem_tile(float(clat), float(clon), dem_path)
-            if tile:
-                dem_file = tile
-                print(f"  FABDEM tile: {Path(tile).name}")
-            else:
-                print(f"  No FABDEM tile found for ({clat:.2f}, {clon:.2f})")
-                dem_file = None
-
-        if dem_file is not None:
-            from grdl.geolocation.elevation.geotiff_dem import GeoTIFFDEM
-            elev = GeoTIFFDEM(dem_file)
-            print(f"  DEM:        {dem_file}")
+        clat, clon, _ = geo.image_to_latlon(
+            chip_rows / 2.0, chip_cols / 2.0,
+        )
+        elev = open_elevation(
+            dem_path,
+            location=(float(clat), float(clon)),
+        )
+        print(f"  DEM:        {type(elev).__name__}")
 
     # ------------------------------------------------------------------
     # Build and run WGS-84 pipeline
@@ -276,7 +195,7 @@ def ortho_sidd(
         nodata=np.nan,
     )
     if elev is not None:
-        wgs_kwargs['elevation'] = elev
+        geo.elevation = elev
     if resolution is not None:
         wgs_kwargs['resolution'] = (resolution, resolution)
         print(f"  Resolution: {resolution:.6f} deg (user)")
@@ -325,9 +244,6 @@ def ortho_sidd(
             nodata=np.nan,
             enu_grid=dict(pixel_size_m=enu_pixel_m),
         )
-        if elev is not None:
-            enu_kwargs['elevation'] = elev
-
         t_enu0 = time.perf_counter()
         result_enu = orthorectify(**enu_kwargs)
         timings['ortho_enu'] = time.perf_counter() - t_enu0

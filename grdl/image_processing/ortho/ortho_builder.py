@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-03-20
+2026-03-27  DEM attached to geolocation instead of passed to Orthorectifier.
 """
 
 # Standard library
@@ -57,7 +57,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from grdl.IO.base import ImageReader
     from grdl.geolocation.base import Geolocation
-    from grdl.geolocation.elevation.base import ElevationModel
 
 
 class OrthoResult:
@@ -220,7 +219,6 @@ class OrthoBuilder:
         self._reader: Optional['ImageReader'] = None
         self._metadata: Optional[Any] = None
         self._geolocation: Optional['Geolocation'] = None
-        self._elevation: Optional['ElevationModel'] = None
         self._output_grid: Optional[GeographicGrid] = None
         self._pixel_size_lat: Optional[float] = None
         self._pixel_size_lon: Optional[float] = None
@@ -290,24 +288,6 @@ class OrthoBuilder:
             Self for chaining.
         """
         self._geolocation = geolocation
-        return self
-
-    def with_elevation(
-        self, elevation: 'ElevationModel'
-    ) -> 'OrthoBuilder':
-        """Set the elevation model for terrain correction.
-
-        Parameters
-        ----------
-        elevation : ElevationModel
-            DEM / DTED elevation model.
-
-        Returns
-        -------
-        OrthoBuilder
-            Self for chaining.
-        """
-        self._elevation = elevation
         return self
 
     def with_output_grid(self, grid: GeographicGrid) -> 'OrthoBuilder':
@@ -580,20 +560,20 @@ class OrthoBuilder:
         # 1. Resolve output grid
         grid = self._resolve_output_grid()
 
-        # 2. Create orthorectifier with optional DEM
+        # 2. Create orthorectifier
         logger.info(
             "Starting mapping for %dx%d grid, DEM %s",
             grid.rows, grid.cols,
-            "provided" if self._elevation is not None else "not provided",
+            "attached" if getattr(self._geolocation, 'elevation', None) is not None
+            else "not provided",
         )
         ortho = Orthorectifier(
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
-            elevation=self._elevation,
         )
 
-        # 3. Compute mapping (DEM heights injected here if configured)
+        # 3. Compute mapping (geolocation handles DEM internally)
         ortho.compute_mapping()
 
         # 4. Resample
@@ -740,7 +720,6 @@ class OrthoBuilder:
                 geolocation=self._geolocation,
                 output_grid=sub,
                 interpolation=self._interpolation,
-                elevation=self._elevation,
             )
             tile_ortho.compute_mapping()
 
@@ -780,7 +759,6 @@ class OrthoBuilder:
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
-            elevation=self._elevation,
         )
         geo_meta = meta_ortho.get_output_geolocation_metadata()
 
@@ -801,7 +779,6 @@ def orthorectify(
     reader: Optional['ImageReader'] = None,
     source_array: Optional[np.ndarray] = None,
     metadata: Optional[Any] = None,
-    elevation: Optional['ElevationModel'] = None,
     output_grid: Optional['GeographicGrid'] = None,
     resolution: Optional[Tuple[float, float]] = None,
     interpolation: str = 'bilinear',
@@ -817,20 +794,20 @@ def orthorectify(
 
     Convenience function wrapping ``OrthoBuilder`` with keyword arguments.
     Provide either ``reader`` (reads pixels on demand) or ``source_array``
-    (pre-loaded data).
+    (pre-loaded data).  Attach a DEM to ``geolocation.elevation`` before
+    calling for terrain-corrected projection.
 
     Parameters
     ----------
     geolocation : Geolocation
-        Source image geolocation (required).
+        Source image geolocation (required).  Set
+        ``geolocation.elevation`` for terrain correction.
     reader : ImageReader, optional
         Open imagery reader.  Mutually exclusive with ``source_array``.
     source_array : np.ndarray, optional
         Pre-loaded source array.  Mutually exclusive with ``reader``.
     metadata : Any, optional
         Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
-    elevation : ElevationModel, optional
-        DEM for terrain correction.
     output_grid : GeographicGrid or ENUGrid, optional
         Explicit output grid.  Overrides auto-computation.
     resolution : (float, float), optional
@@ -868,12 +845,12 @@ def orthorectify(
 
     Examples
     --------
-    From a reader::
+    From a reader with DEM::
 
+        geo.elevation = dem
         result = orthorectify(
             geolocation=geo,
             reader=reader,
-            elevation=dem,
             interpolation='bilinear',
         )
 
@@ -900,8 +877,6 @@ def orthorectify(
     builder.with_interpolation(interpolation)
     builder.with_nodata(nodata)
 
-    if elevation is not None:
-        builder.with_elevation(elevation)
     if output_grid is not None:
         builder.with_output_grid(output_grid)
     if resolution is not None:

@@ -276,17 +276,17 @@ class TestPipelineROI:
 
     def test_roi_with_elevation(self, geo, source_2d):
         """ROI + DEM should not error."""
-        elev = ConstantElevation(height=100.0)
+        geo.elevation = ConstantElevation(height=100.0)
         result = (
             OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.01, 0.005)
             .with_roi(-30.5, -30.2, 115.2, 115.5)
             .with_interpolation('nearest')
             .run()
         )
+        geo.elevation = None
         assert isinstance(result, OrthoResult)
 
 
@@ -400,12 +400,11 @@ class TestPipelineTiled:
 
     def test_tiled_with_elevation(self, geo, source_2d):
         """Tiling + DEM should match non-tiled + DEM."""
-        elev = ConstantElevation(height=0.0)
+        geo.elevation = ConstantElevation(height=0.0)
         result_full = (
             OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.009, 0.004)
             .with_interpolation('nearest')
             .run()
@@ -414,12 +413,12 @@ class TestPipelineTiled:
             OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.009, 0.004)
             .with_interpolation('nearest')
             .with_tile_size(32)
             .run()
         )
+        geo.elevation = None
         np.testing.assert_array_equal(result_full.data, result_tiled.data)
 
     def test_tiled_multiband(self, geo, source_3d):

@@ -296,15 +296,15 @@ class TestPipelineReader:
 class TestPipelineElevation:
 
     def test_constant_elevation_accepted(self, geo, source_2d):
-        """orthorectify should accept ConstantElevation without error."""
-        elev = ConstantElevation(height=500.0)
+        """orthorectify should work with elevation on geolocation."""
+        geo.elevation = ConstantElevation(height=500.0)
         result = orthorectify(
             geolocation=geo,
             source_array=source_2d,
-            elevation=elev,
             resolution=(0.01, 0.005),
             interpolation='nearest',
         )
+        geo.elevation = None
         assert isinstance(result, OrthoResult)
         assert result.data.shape[0] > 0
 
@@ -316,14 +316,14 @@ class TestPipelineElevation:
             resolution=(0.01, 0.005),
             interpolation='nearest',
         )
-        elev = ConstantElevation(height=0.0)
+        geo.elevation = ConstantElevation(height=0.0)
         result_dem = orthorectify(
             geolocation=geo,
             source_array=source_2d,
-            elevation=elev,
             resolution=(0.01, 0.005),
             interpolation='nearest',
         )
+        geo.elevation = None
         np.testing.assert_array_equal(result_no_dem.data, result_dem.data)
 
 
@@ -390,9 +390,6 @@ class TestBuilderChaining:
 
         reader = MockReader(source_2d)
         assert p.with_reader(reader) is p
-
-        elev = ConstantElevation(0.0)
-        assert p.with_elevation(elev) is p
 
         grid = GeographicGrid.from_geolocation(geo, 0.01, 0.005)
         assert p.with_output_grid(grid) is p

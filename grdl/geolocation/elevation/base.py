@@ -24,7 +24,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-27  Refactor stacked array input from (2, N) to (N, 2) convention.
 """
 
 # Standard library
@@ -136,8 +136,8 @@ class ElevationModel(ABC):
         Accepts three input forms:
 
         - **Scalar:** ``get_elevation(lat, lon)`` returns a single float.
-        - **Stacked (2, N) array:** ``get_elevation(points_2xN)`` returns
-          an ``(N,)`` ndarray.
+        - **Stacked (N, 2) array:** ``get_elevation(points_Nx2)`` returns
+          an ``(N,)`` ndarray.  Columns are ``[lat, lon]``.
         - **Separate arrays:** ``get_elevation(lats_arr, lons_arr)`` returns
           an ndarray.
 
@@ -148,11 +148,11 @@ class ElevationModel(ABC):
         Parameters
         ----------
         lat_or_points : float, list, or np.ndarray
-            Latitude(s) when ``lon`` is provided, or a ``(2, N)`` ndarray
-            of stacked ``[lats; lons]`` when ``lon`` is None.
+            Latitude(s) when ``lon`` is provided, or an ``(N, 2)``
+            ndarray of stacked ``[lat, lon]`` rows when ``lon`` is None.
         lon : float, list, or np.ndarray, optional
-            Longitude(s). Omit to pass a ``(2, N)`` stacked array as the
-            first argument.
+            Longitude(s). Omit to pass an ``(N, 2)`` stacked array as
+            the first argument.
 
         Returns
         -------
@@ -164,7 +164,7 @@ class ElevationModel(ABC):
         Raises
         ------
         ValueError
-            If a ``(2, N)`` array is expected but the shape is wrong.
+            If a stacked array is expected but the shape is wrong.
 
         Examples
         --------
@@ -178,20 +178,20 @@ class ElevationModel(ABC):
         ...     np.array([34.0, 35.0]), np.array([-118.0, -117.0])
         ... )
 
-        Stacked (2, N) array:
+        Stacked (N, 2) array:
 
-        >>> pts = np.array([[34.0, 35.0], [-118.0, -117.0]])
+        >>> pts = np.array([[34.0, -118.0], [35.0, -117.0]])
         >>> heights = elev.get_elevation(pts)
         """
         if lon is None:
-            # (2, N) ndarray input
+            # (N, 2) ndarray input
             pts = np.asarray(lat_or_points, dtype=np.float64)
-            if pts.ndim != 2 or pts.shape[0] != 2:
+            if pts.ndim != 2 or pts.shape[1] != 2:
                 raise ValueError(
-                    f"Expected (2, N) array, got shape {pts.shape}"
+                    f"Expected (N, 2) array, got shape {pts.shape}"
                 )
-            lats_arr = pts[0]
-            lons_arr = pts[1]
+            lats_arr = pts[:, 0]
+            lons_arr = pts[:, 1]
             heights = self._get_elevation_array(lats_arr, lons_arr)
             if self._geoid is not None:
                 heights = heights + self._geoid.get_undulation(

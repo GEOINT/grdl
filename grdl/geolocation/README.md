@@ -421,11 +421,13 @@ dem = ConstantElevation(height=500.0)
 h = dem.get_elevation(34.05, -118.25)  # always 500.0
 ```
 
-**DTEDElevation** — DTED Level 0/1/2:
+**DTEDElevation** — DTED Level 0/1/2 with configurable interpolation:
 
 ```python
 from grdl.geolocation.elevation import DTEDElevation
 dem = DTEDElevation('/data/dted/', geoid_path='/data/egm96.pgm')
+# Default is bicubic interpolation (order=3), recommended for ortho.
+# Cross-tile boundary stitching and nodata void handling are automatic.
 h = dem.get_elevation(34.05, -118.25)       # scalar query
 hs = dem.get_elevation(lats_arr, lons_arr)  # vectorized
 ```
@@ -478,6 +480,9 @@ height_hae = height_msl + geoid_undulation
 ```
 
 Supported formats: EGM96 PGM (`.pgm`), any geoid GeoTIFF (`.tif`).
+Scale and offset are read from file metadata when available (GeoTIFF
+band scale/offset tags, PGM `# Scale` / `# Offset` comment lines),
+falling back to EGM96 defaults for standard `.pgm` files.
 
 ---
 
@@ -565,16 +570,23 @@ with SICDReader('complex.nitf') as reader:
     )
 ```
 
-**Never do this:**
+**Common mistake -- forgetting to set the DEM on the geolocation:**
 
 ```python
-# WRONG: passing DEM to both geolocation AND orthorectifier
-geo.elevation = dem
-result = orthorectify(geolocation=geo, elevation=dem)  # double DEM lookup
+# WRONG: no DEM attached — R/Rdot iteration uses height=0
+geo = SICDGeolocation.from_reader(reader)
+# geo.elevation is None — terrain is ignored!
 
-# WRONG: passing DEM only to orthorectifier
-result = orthorectify(geolocation=geo, elevation=dem)  # geo has no terrain
+result = orthorectify(
+    geolocation=geo,       # no terrain correction in the coordinate transform
+    reader=reader,
+    output_grid=GeographicGrid.from_geolocation(geo, resolution=0.00005),
+)
 ```
+
+Always attach the DEM to the geolocation object *before* orthorectification.
+The orthorectifier has no ``elevation=`` parameter -- terrain correction
+happens inside the geolocation's R/Rdot iteration via ``geo.elevation``.
 
 ---
 
@@ -638,23 +650,27 @@ error = np.max(np.linalg.norm(px_back - pixels, axis=1))
 
 ### Chip Offset Wrapper
 
-When working with a sub-region of a larger image, wrap the geolocation
-to offset chip-local coordinates to full-image coordinates:
+When working with a sub-region (chip) of a larger image, use the
+library-provided ``ChipGeolocation`` class to offset chip-local
+coordinates to full-image coordinates automatically:
 
 ```python
-class ChipGeolocationWrapper:
-    def __init__(self, geo, row_offset, col_offset):
-        self._geo = geo
-        self._row_off = row_offset
-        self._col_off = col_offset
+from grdl.geolocation import ChipGeolocation
 
-    def image_to_latlon(self, pixels):
-        offset = np.array([self._row_off, self._col_off])
-        return self._geo.image_to_latlon(pixels + offset)
+# region is a ChipRegion from data_prep (has .row_start, .col_start, .nrows, .ncols)
+chip_geo = ChipGeolocation(
+    geo,
+    row_offset=region.row_start,
+    col_offset=region.col_start,
+    shape=(region.nrows, region.ncols),
+)
 
-    def latlon_to_image(self, coords):
-        offset = np.array([self._row_off, self._col_off])
-        return self._geo.latlon_to_image(coords) - offset
+# Chip-local (0, 0) maps to (row_start, col_start) in the full image
+lat, lon, h = chip_geo.image_to_latlon(0, 0)
+
+# Batch works the same way
+pixels = np.array([[0, 0], [10, 20], [50, 100]])   # chip-local
+geo_pts = chip_geo.image_to_latlon(pixels)          # (3, 3) [lat, lon, h]
 ```
 
 ### Scene Properties

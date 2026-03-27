@@ -48,6 +48,8 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Interpolation / resampling | `grdl.interpolation` (`PolyphaseInterpolator`, `LanczosInterpolator`, ...) | Manual sinc convolution |
 | Image alignment | `grdl.coregistration` | Custom OpenCV wrappers |
 | Transform detection geometries | `grdl.transforms` | Manual coordinate mapping |
+| Chip geolocation offset | `grdl.geolocation.ChipGeolocation` | Manual row/col offset arithmetic |
+| Auto-detect geolocation from reader | `grdl.geolocation.create_geolocation()` | Manual reader-type inspection |
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
@@ -55,7 +57,7 @@ Modules handle edge cases (boundary snapping, band indexing, lazy loading, resou
 
 **The geolocation object owns the DEM. The orthorectifier does not.**
 
-The `Geolocation` object (SICD, SIDD, RPC, etc.) is responsible for all coordinate transforms including terrain correction. Attach the DEM to `geo.elevation` and let the geolocation use it internally in its R/Rdot iteration. The orthorectifier maps coordinates *through* the geolocation object — it should not query DEM separately or pass a redundant `elevation=` parameter.
+The `Geolocation` object (SICD, SIDD, RPC, etc.) is responsible for all coordinate transforms including terrain correction. Attach the DEM to `geo.elevation` and let the geolocation use it internally in its R/Rdot iteration. The orthorectifier maps coordinates *through* the geolocation object -- it does not accept an `elevation` parameter at all.
 
 ```python
 # CORRECT: DEM lives on the geolocation object
@@ -70,28 +72,21 @@ result = orthorectify(
 ```
 
 ```python
-# WRONG: passing DEM to both geolocation AND orthorectifier
-geo.elevation = dem
-result = orthorectify(
-    geolocation=geo,
-    elevation=dem,         # DO NOT — creates double DEM lookup
-    ...
-)
-```
+# WRONG: forgetting to set geo.elevation — R/Rdot has no terrain data
+geo = SICDGeolocation.from_reader(reader, backend='native')
+# geo.elevation is None — no DEM attached!
 
-```python
-# WRONG: passing DEM only to orthorectifier, not geolocation
 result = orthorectify(
-    geolocation=geo,       # geo.elevation is None — R/Rdot has no terrain
-    elevation=dem,         # orthorectifier queries DEM, but geolocation ignores it
-    ...
+    geolocation=geo,       # projects to height=0 (ellipsoid), ignoring terrain
+    reader=reader,
+    output_grid=grid,
 )
 ```
 
 **Why this matters:**
-- SICD's native R/Rdot inverse checks `self.elevation` first and queries DEM directly — it ignores explicit height arrays when its own DEM is set.
+- SICD's native R/Rdot inverse checks `self.elevation` first and queries DEM directly -- if `geo.elevation` is not set, the projection falls back to the WGS84 ellipsoid (height=0), producing terrain-uncorrected output.
 - SIDD's R/Rdot inverse uses `self.elevation` when the caller passes `height=0.0`.
-- Passing DEM to both creates a double lookup (wasteful). Passing DEM only to the orthorectifier bypasses the geolocation's terrain-corrected R/Rdot iteration entirely.
+- The orthorectifier has no `elevation` parameter. All terrain correction flows through `geo.elevation`.
 
 ### API Style: Functions and Constructors over Fluent Chaining
 
@@ -102,7 +97,6 @@ GRDL targets scientific Python developers who expect the NumPy/SciPy calling con
 result = orthorectify(
     reader=reader,
     geolocation=geo,
-    elevation=ortho_elev,
     interpolation='bilinear',
     output_grid=grid,
 )
@@ -114,7 +108,6 @@ result = (
     OrthoBuilder()
     .with_reader(reader)
     .with_geolocation(geo)
-    .with_elevation(ortho_elev)
     .with_interpolation('bilinear')
     .with_output_grid(grid)
     .run()
@@ -349,7 +342,9 @@ GRDL/
       utils.py               # Footprint, bounds, distance helpers
       coordinates.py         # geodetic_to_ecef, ecef_to_geodetic, geodetic_to_enu, enu_to_geodetic
       projection.py          # COAProjection, image_to_ground_hae/dem, ground_to_image, wgs84_norm
-      __init__.py            # Re-exports all public classes
+      chip.py                # ChipGeolocation (row/col offset wrapper for chipped images)
+      factory.py             # create_geolocation() (auto-detect geolocation from reader)
+      __init__.py            # Re-exports all public classes, ChipGeolocation, create_geolocation
       sar/                   # SAR geolocation submodule
         _backend.py          # sarpy/sarkit availability probing
         gcp.py               # GCPGeolocation (BIOMASS Delaunay interpolation)
@@ -368,7 +363,7 @@ GRDL/
         _backend.py          # rasterio availability probing
         base.py              # ElevationModel ABC
         constant.py          # ConstantElevation (fixed-height fallback)
-        dted.py              # DTEDElevation (DTED tiles via rasterio)
+        dted.py              # DTEDElevation (DTED tiles, bicubic default, cross-tile stitching)
         geotiff_dem.py       # GeoTIFFDEM (GeoTIFF DEM via rasterio)
         geoid.py             # GeoidCorrection (EGM96 geoid undulation lookup)
         __init__.py
@@ -378,7 +373,7 @@ GRDL/
       versioning.py          # @processor_version, @processor_tags
       pipeline.py            # Pipeline (sequential transform composition)
       ortho/                 # Orthorectification
-        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, GeographicGrid (alias: OutputGrid), Orthorectifier
+        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, GeographicGrid, Orthorectifier
         ortho_builder.py     # OrthoBuilder, OrthoResult
         enu_grid.py          # ENUGrid (local East-North-Up grid)
         utm_grid.py          # UTMGrid (UTM projection grid)

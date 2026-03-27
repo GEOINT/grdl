@@ -36,7 +36,7 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-03-27  DEM ownership moved to geolocation; elevation param deprecated.
 """
 
 import logging
@@ -63,7 +63,6 @@ from grdl.image_processing.base import ImageTransform
 
 if TYPE_CHECKING:
     from grdl.geolocation.base import Geolocation
-    from grdl.geolocation.elevation.base import ElevationModel
     from grdl.IO.base import ImageReader
 
 
@@ -496,7 +495,6 @@ class Orthorectifier(ImageTransform):
         geolocation: 'Geolocation',
         output_grid: OutputGridProtocol,
         interpolation: str = 'bilinear',
-        elevation: Optional['ElevationModel'] = None,
     ) -> None:
         """
         Initialize orthorectifier.
@@ -504,19 +502,16 @@ class Orthorectifier(ImageTransform):
         Parameters
         ----------
         geolocation : Geolocation
-            Geolocation for the source image. Must support
-            ``latlon_to_image()`` for inverse mapping.
+            Geolocation for the source image.  Must support
+            ``latlon_to_image()`` for inverse mapping.  Attach a DEM
+            via ``geolocation.elevation`` for terrain-corrected
+            projection — the geolocation handles DEM lookup internally.
         output_grid : OutputGridProtocol
             Output grid specification defining bounds and resolution.
             Any object satisfying ``OutputGridProtocol`` (e.g.
             ``GeographicGrid``, ``ENUGrid``).
         interpolation : str, default='bilinear'
             Resampling method. One of 'nearest', 'bilinear', 'bicubic'.
-        elevation : ElevationModel, optional
-            Terrain elevation model for DEM-corrected projection. When
-            provided, ``compute_mapping()`` looks up terrain heights at
-            each output grid point and passes them to the inverse
-            geolocation for terrain-corrected pixel mapping.
 
         Raises
         ------
@@ -540,7 +535,6 @@ class Orthorectifier(ImageTransform):
         self.geolocation = geolocation
         self.output_grid = output_grid
         self.interpolation = interpolation
-        self.elevation = elevation
         self._order = _INTERPOLATION_ORDERS[interpolation]
 
         # Cached mapping (computed lazily)
@@ -588,10 +582,11 @@ class Orthorectifier(ImageTransform):
         grid = self.output_grid
         total_pixels = grid.rows * grid.cols
 
-        if self.elevation is not None:
-            logger.debug("Using DEM for terrain-corrected mapping")
+        geo_has_dem = getattr(self.geolocation, 'elevation', None) is not None
+        if geo_has_dem:
+            logger.debug("Geolocation has DEM for terrain-corrected mapping")
         else:
-            logger.debug("No DEM provided, using flat-earth mapping")
+            logger.debug("No DEM on geolocation, using flat-earth mapping")
 
         out_cols = np.arange(grid.cols, dtype=np.float64) + 0.5
 
@@ -649,14 +644,9 @@ class Orthorectifier(ImageTransform):
         lats_flat = np.asarray(lats).ravel()
         lons_flat = np.asarray(lons).ravel()
 
-        if self.elevation is not None:
-            heights = self.elevation.get_elevation(lats_flat, lons_flat)
-            heights = np.where(np.isfinite(heights), heights, 0.0)
-            coords = np.column_stack([lats_flat, lons_flat, heights])
-        else:
-            # No ortho-level DEM — pass (N, 2) so the geolocation
-            # object uses its own DEM / default HAE internally.
-            coords = np.column_stack([lats_flat, lons_flat])
+        # Pass (N, 2) coords — the geolocation object handles DEM
+        # lookup internally via its own elevation model.
+        coords = np.column_stack([lats_flat, lons_flat])
         src_px = self.geolocation.latlon_to_image(coords)
         return (
             src_px[:, 0].reshape(n_rows, grid.cols),
