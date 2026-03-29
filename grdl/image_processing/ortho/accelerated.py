@@ -20,8 +20,6 @@ the fastest available backend:
 The numba backend supports order 0 (nearest), 1 (bilinear), 3 (Keys
 cubic, 4x4), and 5 (Lanczos-3, 6x6). Torch supports 0 and 1.
 
-Adapted from Starlight geolocation.ortho.accelerated (same author).
-
 Dependencies
 ------------
 scipy

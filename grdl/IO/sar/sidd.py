@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-03-07
+2026-03-29
 """
 
 # Standard library
@@ -98,7 +98,7 @@ from grdl.IO.models.sicd import (
     SICDMatchType,
     SICDMatchCollection,
 )
-from grdl.IO.sar._backend import require_sar_backend
+from grdl.IO.sar._backend import _HAS_SARPY, require_sar_backend
 
 logger = logging.getLogger(__name__)
 
@@ -1444,9 +1444,24 @@ class SIDDReader(ImageReader):
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
-        """Load SIDD metadata using the active backend."""
+        """Load SIDD metadata using the active backend.
+
+        If sarkit is selected but fails at runtime, falls back to sarpy
+        when available.
+        """
         if self.backend == 'sarkit':
-            self._load_metadata_sarkit()
+            try:
+                self._load_metadata_sarkit()
+            except Exception as e:
+                if _HAS_SARPY:
+                    logger.warning(
+                        "sarkit failed for %s, falling back to sarpy: %s",
+                        self.filepath.name, e,
+                    )
+                    self.backend = 'sarpy'
+                    self._load_metadata_sarpy()
+                else:
+                    raise
         else:
             self._load_metadata_sarpy()
 
@@ -1660,12 +1675,12 @@ class SIDDReader(ImageReader):
                 np.s_[:, :], index=self.image_index,
             )
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)``.
         """
         return (self.metadata['rows'], self.metadata['cols'])

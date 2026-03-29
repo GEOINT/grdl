@@ -676,12 +676,12 @@ class NISARReader(ImageReader):
         ds = self._file[self._imagery_path]
         return ds[()]
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)``.
         """
         return (self.metadata.rows, self.metadata.cols)

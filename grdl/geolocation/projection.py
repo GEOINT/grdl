@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-03-27  Add numba dispatch for image_to_ground_plane and wgs84_norm.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16
 """
@@ -68,6 +69,16 @@ from grdl.geolocation.coordinates import (
     geodetic_to_ecef,
 )
 
+# Optional numba acceleration for R/Rdot algebra
+try:
+    from grdl.geolocation._numba_projection import (
+        image_to_ground_plane_fast as _itgp_fast,
+        wgs84_norm_fast as _wgs84_norm_fast,
+    )
+    _HAS_NUMBA_PROJ = True
+except ImportError:
+    _HAS_NUMBA_PROJ = False
+
 
 # ── WGS-84 helpers ───────────────────────────────────────────────────
 
@@ -86,6 +97,13 @@ def wgs84_norm(ecf: np.ndarray) -> np.ndarray:
         Unit normal vector(s), same shape as input.
     """
     ecf = np.asarray(ecf, dtype=np.float64)
+
+    # Try numba-accelerated path for large batches
+    if _HAS_NUMBA_PROJ:
+        fast = _wgs84_norm_fast(ecf)
+        if fast is not None:
+            return fast
+
     scale = np.array([1.0 / WGS84_A ** 2,
                       1.0 / WGS84_A ** 2,
                       1.0 / WGS84_B ** 2])
@@ -641,6 +659,12 @@ def image_to_ground_plane(
         Points where the R/Rdot contour does not intersect the plane
         are filled with NaN.
     """
+    # Try numba-accelerated path for large batches
+    if _HAS_NUMBA_PROJ:
+        fast_result = _itgp_fast(r, rdot, arp, varp, gref, u_z)
+        if fast_result is not None:
+            return fast_result
+
     r = np.atleast_1d(r).astype(np.float64)
     rdot = np.atleast_1d(rdot).astype(np.float64)
     arp = np.atleast_2d(arp).astype(np.float64)

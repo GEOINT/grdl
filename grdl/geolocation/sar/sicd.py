@@ -33,6 +33,8 @@ Created
 
 Modified
 --------
+2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_native_ppn)
+            and per_point_normal constructor parameter.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16  Add native R/Rdot backend via COAProjection.
 2026-02-17  height param broadened to Union[float, np.ndarray] for DEM support.
@@ -163,8 +165,10 @@ class SICDGeolocation(Geolocation):
         range_bias: float = 0.0,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
+        per_point_normal: bool = True,
     ) -> None:
         backend = _select_backend(backend)
+        self._use_ppn = per_point_normal
 
         # Validate required metadata sections
         if metadata.image_data is None:
@@ -456,6 +460,122 @@ class SICDGeolocation(Geolocation):
 
         return im_points[:, 0], im_points[:, 1]
 
+    def _latlon_to_image_native_ppn(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        height: Union[float, np.ndarray] = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Ground-to-image with per-point WGS-84 ellipsoid normals.
+
+        Same algorithm as ``_latlon_to_image_native`` but recomputes
+        the ground plane normal from each point's ECF position at every
+        iteration instead of using a single SCP-derived normal for the
+        entire batch.  This eliminates the flat-earth approximation
+        error that grows with distance from the SCP.
+
+        For scenes spanning <10 km the improvement is sub-centimeter.
+        For 50+ km scenes (e.g., Maritime Surveillance, spotlight mosaics)
+        the improvement can reach 0.5-1 m.
+
+        Parameters
+        ----------
+        lats, lons : np.ndarray
+            Target geodetic coordinates, each shape ``(N,)``.
+        height : float or np.ndarray, default=0.0
+            Height above WGS-84 ellipsoid (meters).  Overridden by
+            DEM when ``self.elevation`` is set.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        from grdl.geolocation.projection import (
+            image_to_ground_plane, wgs84_norm,
+        )
+
+        # Height resolution — same as _latlon_to_image_native
+        if self.elevation is not None:
+            heights_arr = self.elevation.get_elevation(lats, lons)
+            if isinstance(heights_arr, (int, float)):
+                heights_arr = np.full_like(lats, float(heights_arr))
+            nan_mask = np.isnan(heights_arr)
+            if np.any(nan_mask):
+                fill = float(height) if height != 0.0 else self._get_scp_hae()
+                heights_arr[nan_mask] = fill
+        elif np.ndim(height) > 0:
+            heights_arr = np.asarray(height, dtype=np.float64)
+        elif height != 0.0:
+            heights_arr = np.full_like(lats, float(height))
+        else:
+            heights_arr = np.full_like(lats, self._get_scp_hae())
+
+        # Convert to ECF
+        coords = geodetic_to_ecef(
+            np.column_stack([lats, lons, heights_arr]))
+
+        # Image plane parameters (same setup as _latlon_to_image_native)
+        grid = self.metadata.grid
+        scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
+        u_row = (grid.row.uvect_ecf.to_array()
+                 if grid.row and grid.row.uvect_ecf else
+                 np.array([1.0, 0.0, 0.0]))
+        u_col = (grid.col.uvect_ecf.to_array()
+                 if grid.col and grid.col.uvect_ecf else
+                 np.array([0.0, 1.0, 0.0]))
+        row_ss = grid.row.ss if grid.row and grid.row.ss else 1.0
+        col_ss = grid.col.ss if grid.col and grid.col.ss else 1.0
+        scp_pixel = np.array([self.metadata.image_data.scp_pixel.row,
+                              self.metadata.image_data.scp_pixel.col])
+
+        u_ipn = np.cross(u_row, u_col)
+        u_ipn = u_ipn / np.linalg.norm(u_ipn)
+        u_spn = u_ipn
+        sf = float(np.dot(u_spn, u_ipn))
+
+        # Handle non-orthogonal row/col
+        cos_theta = np.dot(u_row, u_col)
+        sin_theta = np.sqrt(max(1.0 - cos_theta * cos_theta, 1e-30))
+        ipp_transform = np.array(
+            [[1, -cos_theta], [-cos_theta, 1]],
+            dtype=np.float64) / (sin_theta * sin_theta)
+        matrix_transform = np.column_stack([u_row, u_col]) @ ipp_transform
+
+        n = coords.shape[0]
+        g_n = coords.copy()
+        im_points = np.zeros((n, 2), dtype=np.float64)
+
+        for _it in range(10):
+            # Per-point ellipsoid normal from current ground estimate
+            u_gpn = wgs84_norm(g_n)  # (N, 3)
+
+            # Project ground points onto image plane
+            dist_n = np.dot(scp_ecf - g_n, u_ipn) / sf
+            i_n = g_n + np.outer(dist_n, u_spn)
+
+            # Convert to pixel coordinates
+            delta_ipp = i_n - scp_ecf
+            ip_iter = delta_ipp @ matrix_transform
+            im_points[:, 0] = ip_iter[:, 0] / row_ss + scp_pixel[0]
+            im_points[:, 1] = ip_iter[:, 1] / col_ss + scp_pixel[1]
+
+            # R/Rdot forward to ground plane with per-point normals
+            r, rdot, _, arp_coa, varp_coa = \
+                self._coa_proj.projection(im_points)
+            p_n = image_to_ground_plane(
+                r, rdot, arp_coa, varp_coa, g_n, u_gpn)
+
+            # Displacement and adjustment
+            diff_n = coords - p_n
+            delta_gpn = np.linalg.norm(diff_n, axis=1)
+            g_n += diff_n
+
+            if np.all(delta_gpn < 1e-2):
+                break
+
+        return im_points[:, 0], im_points[:, 1]
+
     # ------------------------------------------------------------------
     # Public interface dispatch
     # ------------------------------------------------------------------
@@ -524,6 +644,9 @@ class SICDGeolocation(Geolocation):
             (rows, cols) pixel coordinate arrays.
         """
         if self._coa_proj is not None:
+            if self._use_ppn:
+                return self._latlon_to_image_native_ppn(
+                    lats, lons, height)
             return self._latlon_to_image_native(lats, lons, height)
         elif self.backend == 'sarpy':
             return self._latlon_to_image_sarpy(lats, lons, height)
@@ -614,6 +737,7 @@ class SICDGeolocation(Geolocation):
         delta_arp: Optional[np.ndarray] = None,
         delta_varp: Optional[np.ndarray] = None,
         range_bias: float = 0.0,
+        per_point_normal: bool = False,
     ) -> 'SICDGeolocation':
         """Create SICDGeolocation from a SICDReader instance.
 
@@ -667,4 +791,5 @@ class SICDGeolocation(Geolocation):
             delta_arp=delta_arp,
             delta_varp=delta_varp,
             range_bias=range_bias,
+            per_point_normal=per_point_normal,
         )

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
 import logging
+import re
 import sqlite3
 import warnings
 
@@ -60,7 +61,7 @@ from grdl.IO.catalog.remote_utils import (
     get_cdse_token,
     load_credentials,
 )
-from grdl.exceptions import DependencyError, ProcessorError
+from grdl.exceptions import DependencyError, ProcessorError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -596,6 +597,19 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 "Install with: pip install requests"
             )
 
+        # Validate inputs to prevent OData injection
+        if bbox:
+            west, south, east, north = bbox
+            for coord_name, coord_val in [
+                ("west", west), ("south", south),
+                ("east", east), ("north", north),
+            ]:
+                if not isinstance(coord_val, (int, float)):
+                    raise ValidationError(
+                        f"bbox {coord_name} must be numeric, "
+                        f"got {type(coord_val).__name__}"
+                    )
+
         # Build OData $filter expression
         filter_parts = [
             f"Collection/Name eq '{self.CDSE_COLLECTION}'",
@@ -613,7 +627,6 @@ class Sentinel1SLCCatalog(CatalogInterface):
                 f"ContentDate/Start lt {ts.replace('Z', '.000Z')}"
             )
         if bbox:
-            west, south, east, north = bbox
             wkt = (
                 f"POLYGON(({west} {south},{east} {south},"
                 f"{east} {north},{west} {north},{west} {south}))"

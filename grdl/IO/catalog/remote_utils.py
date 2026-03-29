@@ -378,6 +378,13 @@ def download_file(
         if extract and zipfile.is_zipfile(file_path):
             extract_dir = destination / file_path.stem
             with zipfile.ZipFile(file_path, "r") as zf:
+                resolved_dir = extract_dir.resolve()
+                for member in zf.namelist():
+                    target = (extract_dir / member).resolve()
+                    if not target.is_relative_to(resolved_dir):
+                        raise ValueError(
+                            f"Zip path traversal detected: {member}"
+                        )
                 zf.extractall(extract_dir)
             file_path.unlink()
             result_path = extract_dir

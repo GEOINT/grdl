@@ -188,12 +188,12 @@ class CRSDReader(ImageReader):
         ch_id = list(self.metadata['channels'].keys())[channel]
         return self._reader.read_signal(ch_id)
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get signal dimensions for first channel.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(num_vectors, num_samples)`` for the first channel.
         """
         first_channel = list(self.metadata['channels'].values())[0]

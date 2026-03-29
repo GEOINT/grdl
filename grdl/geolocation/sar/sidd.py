@@ -48,6 +48,8 @@ Created
 
 Modified
 --------
+2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_rdot_ppn)
+            and per_point_normal constructor parameter.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16  Add R/Rdot refinement via COAProjection when TimeCOAPoly
             and ARPPoly are available.
@@ -141,9 +143,11 @@ class SIDDGeolocation(Geolocation):
         refine: bool = True,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
+        per_point_normal: bool = True,
     ) -> None:
         self.metadata = metadata
         self.backend = 'native'
+        self._use_ppn = per_point_normal
 
         meas = metadata.measurement
         if meas is None:
@@ -499,6 +503,9 @@ class SIDDGeolocation(Geolocation):
             else:
                 h = height if height != 0.0 else self._default_hae
                 h_arr = np.full_like(lats, float(h))
+            if self._use_ppn:
+                return self._latlon_to_image_rdot_ppn(
+                    lats, lons, h_arr)
             return self._latlon_to_image_rdot(lats, lons, h_arr)
 
         # Grid-only path: DEM → explicit height → _default_hae.
@@ -628,6 +635,97 @@ class SIDDGeolocation(Geolocation):
             delta_gpn = np.linalg.norm(diff_n, axis=1)
 
             # Step 5: Adjust ground point estimates
+            g_n += diff_n
+
+            if np.all(delta_gpn < tol):
+                break
+
+        return im_points[:, 0], im_points[:, 1]
+
+    def _latlon_to_image_rdot_ppn(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        heights: np.ndarray,
+        max_iter: int = 10,
+        tol: float = 1e-2,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """R/Rdot scene-to-image with per-point WGS-84 ellipsoid normals.
+
+        Same algorithm as ``_latlon_to_image_rdot`` but recomputes
+        the ground plane normal from each point's ECF position at every
+        iteration.  Eliminates the flat-earth approximation error that
+        grows with distance from the reference point.
+
+        Parameters
+        ----------
+        lats, lons, heights : np.ndarray
+            Target geodetic coordinates, each shape ``(N,)``.
+        max_iter : int
+            Maximum iterations.
+        tol : float
+            Ground plane displacement tolerance (meters).
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (rows, cols) pixel coordinate arrays.
+        """
+        from grdl.geolocation.projection import (
+            image_to_ground_plane, wgs84_norm,
+        )
+
+        # Convert target geodetic to ECF
+        coords = _geodetic_to_ecef(
+            np.column_stack([lats, lons, heights]))
+
+        # Image plane parameters (same setup as _latlon_to_image_rdot)
+        ref_point = self._srp
+        ref_pixel = np.array([self._r0, self._c0])
+        u_row = self._row_vec
+        u_col = self._col_vec
+        row_ss = self._dr
+        col_ss = self._dc
+
+        u_ipn = np.cross(u_row, u_col)
+        u_ipn = u_ipn / np.linalg.norm(u_ipn)
+        u_spn = u_ipn
+        sf = float(np.dot(u_spn, u_ipn))
+
+        cos_theta = np.dot(u_row, u_col)
+        sin_theta = np.sqrt(max(1.0 - cos_theta * cos_theta, 1e-30))
+        ipp_transform = np.array(
+            [[1, -cos_theta], [-cos_theta, 1]],
+            dtype=np.float64) / (sin_theta * sin_theta)
+        row_col_transform = np.column_stack([u_row, u_col])
+        matrix_transform = row_col_transform @ ipp_transform
+
+        n = coords.shape[0]
+        g_n = coords.copy()
+        im_points = np.zeros((n, 2), dtype=np.float64)
+
+        for _it in range(max_iter):
+            # Per-point ellipsoid normal from current ground estimate
+            u_gpn = wgs84_norm(g_n)  # (N, 3)
+
+            # Project ground points onto image plane
+            dist_n = np.dot(ref_point - g_n, u_ipn) / sf
+            i_n = g_n + np.outer(dist_n, u_spn)
+
+            # Convert to pixel coordinates
+            delta_ipp = i_n - ref_point
+            ip_iter = delta_ipp @ matrix_transform
+            im_points[:, 0] = ip_iter[:, 0] / row_ss + ref_pixel[0]
+            im_points[:, 1] = ip_iter[:, 1] / col_ss + ref_pixel[1]
+
+            # R/Rdot forward with per-point normals
+            r, rdot, t_coa, arp_coa, varp_coa = \
+                self._coa_proj.projection(im_points)
+            p_n = image_to_ground_plane(
+                r, rdot, arp_coa, varp_coa, g_n, u_gpn)
+
+            diff_n = coords - p_n
+            delta_gpn = np.linalg.norm(diff_n, axis=1)
             g_n += diff_n
 
             if np.all(delta_gpn < tol):
