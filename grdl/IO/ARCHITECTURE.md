@@ -2,7 +2,7 @@
 
 Technical design documentation for the IO module.
 
-Modified: 2026-03-10
+Modified: 2026-03-29
 
 ## Design Philosophy
 
@@ -34,7 +34,8 @@ grdl/
 │   │   ├── sentinel2.py     # Sentinel2Metadata (flat typed fields)
 │   │   ├── sentinel1_slc.py # Sentinel1SLCMetadata + burst/orbit/calibration dataclasses
 │   │   ├── terrasar.py      # TerraSARMetadata + product/scene/radar dataclasses
-│   │   └── nisar.py         # NISARMetadata + identification/orbit/swath dataclasses
+│   │   ├── nisar.py         # NISARMetadata + identification/orbit/swath dataclasses
+│   │   └── eo_nitf.py       # EONITFMetadata + RPCCoefficients + RSMCoefficients
 │   ├── geotiff.py           # GeoTIFFReader, GeoTIFFWriter (rasterio)
 │   ├── hdf5.py              # HDF5Reader, HDF5Writer (h5py)
 │   ├── jpeg2000.py          # JP2Reader (glymur/rasterio)
@@ -46,7 +47,8 @@ grdl/
 │   ├── eo/                  # EO (visible/panchromatic) readers
 │   │   ├── __init__.py      # EO exports + open_eo()
 │   │   ├── _backend.py      # rasterio/glymur availability detection
-│   │   └── sentinel2.py     # Sentinel2Reader (wraps JP2Reader)
+│   │   ├── sentinel2.py     # Sentinel2Reader (wraps JP2Reader)
+│   │   └── nitf.py          # EONITFReader (RPC/RSM extraction)
 │   ├── ir/                  # IR/thermal readers
 │   │   ├── __init__.py      # IR exports + open_ir()
 │   │   ├── _backend.py      # rasterio/h5py availability detection
@@ -138,6 +140,7 @@ Format-specific metadata is provided via typed subclasses:
 | Sentinel-1 SLC | `Sentinel1SLCMetadata(ImageMetadata)` | Burst, orbit, Doppler, calibration/noise vectors |
 | TerraSAR-X | `TerraSARMetadata(ImageMetadata)` | Product, scene, radar params, orbit, calibration |
 | NISAR | `NISARMetadata(ImageMetadata)` | Identification, orbit, attitude, swath, geolocation grid |
+| EO NITF | `EONITFMetadata(ImageMetadata)` | RPC/RSM coefficients, sensor ID, target geometry |
 
 All metadata classes support dict-like `[]` access for backward compatibility (`meta['format']`, `'rows' in meta`, `meta.keys()`) alongside native attribute access (`meta.format`, `meta.collection_info.radar_mode.mode_type`)
 
@@ -174,8 +177,7 @@ Abstract class for image discovery and spatial queries.
   - Unified interface for heterogeneous collections
   - Enables multi-sensor workflows
 
-**Implemented**: `BIOMASSCatalog` in `sar/biomass_catalog.py` provides local
-discovery, ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
+**Implemented**: `BIOMASSCatalog`, `Sentinel1SLCCatalog`, `Sentinel2Catalog`, `NISARCatalog`, `TerraSARCatalog`, `ASTERCatalog`, `VIIRSCatalog` — all inherit from `CatalogInterface` with local discovery, SQLite tracking, and (where applicable) remote search and download.
 
 ### Integration with Other GRDL Modules
 
@@ -221,7 +223,7 @@ with SICDReader('image.nitf') as reader:
 | SICD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
 | CPHD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
 | CRSD | sarkit (only) | sarpy does not fully support CRSD |
-| SIDD | sarkit (only) | sarpy does not fully support SIDD |
+| SIDD | sarkit (primary), sarpy (fallback) | sarkit preferred; sarpy fallback for compatibility |
 | BIOMASS | rasterio | Magnitude/phase GeoTIFFs + XML annotation |
 | Sentinel-1 SLC | rasterio | SAFE archive with TIFF measurements + XML annotation |
 | TerraSAR-X / TanDEM-X | rasterio | CoSSC GeoTIFFs + XML annotation |
@@ -341,6 +343,7 @@ Metadata is organized as a Python package at `grdl/IO/models/`:
 | `sentinel1_slc.py` | `Sentinel1SLCMetadata` + burst, orbit, Doppler, calibration/noise dataclasses |
 | `terrasar.py` | `TerraSARMetadata` + product, scene, radar, orbit, calibration dataclasses |
 | `nisar.py` | `NISARMetadata` + identification, orbit, attitude, swath, geolocation dataclasses |
+| `eo_nitf.py` | `EONITFMetadata` -- RPC/RSM coefficients for EO NITF imagery |
 | `__init__.py` | Re-exports everything; preserves `from grdl.IO.models import ...` paths |
 
 ### Design Decisions

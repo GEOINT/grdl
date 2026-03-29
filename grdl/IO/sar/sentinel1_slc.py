@@ -1012,12 +1012,12 @@ class Sentinel1SLCReader(ImageReader):
         """
         return list(self._available_polarizations)
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get full swath image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)`` — total lines and samples for this swath.
         """
         return (self.metadata.rows, self.metadata.cols)

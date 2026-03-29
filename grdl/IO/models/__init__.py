@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-03-27
+2026-03-29
 """
 
 # Base
@@ -209,6 +209,14 @@ from grdl.IO.models.nisar import (
     NISARProcessingInfo,
 )
 
+# EO NITF
+from grdl.IO.models.eo_nitf import (
+    EONITFMetadata,
+    RPCCoefficients,
+    RSMIdentification,
+    RSMCoefficients,
+)
+
 __all__ = [
     # Base
     'ImageMetadata',
@@ -365,4 +373,9 @@ __all__ = [
     'NISARGeolocationGrid',
     'NISARCalibration',
     'NISARProcessingInfo',
+    # EO NITF
+    'EONITFMetadata',
+    'RPCCoefficients',
+    'RSMIdentification',
+    'RSMCoefficients',
 ]

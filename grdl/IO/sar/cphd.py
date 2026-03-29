@@ -915,12 +915,12 @@ class CPHDReader(ImageReader):
         else:
             return self._reader.read(index=channel)
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get phase history dimensions for first channel.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(num_vectors, num_samples)`` for the first channel.
         """
         first_ch = self.metadata.channels[0]

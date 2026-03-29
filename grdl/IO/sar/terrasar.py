@@ -1020,12 +1020,12 @@ class TerraSARReader(ImageReader):
             return list(self.metadata.product_info.polarization_list)
         return [self._requested_polarization]
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)`` — total lines and samples.
         """
         return (self.metadata.rows, self.metadata.cols)
