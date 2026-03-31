@@ -186,3 +186,16 @@ class OutputFormat(Enum):
     PNG = "png"
     HDF5 = "hdf5"
     NITF = "nitf"
+
+
+class DataType(str, Enum):
+    """Logical data type flowing through a processing pipeline.
+
+    Used to tag edges and ports in grdl-runtime workflow graphs so
+    the executor knows which processor family to dispatch to.
+    """
+
+    RASTER = "raster"
+    FEATURE_SET = "feature_set"
+    DETECTION_SET = "detection_set"
+    METADATA = "metadata"
