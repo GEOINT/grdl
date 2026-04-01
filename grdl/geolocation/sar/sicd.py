@@ -33,6 +33,8 @@ Created
 
 Modified
 --------
+2026-03-31  Use base class _resolve_height and _fill_nan_heights for
+            consistent height/NaN handling.  Add interpolation parameter.
 2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_native_ppn)
             and per_point_normal constructor parameter.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
@@ -166,6 +168,7 @@ class SICDGeolocation(Geolocation):
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         per_point_normal: bool = True,
+        interpolation: int = 3,
     ) -> None:
         backend = _select_backend(backend)
         self._use_ppn = per_point_normal
@@ -200,7 +203,8 @@ class SICDGeolocation(Geolocation):
         shape = (metadata.rows, metadata.cols)
 
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation,
         )
 
         # Always try to build native COAProjection (needed for DEM
@@ -324,16 +328,7 @@ class SICDGeolocation(Geolocation):
         im_points = np.column_stack([rows, cols])
         scp_ecf = self.metadata.geo_data.scp.ecf.to_array()
 
-        # Default HAE: SCP height (never 0 for real scenes).
-        # When height is an array, use the mean as the initial HAE
-        # for the R/Rdot engine (it does its own per-point DEM
-        # iteration internally when self.elevation is set).
-        if np.ndim(height) > 0:
-            h_arr = np.asarray(height, dtype=np.float64)
-            hae = float(np.mean(h_arr)) if np.any(h_arr != 0.0) \
-                else self._get_scp_hae()
-        else:
-            hae = float(height) if height != 0.0 else self._get_scp_hae()
+        hae = self._resolve_height(height)
 
         gpp = image_to_ground_hae(
             self._coa_proj,
@@ -341,6 +336,7 @@ class SICDGeolocation(Geolocation):
             hae=hae,
             scp_ecf=scp_ecf,
             elevation_model=self.elevation,
+            nan_fill_height=hae,
         )
 
         geo = ecef_to_geodetic(gpp)
@@ -379,22 +375,16 @@ class SICDGeolocation(Geolocation):
             image_to_ground_plane, wgs84_norm)
         from grdl.geolocation.coordinates import geodetic_to_ecef
 
-        # Determine per-point heights: DEM → explicit → SCP HAE
+        # Determine per-point heights: DEM → explicit → default_hae
         if self.elevation is not None:
             heights_arr = self.elevation.get_elevation(lats, lons)
             if isinstance(heights_arr, (int, float)):
                 heights_arr = np.full_like(lats, float(heights_arr))
-            nan_mask = np.isnan(heights_arr)
-            if np.any(nan_mask):
-                # Fill gaps with explicit height or SCP HAE
-                fill = float(height) if height != 0.0 else self._get_scp_hae()
-                heights_arr[nan_mask] = fill
+            self._fill_nan_heights(heights_arr, height)
         elif np.ndim(height) > 0:
             heights_arr = np.asarray(height, dtype=np.float64)
-        elif height != 0.0:
-            heights_arr = np.full_like(lats, float(height))
         else:
-            heights_arr = np.full_like(lats, self._get_scp_hae())
+            heights_arr = np.full_like(lats, self._resolve_height(height))
 
         # Convert to ECF (height is embedded)
         coords = geodetic_to_ecef(
@@ -500,16 +490,11 @@ class SICDGeolocation(Geolocation):
             heights_arr = self.elevation.get_elevation(lats, lons)
             if isinstance(heights_arr, (int, float)):
                 heights_arr = np.full_like(lats, float(heights_arr))
-            nan_mask = np.isnan(heights_arr)
-            if np.any(nan_mask):
-                fill = float(height) if height != 0.0 else self._get_scp_hae()
-                heights_arr[nan_mask] = fill
+            self._fill_nan_heights(heights_arr, height)
         elif np.ndim(height) > 0:
             heights_arr = np.asarray(height, dtype=np.float64)
-        elif height != 0.0:
-            heights_arr = np.full_like(lats, float(height))
         else:
-            heights_arr = np.full_like(lats, self._get_scp_hae())
+            heights_arr = np.full_like(lats, self._resolve_height(height))
 
         # Convert to ECF
         coords = geodetic_to_ecef(

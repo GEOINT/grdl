@@ -28,6 +28,7 @@ Created
 
 Modified
 --------
+2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 """
 
@@ -223,6 +224,7 @@ class RSMGeolocation(Geolocation):
         shape: Tuple[int, int] = (1, 1),
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
+        interpolation: int = 3,
     ) -> None:
         if rsm is None:
             raise ValueError("RSMCoefficients is required")
@@ -232,7 +234,8 @@ class RSMGeolocation(Geolocation):
             rsm_id.ground_domain_type if rsm_id and
             rsm_id.ground_domain_type else 'G')
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path)
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation)
 
     def _latlon_to_image_array(
         self,

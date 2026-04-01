@@ -95,6 +95,7 @@ class NISARGeolocation(Geolocation):
         metadata: 'NISARMetadata',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> None:
         if not _HAS_SCIPY:
             raise DependencyError(
@@ -121,7 +122,8 @@ class NISARGeolocation(Geolocation):
         self._build_interpolators(metadata)
         shape = (metadata.rows, metadata.cols)
         super().__init__(shape, crs='WGS84', dem_path=dem_path,
-                         geoid_path=geoid_path)
+                         geoid_path=geoid_path,
+                         interpolation=interpolation)
 
     def _build_interpolators(self, metadata: 'NISARMetadata') -> None:
         """Build forward and inverse interpolators from the geolocation grid.
