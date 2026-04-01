@@ -199,6 +199,15 @@ class NISARSwathParameters:
         Zero-Doppler time vector, shape ``(rows,)``, seconds since epoch.
     zero_doppler_time_reference_epoch : str, optional
         Time reference for zero_doppler_time.
+    doppler_centroid : np.ndarray, optional
+        Doppler centroid 2D grid, shape ``(n_dc_az, n_dc_rng)``, Hz.
+        Extracted from
+        ``metadata/processingInformation/parameters/frequency{X}/dopplerCentroid``.
+    doppler_centroid_slant_range : np.ndarray, optional
+        Slant-range axis of the Doppler centroid grid, shape ``(n_dc_rng,)``, m.
+    doppler_centroid_zero_doppler_time : np.ndarray, optional
+        Zero-Doppler time axis of the Doppler centroid grid,
+        shape ``(n_dc_az,)``, seconds.
     """
 
     acquired_center_frequency: Optional[float] = None
@@ -216,6 +225,11 @@ class NISARSwathParameters:
     slant_range: Optional[np.ndarray] = None
     zero_doppler_time: Optional[np.ndarray] = None
     zero_doppler_time_reference_epoch: Optional[str] = None
+    range_chirp_weighting: Optional[np.ndarray] = None
+    azimuth_chirp_weighting: Optional[np.ndarray] = None
+    doppler_centroid: Optional[np.ndarray] = None
+    doppler_centroid_slant_range: Optional[np.ndarray] = None
+    doppler_centroid_zero_doppler_time: Optional[np.ndarray] = None
 
 
 @dataclass

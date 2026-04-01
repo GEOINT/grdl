@@ -393,9 +393,34 @@ class NISARReader(ImageReader):
         freq_path = (
             f'{self._base_path}/swaths/frequency{self._frequency}'
         )
+        swaths_path = f'{self._base_path}/swaths'
         if freq_path not in self._file:
             return None
         grp = self._file[freq_path]
+        # Try to get zeroDopplerTime from frequency group, else fall back to swaths-level
+        zdt = _read_array(grp, 'zeroDopplerTime')
+        zdt_ref = _read_time_reference(grp, 'zeroDopplerTime')
+        if zdt is None and swaths_path in self._file:
+            zdt = _read_array(self._file[swaths_path], 'zeroDopplerTime')
+            zdt_ref = _read_time_reference(self._file[swaths_path], 'zeroDopplerTime')
+        # Get weighting arrays from processingInformation/parameters
+        proc_params_path = f"{self._base_path}/metadata/processingInformation/parameters"
+        range_chirp_weighting = None
+        azimuth_chirp_weighting = None
+        doppler_centroid = None
+        doppler_centroid_sr = None
+        doppler_centroid_zdt = None
+        if proc_params_path in self._file:
+            proc_grp = self._file[proc_params_path]
+            range_chirp_weighting = _read_array(proc_grp, 'rangeChirpWeighting')
+            azimuth_chirp_weighting = _read_array(proc_grp, 'azimuthChirpWeighting')
+            # Doppler centroid grid is stored per-frequency.
+            dc_freq_path = f'{proc_params_path}/frequency{self._frequency}'
+            if dc_freq_path in self._file:
+                dc_grp = self._file[dc_freq_path]
+                doppler_centroid = _read_array(dc_grp, 'dopplerCentroid')
+                doppler_centroid_sr = _read_array(dc_grp, 'slantRange')
+                doppler_centroid_zdt = _read_array(dc_grp, 'zeroDopplerTime')
         return NISARSwathParameters(
             acquired_center_frequency=_read_scalar_float(
                 grp, 'acquiredCenterFrequency'
@@ -432,10 +457,13 @@ class NISARReader(ImageReader):
                 grp, 'zeroDopplerTimeSpacing'
             ),
             slant_range=_read_array(grp, 'slantRange'),
-            zero_doppler_time=_read_array(grp, 'zeroDopplerTime'),
-            zero_doppler_time_reference_epoch=_read_time_reference(
-                grp, 'zeroDopplerTime'
-            ),
+            zero_doppler_time=zdt,
+            zero_doppler_time_reference_epoch=zdt_ref,
+            range_chirp_weighting=range_chirp_weighting,
+            azimuth_chirp_weighting=azimuth_chirp_weighting,
+            doppler_centroid=doppler_centroid,
+            doppler_centroid_slant_range=doppler_centroid_sr,
+            doppler_centroid_zero_doppler_time=doppler_centroid_zdt,
         )
 
     def _extract_grid_parameters(self) -> Optional[NISARGridParameters]:

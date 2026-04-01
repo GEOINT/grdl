@@ -40,6 +40,7 @@ from typing import Union
 from grdl.IO.sar.sicd import SICDReader
 from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.cphd import CPHDReader
+from grdl.IO.sar.cphd_writer import CPHDWriter
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
 from grdl.IO.sar.sidd_writer import SIDDWriter
