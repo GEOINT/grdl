@@ -100,11 +100,18 @@ dev = [
 [project.urls]
 Repository = "https://github.com/geoint-org/GRDL"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["grdl*"]
 
 [tool.setuptools.package-data]
 grdl = ["**/*.md", "py.typed"]
+
+[tool.setuptools.data-files]
+"share/grdl" = ["README.md", "ARCHITECTURE.md", "LICENSE"]
+"share/grdl/docs" = ["docs/logging_tutorial.md"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:faulthandler"
