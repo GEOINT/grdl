@@ -28,6 +28,7 @@ Created
 
 Modified
 --------
+2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-17
 """
 
@@ -180,12 +181,14 @@ class RPCGeolocation(Geolocation):
         shape: Tuple[int, int] = (1, 1),
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
+        interpolation: int = 3,
     ) -> None:
         if rpc is None:
             raise ValueError("RPCCoefficients is required")
         self.rpc = rpc
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path)
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation)
 
     def _latlon_to_image_array(
         self,

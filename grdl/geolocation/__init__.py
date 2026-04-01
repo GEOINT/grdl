@@ -148,6 +148,7 @@ def create_geolocation(reader: object, **kwargs) -> Geolocation:
         - ``refine`` : bool — SIDD R/Rdot refinement toggle.
         - ``dem_path`` : str — DEM path for elevation.
         - ``geoid_path`` : str — Geoid model path.
+        - ``interpolation`` : int — DEM spline order (1/3/5).
 
     Returns
     -------

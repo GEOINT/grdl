@@ -98,6 +98,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         metadata: 'Sentinel1SLCMetadata',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> None:
         if not _HAS_SCIPY:
             raise DependencyError(
@@ -116,7 +117,8 @@ class Sentinel1SLCGeolocation(Geolocation):
 
         shape = (metadata.rows, metadata.cols)
         super().__init__(shape, crs='WGS84', dem_path=dem_path,
-                         geoid_path=geoid_path)
+                         geoid_path=geoid_path,
+                         interpolation=interpolation)
 
     def _build_interpolators(
         self,

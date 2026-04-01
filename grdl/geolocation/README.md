@@ -411,6 +411,30 @@ lat, lon, h = geo.image_to_latlon(500, 1000)
 row, col = geo.latlon_to_image(lat, lon)
 ```
 
+**DEM interpolation order** can be set via constructor:
+
+```python
+# All geolocation constructors accept interpolation= (default=3, bicubic)
+geo = SICDGeolocation(metadata, dem_path='/data/dted/', interpolation=1)  # bilinear
+geo = RPCGeolocation(rpc, shape=(4096, 4096), dem_path='/data/srtm.tif', interpolation=5)  # quintic
+```
+
+### Unified Height Resolution and NaN Fill
+
+All geolocation subclasses share two base-class methods so that DEM
+behavior is identical everywhere:
+
+- **`_resolve_height(height)`**: Returns the explicit height if non-zero,
+  otherwise falls back to `default_hae` (SCP HAE for SICD, reference
+  point HAE for SIDD, 0.0 for RPC/RSM unless overridden).
+- **`_fill_nan_heights(dem_h, fallback_height)`**: Fills NaN gaps in
+  DEM-queried heights.  Uses `fallback_height` if non-zero, else
+  `default_hae`.
+
+These ensure that SICD, SIDD, RPC, RSM, Affine, and any future
+geolocation types all handle missing DEM coverage and default heights
+the same way.
+
 ### Elevation Models
 
 **ConstantElevation** — fixed height fallback:

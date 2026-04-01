@@ -48,6 +48,8 @@ Created
 
 Modified
 --------
+2026-03-31  Use base class _resolve_height and _fill_nan_heights for
+            consistent height/NaN handling.  Add interpolation parameter.
 2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_rdot_ppn)
             and per_point_normal constructor parameter.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
@@ -144,6 +146,7 @@ class SIDDGeolocation(Geolocation):
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         per_point_normal: bool = True,
+        interpolation: int = 3,
     ) -> None:
         self.metadata = metadata
         self.backend = 'native'
@@ -205,7 +208,8 @@ class SIDDGeolocation(Geolocation):
 
         shape = (metadata.rows, metadata.cols)
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation,
         )
 
     # ------------------------------------------------------------------
@@ -452,12 +456,7 @@ class SIDDGeolocation(Geolocation):
         - **Grid only**: PlaneProjection / GGD / CGD (no R/Rdot).
         """
         if self.has_rdot:
-            if np.ndim(height) > 0:
-                h_arr = np.asarray(height, dtype=np.float64)
-                hae = float(np.mean(h_arr)) if np.any(h_arr != 0.0) \
-                    else self._default_hae
-            else:
-                hae = float(height) if height != 0.0 else self._default_hae
+            hae = self._resolve_height(height)
             return self._image_to_latlon_rdot_fwd(rows, cols, hae)
 
         if self.projection_type == 'PlaneProjection':
@@ -487,7 +486,7 @@ class SIDDGeolocation(Geolocation):
         - **Grid only**: Fast vectorized plane inverse.
         """
         if self.has_rdot:
-            # Height chain: explicit array → DEM → SCP HAE.
+            # Height chain: explicit array → DEM → default_hae.
             # When the caller passes a per-pixel height array (e.g.
             # from Orthorectifier's DEM lookup), use it directly.
             # Only fall back to self.elevation when height is scalar 0.
@@ -497,18 +496,16 @@ class SIDDGeolocation(Geolocation):
                 h_arr = self.elevation.get_elevation(lats, lons)
                 if isinstance(h_arr, (int, float)):
                     h_arr = np.full_like(lats, float(h_arr))
-                nan_mask = np.isnan(h_arr)
-                if np.any(nan_mask):
-                    h_arr[nan_mask] = self._default_hae
+                self._fill_nan_heights(h_arr, height)
             else:
-                h = height if height != 0.0 else self._default_hae
-                h_arr = np.full_like(lats, float(h))
+                h_arr = np.full_like(
+                    lats, self._resolve_height(height))
             if self._use_ppn:
                 return self._latlon_to_image_rdot_ppn(
                     lats, lons, h_arr)
             return self._latlon_to_image_rdot(lats, lons, h_arr)
 
-        # Grid-only path: DEM → explicit height → _default_hae.
+        # Grid-only path: DEM → explicit height → default_hae.
         # Terrain height matters for PlaneProjection — a ground point
         # at a different height than the reference plane projects to a
         # different pixel.  Error scales with
@@ -519,11 +516,9 @@ class SIDDGeolocation(Geolocation):
             h = self.elevation.get_elevation(lats, lons)
             if isinstance(h, (int, float)):
                 h = np.full_like(lats, float(h))
-            nan_mask = np.isnan(h)
-            if np.any(nan_mask):
-                h[nan_mask] = self._default_hae
+            self._fill_nan_heights(h, height)
         else:
-            h = height if height != 0.0 else self._default_hae
+            h = self._resolve_height(height)
         if self.projection_type == 'PlaneProjection':
             return self._latlon_to_plane(lats, lons, h)
         elif self.projection_type == 'GeographicProjection':
@@ -758,6 +753,7 @@ class SIDDGeolocation(Geolocation):
             self._coa_proj, im_points, hae=height,
             scp_ecf=self._scp_ecf,
             elevation_model=self.elevation,
+            nan_fill_height=self._resolve_height(height),
         )
         geo = _ecef_to_geodetic(gpp)
         return geo[:, 0], geo[:, 1], geo[:, 2]

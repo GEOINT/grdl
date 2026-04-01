@@ -333,7 +333,7 @@ catalog.close()
 
 ### Geolocation Transforms
 
-All geolocation classes share the same `Geolocation` ABC and return stacked ndarrays: scalar calls return a 1-D array (e.g., `(3,)` for `[lat, lon, h]`) that supports tuple unpacking, and batch calls accept an `(N, 2)` stacked ndarray and return `(N, 3)`. The ABC constructor accepts optional `dem_path` and `geoid_path` parameters for DEM integration.
+All geolocation classes share the same `Geolocation` ABC and return stacked ndarrays: scalar calls return a 1-D array (e.g., `(3,)` for `[lat, lon, h]`) that supports tuple unpacking, and batch calls accept an `(N, 2)` stacked ndarray and return `(N, 3)`. The ABC constructor accepts optional `dem_path`, `geoid_path`, and `interpolation` (DEM spline order: 1=bilinear, 3=bicubic, 5=quintic) parameters for DEM integration. All subclasses use the same base-class methods for height resolution and NaN fill, ensuring consistent terrain-corrected behavior across SICD, SIDD, RPC, RSM, and geocoded rasters.
 
 ```python
 from grdl.geolocation.sar.gcp import GCPGeolocation
@@ -409,8 +409,9 @@ dem = ConstantElevation(height=0.0)
 # EGM96 geoid undulation correction
 geoid = GeoidCorrection('/data/egm96.tif')
 
-# Pass DEM path to any Geolocation subclass
+# Pass DEM path to any Geolocation subclass (interpolation= sets DEM spline order)
 geo = AffineGeolocation('scene.tif', dem_path='/data/srtm_30m.tif')
+geo = SICDGeolocation(metadata, dem_path='/data/dted/', interpolation=1)  # bilinear
 ```
 
 ### Pauli Decomposition (Quad-Pol SAR)
@@ -610,27 +611,31 @@ with SICDReader('image.nitf') as reader:
 ### Orthorectification
 
 ```python
-from grdl.image_processing.ortho import OrthoBuilder, ENUGrid
+from grdl.image_processing.ortho import orthorectify, GeographicGrid
 
-# DEM belongs on the geolocation object
+# DEM belongs on the geolocation object — the orthorectifier
+# maps coordinates *through* the geolocation, never queries DEM directly
 geo.elevation = dem
 
-# Recommended: OrthoBuilder handles mapping, chip reading, and resampling
-result = (
-    OrthoBuilder()
-    .with_reader(reader)
-    .with_geolocation(geo)
-    .with_enu_grid(pixel_size_m=1.0)       # or .with_resolution(0.001, 0.001)
-    .with_interpolation('bilinear')
-    .run()
+# Recommended: orthorectify() function (keyword arguments, Pythonic)
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    interpolation='bilinear',
 )
 ortho = result.data                         # ndarray
 result.save_geotiff('ortho.tif')            # georeferenced output
 
-# Direct control: Orthorectifier for custom workflows
-from grdl.image_processing.ortho import Orthorectifier, GeographicGrid
+# With explicit grid and ENU coordinates
+result = orthorectify(
+    geolocation=geo,
+    reader=reader,
+    enu_grid=dict(pixel_size_m=1.0),
+)
 
-geo.elevation = dem
+# Direct control: Orthorectifier for custom workflows
+from grdl.image_processing.ortho import Orthorectifier
+
 grid = GeographicGrid.from_geolocation(geo, pixel_size_lat=0.001,
                                        pixel_size_lon=0.001)
 ortho = Orthorectifier(geo, grid, interpolation='nearest')
