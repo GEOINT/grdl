@@ -126,6 +126,7 @@ class AffineGeolocation(Geolocation):
         crs: str,
         dem_path: Optional[Union[str, object]] = None,
         geoid_path: Optional[Union[str, object]] = None,
+        interpolation: int = 3,
     ) -> None:
         # Fail fast if dependencies are missing
         require_affine_backend()
@@ -172,7 +173,8 @@ class AffineGeolocation(Geolocation):
 
         # Initialize base class (output CRS is always WGS84)
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation,
         )
 
         # Store the native CRS for reference

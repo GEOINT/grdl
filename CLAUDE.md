@@ -88,6 +88,35 @@ result = orthorectify(
 - SIDD's R/Rdot inverse uses `self.elevation` when the caller passes `height=0.0`.
 - The orthorectifier has no `elevation` parameter. All terrain correction flows through `geo.elevation`.
 
+### Unified Height Resolution and NaN Fill
+
+All geolocation subclasses share two base-class methods for consistent DEM behavior. **Never reimplement height resolution or NaN fill inline** — call these instead.
+
+**`_resolve_height(height)`** — "What height when user passes 0.0?"
+
+Returns the explicit height if non-zero, otherwise falls back to `default_hae` (which each subclass overrides: SICD returns SCP HAE, SIDD returns reference point HAE, etc.). All paths — SICD, SIDD, RPC, RSM, Affine — go through this single method.
+
+**`_fill_nan_heights(dem_h, fallback_height)`** — "What to use when DEM has no coverage?"
+
+Fills NaN gaps in DEM-queried heights. Uses `fallback_height` if non-zero, otherwise `default_hae`. Every DEM NaN fill — base class wrapper, SICD inverse, SIDD inverse, projection.py — uses this method or a `nan_fill_height` parameter computed from it.
+
+```python
+# CORRECT: use base class methods
+hae = self._resolve_height(height)
+self._fill_nan_heights(dem_h, height)
+
+# WRONG: inline reimplementation
+hae = float(height) if height != 0.0 else self._get_scp_hae()  # don't do this
+dem_h[nan_mask] = hae  # don't do this
+```
+
+**DEM interpolation order** is configurable via the `interpolation` parameter on all geolocation constructors (default=3, bicubic). It flows through `_build_elevation_model` → `open_elevation` → the DEM backend.
+
+```python
+geo = SICDGeolocation(metadata, dem_path='/data/dted/', interpolation=1)  # bilinear
+geo = RPCGeolocation(rpc, shape=(4096, 4096), dem_path='/data/srtm.tif', interpolation=5)  # quintic
+```
+
 ### API Style: Functions and Constructors over Fluent Chaining
 
 GRDL targets scientific Python developers who expect the NumPy/SciPy calling convention. **Prefer plain functions and constructors with keyword arguments** over fluent builder / method-chaining patterns.

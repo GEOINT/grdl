@@ -23,6 +23,9 @@ Created
 
 Modified
 --------
+2026-03-31  Add _resolve_height and _fill_nan_heights for consistent
+            height/NaN handling across all subclasses.  Add interpolation
+            parameter to __init__ and _build_elevation_model.
 2026-03-22  Refactor public API to (N, M) stacked ndarray convention.
             Add _handles_dem_internally bypass, _latlon_to_image_with_dem,
             delegate _build_elevation_model to open_elevation.
@@ -99,6 +102,7 @@ class Geolocation(ABC):
         crs: str = 'WGS84',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ):
         """
         Initialize geolocation.
@@ -116,13 +120,18 @@ class Geolocation(ABC):
         geoid_path : str or Path, optional
             Path to geoid correction file (EGM96/EGM2008). Used with
             ``dem_path`` to convert DEM heights (MSL) to HAE.
+        interpolation : int, default=3
+            Spline interpolation order for DEM sampling (1=bilinear,
+            3=bicubic, 5=quintic).  Only used when ``dem_path`` is
+            provided.
         """
         self.shape = shape
         self.crs = crs
         self.elevation = None
 
         if dem_path is not None:
-            self.elevation = _build_elevation_model(dem_path, geoid_path)
+            self.elevation = _build_elevation_model(
+                dem_path, geoid_path, interpolation=interpolation)
 
     @property
     def default_hae(self) -> float:
@@ -139,6 +148,74 @@ class Geolocation(ABC):
             Height above WGS-84 ellipsoid in meters.
         """
         return 0.0
+
+    def _resolve_height(self, height: Union[float, np.ndarray]) -> float:
+        """Resolve a single representative height for projection.
+
+        Returns the explicit height if non-zero, otherwise falls back
+        to ``default_hae`` (which subclasses override to return their
+        sensor-specific reference height: SCP HAE, reference point,
+        etc.).
+
+        All geolocation subclasses should call this instead of
+        implementing their own ``height if height != 0.0 else ...``
+        logic, so that height resolution is consistent everywhere.
+
+        Parameters
+        ----------
+        height : float or np.ndarray
+            Height value from the caller.  Scalar ``0.0`` triggers
+            fallback to ``default_hae``.  An array triggers fallback
+            when all elements are zero.
+
+        Returns
+        -------
+        float
+            A single representative height in meters HAE.
+        """
+        if np.ndim(height) > 0:
+            arr = np.asarray(height, dtype=np.float64)
+            if np.any(arr != 0.0):
+                return float(np.mean(arr))
+            return self.default_hae
+        return float(height) if height != 0.0 else self.default_hae
+
+    def _fill_nan_heights(
+        self,
+        dem_h: np.ndarray,
+        fallback_height: Union[float, np.ndarray] = 0.0,
+    ) -> np.ndarray:
+        """Fill NaN gaps in DEM-queried heights with a fallback value.
+
+        Uses ``fallback_height`` when it is non-zero, otherwise falls
+        back to ``default_hae``.  This ensures all geolocation paths
+        handle missing DEM coverage identically.
+
+        Parameters
+        ----------
+        dem_h : np.ndarray
+            Heights from a DEM query, shape ``(N,)``.  May contain NaN
+            where the DEM has no coverage.  **Modified in-place.**
+        fallback_height : float or np.ndarray, default=0.0
+            Caller's explicit height.  When scalar and non-zero, used
+            directly as the fill value.  When zero or array, fills with
+            ``default_hae``.
+
+        Returns
+        -------
+        np.ndarray
+            The same ``dem_h`` array with NaN values replaced.
+        """
+        nan_mask = np.isnan(dem_h)
+        if not np.any(nan_mask):
+            return dem_h
+        if np.ndim(fallback_height) > 0:
+            fill = self.default_hae
+        else:
+            fill = (float(fallback_height) if fallback_height != 0.0
+                    else self.default_hae)
+        dem_h[nan_mask] = fill
+        return dem_h
 
     @abstractmethod
     def _image_to_latlon_array(
@@ -244,7 +321,8 @@ class Geolocation(ABC):
             return self._image_to_latlon_array(rows, cols, height)
 
         n = len(rows)
-        h_arr = np.full(n, float(height))
+        initial_h = self._resolve_height(height)
+        h_arr = np.full(n, initial_h)
         converged = np.zeros(n, dtype=bool)
 
         for _ in range(max_iter):
@@ -257,9 +335,7 @@ class Geolocation(ABC):
             if dem_h.ndim == 0:
                 dem_h = np.full(n, float(dem_h))
 
-            # Fill NaN (outside DEM coverage) with current height
-            nan_mask = np.isnan(dem_h)
-            dem_h[nan_mask] = h_arr[nan_mask]
+            self._fill_nan_heights(dem_h, height)
 
             # Check per-point convergence
             delta = np.abs(dem_h - h_arr)
@@ -309,11 +385,7 @@ class Geolocation(ABC):
         if dem_h.ndim == 0:
             dem_h = np.full(len(lats), float(dem_h))
 
-        nan_mask = np.isnan(dem_h)
-        if np.any(nan_mask):
-            fill = (float(height) if np.ndim(height) == 0
-                    else self.default_hae)
-            dem_h[nan_mask] = fill
+        self._fill_nan_heights(dem_h, height)
 
         return self._latlon_to_image_array(lats, lons, dem_h)
 
@@ -616,6 +688,7 @@ class NoGeolocation(Geolocation):
 def _build_elevation_model(
     dem_path: Union[str, Any],
     geoid_path: Optional[Union[str, Any]] = None,
+    interpolation: int = 3,
 ) -> Any:
     """
     Build an ElevationModel from DEM path and optional geoid path.
@@ -628,6 +701,9 @@ def _build_elevation_model(
         Path to DEM/DTED data.
     geoid_path : str or Path, optional
         Path to geoid correction file.
+    interpolation : int, default=3
+        Spline interpolation order for DEM sampling (1=bilinear,
+        3=bicubic, 5=quintic).  Passed through to ``open_elevation``.
 
     Returns
     -------
@@ -646,4 +722,5 @@ def _build_elevation_model(
     return open_elevation(
         str(dem_path),
         geoid_path=str(geoid_path) if geoid_path else None,
+        interpolation=interpolation,
     )

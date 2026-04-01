@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-03-31  Add nan_fill_height parameter to image_to_ground_hae.
 2026-03-27  Add numba dispatch for image_to_ground_plane and wgs84_norm.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 2026-03-16
@@ -740,6 +741,7 @@ def image_to_ground_hae(
     elevation_model: Optional[object] = None,
     max_iter: int = 10,
     tol: float = 1e-3,
+    nan_fill_height: Optional[float] = None,
 ) -> np.ndarray:
     """Project image points to a height surface via R/Rdot iteration.
 
@@ -766,7 +768,8 @@ def image_to_ground_hae(
         Image coordinates, shape ``(N, 2)`` as ``[row, col]``.
     hae : float
         Target height above WGS-84 (meters).  Used as the initial
-        guess and as fallback when ``elevation_model`` returns NaN.
+        guess and as fallback when ``elevation_model`` returns NaN
+        and ``nan_fill_height`` is not provided.
     scp_ecf : np.ndarray, optional
         Scene Center Point in ECF (meters), shape ``(3,)``.
     elevation_model : ElevationModel, optional
@@ -777,6 +780,11 @@ def image_to_ground_hae(
         Maximum iterations (default 10).
     tol : float
         Convergence tolerance on height (meters, default 1 mm).
+    nan_fill_height : float, optional
+        Height (meters HAE) used to fill NaN gaps in DEM queries.
+        When ``None``, falls back to ``hae``.  Callers should pass
+        the sensor reference height (e.g., SCP HAE) so that DEM
+        gaps are filled consistently across all geolocation types.
 
     Returns
     -------
@@ -821,9 +829,11 @@ def image_to_ground_hae(
             dem_h = elevation_model.get_elevation(lats, lons)
             if isinstance(dem_h, (int, float)):
                 dem_h = np.full_like(lats, float(dem_h))
-            # Fill NaN (outside coverage) with initial hae
+            # Fill NaN (outside coverage) with caller-provided
+            # fallback or initial hae
             nan_mask = np.isnan(dem_h)
-            dem_h[nan_mask] = hae
+            dem_h[nan_mask] = (nan_fill_height if nan_fill_height is not None
+                               else hae)
             target_hae[valid] = dem_h
 
         # Check convergence against per-point target heights
