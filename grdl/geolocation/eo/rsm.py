@@ -28,12 +28,13 @@ Created
 
 Modified
 --------
+2026-04-01  Add multi-segment RSM support and ICHIPB integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
 """
 
 # Standard library
-from typing import Optional, Tuple, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -46,7 +47,12 @@ from grdl.geolocation.coordinates import (
 )
 
 if TYPE_CHECKING:
-    from grdl.IO.models.eo_nitf import RSMCoefficients, RSMIdentification
+    from grdl.IO.models.eo_nitf import (
+        ICHIPBMetadata,
+        RSMCoefficients,
+        RSMIdentification,
+        RSMSegmentGrid,
+    )
 
 
 def _build_monomial_exponents(
@@ -193,6 +199,62 @@ def _rsm_evaluate(
     return rows, cols
 
 
+def _apply_ichipb_forward(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    ichipb: 'ICHIPBMetadata',
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Transform chip pixel coordinates to full-image coordinates.
+
+    Parameters
+    ----------
+    rows, cols : np.ndarray
+        Chip pixel coordinates, each shape ``(N,)``.
+    ichipb : ICHIPBMetadata
+        ICHIPB transform parameters.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Full-image (rows, cols).
+    """
+    fi_row_off = ichipb.fi_row_off if ichipb.fi_row_off is not None else 0.0
+    fi_col_off = ichipb.fi_col_off if ichipb.fi_col_off is not None else 0.0
+    fi_row_scale = ichipb.fi_row_scale if ichipb.fi_row_scale is not None else 1.0
+    fi_col_scale = ichipb.fi_col_scale if ichipb.fi_col_scale is not None else 1.0
+    full_rows = fi_row_off + fi_row_scale * rows
+    full_cols = fi_col_off + fi_col_scale * cols
+    return full_rows, full_cols
+
+
+def _apply_ichipb_inverse(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    ichipb: 'ICHIPBMetadata',
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Transform full-image coordinates back to chip pixel coordinates.
+
+    Parameters
+    ----------
+    rows, cols : np.ndarray
+        Full-image pixel coordinates, each shape ``(N,)``.
+    ichipb : ICHIPBMetadata
+        ICHIPB transform parameters.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Chip (rows, cols).
+    """
+    fi_row_off = ichipb.fi_row_off if ichipb.fi_row_off is not None else 0.0
+    fi_col_off = ichipb.fi_col_off if ichipb.fi_col_off is not None else 0.0
+    fi_row_scale = ichipb.fi_row_scale if ichipb.fi_row_scale is not None else 1.0
+    fi_col_scale = ichipb.fi_col_scale if ichipb.fi_col_scale is not None else 1.0
+    chip_rows = (rows - fi_row_off) / fi_row_scale
+    chip_cols = (cols - fi_col_off) / fi_col_scale
+    return chip_rows, chip_cols
+
+
 class RSMGeolocation(Geolocation):
     """Geolocation for EO NITF imagery using RSM polynomial coefficients.
 
@@ -202,25 +264,41 @@ class RSMGeolocation(Geolocation):
     The **inverse** (ground → image) is a direct polynomial evaluation.
     The **forward** (image → ground) is iterative via Newton-Raphson.
 
+    Supports multi-segment RSM where the image is partitioned into a
+    grid of sections, each with its own polynomial coefficients.
+
     Parameters
     ----------
     rsm : RSMCoefficients
-        RSM polynomial coefficients (from RSMPCA TRE).
+        RSM polynomial coefficients (from RSMPCA TRE).  For
+        single-segment files this is the only segment.  For
+        multi-segment files this is used as the default/fallback.
     rsm_id : RSMIdentification, optional
         RSM identification (from RSMIDA TRE).  Provides
         ``ground_domain_type`` for coordinate interpretation.
+    rsm_segments : RSMSegmentGrid, optional
+        Full grid of RSM segments for multi-section imagery.
+        When provided, per-pixel segment selection is used.
+    ichipb : ICHIPBMetadata, optional
+        Image chip transform.  When provided, chip pixel
+        coordinates are transformed to full-image coordinates
+        before polynomial evaluation.
     shape : tuple of int
         Image dimensions ``(rows, cols)``.
     dem_path : str or Path, optional
         Path to DEM for terrain-corrected projection.
     geoid_path : str or Path, optional
         Path to geoid correction file.
+    interpolation : int
+        DEM interpolation order (default 3, bicubic).
     """
 
     def __init__(
         self,
         rsm: 'RSMCoefficients',
         rsm_id: Optional['RSMIdentification'] = None,
+        rsm_segments: Optional['RSMSegmentGrid'] = None,
+        ichipb: Optional['ICHIPBMetadata'] = None,
         shape: Tuple[int, int] = (1, 1),
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
@@ -230,12 +308,89 @@ class RSMGeolocation(Geolocation):
             raise ValueError("RSMCoefficients is required")
         self.rsm = rsm
         self.rsm_id = rsm_id
+        self.ichipb = ichipb
         self._ground_domain = (
             rsm_id.ground_domain_type if rsm_id and
             rsm_id.ground_domain_type else 'G')
+
+        # Multi-segment support
+        self._segments = None
+        self._segment_bounds = None
+        if (rsm_segments is not None
+                and len(rsm_segments.segments) > 1):
+            self._segments = rsm_segments
+            self._segment_bounds = self._precompute_segment_bounds(
+                rsm_segments)
+
         super().__init__(
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
             interpolation=interpolation)
+
+    @staticmethod
+    def _precompute_segment_bounds(
+        grid: 'RSMSegmentGrid',
+    ) -> Dict[Tuple[int, int], Tuple[float, float, float, float]]:
+        """Compute pixel bounding boxes for each RSM segment.
+
+        Each segment's valid region is defined by its normalization
+        center and scale: ``[off - sf, off + sf]`` in both row and col.
+
+        Returns
+        -------
+        dict
+            Mapping ``(rsn, csn)`` → ``(row_min, row_max, col_min, col_max)``.
+        """
+        bounds = {}
+        for key, seg in grid.segments.items():
+            bounds[key] = (
+                seg.row_off - abs(seg.row_norm_sf),
+                seg.row_off + abs(seg.row_norm_sf),
+                seg.col_off - abs(seg.col_norm_sf),
+                seg.col_off + abs(seg.col_norm_sf),
+            )
+        return bounds
+
+    def _select_segments_for_pixels(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+    ) -> np.ndarray:
+        """Select the best RSM segment for each pixel location.
+
+        Returns an integer index array mapping each point to a segment.
+        Points outside all segments fall back to the nearest segment.
+
+        Parameters
+        ----------
+        rows, cols : np.ndarray
+            Pixel coordinates, each shape ``(N,)``.
+
+        Returns
+        -------
+        np.ndarray
+            Segment keys as list, length N.
+        """
+        keys = list(self._segment_bounds.keys())
+        n = len(rows)
+        assignments = [keys[0]] * n
+
+        for i in range(n):
+            r, c = rows[i], cols[i]
+            best_key = keys[0]
+            best_dist = float('inf')
+            for key in keys:
+                rmin, rmax, cmin, cmax = self._segment_bounds[key]
+                if rmin <= r <= rmax and cmin <= c <= cmax:
+                    # Inside this segment — compute distance to center
+                    seg = self._segments.segments[key]
+                    dist = ((r - seg.row_off) ** 2
+                            + (c - seg.col_off) ** 2)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_key = key
+            assignments[i] = best_key
+
+        return assignments
 
     def _latlon_to_image_array(
         self,
@@ -244,6 +399,10 @@ class RSMGeolocation(Geolocation):
         height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Ground → image: direct RSM polynomial evaluation.
+
+        For multi-segment RSM, evaluates all segments and selects the
+        one whose output pixel falls within its valid normalization
+        window.
 
         Parameters
         ----------
@@ -264,8 +423,47 @@ class RSMGeolocation(Geolocation):
         else:
             h = np.asarray(height, dtype=np.float64)
 
-        rows, cols = _rsm_evaluate(
-            lats, lons, h, self.rsm, self._ground_domain)
+        if self._segments is None:
+            # Single-segment: evaluate directly
+            rows, cols = _rsm_evaluate(
+                lats, lons, h, self.rsm, self._ground_domain)
+        else:
+            # Multi-segment: evaluate all, pick best per point
+            n = len(lats)
+            rows = np.empty(n, dtype=np.float64)
+            cols = np.empty(n, dtype=np.float64)
+            keys = list(self._segments.segments.keys())
+
+            # Evaluate all segments
+            seg_results = {}
+            for key in keys:
+                seg = self._segments.segments[key]
+                r, c = _rsm_evaluate(
+                    lats, lons, h, seg, self._ground_domain)
+                seg_results[key] = (r, c)
+
+            # Per-point: pick segment whose output is in-bounds
+            for i in range(n):
+                best_key = keys[0]
+                best_dist = float('inf')
+                for key in keys:
+                    r, c = seg_results[key]
+                    rmin, rmax, cmin, cmax = self._segment_bounds[key]
+                    if rmin <= r[i] <= rmax and cmin <= c[i] <= cmax:
+                        seg = self._segments.segments[key]
+                        dist = ((r[i] - seg.row_off) ** 2
+                                + (c[i] - seg.col_off) ** 2)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_key = key
+                r_best, c_best = seg_results[best_key]
+                rows[i] = r_best[i]
+                cols[i] = c_best[i]
+
+        # Apply inverse ICHIPB: full-image → chip coordinates
+        if self.ichipb is not None:
+            rows, cols = _apply_ichipb_inverse(rows, cols, self.ichipb)
+
         return rows, cols
 
     def _image_to_latlon_array(
@@ -277,6 +475,8 @@ class RSMGeolocation(Geolocation):
         """Image → ground: iterative Newton-Raphson inversion.
 
         Finds (lat, lon) such that ``RSM(lat, lon, h) ≈ (row, col)``.
+        For multi-segment RSM, selects the segment per pixel based on
+        input coordinates.
 
         Parameters
         ----------
@@ -294,33 +494,82 @@ class RSMGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) in WGS-84.
         """
-        n = len(rows)
-        rsm = self.rsm
+        # Apply ICHIPB forward: chip → full-image coordinates
+        if self.ichipb is not None:
+            rows, cols = _apply_ichipb_forward(rows, cols, self.ichipb)
 
-        # Initial guess from RSM normalization center
-        if self._ground_domain == 'R':
-            # ECEF center — convert to geodetic for initial guess
-            init_geo = ecef_to_geodetic(
-                np.array([rsm.x_off, rsm.y_off, rsm.z_off]))
-            lats = np.full(n, float(init_geo[0]))
-            lons = np.full(n, float(init_geo[1]))
-        else:
-            # Geodetic (G or H): x_off = longitude (radians),
-            # y_off = latitude (radians). Convert to degrees.
-            lats = np.full(n, np.rad2deg(rsm.y_off))
-            lons = np.full(n, np.rad2deg(rsm.x_off))
+        n = len(rows)
 
         if np.ndim(height) > 0:
             h_arr = np.asarray(height, dtype=np.float64)
         else:
             h_arr = np.full(n, float(height))
 
+        if self._segments is None:
+            # Single-segment path
+            return self._newton_raphson_inverse(
+                rows, cols, h_arr, self.rsm)
+        else:
+            # Multi-segment: group points by segment, solve each group
+            assignments = self._select_segments_for_pixels(rows, cols)
+            lats_out = np.empty(n, dtype=np.float64)
+            lons_out = np.empty(n, dtype=np.float64)
+
+            # Group indices by segment key
+            groups: Dict[Tuple[int, int], List[int]] = {}
+            for i, key in enumerate(assignments):
+                groups.setdefault(key, []).append(i)
+
+            for key, indices in groups.items():
+                idx = np.array(indices)
+                seg = self._segments.segments[key]
+                la, lo, _ = self._newton_raphson_inverse(
+                    rows[idx], cols[idx], h_arr[idx], seg)
+                lats_out[idx] = la
+                lons_out[idx] = lo
+
+            return lats_out, lons_out, h_arr.copy()
+
+    def _newton_raphson_inverse(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        h_arr: np.ndarray,
+        rsm: 'RSMCoefficients',
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Newton-Raphson inversion for a single RSM segment.
+
+        Parameters
+        ----------
+        rows, cols : np.ndarray
+            Target pixel coordinates, shape ``(N,)``.
+        h_arr : np.ndarray
+            Heights (meters HAE), shape ``(N,)``.
+        rsm : RSMCoefficients
+            Segment polynomial coefficients.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            (lats, lons, heights) in WGS-84.
+        """
+        n = len(rows)
+
+        # Initial guess from RSM normalization center
+        if self._ground_domain == 'R':
+            init_geo = ecef_to_geodetic(
+                np.array([rsm.x_off, rsm.y_off, rsm.z_off]))
+            lats = np.full(n, float(init_geo[0]))
+            lons = np.full(n, float(init_geo[1]))
+        else:
+            lats = np.full(n, np.rad2deg(rsm.y_off))
+            lons = np.full(n, np.rad2deg(rsm.x_off))
+
         # Finite difference steps (degrees)
         if self._ground_domain == 'R':
             dlat = max(abs(rsm.y_norm_sf) * 1e-6, 1e-8)
             dlon = max(abs(rsm.x_norm_sf) * 1e-6, 1e-8)
         else:
-            # Geodetic: norm_sf is in radians, convert to degree scale
             dlat = max(np.rad2deg(abs(rsm.y_norm_sf)) * 1e-6, 1e-8)
             dlon = max(np.rad2deg(abs(rsm.x_norm_sf)) * 1e-6, 1e-8)
 
@@ -361,13 +610,16 @@ class RSMGeolocation(Geolocation):
         return lats, lons, h_arr.copy()
 
     @classmethod
-    def from_reader(cls, reader: object) -> 'RSMGeolocation':
+    def from_reader(cls, reader: object, **kwargs) -> 'RSMGeolocation':
         """Create from an EONITFReader.
 
         Parameters
         ----------
         reader : EONITFReader
             An open EO NITF reader with populated metadata.
+        **kwargs
+            Passed to the constructor (e.g., ``dem_path``,
+            ``geoid_path``, ``interpolation``).
 
         Returns
         -------
@@ -388,5 +640,8 @@ class RSMGeolocation(Geolocation):
         return cls(
             rsm=meta.rsm,
             rsm_id=getattr(meta, 'rsm_id', None),
+            rsm_segments=getattr(meta, 'rsm_segments', None),
+            ichipb=getattr(meta, 'ichipb', None),
             shape=shape,
+            **kwargs,
         )

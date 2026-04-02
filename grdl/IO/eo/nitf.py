@@ -30,10 +30,11 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-04-01
 """
 
 # Standard library
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -50,12 +51,26 @@ except ImportError:
 # GRDL internal
 from grdl.IO.base import ImageReader
 from grdl.IO.models.eo_nitf import (
+    AccuracyInfo,
+    BLOCKAMetadata,
+    CSEXRAMetadata,
+    CollectionInfo,
     EONITFMetadata,
+    ICHIPBMetadata,
     RPCCoefficients,
     RSMCoefficients,
     RSMIdentification,
+    RSMSegmentGrid,
+    USE00AMetadata,
 )
 from grdl.IO.models.common import XYZ
+from grdl.IO.performance import (
+    ReadConfig,
+    _ensure_gdal_threads,
+    _resolve_workers,
+    chunked_parallel_read,
+    parallel_band_read,
+)
 
 
 def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
@@ -107,17 +122,19 @@ def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
             pos += n
             return val
 
-        # --- Image Information (skipped, not stored) ---
-        _iid = read_str(80)       # IID
-        _edition = read_str(40)   # EDITION
+        # --- Image Information ---
+        read_str(80)              # IID (not stored)
+        read_str(40)              # EDITION (not stored)
 
         # --- Section identification ---
-        _rsn = read_int(3)        # RSN (row section number)
-        _csn = read_int(3)        # CSN (column section number)
+        rsn = read_int(3)         # RSN (row section number)
+        csn = read_int(3)         # CSN (column section number)
 
-        # --- Fitting errors (optional, skipped) ---
-        _rfep = read_str(21)      # RFEP
-        _cfep = read_str(21)      # CFEP
+        # --- Fitting errors ---
+        rfep_str = read_str(21)   # RFEP
+        cfep_str = read_str(21)   # CFEP
+        rfep = float(rfep_str) if rfep_str else None
+        cfep = float(cfep_str) if cfep_str else None
 
         # --- Normalization offsets (5 × 21 bytes) ---
         row_off = read_float()     # RNRMO
@@ -184,6 +201,10 @@ def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
             row_den_coefs=row_den_coefs,
             col_num_coefs=col_num_coefs,
             col_den_coefs=col_den_coefs,
+            rsn=rsn,
+            csn=csn,
+            row_fit_error=rfep,
+            col_fit_error=cfep,
         )
     except (ValueError, IndexError):
         return None
@@ -251,57 +272,690 @@ def _parse_rsmida_tre(tre_value: str) -> Optional[RSMIdentification]:
         edition = read_str(40)      # EDITION
 
         # --- Sensor identification ---
-        _isid = read_str(40)        # ISID (40 bytes, not 80)
+        isid = read_str(40)         # ISID
         sensor_id = read_str(40)    # SID
         sensor_type_id = read_str(40)  # STID
 
         # --- Date/time ---
-        _year = read_str(4)         # YEAR
-        _month = read_str(2)        # MONTH
-        _day = read_str(2)          # DAY
-        _hour = read_str(2)         # HOUR
-        _minute = read_str(2)       # MINUTE
-        _second = read_str(9)       # SECOND
+        year_s = read_str(4)        # YEAR
+        month_s = read_str(2)       # MONTH
+        day_s = read_str(2)         # DAY
+        hour_s = read_str(2)        # HOUR
+        minute_s = read_str(2)      # MINUTE
+        second_s = read_str(9)      # SECOND
+
+        collection_dt = None
+        try:
+            if year_s and month_s and day_s:
+                sec_f = float(second_s) if second_s else 0.0
+                sec_int = int(sec_f)
+                micro = int((sec_f - sec_int) * 1_000_000)
+                collection_dt = datetime(
+                    int(year_s), int(month_s), int(day_s),
+                    int(hour_s) if hour_s else 0,
+                    int(minute_s) if minute_s else 0,
+                    sec_int, micro,
+                )
+        except (ValueError, TypeError):
+            pass
 
         # --- Time-of-image model ---
         nrg = read_int(8)           # NRG (8 bytes)
         ncg = read_int(8)           # NCG (8 bytes)
-        _trg = read_str(21)         # TRG (21 bytes)
-        _tcg = read_str(21)         # TCG (21 bytes)
+        trg_s = read_str(21)        # TRG (21 bytes)
+        tcg_s = read_str(21)        # TCG (21 bytes)
+        trg = float(trg_s) if trg_s else None
+        tcg = float(tcg_s) if tcg_s else None
 
         # --- Ground coordinate system ---
         grndd = read_str(1)         # GRNDD
 
         # --- Rectangular coordinate origin (3 × 21) ---
-        _xuor = read_str(21)        # XUOR
-        _yuor = read_str(21)        # YUOR
-        _zuor = read_str(21)        # ZUOR
+        xuor_s = read_str(21)       # XUOR
+        yuor_s = read_str(21)       # YUOR
+        zuor_s = read_str(21)       # ZUOR
+        coord_origin = None
+        try:
+            if xuor_s and yuor_s and zuor_s:
+                coord_origin = XYZ(
+                    x=float(xuor_s), y=float(yuor_s), z=float(zuor_s))
+        except ValueError:
+            pass
 
         # --- Rectangular unit vectors (9 × 21) ---
+        uv_vals = []
         for _ in range(9):
-            read_str(21)            # XUXR..ZUZR
+            uv_s = read_str(21)
+            try:
+                uv_vals.append(float(uv_s) if uv_s else 0.0)
+            except ValueError:
+                uv_vals.append(0.0)
+        coord_unit_vectors = np.array(uv_vals, dtype=np.float64).reshape(3, 3)
 
         # --- Ground domain vertices (24 × 21 = 504 bytes) ---
+        vert_vals = []
         for _ in range(24):
-            read_str(21)            # V1X..V8Z
+            vs = read_str(21)
+            try:
+                vert_vals.append(float(vs) if vs else 0.0)
+            except ValueError:
+                vert_vals.append(0.0)
+        ground_domain_vertices = np.array(
+            vert_vals, dtype=np.float64).reshape(8, 3)
 
         # --- Ground reference point (3 × 21) ---
         grpx = read_float(21)       # GRPX
         grpy = read_float(21)       # GRPY
         grpz = read_float(21)       # GRPZ
 
+        # --- Image extent fields (6 × 8 bytes) ---
+        fullr = None
+        fullc = None
+        minr = None
+        maxr = None
+        minc = None
+        maxc = None
+        try:
+            if pos + 48 <= len(v):
+                fullr_s = read_str(8)
+                fullc_s = read_str(8)
+                minr_s = read_str(8)
+                maxr_s = read_str(8)
+                minc_s = read_str(8)
+                maxc_s = read_str(8)
+                fullr = int(fullr_s) if fullr_s else None
+                fullc = int(fullc_s) if fullc_s else None
+                minr = int(minr_s) if minr_s else None
+                maxr = int(maxr_s) if maxr_s else None
+                minc = int(minc_s) if minc_s else None
+                maxc = int(maxc_s) if maxc_s else None
+        except (ValueError, IndexError):
+            pass
+
         return RSMIdentification(
             image_id=image_id,
             edition=edition,
             sensor_id=sensor_id,
             sensor_type_id=sensor_type_id,
+            image_sensor_id=isid if isid else None,
+            collection_datetime=collection_dt,
             ground_domain_type=grndd,
             ground_ref_point=XYZ(x=grpx, y=grpy, z=grpz),
             num_row_sections=nrg,
             num_col_sections=ncg,
+            time_ref_row=trg,
+            time_ref_col=tcg,
+            coord_origin=coord_origin,
+            coord_unit_vectors=coord_unit_vectors,
+            ground_domain_vertices=ground_domain_vertices,
+            full_image_rows=fullr,
+            full_image_cols=fullc,
+            min_row=minr,
+            max_row=maxr,
+            min_col=minc,
+            max_col=maxc,
         )
     except (ValueError, IndexError):
         return None
+
+
+def _parse_csexra_tre(tre_value: str) -> Optional[CSEXRAMetadata]:
+    """Parse a CSEXRA TRE CEDATA string.
+
+    Compensated Sensor Error Extension Record provides CE90, LE90,
+    and GSD accuracy estimates.
+
+    Parameters
+    ----------
+    tre_value : str
+        Raw CEDATA string from GDAL TRE metadata.
+
+    Returns
+    -------
+    CSEXRAMetadata or None
+        Parsed metadata, or None if parsing fails.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 120:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_opt_float(n: int) -> Optional[float]:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            if not raw or raw == '-':
+                return None
+            return float(raw)
+
+        predicted_niirs = read_opt_float(3)  # PREDICTED_NIIRS
+        read_str(3)                          # CSNR (not stored)
+        read_str(1)                          # GROUND_COVER (not stored)
+        read_str(3)                          # SNOW_DEPTH_CAT (not stored)
+        read_str(7)                          # SUN_AZIMUTH (handled by USE00A)
+        read_str(5)                          # SUN_ELEVATION
+        read_str(7)                          # PREDICTED_GSD (deprecated)
+        ground_gsd_row = read_opt_float(5)   # GROUND_GSD_ROW
+        ground_gsd_col = read_opt_float(5)   # GROUND_GSD_COL
+        read_str(5)                          # GSD_BETA_ANGLE
+        read_str(2)                          # DYNAMIC_RANGE
+        read_str(7)                          # LINE_FF_AVG
+        read_str(7)                          # COL_FF_AVG
+        read_str(7)                          # LINE_FF_STD
+        read_str(7)                          # COL_FF_STD
+        read_str(7)                          # LINE_CNT_AVG
+        read_str(7)                          # COL_CNT_AVG
+        read_str(7)                          # LINE_CNT_STD
+        read_str(7)                          # COL_CNT_STD
+        read_str(5)                          # PREDICTED_EDGE_RESP_ROW
+        read_str(5)                          # PREDICTED_EDGE_RESP_COL
+        read_str(5)                          # PREDICTED_MTF_EL
+        read_str(5)                          # PREDICTED_MTF_AZ
+        ce90 = read_opt_float(7)             # CE
+        le90 = read_opt_float(7)             # LE
+
+        return CSEXRAMetadata(
+            predicted_niirs=predicted_niirs,
+            ce90=ce90,
+            le90=le90,
+            ground_gsd_row=ground_gsd_row,
+            ground_gsd_col=ground_gsd_col,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_use00a_tre(tre_value: str) -> Optional[USE00AMetadata]:
+    """Parse a USE00A TRE CEDATA string.
+
+    Exploitation Usability Extension provides sensor geometry,
+    sun angles, and mean GSD.
+
+    Parameters
+    ----------
+    tre_value : str
+        Raw CEDATA string from GDAL TRE metadata.
+
+    Returns
+    -------
+    USE00AMetadata or None
+        Parsed metadata, or None if parsing fails.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 107:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_opt_float(n: int) -> Optional[float]:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            if not raw or raw == '-':
+                return None
+            return float(raw)
+
+        obliquity_angle = read_opt_float(5)  # OBL_ANG
+        read_str(5)                           # ROLL_ANG
+        read_str(12)                          # PRIME_ID
+        read_str(15)                          # PRIME_BE
+        read_str(5)                           # ILETEFOV (N/RS)
+        sun_azimuth = read_opt_float(7)       # SUN_AZ
+        sun_elevation = read_opt_float(5)     # SUN_EL
+        read_str(1)                           # DATA_RATE (not stored)
+        read_str(5)                           # NRL_EL
+        read_str(5)                           # NRL_AZ
+        read_str(5)                           # SWATH_AZ
+        mean_gsd = read_opt_float(5)          # MEAN_GSD
+        predicted_niirs = read_opt_float(3)   # PREDICTED_NIIRS
+
+        return USE00AMetadata(
+            obliquity_angle=obliquity_angle,
+            sun_azimuth=sun_azimuth,
+            sun_elevation=sun_elevation,
+            mean_gsd=mean_gsd,
+            predicted_niirs=predicted_niirs,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
+    """Parse an ICHIPB TRE CEDATA string.
+
+    Image Chip Block defines the affine transform from chip pixel
+    coordinates to original full-image coordinates.
+
+    Parameters
+    ----------
+    tre_value : str
+        Raw CEDATA string from GDAL TRE metadata.
+
+    Returns
+    -------
+    ICHIPBMetadata or None
+        Parsed metadata, or None if parsing fails.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 216:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_float(n: int = 12) -> float:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            return float(raw)
+
+        def read_int(n: int) -> int:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            return int(raw)
+
+        xfrm_flag = read_int(2)              # XFRM_FLAG
+        scale_factor_r = read_float(10)      # SCALE_FACTOR_1 (row)
+        scale_factor_c = read_float(10)      # SCALE_FACTOR_2 (col)
+        anamorphic_corr = read_float(10)     # ANAMORPHIC_CORR
+
+        # Chip-to-full-image mapping (12 bytes each)
+        read_float(12)                       # SCANBLK_NUM
+        fi_col_off = read_float(12)          # OP_COL_11
+        fi_row_off = read_float(12)          # OP_ROW_11
+        read_float(12)                       # OP_COL_12
+        read_float(12)                       # OP_ROW_12
+        read_float(12)                       # OP_COL_21
+        read_float(12)                       # OP_ROW_21
+        op_col = read_float(12)              # OP_COL_22
+        op_row = read_float(12)              # OP_ROW_22
+
+        # Full-image row/col at (0,0) and (1,1)
+        fi_row_scale = read_float(12)        # FI_ROW_11
+        fi_col_scale = read_float(12)        # FI_COL_11
+        read_float(12)                       # FI_ROW_12
+        read_float(12)                       # FI_COL_12
+        read_float(12)                       # FI_ROW_21
+        read_float(12)                       # FI_COL_21
+        read_float(12)                       # FI_ROW_22
+        read_float(12)                       # FI_COL_22
+
+        full_image_rows = None
+        full_image_cols = None
+        try:
+            if pos + 16 <= len(v):
+                full_image_rows = read_int(8)  # FI_ROW
+                full_image_cols = read_int(8)  # FI_COL
+        except (ValueError, IndexError):
+            pass
+
+        return ICHIPBMetadata(
+            xfrm_flag=xfrm_flag,
+            scale_factor_r=scale_factor_r,
+            scale_factor_c=scale_factor_c,
+            anamorphic_corr=anamorphic_corr,
+            fi_row_off=fi_row_off,
+            fi_col_off=fi_col_off,
+            fi_row_scale=fi_row_scale,
+            fi_col_scale=fi_col_scale,
+            op_row=op_row,
+            op_col=op_col,
+            full_image_rows=full_image_rows,
+            full_image_cols=full_image_cols,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_blocka_tre(tre_value: str) -> Optional[BLOCKAMetadata]:
+    """Parse a BLOCKA TRE CEDATA string.
+
+    Image Geographic Location provides corner coordinates.
+
+    Parameters
+    ----------
+    tre_value : str
+        Raw CEDATA string from GDAL TRE metadata.
+
+    Returns
+    -------
+    BLOCKAMetadata or None
+        Parsed metadata, or None if parsing fails.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 117:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_int(n: int) -> int:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            return int(raw)
+
+        block_number = read_int(2)           # BLOCK_INSTANCE
+        read_str(5)                          # N_GRAY
+        read_str(5)                          # L_LINES
+        read_str(2)                          # LAYOVER_ANGLE
+        read_str(2)                          # SHADOW_ANGLE
+        read_str(16)                         # reserved
+        frfc_loc = read_str(21)              # FRLC_LOC
+        frlc_loc = read_str(21)              # FRFC_LOC
+        lrfc_loc = read_str(21)              # LRLC_LOC
+        lrlc_loc = read_str(21)              # LRFC_LOC
+
+        return BLOCKAMetadata(
+            block_number=block_number,
+            frfc_loc=frfc_loc if frfc_loc else None,
+            frlc_loc=frlc_loc if frlc_loc else None,
+            lrfc_loc=lrfc_loc if lrfc_loc else None,
+            lrlc_loc=lrlc_loc if lrlc_loc else None,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_aimidb_tre(tre_value: str) -> Optional[Dict[str, Any]]:
+    """Parse an AIMIDB TRE CEDATA string.
+
+    Additional Image ID provides collection date/time and mission info.
+
+    Returns
+    -------
+    dict or None
+        Keys: ``'collection_datetime'``, ``'mission_id'``,
+        ``'country_code'``.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 89:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        # ACQUISITION_DATE: DDHHMMSSZMONYY (14 chars)
+        acq_date_s = read_str(14)
+        mission_id = read_str(12)            # MISSION_NO
+        read_str(20)                         # MISSION_IDENTIFICATION
+        read_str(6)                          # FLIGHT_NO
+        read_str(3)                          # OP_NUM
+        read_str(2)                          # CURRENT_SEGMENT
+        read_str(2)                          # REPROCESS_NUM
+        read_str(3)                          # REPLAY
+        read_str(1)                          # START_TILE_COL
+        read_str(5)                          # START_TILE_ROW
+        read_str(2)                          # END_SEGMENT
+        read_str(2)                          # END_TILE_COL
+        read_str(5)                          # END_TILE_ROW
+        country_code = read_str(2)           # COUNTRY
+
+        collection_dt = None
+        if acq_date_s and len(acq_date_s) >= 14:
+            try:
+                # Format: DDHHMMSSZMONYY
+                day = int(acq_date_s[0:2])
+                hour = int(acq_date_s[2:4])
+                minute = int(acq_date_s[4:6])
+                second = int(acq_date_s[6:8])
+                mon_str = acq_date_s[9:12]
+                year_2 = int(acq_date_s[12:14])
+                months = {
+                    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+                    'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+                    'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+                }
+                month = months.get(mon_str.upper(), 1)
+                year = 2000 + year_2 if year_2 < 80 else 1900 + year_2
+                collection_dt = datetime(
+                    year, month, day, hour, minute, second)
+            except (ValueError, KeyError):
+                pass
+
+        return {
+            'collection_datetime': collection_dt,
+            'mission_id': mission_id if mission_id else None,
+            'country_code': country_code if country_code else None,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_stdidc_tre(tre_value: str) -> Optional[Dict[str, Any]]:
+    """Parse a STDIDC TRE CEDATA string.
+
+    Standard ID Extension provides acquisition date and mission number.
+
+    Returns
+    -------
+    dict or None
+        Keys: ``'collection_datetime'``, ``'mission_id'``,
+        ``'country_code'``.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 89:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        acq_date_s = read_str(14)            # ACQUISITION_DATE
+        mission_id = read_str(14)            # MISSION
+        read_str(2)                          # PASS
+        read_str(3)                          # OP_NUM
+        read_str(2)                          # START_SEGMENT
+        read_str(2)                          # REPROCESS_NUM
+        read_str(3)                          # END_SEGMENT
+        country_code = read_str(2)           # COUNTRY_CODE
+
+        collection_dt = None
+        if acq_date_s and len(acq_date_s) >= 14:
+            try:
+                collection_dt = datetime.strptime(
+                    acq_date_s[:14], '%Y%m%d%H%M%S')
+            except ValueError:
+                pass
+
+        return {
+            'collection_datetime': collection_dt,
+            'mission_id': mission_id if mission_id else None,
+            'country_code': country_code if country_code else None,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_piaimc_tre(tre_value: str) -> Optional[Dict[str, Any]]:
+    """Parse a PIAIMC TRE CEDATA string.
+
+    Profile for Imagery Access Image provides sensor mode, cloud cover,
+    and band info.
+
+    Returns
+    -------
+    dict or None
+        Keys: ``'sensor_mode'``, ``'cloud_cover'``.
+    """
+    try:
+        v = tre_value.strip()
+        if len(v) < 73:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_opt_float(n: int) -> Optional[float]:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            if not raw or raw == '-':
+                return None
+            return float(raw)
+
+        read_str(7)                          # CLOUDCVR
+        read_str(1)                          # SRP_FLAG
+        sensor_mode = read_str(12)           # SENSMODE
+        read_str(18)                         # SENSNAME
+        read_str(5)                          # SOURCE
+        cloud_cover = read_opt_float(3)      # COMGEN (cloud cover %)
+        # remaining fields not critical for geospatial context
+
+        return {
+            'sensor_mode': sensor_mode if sensor_mode else None,
+            'cloud_cover': cloud_cover,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _build_accuracy_info(
+    csexra: Optional[CSEXRAMetadata],
+    use00a: Optional[USE00AMetadata],
+    rpc: Optional[RPCCoefficients],
+) -> Optional[AccuracyInfo]:
+    """Build aggregated accuracy from best available TRE source.
+
+    Priority: CSEXRA > USE00A > RPC err_bias.
+
+    Parameters
+    ----------
+    csexra : CSEXRAMetadata or None
+    use00a : USE00AMetadata or None
+    rpc : RPCCoefficients or None
+
+    Returns
+    -------
+    AccuracyInfo or None
+    """
+    if csexra and (csexra.ce90 is not None or csexra.le90 is not None):
+        gsd = None
+        if csexra.ground_gsd_row is not None and csexra.ground_gsd_col is not None:
+            gsd = (csexra.ground_gsd_row + csexra.ground_gsd_col) / 2.0
+        elif csexra.ground_gsd_row is not None:
+            gsd = csexra.ground_gsd_row
+        elif csexra.ground_gsd_col is not None:
+            gsd = csexra.ground_gsd_col
+        return AccuracyInfo(
+            ce90=csexra.ce90, le90=csexra.le90,
+            mean_gsd=gsd, source='CSEXRA')
+
+    if use00a and use00a.mean_gsd is not None:
+        return AccuracyInfo(
+            ce90=None, le90=None,
+            mean_gsd=use00a.mean_gsd, source='USE00A')
+
+    if rpc and rpc.err_bias is not None:
+        return AccuracyInfo(
+            ce90=rpc.err_bias, le90=None,
+            mean_gsd=None, source='RPC00B')
+
+    return None
+
+
+def _build_collection_info(
+    aimidb: Optional[Dict[str, Any]],
+    stdidc: Optional[Dict[str, Any]],
+    piaimc: Optional[Dict[str, Any]],
+) -> Optional[CollectionInfo]:
+    """Build aggregated collection context from available TREs.
+
+    Priority: AIMIDB > STDIDC > PIAIMC for overlapping fields.
+
+    Parameters
+    ----------
+    aimidb : dict or None
+    stdidc : dict or None
+    piaimc : dict or None
+
+    Returns
+    -------
+    CollectionInfo or None
+    """
+    if not aimidb and not stdidc and not piaimc:
+        return None
+
+    dt = None
+    mission = None
+    country = None
+    sensor_mode = None
+    cloud_cover = None
+
+    # AIMIDB first (highest priority)
+    if aimidb:
+        dt = aimidb.get('collection_datetime')
+        mission = aimidb.get('mission_id')
+        country = aimidb.get('country_code')
+
+    # STDIDC fills gaps
+    if stdidc:
+        if dt is None:
+            dt = stdidc.get('collection_datetime')
+        if mission is None:
+            mission = stdidc.get('mission_id')
+        if country is None:
+            country = stdidc.get('country_code')
+
+    # PIAIMC fills remaining gaps
+    if piaimc:
+        sensor_mode = piaimc.get('sensor_mode')
+        cloud_cover = piaimc.get('cloud_cover')
+
+    if not any([dt, mission, sensor_mode, cloud_cover, country]):
+        return None
+
+    return CollectionInfo(
+        collection_datetime=dt,
+        mission_id=mission,
+        sensor_mode=sensor_mode,
+        cloud_cover=cloud_cover,
+        country_code=country,
+    )
 
 
 class EONITFReader(ImageReader):
@@ -349,17 +1003,22 @@ class EONITFReader(ImageReader):
     ...         lat, lon, h = geo.image_to_latlon(256, 256)
     """
 
-    def __init__(self, filepath: Union[str, Path]) -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        read_config: Optional[ReadConfig] = None,
+    ) -> None:
         if not _HAS_RASTERIO:
             raise ImportError(
                 "rasterio is required for EO NITF reading. "
                 "Install with: pip install rasterio  "
                 "or: conda install -c conda-forge rasterio"
             )
+        self.read_config = read_config or ReadConfig(parallel=True)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
-        """Load EO NITF metadata including RPC and RSM TREs."""
+        """Load EO NITF metadata including RPC, RSM, and context TREs."""
         try:
             self.dataset = rasterio.open(str(self.filepath))
         except Exception as e:
@@ -375,21 +1034,68 @@ class EONITFReader(ImageReader):
         except (AttributeError, TypeError):
             pass
 
-        # Extract RSM from TRE namespace
-        rsm = None
+        # Extract all TREs from tag namespaces
+        rsm_segments_list: List[RSMCoefficients] = []
         rsm_id = None
+        csexra = None
+        use00a = None
+        ichipb = None
+        blocka = None
+        aimidb = None
+        stdidc = None
+        piaimc = None
+
         try:
             namespaces = self.dataset.tag_namespaces()
             for ns in namespaces:
                 tags = self.dataset.tags(ns=ns)
-                if tags:
-                    for key, val in tags.items():
-                        if 'RSMPCA' in key.upper() and rsm is None:
-                            rsm = _parse_rsmpca_tre(val)
-                        if 'RSMIDA' in key.upper() and rsm_id is None:
-                            rsm_id = _parse_rsmida_tre(val)
+                if not tags:
+                    continue
+                for key, val in tags.items():
+                    key_upper = key.upper()
+                    if 'RSMPCA' in key_upper:
+                        seg = _parse_rsmpca_tre(val)
+                        if seg is not None:
+                            rsm_segments_list.append(seg)
+                    elif 'RSMIDA' in key_upper and rsm_id is None:
+                        rsm_id = _parse_rsmida_tre(val)
+                    elif 'CSEXRA' in key_upper and csexra is None:
+                        csexra = _parse_csexra_tre(val)
+                    elif 'USE00A' in key_upper and use00a is None:
+                        use00a = _parse_use00a_tre(val)
+                    elif 'ICHIPB' in key_upper and ichipb is None:
+                        ichipb = _parse_ichipb_tre(val)
+                    elif 'BLOCKA' in key_upper and blocka is None:
+                        blocka = _parse_blocka_tre(val)
+                    elif 'AIMIDB' in key_upper and aimidb is None:
+                        aimidb = _parse_aimidb_tre(val)
+                    elif 'STDIDC' in key_upper and stdidc is None:
+                        stdidc = _parse_stdidc_tre(val)
+                    elif 'PIAIMC' in key_upper and piaimc is None:
+                        piaimc = _parse_piaimc_tre(val)
         except (AttributeError, TypeError):
             pass
+
+        # Build RSM segment grid and backward-compatible single RSM
+        rsm = None
+        rsm_segments = None
+        if rsm_segments_list:
+            rsm = rsm_segments_list[0]
+            nrg = rsm_id.num_row_sections if rsm_id else 1
+            ncg = rsm_id.num_col_sections if rsm_id else 1
+            seg_dict: Dict[Tuple[int, int], RSMCoefficients] = {}
+            for seg in rsm_segments_list:
+                seg_key = (seg.rsn or 1, seg.csn or 1)
+                seg_dict[seg_key] = seg
+            rsm_segments = RSMSegmentGrid(
+                num_row_sections=nrg or 1,
+                num_col_sections=ncg or 1,
+                segments=seg_dict,
+            )
+
+        # Build aggregated metadata
+        accuracy = _build_accuracy_info(csexra, use00a, rpc)
+        collection_info = _build_collection_info(aimidb, stdidc, piaimc)
 
         # Extract NITF header fields from tags
         tags = self.dataset.tags() or {}
@@ -399,6 +1105,10 @@ class EONITFReader(ImageReader):
         icat = tags.get('NITF_ICAT', tags.get('ICAT'))
         abpp_str = tags.get('NITF_ABPP', tags.get('ABPP'))
         abpp = int(abpp_str) if abpp_str else None
+        idatim = tags.get('NITF_IDATIM', tags.get('IDATIM'))
+        tgtid = tags.get('NITF_TGTID', tags.get('TGTID'))
+        isource = tags.get('NITF_ISOURCE', tags.get('ISOURCE'))
+        igeolo = tags.get('NITF_IGEOLO', tags.get('IGEOLO'))
 
         self.metadata = EONITFMetadata(
             format='NITF',
@@ -411,11 +1121,22 @@ class EONITFReader(ImageReader):
             rpc=rpc,
             rsm=rsm,
             rsm_id=rsm_id,
+            rsm_segments=rsm_segments,
+            csexra=csexra,
+            use00a=use00a,
+            ichipb=ichipb,
+            blocka=blocka,
+            collection_info=collection_info,
+            accuracy=accuracy,
             iid1=iid1,
             iid2=iid2,
             icords=icords,
             icat=icat,
             abpp=abpp,
+            idatim=idatim,
+            tgtid=tgtid,
+            isource=isource,
+            igeolo=igeolo,
         )
 
     @property
@@ -467,11 +1188,33 @@ class EONITFReader(ImageReader):
             col_end - col_start, row_end - row_start,
         )
 
-        if bands is None:
-            data = self.dataset.read(window=window)
+        cfg = self.read_config
+        if cfg.parallel:
+            _ensure_gdal_threads(cfg)
+            workers = _resolve_workers(cfg)
+            n_pixels = (row_end - row_start) * (col_end - col_start)
+
+            if bands is None:
+                band_indices = list(range(1, self.dataset.count + 1))
+            else:
+                band_indices = [b + 1 for b in bands]
+
+            # Chunked parallel for large windows
+            if n_pixels >= cfg.chunk_threshold:
+                data = chunked_parallel_read(
+                    self.dataset, window, band_indices, workers)
+            elif len(band_indices) > 1:
+                # Parallel band read for multi-band
+                data = parallel_band_read(
+                    self.dataset, window, band_indices, workers)
+            else:
+                data = self.dataset.read(band_indices, window=window)
         else:
-            data = self.dataset.read(
-                [b + 1 for b in bands], window=window)
+            if bands is None:
+                data = self.dataset.read(window=window)
+            else:
+                data = self.dataset.read(
+                    [b + 1 for b in bands], window=window)
 
         if data.shape[0] == 1:
             return data[0]

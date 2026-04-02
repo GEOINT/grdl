@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-04-01
 """
 
 # Standard library
@@ -49,6 +49,13 @@ except ImportError:
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+from grdl.IO.performance import (
+    ReadConfig,
+    _ensure_gdal_threads,
+    _resolve_workers,
+    chunked_parallel_read,
+    parallel_band_read,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +98,17 @@ class GeoTIFFReader(ImageReader):
     ...     print(reader.metadata['crs'])
     """
 
-    def __init__(self, filepath: Union[str, Path]) -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        read_config: Optional[ReadConfig] = None,
+    ) -> None:
         if not _HAS_RASTERIO:
             raise DependencyError(
                 "rasterio is required for GeoTIFF reading. "
                 "Install with: pip install rasterio"
             )
+        self.read_config = read_config or ReadConfig(parallel=True)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -181,10 +193,31 @@ class GeoTIFFReader(ImageReader):
             col_end - col_start, row_end - row_start,
         )
 
-        if bands is None:
-            data = self.dataset.read(window=window)
+        cfg = self.read_config
+        if cfg.parallel:
+            _ensure_gdal_threads(cfg)
+            workers = _resolve_workers(cfg)
+            n_pixels = (row_end - row_start) * (col_end - col_start)
+
+            if bands is None:
+                band_indices = list(range(1, self.dataset.count + 1))
+            else:
+                band_indices = [b + 1 for b in bands]
+
+            if n_pixels >= cfg.chunk_threshold:
+                data = chunked_parallel_read(
+                    self.dataset, window, band_indices, workers)
+            elif len(band_indices) > 1:
+                data = parallel_band_read(
+                    self.dataset, window, band_indices, workers)
+            else:
+                data = self.dataset.read(band_indices, window=window)
         else:
-            data = self.dataset.read([b + 1 for b in bands], window=window)
+            if bands is None:
+                data = self.dataset.read(window=window)
+            else:
+                data = self.dataset.read(
+                    [b + 1 for b in bands], window=window)
 
         if data.shape[0] == 1:
             return data[0]

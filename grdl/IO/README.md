@@ -56,6 +56,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 |--------|-------------|---------|--------|
 | Sentinel-2 MSI | `Sentinel2Reader` | JP2Reader (rasterio/glymur) | ✅ Implemented |
 | EO NITF (RPC/RSM) | `EONITFReader` | rasterio | ✅ Implemented |
+| | | Parses: RPC00B, RSMPCA (multi-segment), RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC | |
 | Landsat OLI | - | - | 🔄 Planned |
 | WorldView | - | - | 🔄 Planned |
 
@@ -496,6 +497,46 @@ print(f"Found {len(overlapping)} products overlapping bbox")
 catalog.close()
 ```
 
+## Parallel Reading
+
+Rasterio-based readers support opt-in multi-threaded reads via `ReadConfig`. The `EONITFReader`, `GeoTIFFReader`, and `BIOMASSL1Reader` default to `parallel=True`.
+
+```python
+from grdl.IO import EONITFReader, GeoTIFFReader
+from grdl.IO.performance import ReadConfig
+
+# Default: parallel reading enabled for rasterio-based readers
+with EONITFReader('worldview.ntf') as reader:
+    chip = reader.read_chip(0, 10000, 0, 10000)  # uses parallel chunked read
+
+# Explicit configuration
+config = ReadConfig(
+    parallel=True,           # enable multi-threaded reads
+    max_workers=8,           # thread pool size (default: cpu_count - 1)
+    gdal_num_threads=4,      # GDAL internal decompression threads
+    chunk_threshold=4_000_000,  # min pixels for chunked parallel read
+)
+with GeoTIFFReader('large_scene.tif', read_config=config) as reader:
+    chip = reader.read_chip(0, 5000, 0, 5000)
+
+# Disable parallel reading if needed
+with EONITFReader('small.ntf', read_config=ReadConfig(parallel=False)) as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+```
+
+**Thread safety by backend:**
+
+| Backend | Readers | Parallel? |
+|---------|---------|-----------|
+| rasterio (GDAL) | EONITFReader, GeoTIFFReader, BIOMASSL1Reader, GDALFallbackReader, Sentinel1SLCReader, TerraSARReader, ASTERReader | Yes (releases GIL) |
+| h5py | HDF5Reader, NISARReader, VIIRSReader | No (holds GIL) |
+| glymur | JP2Reader, Sentinel2Reader | No (not thread-safe) |
+
+**Parallel strategy cascade** (automatic, based on read size):
+1. **Chunked parallel** — large windows (>4M pixels): split into tile-aligned sub-windows, read concurrently
+2. **Parallel bands** — multi-band imagery: read each band in a separate thread
+3. **Serial** — single band, small window: standard single-threaded read
+
 ## Architecture
 
 ### Base Classes
@@ -540,7 +581,7 @@ All readers populate `self.metadata` with a typed dataclass. Format-specific rea
 | `Sentinel2Reader` | `Sentinel2Metadata` | `satellite`, `processing_level`, `product_type`, `band_id`, `mgrs_tile_id`, `resolution_tier`, `sensing_datetime` |
 | `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
 | `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
-| `EONITFReader` | `EONITFMetadata` | `rpc_coefficients`, `rsm_coefficients`, `sensor_id`, `image_datetime`, `target_id` |
+| `EONITFReader` | `EONITFMetadata` | `rpc` (RPCCoefficients), `rsm` (RSMCoefficients), `rsm_segments` (RSMSegmentGrid), `rsm_id` (RSMIdentification), `ichipb` (ICHIPBMetadata), `csexra` (CSEXRAMetadata), `use00a` (USE00AMetadata), `blocka` (BLOCKAMetadata), `collection_info` (CollectionInfo), `accuracy` (AccuracyInfo), `idatim`, `tgtid`, `isource`, `igeolo` |
 
 ```python
 from grdl.IO.models import SICDMetadata, LatLonHAE, XYZ
@@ -638,6 +679,8 @@ except GrdlError as e:
 ## API Reference
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design decisions.
+
+See [PATTERNS.md](PATTERNS.md) for recurring implementation patterns (TRE parsers, ReadConfig integration, multi-segment TRE collection, etc.).
 
 See [TODO.md](TODO.md) for planned features and roadmap.
 
