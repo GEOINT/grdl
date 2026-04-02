@@ -73,13 +73,14 @@ with SICDReader('image.nitf') as reader:
 | | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS, Sentinel-1 SLC, TerraSAR-X, NISAR | |
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
-| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial) | |
+| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial; full TRE suite: RPC00B, RSMPCA multi-segment, RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC) | |
 | | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG | |
 | | Generic: `GDALFallbackReader` (`open_any()`), `InvasiveProbeReader` | |
+| | Parallel I/O: `ReadConfig` opt-in multi-threaded reads for rasterio-based readers | |
 | **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
 | | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
 | | SAR: `SICDGeolocation` (native R/Rdot + sarpy), `SIDDGeolocation`, `GCPGeolocation`, `NISARGeolocation`, `Sentinel1SLCGeolocation` | |
-| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B), `RSMGeolocation` (RSMPCA) | |
+| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B + ICHIPB), `RSMGeolocation` (RSMPCA multi-segment + ICHIPB) | |
 | | Projection: `COAProjection` (native R/Rdot engine), `image_to_ground_hae`, `image_to_ground_dem`, `ground_to_image` | |
 | | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
 | | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic` | |
@@ -113,6 +114,7 @@ GRDL/
 │   │   ├── numpy_io.py              #   NumpyWriter (.npy / .npz)
 │   │   ├── png.py                   #   PngWriter
 │   │   ├── generic.py               #   GDALFallbackReader, open_any()
+│   │   ├── performance.py           #   ReadConfig, parallel_band_read, chunked_parallel_read
 │   │   ├── probe.py                 #   InvasiveProbeReader (format sniffing)
 │   │   ├── models/                  #   Typed metadata dataclasses
 │   │   │   ├── base.py              #     ImageMetadata base class
@@ -127,7 +129,7 @@ GRDL/
 │   │   │   ├── sentinel2.py         #     Sentinel2Metadata
 │   │   │   ├── terrasar.py          #     TerraSARMetadata
 │   │   │   ├── nisar.py             #     NISARMetadata
-│   │   │   └── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients
+│   │   │   └── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients, RSMSegmentGrid, ICHIPBMetadata, CSEXRAMetadata, USE00AMetadata, BLOCKAMetadata, CollectionInfo, AccuracyInfo
 │   │   ├── sar/                     #   SAR-specific formats
 │   │   │   ├── _backend.py          #     sarkit/sarpy availability detection
 │   │   │   ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)

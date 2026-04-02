@@ -48,6 +48,7 @@ except ImportError:
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.models import BIOMASSMetadata
+from grdl.IO.performance import ReadConfig, _ensure_gdal_threads, _resolve_workers
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +100,18 @@ class BIOMASSL1Reader(ImageReader):
     ...     hh_db = 20 * np.log10(np.abs(hh_chip) + 1e-10)
     """
 
-    def __init__(self, filepath: Union[str, Path]) -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        read_config: Optional[ReadConfig] = None,
+    ) -> None:
         if not _HAS_RASTERIO:
             raise DependencyError(
                 "rasterio is required for BIOMASS reading. "
                 "Install with: pip install rasterio"
             )
+
+        self.read_config = read_config or ReadConfig(parallel=True)
 
         filepath = Path(filepath)
         if not filepath.exists():
@@ -394,12 +401,25 @@ class BIOMASSL1Reader(ImageReader):
         else:
             bands_to_read = [b + 1 for b in bands]
 
-        mag_data = self.magnitude_dataset.read(
-            bands_to_read, window=window
-        )
-        phase_data = self.phase_dataset.read(
-            bands_to_read, window=window
-        )
+        cfg = self.read_config
+        if cfg.parallel:
+            _ensure_gdal_threads(cfg)
+            from concurrent.futures import ThreadPoolExecutor
+            workers = _resolve_workers(cfg)
+            with ThreadPoolExecutor(max_workers=min(workers, 2)) as pool:
+                mag_future = pool.submit(
+                    self.magnitude_dataset.read,
+                    bands_to_read, window=window)
+                phase_future = pool.submit(
+                    self.phase_dataset.read,
+                    bands_to_read, window=window)
+                mag_data = mag_future.result()
+                phase_data = phase_future.result()
+        else:
+            mag_data = self.magnitude_dataset.read(
+                bands_to_read, window=window)
+            phase_data = self.phase_dataset.read(
+                bands_to_read, window=window)
 
         if mag_data.ndim == 2:
             complex_chip = self._reconstruct_complex(mag_data, phase_data)

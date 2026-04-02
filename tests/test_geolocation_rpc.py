@@ -259,3 +259,54 @@ class TestRPCGeolocation:
         lat0, lon0, _ = geo.image_to_latlon(5000, 5000, 0.0)
         lat1, lon1, _ = geo.image_to_latlon(5000, 5000, 1000.0)
         assert lat0 != lat1 or lon0 != lon1
+
+
+# ── ICHIPB Integration tests ───────────────────────────────────────
+
+
+class TestRPCICHIPBIntegration:
+    """Tests for ICHIPB chip transform integration with RPC."""
+
+    def test_ichipb_offset_applied(self, simple_rpc):
+        """ICHIPB offset shifts pixel coordinates."""
+        from grdl.IO.models.eo_nitf import ICHIPBMetadata
+
+        ichipb = ICHIPBMetadata(
+            xfrm_flag=2,
+            fi_row_off=500.0,
+            fi_col_off=300.0,
+            fi_row_scale=1.0,
+            fi_col_scale=1.0,
+        )
+        geo_no_chip = RPCGeolocation(simple_rpc, shape=(10000, 10000))
+        geo_with_chip = RPCGeolocation(
+            simple_rpc, ichipb=ichipb, shape=(10000, 10000))
+
+        lat, lon = simple_rpc.lat_off, simple_rpc.long_off
+        row_no, col_no = geo_no_chip.latlon_to_image(lat, lon, 0.0)
+        row_ch, col_ch = geo_with_chip.latlon_to_image(lat, lon, 0.0)
+
+        # Chip coords should be shifted
+        assert row_no - row_ch == pytest.approx(500.0, abs=0.1)
+        assert col_no - col_ch == pytest.approx(300.0, abs=0.1)
+
+    def test_ichipb_round_trip(self, realistic_rpc):
+        """Round-trip with ICHIPB offset preserves pixel accuracy."""
+        from grdl.IO.models.eo_nitf import ICHIPBMetadata
+
+        ichipb = ICHIPBMetadata(
+            xfrm_flag=2,
+            fi_row_off=200.0,
+            fi_col_off=100.0,
+            fi_row_scale=1.0,
+            fi_col_scale=1.0,
+        )
+        geo = RPCGeolocation(
+            realistic_rpc, ichipb=ichipb, shape=(10000, 10000))
+
+        chip_row, chip_col = 4000.0, 4000.0
+        lat, lon, h = geo.image_to_latlon(chip_row, chip_col, 100.0)
+        row_rt, col_rt = geo.latlon_to_image(lat, lon, 100.0)
+
+        assert row_rt == pytest.approx(chip_row, abs=0.01)
+        assert col_rt == pytest.approx(chip_col, abs=0.01)

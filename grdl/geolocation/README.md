@@ -6,7 +6,9 @@ SAR complex data, SAR detected products, EO NITF with rational polynomial
 models, geocoded rasters, and grid-based products.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for class hierarchy and internal
-design decisions.
+design decisions. See [PATTERNS.md](PATTERNS.md) for recurring
+implementation patterns (Newton-Raphson inversion, ICHIPB integration,
+multi-segment RSM dispatch, DEM ownership, etc.).
 
 ---
 
@@ -369,7 +371,9 @@ geo = RPCGeolocation(rpc, shape=(4096, 4096))
 
 RSM provides higher-fidelity rational polynomials with variable-order
 terms. Supports geodetic (G), cartographic (C), and rectangular ECEF (R)
-ground domain types.
+ground domain types. **Multi-segment RSM** is fully supported — when the
+image is partitioned into sections, each with its own polynomial, the
+correct segment is selected per-pixel automatically.
 
 ```python
 from grdl.IO.eo import EONITFReader
@@ -380,10 +384,62 @@ with EONITFReader('image_rsm.ntf') as reader:
 
     lat, lon, h = geo.image_to_latlon(2048, 2048)
     row, col = geo.latlon_to_image(lat, lon, h)
+
+    # Multi-segment info (if available)
+    if reader.metadata.rsm_segments:
+        grid = reader.metadata.rsm_segments
+        print(f"RSM grid: {grid.num_row_sections} x {grid.num_col_sections}")
+        print(f"Segments: {len(grid.segments)}")
 ```
 
 Usage is identical to RPCGeolocation. DEM attachment, batch processing,
 and stacked array inputs all work the same way.
+
+---
+
+### ICHIPB (Chipped Image) Support
+
+When imagery has been chipped (sub-region extracted) from a larger
+product, the ICHIPB TRE provides the affine mapping from chip pixels
+to the original full-image pixel coordinates where the RPC/RSM
+polynomials are valid. **Both RPCGeolocation and RSMGeolocation handle
+this automatically** when ICHIPB metadata is present.
+
+```python
+with EONITFReader('chipped_worldview.ntf') as reader:
+    # ICHIPB extracted automatically from TRE
+    print(f"Has ICHIPB: {reader.metadata.ichipb is not None}")
+
+    # from_reader() passes ICHIPB to geolocation constructor
+    geo = RPCGeolocation.from_reader(reader)
+
+    # Chip pixel (0, 0) maps through ICHIPB to full-image coords
+    # before RPC polynomial evaluation — transparent to caller
+    lat, lon, h = geo.image_to_latlon(0, 0)
+```
+
+---
+
+### Geospatial Accuracy Metadata
+
+The EO NITF reader extracts accuracy information from multiple TREs
+and aggregates it with priority ordering: CSEXRA > USE00A > RPC err_bias.
+
+```python
+with EONITFReader('satellite.ntf') as reader:
+    acc = reader.metadata.accuracy
+    if acc:
+        print(f"CE90: {acc.ce90} m (from {acc.source})")
+        print(f"LE90: {acc.le90} m")
+        print(f"Mean GSD: {acc.mean_gsd} m")
+
+    # Collection context from AIMIDB/STDIDC/PIAIMC TREs
+    ci = reader.metadata.collection_info
+    if ci:
+        print(f"Collected: {ci.collection_datetime}")
+        print(f"Mission: {ci.mission_id}")
+        print(f"Cloud cover: {ci.cloud_cover}%")
+```
 
 ---
 

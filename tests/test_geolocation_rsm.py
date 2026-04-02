@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-04-01
 """
 
 # Third-party
@@ -31,7 +31,12 @@ import numpy as np
 import pytest
 
 # GRDL
-from grdl.IO.models.eo_nitf import RSMCoefficients, RSMIdentification
+from grdl.IO.models.eo_nitf import (
+    ICHIPBMetadata,
+    RSMCoefficients,
+    RSMIdentification,
+    RSMSegmentGrid,
+)
 from grdl.IO.models.common import XYZ
 from grdl.geolocation.eo.rsm import (
     RSMGeolocation,
@@ -293,3 +298,136 @@ class TestRSMGeolocation:
         assert abs(col_d - col_c) > 100
         # Row should stay approximately constant
         assert abs(row_d - row_c) < 10
+
+
+# ── Multi-segment RSM tests ────────────────────────────────────────
+
+
+class TestMultiSegmentRSM:
+    """Tests for multi-segment RSM geolocation."""
+
+    @staticmethod
+    def _make_segment(row_off, col_off, row_sf=1024.0, col_sf=1024.0):
+        """Create a simple linear RSM segment centered at (row_off, col_off)."""
+        row_num = np.zeros(8)
+        row_num[2] = 1.0   # y dominant
+        row_den = np.zeros(8)
+        row_den[0] = 1.0
+        col_num = np.zeros(8)
+        col_num[1] = 1.0   # x dominant
+        col_den = np.zeros(8)
+        col_den[0] = 1.0
+        return RSMCoefficients(
+            row_off=row_off, col_off=col_off,
+            row_norm_sf=row_sf, col_norm_sf=col_sf,
+            x_off=np.deg2rad(-77.0), y_off=np.deg2rad(38.0),
+            z_off=100.0,
+            x_norm_sf=np.deg2rad(0.5), y_norm_sf=np.deg2rad(0.5),
+            z_norm_sf=500.0,
+            row_num_powers=np.array([1, 1, 1]),
+            row_den_powers=np.array([1, 1, 1]),
+            col_num_powers=np.array([1, 1, 1]),
+            col_den_powers=np.array([1, 1, 1]),
+            row_num_coefs=row_num, row_den_coefs=row_den,
+            col_num_coefs=col_num, col_den_coefs=col_den,
+            rsn=1, csn=1,
+        )
+
+    def test_single_segment_backward_compat(self):
+        """Single segment with no grid behaves identically to before."""
+        seg = self._make_segment(2048.0, 2048.0)
+        geo = RSMGeolocation(seg, shape=(4096, 4096))
+        lat, lon, h = geo.image_to_latlon(2048, 2048)
+        assert lat == pytest.approx(38.0, abs=0.5)
+        assert lon == pytest.approx(-77.0, abs=0.5)
+
+    def test_multi_segment_construction(self):
+        """Multi-segment RSMGeolocation stores segment bounds."""
+        seg1 = self._make_segment(1024.0, 1024.0)
+        seg1.rsn = 1
+        seg1.csn = 1
+        seg2 = self._make_segment(1024.0, 3072.0)
+        seg2.rsn = 1
+        seg2.csn = 2
+        seg3 = self._make_segment(3072.0, 1024.0)
+        seg3.rsn = 2
+        seg3.csn = 1
+        seg4 = self._make_segment(3072.0, 3072.0)
+        seg4.rsn = 2
+        seg4.csn = 2
+
+        grid = RSMSegmentGrid(
+            num_row_sections=2,
+            num_col_sections=2,
+            segments={
+                (1, 1): seg1, (1, 2): seg2,
+                (2, 1): seg3, (2, 2): seg4,
+            },
+        )
+        geo = RSMGeolocation(
+            seg1, rsm_segments=grid, shape=(4096, 4096))
+        assert geo._segments is not None
+        assert len(geo._segment_bounds) == 4
+
+    def test_multi_segment_selects_correct_segment(self):
+        """Segment selection picks the segment containing the pixel."""
+        seg1 = self._make_segment(1024.0, 1024.0)
+        seg1.rsn = 1
+        seg1.csn = 1
+        seg2 = self._make_segment(3072.0, 3072.0)
+        seg2.rsn = 2
+        seg2.csn = 2
+
+        grid = RSMSegmentGrid(
+            num_row_sections=2,
+            num_col_sections=2,
+            segments={(1, 1): seg1, (2, 2): seg2},
+        )
+        geo = RSMGeolocation(
+            seg1, rsm_segments=grid, shape=(4096, 4096))
+
+        # Pixel near (500, 500) should use segment (1,1)
+        assignments = geo._select_segments_for_pixels(
+            np.array([500.0]), np.array([500.0]))
+        assert assignments[0] == (1, 1)
+
+        # Pixel near (3500, 3500) should use segment (2,2)
+        assignments = geo._select_segments_for_pixels(
+            np.array([3500.0]), np.array([3500.0]))
+        assert assignments[0] == (2, 2)
+
+
+# ── ICHIPB Integration tests ───────────────────────────────────────
+
+
+class TestICHIPBIntegration:
+    """Tests for ICHIPB chip transform integration with RSM."""
+
+    def test_ichipb_round_trip(self, linear_rsm):
+        """ICHIPB offset is correctly applied and inverted."""
+        ichipb = ICHIPBMetadata(
+            xfrm_flag=2,
+            fi_row_off=1000.0,
+            fi_col_off=500.0,
+            fi_row_scale=1.0,
+            fi_col_scale=1.0,
+        )
+        geo_no_chip = RSMGeolocation(linear_rsm, shape=(4096, 4096))
+        geo_with_chip = RSMGeolocation(
+            linear_rsm, ichipb=ichipb, shape=(4096, 4096))
+
+        # Forward: same ground point should give different chip coords
+        lat, lon = 38.0, -77.0
+        row_no, col_no = geo_no_chip.latlon_to_image(lat, lon, 100.0)
+        row_ch, col_ch = geo_with_chip.latlon_to_image(lat, lon, 100.0)
+
+        # Chip coords should be offset by (1000, 500)
+        assert row_no - row_ch == pytest.approx(1000.0, abs=0.1)
+        assert col_no - col_ch == pytest.approx(500.0, abs=0.1)
+
+        # Inverse round-trip: chip pixel -> ground -> chip pixel
+        lat_rt, lon_rt, _ = geo_with_chip.image_to_latlon(row_ch, col_ch)
+        row_rt, col_rt = geo_with_chip.latlon_to_image(
+            lat_rt, lon_rt, 100.0)
+        assert row_rt == pytest.approx(float(row_ch), abs=0.01)
+        assert col_rt == pytest.approx(float(col_ch), abs=0.01)

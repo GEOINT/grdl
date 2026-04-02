@@ -28,6 +28,7 @@ Created
 
 Modified
 --------
+2026-04-01  Add ICHIPB chip transform integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-17
 """
@@ -42,7 +43,7 @@ import numpy as np
 from grdl.geolocation.base import Geolocation
 
 if TYPE_CHECKING:
-    from grdl.IO.models.eo_nitf import RPCCoefficients
+    from grdl.IO.models.eo_nitf import ICHIPBMetadata, RPCCoefficients
 
 
 def _rpc_monomials(p: np.ndarray, l: np.ndarray, h: np.ndarray) -> np.ndarray:
@@ -139,6 +140,58 @@ def _rpc_evaluate(
     return rows, cols
 
 
+def _apply_ichipb_forward(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    ichipb: 'ICHIPBMetadata',
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Transform chip pixel coordinates to full-image coordinates.
+
+    Parameters
+    ----------
+    rows, cols : np.ndarray
+        Chip pixel coordinates, each shape ``(N,)``.
+    ichipb : ICHIPBMetadata
+        ICHIPB transform parameters.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Full-image (rows, cols).
+    """
+    fi_row_off = ichipb.fi_row_off if ichipb.fi_row_off is not None else 0.0
+    fi_col_off = ichipb.fi_col_off if ichipb.fi_col_off is not None else 0.0
+    fi_row_scale = ichipb.fi_row_scale if ichipb.fi_row_scale is not None else 1.0
+    fi_col_scale = ichipb.fi_col_scale if ichipb.fi_col_scale is not None else 1.0
+    return fi_row_off + fi_row_scale * rows, fi_col_off + fi_col_scale * cols
+
+
+def _apply_ichipb_inverse(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    ichipb: 'ICHIPBMetadata',
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Transform full-image coordinates back to chip pixel coordinates.
+
+    Parameters
+    ----------
+    rows, cols : np.ndarray
+        Full-image pixel coordinates, each shape ``(N,)``.
+    ichipb : ICHIPBMetadata
+        ICHIPB transform parameters.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Chip (rows, cols).
+    """
+    fi_row_off = ichipb.fi_row_off if ichipb.fi_row_off is not None else 0.0
+    fi_col_off = ichipb.fi_col_off if ichipb.fi_col_off is not None else 0.0
+    fi_row_scale = ichipb.fi_row_scale if ichipb.fi_row_scale is not None else 1.0
+    fi_col_scale = ichipb.fi_col_scale if ichipb.fi_col_scale is not None else 1.0
+    return (rows - fi_row_off) / fi_row_scale, (cols - fi_col_off) / fi_col_scale
+
+
 class RPCGeolocation(Geolocation):
     """Geolocation for EO NITF imagery using RPC00B coefficients.
 
@@ -158,12 +211,18 @@ class RPCGeolocation(Geolocation):
     ----------
     rpc : RPCCoefficients
         RPC00B coefficient set.
+    ichipb : ICHIPBMetadata, optional
+        Image chip transform.  When provided, chip pixel
+        coordinates are transformed to full-image coordinates
+        before polynomial evaluation.
     shape : tuple of int
         Image dimensions ``(rows, cols)``.
     dem_path : str or Path, optional
         Path to DEM for terrain-corrected forward projection.
     geoid_path : str or Path, optional
         Path to geoid correction file.
+    interpolation : int
+        DEM interpolation order (default 3, bicubic).
 
     Examples
     --------
@@ -178,6 +237,7 @@ class RPCGeolocation(Geolocation):
     def __init__(
         self,
         rpc: 'RPCCoefficients',
+        ichipb: Optional['ICHIPBMetadata'] = None,
         shape: Tuple[int, int] = (1, 1),
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
@@ -186,6 +246,7 @@ class RPCGeolocation(Geolocation):
         if rpc is None:
             raise ValueError("RPCCoefficients is required")
         self.rpc = rpc
+        self.ichipb = ichipb
         super().__init__(
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
             interpolation=interpolation)
@@ -218,6 +279,11 @@ class RPCGeolocation(Geolocation):
             h = np.asarray(height, dtype=np.float64)
 
         rows, cols = _rpc_evaluate(lats, lons, h, self.rpc)
+
+        # Apply inverse ICHIPB: full-image → chip coordinates
+        if self.ichipb is not None:
+            rows, cols = _apply_ichipb_inverse(rows, cols, self.ichipb)
+
         return rows, cols
 
     def _image_to_latlon_array(
@@ -247,6 +313,10 @@ class RPCGeolocation(Geolocation):
         Tuple[np.ndarray, np.ndarray, np.ndarray]
             (lats, lons, heights) in WGS-84.
         """
+        # Apply ICHIPB forward: chip → full-image coordinates
+        if self.ichipb is not None:
+            rows, cols = _apply_ichipb_forward(rows, cols, self.ichipb)
+
         n = len(rows)
         rpc = self.rpc
 
@@ -324,13 +394,16 @@ class RPCGeolocation(Geolocation):
         return cls(rpc=rpc, shape=shape)
 
     @classmethod
-    def from_reader(cls, reader: object) -> 'RPCGeolocation':
+    def from_reader(cls, reader: object, **kwargs) -> 'RPCGeolocation':
         """Create from an EONITFReader.
 
         Parameters
         ----------
         reader : EONITFReader
             An open EO NITF reader with populated metadata.
+        **kwargs
+            Passed to the constructor (e.g., ``dem_path``,
+            ``geoid_path``, ``interpolation``).
 
         Returns
         -------
@@ -348,4 +421,9 @@ class RPCGeolocation(Geolocation):
                 "Ensure the NITF file contains an RPC00B TRE."
             )
         shape = reader.get_shape()
-        return cls(rpc=meta.rpc, shape=shape)
+        return cls(
+            rpc=meta.rpc,
+            ichipb=getattr(meta, 'ichipb', None),
+            shape=shape,
+            **kwargs,
+        )
