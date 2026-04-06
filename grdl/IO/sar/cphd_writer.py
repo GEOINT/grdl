@@ -8,15 +8,18 @@ azimuth matched-filter compression steps, populating a fully-typed
 ``CPHDMetadata`` structure from the NISAR product metadata, and writing
 a standards-compliant CPHD 1.1.0 binary file via sarkit.
 
-The six decompression steps mirror the experiment in
+The decompression steps mirror the experiment in
 ``experiments/nisar/main.py``:
 
     3a  Azimuth FFT            (np.fft.fft, axis=0)
     3b  Azimuth decompression  (k_a orbit-derived; invert azimuth MF)
-    3c  Range FFT              (np.fft.fft, axis=1)
-    3d  Range decompression    (Kr estimated; invert range chirp MF)
-    3e  Inverse range FFT      (np.fft.ifft, axis=1)
-    3f  Transpose              -> (n_range, n_slow_time)
+    3c  Inverse azimuth FFT    (np.fft.ifft, axis=0) -> slow-time
+    3d  Range FFT              (np.fft.fft, axis=1)
+    3e  Range decompression    (Kr estimated; invert range chirp MF)
+    3f  Transpose              -> (n_range_freq, n_slow_time)
+
+The output is in the range-frequency × slow-time domain (CPHD FX
+standard, ``DomainType=FX``).
 
 The ``write()`` method saves a binary CPHD 1.1.0 file (sarkit backend)
 containing the signal array in (NumVectors, NumSamples) layout and all
@@ -395,10 +398,13 @@ class CPHDWriter(ImageWriter):
 
             Step 3a  Az-FFT              fft(slc, axis=0)
             Step 3b  Az-decompression    *= H_az.T
-            Step 3c  Rng-FFT             fft(s, axis=1)
-            Step 3d  Rng-decompression   *= H_rng
-            Step 3e  Rng-IFFT            ifft(s, axis=1)
+            Step 3c  Az-IFFT             ifft(s, axis=0)  -> slow-time
+            Step 3d  Rng-FFT             fft(s, axis=1)
+            Step 3e  Rng-decompression   *= H_rng
             Step 3f  Transpose           -> (N_rng, N_az)
+
+        The output is in the range-**frequency** × slow-**time** domain,
+        matching the CPHD FX standard (``DomainType=FX``).
 
         Parameters
         ----------
@@ -413,7 +419,7 @@ class CPHDWriter(ImageWriter):
         -------
         phase_history : np.ndarray
             Pseudo phase history, shape ``(N_rng, N_az)``, complex64.
-            Axis 0 is range/frequency; axis 1 is slow-time.
+            Axis 0 is range-frequency; axis 1 is slow-time.
 
         Notes
         -----
@@ -423,9 +429,9 @@ class CPHDWriter(ImageWriter):
         s = slc_az_rng.astype(np.complex64)
         s = np.fft.fft(s, axis=0)           # 3a  (N_az, N_rng)
         s *= H_az.T                          # 3b  H_az:(N_rng,N_az) -> .T:(N_az,N_rng)
-        s = np.fft.fft(s, axis=1)           # 3c
-        s *= H_rng[np.newaxis, :]            # 3d
-        s = np.fft.ifft(s, axis=1)          # 3e
+        s = np.fft.ifft(s, axis=0)          # 3c  -> slow-time
+        s = np.fft.fft(s, axis=1)           # 3d  -> range-frequency
+        s *= H_rng[np.newaxis, :]            # 3e
         return s.T.copy()                    # 3f -> (N_rng, N_az)
 
     # ------------------------------------------------------------------

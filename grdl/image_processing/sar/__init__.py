@@ -114,6 +114,16 @@ from grdl.image_processing.sar.image_formation import (
     RangeDopplerAlgorithm,
     FastBackProjection,
 )
+from grdl.image_processing.sar.rfi import (
+    MeanPSDResult,
+    PerPulseResult,
+    CrossPolResult,
+    EigenvalueResult,
+    detect_mean_psd,
+    detect_per_pulse,
+    detect_cross_pol,
+    detect_eigenvalue,
+)
 
 __all__ = [
     'SublookDecomposition',
@@ -130,4 +140,12 @@ __all__ = [
     'StripmapPFA',
     'RangeDopplerAlgorithm',
     'FastBackProjection',
+    'MeanPSDResult',
+    'PerPulseResult',
+    'CrossPolResult',
+    'EigenvalueResult',
+    'detect_mean_psd',
+    'detect_per_pulse',
+    'detect_cross_pol',
+    'detect_eigenvalue',
 ]
