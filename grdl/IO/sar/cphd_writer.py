@@ -443,67 +443,8 @@ class CPHDWriter(ImageWriter):
         but degrades at large squint angles.
         """
         s = slc_az_rng.astype(np.complex64)
-        n_az, n_rng = s.shape
-
-        # --- DIAGNOSTIC (remove after validation) ---
-        S_dop_check = np.fft.fft(s, axis=0)
-        dop_power = np.mean(np.abs(S_dop_check)**2, axis=1)  # power vs az-freq
-        peak_bin = int(np.argmax(dop_power))
-        logger.debug(
-            "Doppler power peak at bin %d of %d (expected near fd0 bin)",
-            peak_bin, s.shape[0]
-        )
-        # In _slc_to_phase_history, replace the diagnostic block with:
-        fa = np.fft.fftfreq(n_az, d=1.0 / prf)
-
-        # First-moment centroid estimator — robust on focused SLC
-        # Use middle 10% of range bins to avoid edge effects
-        rng_start = n_rng * 45 // 100
-        rng_end   = n_rng * 55 // 100
-        power_mid = np.mean(np.abs(S_dop_check[:, rng_start:rng_end])**2, axis=1)
-        total_pow = power_mid.sum()
-        if total_pow > 0:
-            measured_fd_centroid = float(np.sum(fa * power_mid) / total_pow)
-        else:
-            measured_fd_centroid = 0.0
-
-        logger.debug(
-            "Doppler centroid (first moment, mid-swath): %.2f Hz  "
-            "[peak-bin method gave %.2f Hz — unreliable on focused SLC]",
-            measured_fd_centroid,
-            (fa[int(np.argmax(power_mid))])
-        )
-
-        # Check specific range bins (using the 2D FFT result)
-        fa = np.fft.fftfreq(n_az, d=1.0 / prf)
-        for rng_bin in [n_rng//4, n_rng//2, 3*n_rng//4]:
-            col_power = np.abs(S_dop_check[:, rng_bin])**2
-            # Smooth before peak-finding to suppress noise spikes
-            col_smooth = np.convolve(col_power, np.ones(64)/64, mode='same')
-            bin_idx = int(np.argmax(col_smooth))
-            measured_fd = float(fa[bin_idx])
-            logger.debug(
-                "Rng bin %d: measured fd0=%.1f Hz (smoothed peak)",
-                rng_bin, measured_fd
-            )
-
         s = np.fft.fft(s, axis=0)           # 3a  (N_az, N_rng)
         s *= H_az.T                          # 3b  H_az:(N_rng,N_az) -> .T:(N_az,N_rng)
-
-        # Energy check — normalise by N_az to compare same-domain means.
-        # np.fft.fft is unnormalised: mean(|FFT(x)|^2) = N_az * mean(|x|^2).
-        # Expected ratio after correct inverse filter: az_bw / prf (fraction of
-        # azimuth bandwidth selected, typically 0.3–0.7). Values near 0 indicate
-        # the fd0 is so misaligned that the in-band gate is empty.
-        energy_after_az_norm = float(np.mean(np.abs(s)**2)) / n_az
-        energy_before_az = float(np.mean(np.abs(slc_az_rng)**2))
-        retention = energy_after_az_norm / (energy_before_az + 1e-30)
-        logger.debug(
-            "Az filter energy retention (normalised): %.3f "
-            "(expect ≈ az_bw/prf, ~0.3–0.7; near 0 → fd0 misaligned)",
-            retention
-        )
-
         s = np.fft.ifft(s, axis=0)          # 3c  -> slow-time
         s = np.fft.fft(s, axis=1)           # 3d  -> range-frequency
         s *= H_rng[np.newaxis, :]            # 3e
