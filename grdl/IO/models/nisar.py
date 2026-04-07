@@ -205,8 +205,8 @@ class NISARSwathParameters:
         ``metadata/processingInformation/parameters/frequency{X}/dopplerCentroid``.
     doppler_centroid_slant_range : np.ndarray, optional
         Slant-range axis of the Doppler centroid grid, shape ``(n_dc_rng,)``, m.
-    doppler_centroid_zero_doppler_time : np.ndarray, optional
-        Zero-Doppler time axis of the Doppler centroid grid,
+    doppler_centroid_azimuth_time : np.ndarray, optional
+        Azimuth time axis of the Doppler centroid grid,
         shape ``(n_dc_az,)``, seconds.
     """
 
@@ -229,7 +229,7 @@ class NISARSwathParameters:
     azimuth_chirp_weighting: Optional[np.ndarray] = None
     doppler_centroid: Optional[np.ndarray] = None
     doppler_centroid_slant_range: Optional[np.ndarray] = None
-    doppler_centroid_zero_doppler_time: Optional[np.ndarray] = None
+    doppler_centroid_azimuth_time: Optional[np.ndarray] = None
 
 
 @dataclass

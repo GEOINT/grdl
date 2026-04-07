@@ -463,7 +463,7 @@ class NISARReader(ImageReader):
             azimuth_chirp_weighting=azimuth_chirp_weighting,
             doppler_centroid=doppler_centroid,
             doppler_centroid_slant_range=doppler_centroid_sr,
-            doppler_centroid_zero_doppler_time=doppler_centroid_zdt,
+            doppler_centroid_azimuth_time=doppler_centroid_zdt,
         )
 
     def _extract_grid_parameters(self) -> Optional[NISARGridParameters]:

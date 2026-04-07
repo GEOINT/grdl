@@ -314,6 +314,8 @@ class CPHDWriter(ImageWriter):
         )
         in_band = np.abs(fr) <= bw / 2.0
         w_safe = np.where(w > 1e-6, w, 1e-6)
+        # Inverse range filter: conjugate of the forward MF exp(+j*pi*fr^2/Kr).
+        # Undoes range chirp compression performed during NISAR L1 processing.
         H = np.where(in_band, np.exp(-1j * np.pi * fr**2 / kr) / w_safe, 0j)
         return H.astype(np.complex64)
 
@@ -328,8 +330,15 @@ class CPHDWriter(ImageWriter):
     ) -> np.ndarray:
         """Build the range-variant inverse azimuth matched filter (2-D).
 
-        Constructs ``H(R, f_a) = exp(+j*pi*(f_a-fd0(R))^2 / k_a(R)) / W(f_a)``
-        for ``|f_a - fd0(R)| <= az_bw/2``, zero elsewhere.
+        Constructs the complex conjugate of the forward azimuth matched filter.
+        The forward MF is ``exp(+j*pi*(f_a-fd0)^2/k_a)``; since k_a < 0 this
+        equals ``exp(-j*pi*(f_a-fd0)^2/|k_a|)``.  The inverse (decompressor)
+        is therefore::
+
+            H_inv(R, f_a) = exp(-j*pi*(f_a-fd0(R))^2 / k_a(R)) / W(f_a)
+                          = exp(+j*pi*(f_a-fd0(R))^2 / |k_a(R)|) / W(f_a)
+
+        applied for ``|f_a - fd0(R)| <= az_bw/2``, zero elsewhere.
 
         Parameters
         ----------
@@ -367,6 +376,10 @@ class CPHDWriter(ImageWriter):
             # Scalar centroid: df is (n_az,); broadcast against ka for ph2d.
             df = fa - float(fd0_arr)                        # (n_az,)
             in_band = np.abs(df) <= az_bw / 2.0            # (n_az,)
+            # Inverse azimuth filter: conjugate of forward MF exp(+j*pi*df^2/ka).
+            # With ka < 0 (orbit-derived), -pi*df^2/ka > 0 for df != 0,
+            # so exp(+j * (-pi*df^2/ka)) applies positive quadratic phase —
+            # the correct decompression (undo) operator.
             ph2d = -np.pi * df[np.newaxis, :]**2 / ka[:, np.newaxis]  # (n_rng, n_az)
             H_az = np.where(
                 in_band[np.newaxis, :],
@@ -377,6 +390,8 @@ class CPHDWriter(ImageWriter):
             # Range-variant centroid: fd0_arr is (N_rng,); df is (N_rng, n_az).
             df = fa[np.newaxis, :] - fd0_arr[:, np.newaxis]      # (n_rng, n_az)
             in_band = np.abs(df) <= az_bw / 2.0                  # (n_rng, n_az)
+            # Same sign convention as scalar branch: -pi*df^2/ka gives
+            # positive phase since ka < 0.
             ph2d = -np.pi * df**2 / ka[:, np.newaxis]            # (n_rng, n_az)
             H_az = np.where(
                 in_band,
@@ -390,6 +405,7 @@ class CPHDWriter(ImageWriter):
         slc_az_rng: np.ndarray,
         H_az: np.ndarray,
         H_rng: np.ndarray,
+        prf: float,
     ) -> np.ndarray:
         """Decompress a focused SLC to pseudo phase history via 6 steps.
 
@@ -427,8 +443,67 @@ class CPHDWriter(ImageWriter):
         but degrades at large squint angles.
         """
         s = slc_az_rng.astype(np.complex64)
+        n_az, n_rng = s.shape
+
+        # --- DIAGNOSTIC (remove after validation) ---
+        S_dop_check = np.fft.fft(s, axis=0)
+        dop_power = np.mean(np.abs(S_dop_check)**2, axis=1)  # power vs az-freq
+        peak_bin = int(np.argmax(dop_power))
+        logger.debug(
+            "Doppler power peak at bin %d of %d (expected near fd0 bin)",
+            peak_bin, s.shape[0]
+        )
+        # In _slc_to_phase_history, replace the diagnostic block with:
+        fa = np.fft.fftfreq(n_az, d=1.0 / prf)
+
+        # First-moment centroid estimator — robust on focused SLC
+        # Use middle 10% of range bins to avoid edge effects
+        rng_start = n_rng * 45 // 100
+        rng_end   = n_rng * 55 // 100
+        power_mid = np.mean(np.abs(S_dop_check[:, rng_start:rng_end])**2, axis=1)
+        total_pow = power_mid.sum()
+        if total_pow > 0:
+            measured_fd_centroid = float(np.sum(fa * power_mid) / total_pow)
+        else:
+            measured_fd_centroid = 0.0
+
+        logger.debug(
+            "Doppler centroid (first moment, mid-swath): %.2f Hz  "
+            "[peak-bin method gave %.2f Hz — unreliable on focused SLC]",
+            measured_fd_centroid,
+            (fa[int(np.argmax(power_mid))])
+        )
+
+        # Check specific range bins (using the 2D FFT result)
+        fa = np.fft.fftfreq(n_az, d=1.0 / prf)
+        for rng_bin in [n_rng//4, n_rng//2, 3*n_rng//4]:
+            col_power = np.abs(S_dop_check[:, rng_bin])**2
+            # Smooth before peak-finding to suppress noise spikes
+            col_smooth = np.convolve(col_power, np.ones(64)/64, mode='same')
+            bin_idx = int(np.argmax(col_smooth))
+            measured_fd = float(fa[bin_idx])
+            logger.debug(
+                "Rng bin %d: measured fd0=%.1f Hz (smoothed peak)",
+                rng_bin, measured_fd
+            )
+
         s = np.fft.fft(s, axis=0)           # 3a  (N_az, N_rng)
         s *= H_az.T                          # 3b  H_az:(N_rng,N_az) -> .T:(N_az,N_rng)
+
+        # Energy check — normalise by N_az to compare same-domain means.
+        # np.fft.fft is unnormalised: mean(|FFT(x)|^2) = N_az * mean(|x|^2).
+        # Expected ratio after correct inverse filter: az_bw / prf (fraction of
+        # azimuth bandwidth selected, typically 0.3–0.7). Values near 0 indicate
+        # the fd0 is so misaligned that the in-band gate is empty.
+        energy_after_az_norm = float(np.mean(np.abs(s)**2)) / n_az
+        energy_before_az = float(np.mean(np.abs(slc_az_rng)**2))
+        retention = energy_after_az_norm / (energy_before_az + 1e-30)
+        logger.debug(
+            "Az filter energy retention (normalised): %.3f "
+            "(expect ≈ az_bw/prf, ~0.3–0.7; near 0 → fd0 misaligned)",
+            retention
+        )
+
         s = np.fft.ifft(s, axis=0)          # 3c  -> slow-time
         s = np.fft.fft(s, axis=1)           # 3d  -> range-frequency
         s *= H_rng[np.newaxis, :]            # 3e
@@ -963,342 +1038,404 @@ class CPHDWriter(ImageWriter):
     # ------------------------------------------------------------------
 
     def nisar_to_cphd(
-        self,
-        slc: np.ndarray,
-        nisar_meta: NISARMetadata,
-        process_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[np.ndarray, CPHDMetadata]:
-        """Convert a NISAR RSLC SLC chip to pseudo-CPHD phase history.
+            self,
+            slc: np.ndarray,
+            nisar_meta: NISARMetadata,
+            process_params: Optional[Dict[str, Any]] = None,
+        ) -> Tuple[np.ndarray, CPHDMetadata]:
+            """Convert a NISAR RSLC SLC chip to pseudo-CPHD phase history.
 
-        NOTE: If you pass a chunked SLC (subset of azimuth lines), all per-azimuth metadata arrays
-        (e.g., zero_doppler_time) in nisar_meta must be sliced to match the chunk. Otherwise, validation
-        or interpolation errors will occur.
+            NOTE: If you pass a chunked SLC (subset of azimuth lines), all per-azimuth metadata arrays
+            (e.g., zero_doppler_time) in nisar_meta must be sliced to match the chunk. Otherwise, validation
+            or interpolation errors will occur.
 
-        Parameters
-        ----------
-        slc : np.ndarray
-            Complex SLC data, shape ``(N_az, N_rng)``.  Cast internally
-            to complex64 before processing.
-        nisar_meta : NISARMetadata
-            Metadata from ``NISARReader.metadata``.  Must be an RSLC
-            product (``swath_parameters`` and ``orbit`` populated).
-        process_params : dict, optional
-            Supplementary parameters not stored in the NISAR L1 product.
+            Parameters
+            ----------
+            slc : np.ndarray
+                Complex SLC data, shape ``(N_az, N_rng)``.  Cast internally
+                to complex64 before processing.
+            nisar_meta : NISARMetadata
+                Metadata from ``NISARReader.metadata``.  Must be an RSLC
+                product (``swath_parameters`` and ``orbit`` populated).
+            process_params : dict, optional
+                Supplementary parameters not stored in the NISAR L1 product.
 
-            ``pulse_duration_s`` : float, default 35e-6
-                Transmit pulse duration (seconds).  Used to estimate
-                ``Kr = processedRangeBandwidth / Tp``.
-                **Not stored in NISAR L1; default is nominal L-band.**
+                ``chunk_az_start`` : int, default 0
+                    The starting azimuth index of this chunk relative to the full SLC.
+                    Used to correctly index the Doppler Centroid grid.
 
-            ``doppler_centroid_hz`` : float, default 0.0
-                Mid-aperture Doppler centroid (Hz) for the azimuth
-                decompression filter.
+                ``pulse_duration_s`` : float, default 35e-6
+                    Transmit pulse duration (seconds).  Used to estimate
+                    ``Kr = processedRangeBandwidth / Tp``.
+                    **Not stored in NISAR L1; default is nominal L-band.**
 
-            ``range_weighting`` : np.ndarray
-                1-D range chirp weighting function.  Read from
-                ``processingInformation/parameters/rangeChirpWeighting``.
+                ``doppler_centroid_hz`` : float, default 0.0
+                    Mid-aperture Doppler centroid (Hz) for the azimuth
+                    decompression filter.
 
-            ``az_weighting`` : np.ndarray
-                1-D azimuth chirp weighting function.  Read from
-                ``processingInformation/parameters/azimuthChirpWeighting``.
+                ``range_weighting`` : np.ndarray
+                    1-D range chirp weighting function.  Read from
+                    ``processingInformation/parameters/rangeChirpWeighting``.
 
-            ``srp_ecf`` : np.ndarray, shape (3,)
-                Scene Reference Point ECF metres.
+                ``az_weighting`` : np.ndarray
+                    1-D azimuth chirp weighting function.  Read from
+                    ``processingInformation/parameters/azimuthChirpWeighting``.
 
-            ``prf_override`` : float
-                Override the effective PRF (Hz).
+                ``srp_ecf`` : np.ndarray, shape (3,)
+                    Scene Reference Point ECF metres.
 
-            ``doppler_centroid_grid`` : np.ndarray, shape (N_rng,)
-                Range-variant Doppler centroid, Hz.  If provided, a
-                separate centroid is applied per range bin, correcting
-                for scene Doppler variation across the swath (squint,
-                crab-angle).  Interpolate the 2D HDF5
-                ``processingInformation/parameters/frequencyX/dopplerCentroid``
-                grid onto the slant-range vector to produce this array.
-                Takes priority over ``doppler_centroid_hz`` if both are set.
+                ``prf_override`` : float
+                    Override the effective PRF (Hz).
 
-            ``doppler_centroid_hz`` : float, default 0.0
-                Single Doppler centroid (Hz) applied uniformly across
-                all range bins.  Ignored when ``doppler_centroid_grid``
-                is provided.
+                ``doppler_centroid_grid`` : np.ndarray, shape (N_rng,)
+                    Range-variant Doppler centroid, Hz.  If provided, a
+                    separate centroid is applied per range bin, correcting
+                    for scene Doppler variation across the swath (squint,
+                    crab-angle).  Interpolate the 2D HDF5
+                    ``processingInformation/parameters/frequencyX/dopplerCentroid``
+                    grid onto the slant-range vector to produce this array.
+                    Takes priority over ``doppler_centroid_hz`` if both are set.
 
-            ``chirp_sign`` : int, default +1
-                Transmit chirp direction: ``+1`` for up-chirp (NISAR,
-                ascending LFM rate) or ``-1`` for down-chirp.  The
-                inverse range filter ``exp(-j*pi*f^2/Kr)`` handles
-                both signs correctly when ``Kr`` is signed.
+                ``chirp_sign`` : int, default +1
+                    Transmit chirp direction: ``+1`` for up-chirp (NISAR,
+                    ascending LFM rate) or ``-1`` for down-chirp.  The
+                    inverse range filter ``exp(-j*pi*f^2/Kr)`` handles
+                    both signs correctly when ``Kr`` is signed.
 
-            ``az_time_offset_s`` : float, default 0.0
-                **Advanced.** Offset (in seconds) to add to the azimuth time vector (``az_times``) before orbit interpolation. Use this to correct for mismatched reference epochs between the orbit and zero-Doppler time vectors. If the orbit and azimuth time epochs differ, set this to the required offset (e.g., ``az_time_offset_s = orbit_epoch - az_epoch``).
+                ``az_time_offset_s`` : float, default 0.0
+                    **Advanced.** Offset (in seconds) to add to the azimuth time vector (``az_times``) before orbit interpolation. Use this to correct for mismatched reference epochs between the orbit and zero-Doppler time vectors. If the orbit and azimuth time epochs differ, set this to the required offset (e.g., ``az_time_offset_s = orbit_epoch - az_epoch``).
 
-        Returns
-        -------
-        phase_history : np.ndarray
-            Pseudo phase history, shape ``(N_rng, N_az)``, complex64.
-            Axis 0 is range/frequency; axis 1 is slow-time/pulse index.
-        cphd_meta : CPHDMetadata
-            Fully populated CPHD metadata.  Approximation notes are in
-            ``cphd_meta.extras['approximations']``.  Call
-            ``CPHDWriter.validate_metadata(cphd_meta)`` to verify
-            completeness before writing.
+            Returns
+            -------
+            phase_history : np.ndarray
+                Pseudo phase history, shape ``(N_rng, N_az)``, complex64.
+                Axis 0 is range/frequency; axis 1 is slow-time/pulse index.
+            cphd_meta : CPHDMetadata
+                Fully populated CPHD metadata.  Approximation notes are in
+                ``cphd_meta.extras['approximations']``.  Call
+                ``CPHDWriter.validate_metadata(cphd_meta)`` to verify
+                completeness before writing.
 
-        Raises
-        ------
-        ValidationError
-            If required metadata sections are absent, if the SLC shape
-            is inconsistent with the swath parameters, or if
-            ``srp_ecf`` has the wrong shape.
-        ProcessorError
-            If the decompression arithmetic raises an unexpected
-            exception.
-        """
-        # ---- validation -----------------------------------------------
-        if nisar_meta.swath_parameters is None:
-            raise ValidationError(
-                "NISARMetadata.swath_parameters is None. "
-                "CPHDWriter requires an RSLC product opened via NISARReader."
-            )
-        if nisar_meta.orbit is None:
-            raise ValidationError(
-                "NISARMetadata.orbit is None. "
-                "Orbit state vectors are required for phase-history inversion."
-            )
-        if slc.ndim != 2:
-            raise ValidationError(
-                f"slc must be 2-D (N_az, N_rng), got shape {slc.shape}."
-            )
-
-        sp = nisar_meta.swath_parameters
-        orb = nisar_meta.orbit
-        n_az, n_rng = slc.shape
-
-        if sp.slant_range is not None and n_rng != sp.slant_range.shape[0]:
-            raise ValidationError(
-                f"slc has {n_rng} range samples but swath_parameters "
-                f"slant_range has {sp.slant_range.shape[0]} elements."
-            )
-
-        # ---- process_params defaults ----------------------------------
-        pp = process_params or {}
-        # Select band-appropriate default pulse duration if caller doesn't override.
-        _default_tp = (
-            _NISAR_S_NOMINAL_PULSE_DURATION_S
-            if (nisar_meta.radar_band or '').upper() == 'S'
-            else _NISAR_L_NOMINAL_PULSE_DURATION_S
-        )
-        pulse_duration_s = float(pp.get('pulse_duration_s', _default_tp))
-        # chirp_sign: +1 = up-chirp (NISAR default), -1 = down-chirp.
-        chirp_sign = int(pp.get('chirp_sign', +1))
-        if chirp_sign not in (+1, -1):
-            raise ValidationError(
-                "process_params['chirp_sign'] must be +1 (up-chirp) or -1 (down-chirp), "
-                f"got {chirp_sign}."
-            )
-        fd0 = float(pp.get('doppler_centroid_hz', 0.0))
-        # doppler_centroid_grid: optional (N_rng,) array for range-variant centroid.
-        fd0_grid_raw = pp.get('doppler_centroid_grid', None)
-        fd0_grid: Optional[np.ndarray] = None
-        if fd0_grid_raw is not None:
-            # Explicit override supplied — validate and use directly.
-            fd0_grid = np.asarray(fd0_grid_raw, dtype=np.float64)
-            if fd0_grid.ndim != 1 or len(fd0_grid) != n_rng:
+            Raises
+            ------
+            ValidationError
+                If required metadata sections are absent, if the SLC shape
+                is inconsistent with the swath parameters, or if
+                ``srp_ecf`` has the wrong shape.
+            ProcessorError
+                If the decompression arithmetic raises an unexpected
+                exception.
+            """
+            # ---- validation -----------------------------------------------
+            if nisar_meta.swath_parameters is None:
                 raise ValidationError(
-                    f"process_params['doppler_centroid_grid'] must be a 1-D array "
-                    f"of length {n_rng} (N_rng), got shape {fd0_grid.shape}."
+                    "NISARMetadata.swath_parameters is None. "
+                    "CPHDWriter requires an RSLC product opened via NISARReader."
                 )
-        elif (
-            sp.doppler_centroid is not None
-            and sp.doppler_centroid_slant_range is not None
-            and sp.slant_range is not None
-        ):
-            # Auto-derive from NISARSwathParameters: interpolate the 2-D
-            # dopplerCentroid grid (n_dc_az, n_dc_rng) onto the image
-            # slant-range vector at the mid-aperture azimuth index.
-            dc2d = sp.doppler_centroid
-            dc_sr = sp.doppler_centroid_slant_range
-            mid_az = dc2d.shape[0] // 2
-            fd0_grid = np.interp(
-                sp.slant_range.astype(np.float64),
-                dc_sr.astype(np.float64),
-                dc2d[mid_az, :].astype(np.float64),
-            )  # (N_rng,)
-            logger.debug(
-                "doppler_centroid_grid: auto-derived from NISARSwathParameters "
-                "(mid-aperture row %d, %.1f–%.1f Hz).",
-                mid_az, float(fd0_grid.min()), float(fd0_grid.max()),
-            )
-        srp_ecf_raw = pp.get('srp_ecf', None)
-        srp_ecf: Optional[np.ndarray] = None
-        if srp_ecf_raw is not None:
-            srp_ecf = np.asarray(srp_ecf_raw, dtype=np.float64)
-            if srp_ecf.shape != (3,):
+            if nisar_meta.orbit is None:
                 raise ValidationError(
-                    f"process_params['srp_ecf'] must have shape (3,), "
-                    f"got {srp_ecf.shape}."
+                    "NISARMetadata.orbit is None. "
+                    "Orbit state vectors are required for phase-history inversion."
+                )
+            if slc.ndim != 2:
+                raise ValidationError(
+                    f"slc must be 2-D (N_az, N_rng), got shape {slc.shape}."
                 )
 
-        uniform = np.ones(_WEIGHTING_SAMPLES, dtype=np.float32)
-        rng_wgt = np.asarray(pp.get('range_weighting', uniform), dtype=np.float64)
-        az_wgt = np.asarray(pp.get('az_weighting', uniform), dtype=np.float64)
+            sp = nisar_meta.swath_parameters
+            orb = nisar_meta.orbit
+            n_az, n_rng = slc.shape
 
-        # ---- derived scalars ----------------------------------------
-        for _attr, _label in (
-            ('processed_center_frequency', 'swath_parameters.processed_center_frequency'),
-            ('processed_range_bandwidth',  'swath_parameters.processed_range_bandwidth'),
-            ('slant_range_spacing',        'swath_parameters.slant_range_spacing'),
-        ):
-            if getattr(sp, _attr) is None:
+            if sp.slant_range is not None and n_rng != sp.slant_range.shape[0]:
                 raise ValidationError(
-                    f"NISARMetadata.swath_parameters.{_attr} is None. "
-                    "This field is required for phase-history inversion."
+                    f"slc has {n_rng} range samples but swath_parameters "
+                    f"slant_range has {sp.slant_range.shape[0]} elements."
                 )
 
-        fc = sp.processed_center_frequency
-        bw = sp.processed_range_bandwidth
-        az_bw = sp.processed_azimuth_bandwidth
-        lam = _C / fc
-        fs = _C / (2.0 * sp.slant_range_spacing)
-        kr = chirp_sign * bw / pulse_duration_s  # signed: +ve = up-chirp (NISAR)
+            # ---- process_params defaults ----------------------------------
+            pp = process_params or {}
+            chunk_az_start = int(pp.get('chunk_az_start', 0))
+            
+            # Select band-appropriate default pulse duration if caller doesn't override.
+            _default_tp = (
+                _NISAR_S_NOMINAL_PULSE_DURATION_S
+                if (nisar_meta.radar_band or '').upper() == 'S'
+                else _NISAR_L_NOMINAL_PULSE_DURATION_S
+            )
+            pulse_duration_s = float(pp.get('pulse_duration_s', _default_tp))
+            
+            # chirp_sign: +1 = up-chirp (NISAR default), -1 = down-chirp.
+            chirp_sign = int(pp.get('chirp_sign', +1))
+            if chirp_sign not in (+1, -1):
+                raise ValidationError(
+                    "process_params['chirp_sign'] must be +1 (up-chirp) or -1 (down-chirp), "
+                    f"got {chirp_sign}."
+                )
+                
+            fd0 = float(pp.get('doppler_centroid_hz', 0.0))
+            
+            # doppler_centroid_grid: optional (N_rng,) array for range-variant centroid.
+            fd0_grid_raw = pp.get('doppler_centroid_grid', None)
+            fd0_grid: Optional[np.ndarray] = None
+            
+            if fd0_grid_raw is not None:
+                # Explicit override supplied — validate and use directly.
+                fd0_grid = np.asarray(fd0_grid_raw, dtype=np.float64)
+                if fd0_grid.ndim != 1 or len(fd0_grid) != n_rng:
+                    raise ValidationError(
+                        f"process_params['doppler_centroid_grid'] must be a 1-D array "
+                        f"of length {n_rng} (N_rng), got shape {fd0_grid.shape}."
+                    )
+            elif (
+                sp.doppler_centroid is not None
+                and sp.doppler_centroid_slant_range is not None
+                and sp.slant_range is not None
+            ):
+                # Derive from NISARSwathParameters using chunk-aware azimuth indexing
+                dc2d = sp.doppler_centroid
+                dc_sr = sp.doppler_centroid_slant_range
+                
+                chunk_az_mid = chunk_az_start + n_az // 2
+                
+                if sp.doppler_centroid_azimuth_time is not None:
+                    # Interpolate using the DC grid's own azimuth-time axis.
+                    # chunk_az_mid is a *line index* in the full SLC — convert
+                    # it to a time value via zero_doppler_time if available,
+                    # otherwise fall through to the fraction-based branch.
+                    if sp.zero_doppler_time is not None and len(sp.zero_doppler_time) > 0:
+                        az_mid_idx = min(chunk_az_mid, len(sp.zero_doppler_time) - 1)
+                        t_mid = float(sp.zero_doppler_time[az_mid_idx])
+                    else:
+                        # No time vector available to anchor the line index;
+                        # raise so the caller knows they must provide one.
+                        raise ValidationError(
+                            "doppler_centroid_azimuth_time is present but "
+                            "zero_doppler_time is absent: cannot map chunk line "
+                            "index to a DC grid row without an azimuth time vector."
+                        )
+                    dc_row_frac = np.interp(
+                        t_mid,
+                        sp.doppler_centroid_azimuth_time.astype(np.float64),
+                        np.arange(dc2d.shape[0], dtype=np.float64),
+                    )
+                    dc_row = int(np.clip(int(round(float(dc_row_frac))), 0, dc2d.shape[0] - 1))
+                elif sp.zero_doppler_time is not None and len(sp.zero_doppler_time) > 0:
+                    # Map chunk mid-line to a time, then scale that time into the DC grid
+                    # using the swath's start/end times as anchors.
+                    az_mid_idx = int(np.clip(chunk_az_mid, 0, len(sp.zero_doppler_time) - 1))
+                    t_mid = float(sp.zero_doppler_time[az_mid_idx])
+                    t_start = float(sp.zero_doppler_time[0])
+                    t_end   = float(sp.zero_doppler_time[-1])
+                    frac = (t_mid - t_start) / max(t_end - t_start, 1e-9)
+                    # DC grid spans a wider time range than the swath — we don't know
+                    # DC grid t_start/t_end without doppler_centroid_azimuth_time, so
+                    # this is still approximate, but far better than line-index scaling.
+                    dc_row = int(round(frac * (dc2d.shape[0] - 1)))
+                    dc_row = int(np.clip(dc_row, 0, dc2d.shape[0] - 1))
+                    logger.warning(
+                        "doppler_centroid_azimuth_time unavailable — DC row estimated from "
+                        "swath time fraction (row %d). Populate sp.doppler_centroid_azimuth_time "
+                        "from HDF5 path .../processingInformation/parameters/frequencyA/zeroDopplerTime "
+                        "for accurate row selection.",
+                        dc_row
+                    )
+                else:
+                    # Last resort: use middle of DC grid
+                    dc_row = dc2d.shape[0] // 2
+                    
+                fd0_grid = np.interp(
+                    sp.slant_range.astype(np.float64),
+                    dc_sr.astype(np.float64),
+                    dc2d[dc_row, :].astype(np.float64),
+                )
+                # dc_row logged after prf is resolved (folding requires prf).
 
-        prf_override = pp.get('prf_override', None)
-        if prf_override is not None:
-            prf = float(prf_override)
-        elif sp.zero_doppler_time_spacing:
-            prf = 1.0 / sp.zero_doppler_time_spacing
-        else:
-            prf = float(sp.nominal_acquisition_prf)
+            srp_ecf_raw = pp.get('srp_ecf', None)
+            srp_ecf: Optional[np.ndarray] = None
+            if srp_ecf_raw is not None:
+                srp_ecf = np.asarray(srp_ecf_raw, dtype=np.float64)
+                if srp_ecf.shape != (3,):
+                    raise ValidationError(
+                        f"process_params['srp_ecf'] must have shape (3,), "
+                        f"got {srp_ecf.shape}."
+                    )
 
-        # ---- az-time vector -----------------------------------------
-        if sp.zero_doppler_time is not None:
-            if len(sp.zero_doppler_time) != n_az:
+            uniform = np.ones(_WEIGHTING_SAMPLES, dtype=np.float32)
+            rng_wgt = np.asarray(pp.get('range_weighting', uniform), dtype=np.float64)
+            az_wgt = np.asarray(pp.get('az_weighting', uniform), dtype=np.float64)
+
+            # ---- derived scalars ----------------------------------------
+            for _attr, _label in (
+                ('processed_center_frequency', 'swath_parameters.processed_center_frequency'),
+                ('processed_range_bandwidth',  'swath_parameters.processed_range_bandwidth'),
+                ('slant_range_spacing',        'swath_parameters.slant_range_spacing'),
+            ):
+                if getattr(sp, _attr) is None:
+                    raise ValidationError(
+                        f"NISARMetadata.swath_parameters.{_attr} is None. "
+                        "This field is required for phase-history inversion."
+                    )
+
+            fc = sp.processed_center_frequency
+            bw = sp.processed_range_bandwidth
+            az_bw = sp.processed_azimuth_bandwidth
+            lam = _C / fc
+            fs = _C / (2.0 * sp.slant_range_spacing)
+            kr = chirp_sign * bw / pulse_duration_s  # signed: +ve = up-chirp (NISAR)
+
+            prf_override = pp.get('prf_override', None)
+            if prf_override is not None:
+                prf = float(prf_override)
+            elif sp.zero_doppler_time_spacing:
+                prf = 1.0 / sp.zero_doppler_time_spacing
+            else:
+                prf = float(sp.nominal_acquisition_prf)
+
+            if fd0_grid is not None and pp.get('doppler_centroid_grid') is None:
+                # NISAR dopplerCentroid is already in (-PRF/2, +PRF/2].
+                # Just verify it's in range — if values are outside, that indicates
+                # a metadata convention difference that needs explicit handling.
+                fd0_min, fd0_max = float(fd0_grid.min()), float(fd0_grid.max())
+                if fd0_max > prf / 2.0 or fd0_min < -prf / 2.0:
+                    # Values outside [-PRF/2, PRF/2) — fold once
+                    fd0_grid = ((fd0_grid + prf / 2.0) % prf) - prf / 2.0
+                    logger.debug(
+                        "doppler_centroid_grid: values outside [-PRF/2, PRF/2), folded to "
+                        "%.1f–%.1f Hz", float(fd0_grid.min()), float(fd0_grid.max())
+                    )
+                else:
+                    logger.debug(
+                        "doppler_centroid_grid: already in [-PRF/2, PRF/2): %.1f–%.1f Hz",
+                        fd0_min, fd0_max
+                    )
+            # ---- az-time vector -----------------------------------------
+            if sp.zero_doppler_time is not None:
+                if len(sp.zero_doppler_time) != n_az:
+                    logger.warning(
+                        "zero_doppler_time has %d elements but slc has %d azimuth lines. "
+                        "Truncating/padding to match slc. Ensure NISARMetadata is "
+                        "pre-sliced to the correct chunk window for mid-scene subsets.",
+                        len(sp.zero_doppler_time), n_az,
+                    )
+                az_times = sp.zero_doppler_time[:n_az].astype(np.float64)
+            else:
+                az_times = np.arange(n_az, dtype=np.float64) / prf
+
+            # ---- orbit/az_times epoch consistency check -------------------
+            orb_epoch = getattr(orb, 'reference_epoch', None)
+            az_epoch = getattr(sp, 'zero_doppler_time_reference_epoch', None)
+            if orb_epoch is not None and az_epoch is not None and orb_epoch != az_epoch:
+                raise ValidationError(
+                    f"Orbit time frame epoch ({orb_epoch}) does not match zero-Doppler time epoch ({az_epoch}). "
+                    "You must convert az_times to the orbit reference frame or supply a time offset via process_params['az_time_offset_s']."
+                )
+            
+            az_time_offset = float(pp.get('az_time_offset_s', 0.0))
+            if az_time_offset != 0.0:
+                az_times = az_times + az_time_offset
+
+            # ---- missing pulse / burst gap detection ---------------------
+            invalid_mask = ~np.any(slc != 0, axis=1)  # True where line is all zeros
+            n_invalid = int(np.sum(invalid_mask))
+            if n_invalid > 0:
                 logger.warning(
-                    "zero_doppler_time has %d elements but slc has %d azimuth lines. "
-                    "Truncating/padding to match slc. Ensure NISARMetadata is "
-                    "pre-sliced to the correct chunk window for mid-scene subsets.",
-                    len(sp.zero_doppler_time), n_az,
+                    "Detected %d all-zero azimuth lines (missing pulses / burst gaps). "
+                    "These will be marked SIGNAL=0 in the PVP array.",
+                    n_invalid,
                 )
-            az_times = sp.zero_doppler_time[:n_az].astype(np.float64)
-        else:
-            az_times = np.arange(n_az, dtype=np.float64) / prf
 
-        # ---- orbit/az_times epoch consistency check -------------------
-        # If both orbit and az_times have a reference epoch, check for match.
-        # NISAR L1 products may use different reference epochs for orbit and zero-Doppler time.
-        orb_epoch = getattr(orb, 'reference_epoch', None)
-        az_epoch = getattr(sp, 'zero_doppler_time_reference_epoch', None)
-        # If both epochs are present and not equal, raise error (or allow override)
-        if orb_epoch is not None and az_epoch is not None and orb_epoch != az_epoch:
-            raise ValidationError(
-                f"Orbit time frame epoch ({orb_epoch}) does not match zero-Doppler time epoch ({az_epoch}). "
-                "You must convert az_times to the orbit reference frame or supply a time offset via process_params['az_time_offset_s']."
-            )
-        # Optionally allow user to override az_times with a time offset
-        az_time_offset = float(pp.get('az_time_offset_s', 0.0))
-        if az_time_offset != 0.0:
-            az_times = az_times + az_time_offset
-
-        # ---- missing pulse / burst gap detection ---------------------
-        invalid_mask = ~np.any(slc != 0, axis=1)  # True where line is all zeros
-        n_invalid = int(np.sum(invalid_mask))
-        if n_invalid > 0:
-            logger.warning(
-                "Detected %d all-zero azimuth lines (missing pulses / burst gaps). "
-                "These will be marked SIGNAL=0 in the PVP array.",
-                n_invalid,
-            )
-
-        # ---- approximation notes ------------------------------------
-        az_fd0: Union[float, np.ndarray] = fd0_grid if fd0_grid is not None else fd0
-        approx_notes: List[str] = [
-            f"Kr = processedRangeBandwidth / Tp "
-            f"(Tp = {pulse_duration_s * 1e6:.0f} us — not stored in NISAR L1).",
-            "TDBP image formation: separable freq-domain inversion is "
-            "approximate (valid near boresight).",
-        ]
-        if fd0_grid is not None:
-            approx_notes.append(
-                f"doppler_centroid_grid: range-variant centroid applied "
-                f"({float(fd0_grid.min()):.1f} – {float(fd0_grid.max()):.1f} Hz)"
-                + (
-                    " [auto-derived from NISARSwathParameters.doppler_centroid]."
-                    if pp.get('doppler_centroid_grid') is None
-                    else " [caller-supplied]."
+            # ---- approximation notes ------------------------------------
+            az_fd0: Union[float, np.ndarray] = fd0_grid if fd0_grid is not None else fd0
+            approx_notes: List[str] = [
+                f"Kr = processedRangeBandwidth / Tp "
+                f"(Tp = {pulse_duration_s * 1e6:.0f} us — not stored in NISAR L1).",
+                "TDBP image formation: separable freq-domain inversion is "
+                "approximate (valid near boresight).",
+            ]
+            if fd0_grid is not None:
+                approx_notes.append(
+                    f"doppler_centroid_grid: range-variant centroid applied "
+                    f"({float(fd0_grid.min()):.1f} – {float(fd0_grid.max()):.1f} Hz)"
+                    + (
+                        " [auto-derived from NISARSwathParameters.doppler_centroid]."
+                        if pp.get('doppler_centroid_grid') is None
+                        else " [caller-supplied]."
+                    )
                 )
+            elif fd0 == 0.0:
+                approx_notes.append(
+                    "doppler_centroid_hz defaulted to 0.0 Hz. "
+                    "Pass process_params['doppler_centroid_grid'] (shape N_rng) or "
+                    "'doppler_centroid_hz' for improved accuracy."
+                )
+            if chirp_sign == -1:
+                approx_notes.append("chirp_sign=-1: down-chirp inversion applied.")
+            if np.all(rng_wgt == 1.0):
+                approx_notes.append(
+                    "range_weighting defaulted to uniform (no tapering correction)."
+                )
+            if np.all(az_wgt == 1.0):
+                approx_notes.append("az_weighting defaulted to uniform.")
+
+            logger.info(
+                "nisar_to_cphd: freq=%s pol=%s n_az=%d n_rng=%d "
+                "fc=%.3f GHz bw=%.1f MHz fs=%.2f MHz prf=%.2f Hz kr=%.3e Hz/s",
+                nisar_meta.frequency, nisar_meta.polarization,
+                n_az, n_rng, fc / 1e9, bw / 1e6, fs / 1e6, prf, kr,
             )
-        elif fd0 == 0.0:
-            approx_notes.append(
-                "doppler_centroid_hz defaulted to 0.0 Hz. "
-                "Pass process_params['doppler_centroid_grid'] (shape N_rng) or "
-                "'doppler_centroid_hz' for improved accuracy."
+
+            # ---- orbit interpolation ------------------------------------
+            try:
+                p_pos, p_vel = self._interp_orbit(
+                    orb.time, orb.position, orb.velocity, az_times
+                )
+            except (ValidationError, Exception) as exc:
+                raise ProcessorError(f"Orbit interpolation failed: {exc}") from exc
+
+            # ---- inverse filters ----------------------------------------
+            ka = self._ka_from_orbit(p_vel, sp.slant_range, lam)
+            H_rng = self._build_range_inv_filter(n_rng, fs, bw, kr, rng_wgt)
+            H_az = self._build_az_inv_filter(n_az, prf, ka, az_fd0, az_bw, az_wgt)
+
+            # ---- decompression ------------------------------------------
+            try:
+                phase_history = self._slc_to_phase_history(slc, H_az, H_rng, prf)
+            except Exception as exc:
+                raise ProcessorError(
+                    f"SLC decompression failed at step 3a-3f: {exc}"
+                ) from exc
+
+            # ---- CPHD metadata ------------------------------------------
+            cphd_meta = self._build_cphd_metadata(
+                nisar_meta=nisar_meta,
+                az_times=az_times,
+                pulse_pos=p_pos,
+                pulse_vel=p_vel,
+                n_rng=n_rng,
+                prf=prf,
+                kr=kr,
+                pulse_duration_s=pulse_duration_s,
+                fs=fs,
+                srp_ecf=srp_ecf,
+                approx_notes=approx_notes,
+                invalid_mask=invalid_mask if n_invalid > 0 else None,
             )
-        if chirp_sign == -1:
-            approx_notes.append("chirp_sign=-1: down-chirp inversion applied.")
-        if np.all(rng_wgt == 1.0):
-            approx_notes.append(
-                "range_weighting defaulted to uniform (no tapering correction)."
+
+            issues = self.validate_metadata(cphd_meta)
+            if issues:
+                logger.warning(
+                    "CPHDMetadata completeness issues (%d):\n  %s",
+                    len(issues), "\n  ".join(issues),
+                )
+            else:
+                logger.debug("CPHDMetadata completeness check passed.")
+
+            self.metadata = cphd_meta
+            logger.info(
+                "nisar_to_cphd complete: phase_history shape=%s dtype=%s",
+                phase_history.shape, phase_history.dtype,
             )
-        if np.all(az_wgt == 1.0):
-            approx_notes.append("az_weighting defaulted to uniform.")
-
-        logger.info(
-            "nisar_to_cphd: freq=%s pol=%s n_az=%d n_rng=%d "
-            "fc=%.3f GHz bw=%.1f MHz fs=%.2f MHz prf=%.2f Hz kr=%.3e Hz/s",
-            nisar_meta.frequency, nisar_meta.polarization,
-            n_az, n_rng, fc / 1e9, bw / 1e6, fs / 1e6, prf, kr,
-        )
-
-        # ---- orbit interpolation ------------------------------------
-        try:
-            p_pos, p_vel = self._interp_orbit(
-                orb.time, orb.position, orb.velocity, az_times
-            )
-        except (ValidationError, Exception) as exc:
-            raise ProcessorError(f"Orbit interpolation failed: {exc}") from exc
-
-        # ---- inverse filters ----------------------------------------
-        ka = self._ka_from_orbit(p_vel, sp.slant_range, lam)
-        H_rng = self._build_range_inv_filter(n_rng, fs, bw, kr, rng_wgt)
-        H_az = self._build_az_inv_filter(n_az, prf, ka, az_fd0, az_bw, az_wgt)
-
-        # ---- decompression ------------------------------------------
-        try:
-            phase_history = self._slc_to_phase_history(slc, H_az, H_rng)
-        except Exception as exc:
-            raise ProcessorError(
-                f"SLC decompression failed at step 3a-3f: {exc}"
-            ) from exc
-
-        # ---- CPHD metadata ------------------------------------------
-        cphd_meta = self._build_cphd_metadata(
-            nisar_meta=nisar_meta,
-            az_times=az_times,
-            pulse_pos=p_pos,
-            pulse_vel=p_vel,
-            n_rng=n_rng,
-            prf=prf,
-            kr=kr,
-            pulse_duration_s=pulse_duration_s,
-            fs=fs,
-            srp_ecf=srp_ecf,
-            approx_notes=approx_notes,
-            invalid_mask=invalid_mask if n_invalid > 0 else None,
-        )
-
-        issues = self.validate_metadata(cphd_meta)
-        if issues:
-            logger.warning(
-                "CPHDMetadata completeness issues (%d):\n  %s",
-                len(issues), "\n  ".join(issues),
-            )
-        else:
-            logger.debug("CPHDMetadata completeness check passed.")
-
-        self.metadata = cphd_meta
-        logger.info(
-            "nisar_to_cphd complete: phase_history shape=%s dtype=%s",
-            phase_history.shape, phase_history.dtype,
-        )
-        return phase_history, cphd_meta
+            return phase_history, cphd_meta
 
     # ------------------------------------------------------------------
     # IO
