@@ -119,10 +119,14 @@ from grdl.image_processing.sar.rfi import (
     PerPulseResult,
     CrossPolResult,
     EigenvalueResult,
+    VSFFResult,
     detect_mean_psd,
     detect_per_pulse,
     detect_cross_pol,
     detect_eigenvalue,
+    mitigate_notch,
+    mitigate_interpolate,
+    mitigate_vsff,
 )
 
 __all__ = [
@@ -144,8 +148,12 @@ __all__ = [
     'PerPulseResult',
     'CrossPolResult',
     'EigenvalueResult',
+    'VSFFResult',
     'detect_mean_psd',
     'detect_per_pulse',
     'detect_cross_pol',
     'detect_eigenvalue',
+    'mitigate_notch',
+    'mitigate_interpolate',
+    'mitigate_vsff',
 ]
