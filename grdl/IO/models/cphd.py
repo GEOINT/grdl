@@ -65,12 +65,18 @@ class CPHDChannel:
         Number of samples per vector.
     signal_array_byte_offset : int, optional
         Byte offset of the signal array in the file.
+    pvp : CPHDPVP, optional
+        Per-vector parameters for this channel.  Populated by
+        ``CPHDWriter.nisar_to_cphd()`` so that multi-channel callers
+        can merge channels from separate ``nisar_to_cphd`` calls into
+        a single ``CPHDMetadata`` without losing per-channel PVP data.
     """
 
     identifier: str = ''
     num_vectors: int = 0
     num_samples: int = 0
     signal_array_byte_offset: Optional[int] = None
+    pvp: Optional['CPHDPVP'] = None
 
 
 # ===================================================================

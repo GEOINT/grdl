@@ -118,11 +118,12 @@ _PVP_FIELDS: List[Tuple[str, int, int, str]] = [
     ('TOA1',      22,  1, 'F8'),
     ('TOA2',      23,  1, 'F8'),
     ('TDTropoSRP',24,  1, 'F8'),
-    ('SC0',       25,  1, 'F8'),
-    ('SCSS',      26,  1, 'F8'),
+    ('SC0',       25,  1, 'F8'),    # CPHD 1.1.0 §6.5.2.25 — Slow-time Compensation start frequency
+    ('SCSS',      26,  1, 'F8'),    # CPHD 1.1.0 §6.5.2.26 — Slow-time Compensation step size (Hz/sample)
     ('SIGNAL',    27,  1, 'I8'),
+    ('AmpSF',     28,  1, 'F8'),    # CPHD 1.1.0 §6.5.2 — Amplitude Scale Factor (monostatic mandatory)
 ]
-_NUM_BYTES_PVP: int = 28 * 8  # 224
+_NUM_BYTES_PVP: int = 29 * 8  # 232
 
 
 def _require_sarkit() -> Any:
@@ -448,7 +449,8 @@ class CPHDWriter(ImageWriter):
         s = np.fft.ifft(s, axis=0)          # 3c  -> slow-time
         s = np.fft.fft(s, axis=1)           # 3d  -> range-frequency
         s *= H_rng[np.newaxis, :]            # 3e
-        return s.T.copy()                    # 3f -> (N_rng, N_az)
+        s = np.fft.fftshift(s, axes=1)      # 3f  monotonic freq order (dc→edge)
+        return s.T.copy()                    # 3g -> (N_rng, N_az)
 
     # ------------------------------------------------------------------
     # CPHD metadata helpers
@@ -461,6 +463,8 @@ class CPHDWriter(ImageWriter):
         pulse_vel: np.ndarray,
         fc: float,
         bw: float,
+        fs: float,
+        n_rng: int,
         srp_ecf: Optional[np.ndarray],
         approx_notes: List[str],
         invalid_mask: Optional[np.ndarray] = None,
@@ -482,7 +486,14 @@ class CPHDWriter(ImageWriter):
         fc : float
             Processed centre frequency, Hz.
         bw : float
-            Processed range bandwidth, Hz.
+            Processed range bandwidth, Hz.  Retained for call-site
+            compatibility; FX1/FX2 are derived from ``fs`` instead.
+        fs : float
+            Range sampling rate, Hz.  Defines the physical frequency
+            span of the signal array: FX1 = fc - fs/2,
+            FX2 = fc + fs/2 - fs/n_rng.
+        n_rng : int
+            Number of range samples (FFT size).
         srp_ecf : np.ndarray or None
             Scene Reference Point ECF, shape ``(3,)``.  If ``None``
             the ARP at mid-aperture is used as a placeholder.
@@ -512,6 +523,12 @@ class CPHDWriter(ImageWriter):
         if invalid_mask is not None:
             signal[invalid_mask] = 0.0
 
+        # FX1/FX2 span the full sampling bandwidth so that the linear
+        # frequency mapping covers every bin in the signal array after
+        # fftshift.  Using processed bw here would map only the in-band
+        # portion, leaving the zero-padded guard bins unmapped.
+        fx1_val = fc - fs / 2.0
+        fx2_val = fc + fs / 2.0 - fs / n_rng
         return CPHDPVP(
             tx_time=az_times.copy(),
             tx_pos=pulse_pos.copy(),
@@ -520,8 +537,8 @@ class CPHDWriter(ImageWriter):
             rcv_pos=pulse_pos.copy(),
             rcv_vel=pulse_vel.copy(),
             srp_pos=srp_pos,
-            fx1=np.full(n_az, fc - bw / 2.0),
-            fx2=np.full(n_az, fc + bw / 2.0),
+            fx1=np.full(n_az, fx1_val),
+            fx2=np.full(n_az, fx2_val),
             signal=signal,
         )
 
@@ -589,6 +606,8 @@ class CPHDWriter(ImageWriter):
             pulse_vel=pulse_vel,
             fc=fc,
             bw=bw,
+            fs=fs,
+            n_rng=n_rng,
             srp_ecf=srp_ecf,
             approx_notes=approx_notes,
             invalid_mask=invalid_mask,
@@ -614,8 +633,8 @@ class CPHDWriter(ImageWriter):
             global_params=CPHDGlobal(
                 domain_type='FX',
                 phase_sgn=-1,
-                fx_band_min=fc - bw / 2.0,
-                fx_band_max=fc + bw / 2.0,
+                fx_band_min=fc - fs / 2.0,
+                fx_band_max=fc + fs / 2.0 - fs / n_rng,
             ),
             collection_info=CPHDCollectionInfo(
                 collector_name='NISAR',
@@ -707,13 +726,14 @@ class CPHDWriter(ImageWriter):
         if not cphd_meta.channels:
             issues.append("channels: empty — no channel descriptor")
         else:
-            ch = cphd_meta.channels[0]
-            if not ch.identifier:
-                issues.append("channels[0].identifier: empty string")
-            if ch.num_vectors == 0:
-                issues.append("channels[0].num_vectors: 0")
-            if ch.num_samples == 0:
-                issues.append("channels[0].num_samples: 0")
+            for idx, ch in enumerate(cphd_meta.channels):
+                tag = f"channels[{idx}]"
+                if not ch.identifier:
+                    issues.append(f"{tag}.identifier: empty string")
+                if ch.num_vectors == 0:
+                    issues.append(f"{tag}.num_vectors: 0")
+                if ch.num_samples == 0:
+                    issues.append(f"{tag}.num_samples: 0")
 
         gp = cphd_meta.global_params
         if gp is None:
@@ -769,28 +789,19 @@ class CPHDWriter(ImageWriter):
     @staticmethod
     def _build_cphd_xml(
         cphd_meta: CPHDMetadata,
-        channel_id: str,
-        n_az: int,
-        n_rng: int,
-        az_times: np.ndarray,
     ) -> Any:
         """Build a minimal CPHD 1.1.0 lxml ElementTree from CPHDMetadata.
 
         Produces an XML tree accepted by ``sarkit.cphd.Writer``.  The tree
         includes CollectionID, Global, Data, PVP, and Channel sections.
+        Supports an arbitrary number of channels derived from
+        ``cphd_meta.channels``.
 
         Parameters
         ----------
         cphd_meta : CPHDMetadata
-            Populated CPHD metadata (must have global_params, collection_info).
-        channel_id : str
-            Channel identifier string (matches ``channels[0].identifier``).
-        n_az : int
-            Number of pulses (slow-time samples = NumVectors).
-        n_rng : int
-            Number of range samples (NumSamples).
-        az_times : np.ndarray
-            Per-pulse zero-Doppler times, shape ``(N_az,)``, seconds.
+            Populated CPHD metadata (must have global_params, collection_info,
+            and at least one entry in channels).
 
         Returns
         -------
@@ -799,6 +810,28 @@ class CPHDWriter(ImageWriter):
         et = _require_lxml()
         ns = _CPHD_NS
         N = lambda tag: f'{{{ns}}}{tag}'  # noqa: E731
+
+        channels = cphd_meta.channels
+        if not channels:
+            raise ValidationError(
+                "_build_cphd_xml: CPHDMetadata.channels is empty."
+            )
+
+        # Derive az_times from the first channel that has PVP, or fall back
+        # to the top-level pvp field.
+        _ref_pvp = None
+        for ch in channels:
+            if ch.pvp is not None and ch.pvp.tx_time is not None:
+                _ref_pvp = ch.pvp
+                break
+        if _ref_pvp is None and cphd_meta.pvp is not None:
+            _ref_pvp = cphd_meta.pvp
+        if _ref_pvp is None or _ref_pvp.tx_time is None:
+            raise ValidationError(
+                "_build_cphd_xml: no tx_time available on any channel PVP or "
+                "CPHDMetadata.pvp — cannot build Timeline element."
+            )
+        az_times = _ref_pvp.tx_time
 
         root = et.Element(N('CPHD'))
 
@@ -809,7 +842,7 @@ class CPHDWriter(ImageWriter):
             ci.collector_name if ci and ci.collector_name else 'NISAR'
         )
         et.SubElement(cid, N('CoreName')).text = (
-            ci.core_name if ci and ci.core_name else channel_id
+            ci.core_name if ci and ci.core_name else channels[0].identifier
         )
         et.SubElement(cid, N('CollectType')).text = (
             ci.collect_type if ci and ci.collect_type else 'MONOSTATIC'
@@ -825,8 +858,15 @@ class CPHDWriter(ImageWriter):
 
         # ---- Global -------------------------------------------------
         gp = cphd_meta.global_params
-        fc = gp.center_frequency if gp else 0.0
-        bw = gp.bandwidth if gp else 0.0
+        if gp is None:
+            raise ValidationError(
+                "_build_cphd_xml: CPHDMetadata.global_params is None."
+            )
+        if gp.fx_band_min is None or gp.fx_band_max is None:
+            raise ValidationError(
+                "_build_cphd_xml: global_params.fx_band_min/fx_band_max are None. "
+                "These must be set from the sampling rate (fs) before calling write()."
+            )
         glb = et.SubElement(root, N('Global'))
         et.SubElement(glb, N('DomainType')).text = (
             gp.domain_type if gp and gp.domain_type else 'FX'
@@ -847,16 +887,11 @@ class CPHDWriter(ImageWriter):
         et.SubElement(tl, N('TxTime1')).text = repr(t_start)
         et.SubElement(tl, N('TxTime2')).text = repr(t_end)
         fb = et.SubElement(glb, N('FxBand'))
-        et.SubElement(fb, N('FxMin')).text = repr(
-            gp.fx_band_min if gp and gp.fx_band_min is not None else fc - bw / 2.0
-        )
-        et.SubElement(fb, N('FxMax')).text = repr(
-            gp.fx_band_max if gp and gp.fx_band_max is not None else fc + bw / 2.0
-        )
+        et.SubElement(fb, N('FxMin')).text = repr(gp.fx_band_min)
+        et.SubElement(fb, N('FxMax')).text = repr(gp.fx_band_max)
         # TOASwath: 2*(R_far - R_near)/c relative to SRP range
         r_min = cphd_meta.extras.get('slant_range_min_m', 0.0) or 0.0
         r_max = cphd_meta.extras.get('slant_range_max_m', 1.0) or 1.0
-        r_mid = 0.5 * (r_min + r_max)
         toa_half = (r_max - r_min) / _C
         toa_sw = et.SubElement(glb, N('TOASwath'))
         et.SubElement(toa_sw, N('TOAMin')).text = repr(-toa_half)
@@ -866,26 +901,28 @@ class CPHDWriter(ImageWriter):
         data_el = et.SubElement(root, N('Data'))
         et.SubElement(data_el, N('SignalArrayFormat')).text = 'CF8'
         et.SubElement(data_el, N('NumBytesPVP')).text = str(_NUM_BYTES_PVP)
-        et.SubElement(data_el, N('NumCPHDChannels')).text = '1'
-        ch_data = et.SubElement(data_el, N('Channel'))
-        et.SubElement(ch_data, N('Identifier')).text = channel_id
-        et.SubElement(ch_data, N('NumVectors')).text = str(n_az)
-        et.SubElement(ch_data, N('NumSamples')).text = str(n_rng)
-        et.SubElement(ch_data, N('SignalArrayByteOffset')).text = '0'
-        et.SubElement(ch_data, N('PVPArrayByteOffset')).text = '0'
+        et.SubElement(data_el, N('NumCPHDChannels')).text = str(len(channels))
+        for ch in channels:
+            ch_data = et.SubElement(data_el, N('Channel'))
+            et.SubElement(ch_data, N('Identifier')).text = ch.identifier
+            et.SubElement(ch_data, N('NumVectors')).text = str(ch.num_vectors)
+            et.SubElement(ch_data, N('NumSamples')).text = str(ch.num_samples)
+            et.SubElement(ch_data, N('SignalArrayByteOffset')).text = '0'
+            et.SubElement(ch_data, N('PVPArrayByteOffset')).text = '0'
 
         # ---- Channel (top-level, §7.5 of CPHD 1.1.0) ---------------
         # Distinct from Data/Channel (which carries byte offsets).
         ch_el = et.SubElement(root, N('Channel'))
-        et.SubElement(ch_el, N('RefChId')).text = channel_id
-        ch_params = et.SubElement(ch_el, N('Parameters'))
-        et.SubElement(ch_params, N('Identifier')).text = channel_id
-        # RefVectorIndex: 0-based index of the reference PVP vector.
-        et.SubElement(ch_params, N('RefVectorIndex')).text = str(n_az // 2)
-        # For pseudo-CPHD the FX band and TOA window are fixed per pulse.
-        et.SubElement(ch_params, N('FXFixed')).text = 'true'
-        et.SubElement(ch_params, N('TOAFixed')).text = 'true'
-        et.SubElement(ch_params, N('SRPFixed')).text = 'false'
+        et.SubElement(ch_el, N('RefChId')).text = channels[0].identifier
+        for ch in channels:
+            ch_params = et.SubElement(ch_el, N('Parameters'))
+            et.SubElement(ch_params, N('Identifier')).text = ch.identifier
+            # RefVectorIndex: 0-based index of the reference PVP vector.
+            et.SubElement(ch_params, N('RefVectorIndex')).text = str(ch.num_vectors // 2)
+            # For pseudo-CPHD the FX band and TOA window are fixed per pulse.
+            et.SubElement(ch_params, N('FXFixed')).text = 'true'
+            et.SubElement(ch_params, N('TOAFixed')).text = 'true'
+            et.SubElement(ch_params, N('SRPFixed')).text = 'false'
 
         # ---- PVP ----------------------------------------------------
         pvp_el = et.SubElement(root, N('PVP'))
@@ -903,7 +940,7 @@ class CPHDWriter(ImageWriter):
         pvp_dtype: Any,
         n_az: int,
         n_rng: int,
-        bw: float,
+        fs: float,
         slant_range_min: float,
         slant_range_max: float,
     ) -> np.ndarray:
@@ -923,8 +960,8 @@ class CPHDWriter(ImageWriter):
             Number of pulses.
         n_rng : int
             Number of range samples.
-        bw : float
-            Processed range bandwidth, Hz.  Used to compute SCSS.
+        fs : float
+            Range sampling rate, Hz.  Used to compute SCSS = fs / n_rng.
         slant_range_min : float
             Near-range slant range, metres.
         slant_range_max : float
@@ -956,8 +993,15 @@ class CPHDWriter(ImageWriter):
         # SC0: start frequency of the receive window = FX1 per pulse.
         pvp_arr['SC0'] = pvp_arr['FX1']
 
-        # SCSS: frequency step between adjacent samples.
-        pvp_arr['SCSS'] = bw / n_rng if n_rng > 0 else 0.0
+        # SCSS: frequency step between adjacent signal samples.
+        # Must use the full sampling rate fs (not the processed bandwidth)
+        # so that each bin maps to the correct physical frequency after
+        # fftshift reorders the array into monotonic order.
+        pvp_arr['SCSS'] = fs / n_rng if n_rng > 0 else 0.0
+
+        # AmpSF: Amplitude Scale Factor, mandatory for MONOSTATIC per
+        # CPHD 1.1.0 §6.5.2.  Set to 1.0 (no per-pulse gain variation).
+        pvp_arr['AmpSF'] = 1.0
 
         # TOA1/TOA2: per-pulse two-way delay relative to the instantaneous
         # ARP-to-SRP slant range.  Using per-pulse r_srp(t) rather than a
@@ -1371,6 +1415,11 @@ class CPHDWriter(ImageWriter):
             else:
                 logger.debug("CPHDMetadata completeness check passed.")
 
+            # Store PVP on the channel descriptor so multi-channel callers
+            # can merge channels from separate nisar_to_cphd calls into a
+            # single CPHDMetadata without losing per-channel PVP data.
+            cphd_meta.channels[0].pvp = cphd_meta.pvp
+
             self.metadata = cphd_meta
             logger.info(
                 "nisar_to_cphd complete: phase_history shape=%s dtype=%s",
@@ -1384,7 +1433,7 @@ class CPHDWriter(ImageWriter):
 
     def write(
         self,
-        data: np.ndarray,
+        data: Union[np.ndarray, Dict[str, np.ndarray]],
         geolocation: Optional[Dict[str, Any]] = None,
         *,
         cphd_meta: Optional[CPHDMetadata] = None,
@@ -1393,15 +1442,16 @@ class CPHDWriter(ImageWriter):
         """Write phase history and metadata to a CPHD 1.1.0 binary file.
 
         Satisfies ``ImageWriter.write()``.  Uses sarkit as the CPHD
-        backend.  The ``data`` array (N_rng, N_az) is transposed to
-        CPHD signal layout (NumVectors=N_az, NumSamples=N_rng) before
-        writing.
+        backend.
 
         Parameters
         ----------
-        data : np.ndarray
-            Phase history, shape ``(N_rng, N_az)``, complex64.
-            Produced by ``nisar_to_cphd()``.
+        data : Dict[str, np.ndarray]
+            Mapping from channel identifier to phase history array.
+            Each array must have shape ``(N_rng, N_az)``, complex64,
+            and be keyed by the matching ``CPHDChannel.identifier``.
+            Produced by calling ``nisar_to_cphd()`` once per
+            polarization and collecting the results into a dict.
         geolocation : dict, optional
             Ignored.  Present for ``ImageWriter`` ABC compatibility.
         cphd_meta : CPHDMetadata, optional
@@ -1414,7 +1464,9 @@ class CPHDWriter(ImageWriter):
         DependencyError
             If sarkit or lxml is not installed.
         ValidationError
-            If no CPHDMetadata is available or required fields are missing.
+            If no CPHDMetadata is available, required fields are missing,
+            or a channel identifier in ``data`` has no entry in
+            ``cphd_meta.channels``.
         ProcessorError
             If the sarkit write operation fails.
         """
@@ -1435,57 +1487,78 @@ class CPHDWriter(ImageWriter):
                 + "\n".join(f"  {i}" for i in issues)
             )
 
+        # Normalise: accept a bare ndarray for single-channel convenience.
+        if isinstance(data, np.ndarray):
+            if not meta.channels:
+                raise ValidationError("data is ndarray but meta.channels is empty.")
+            data = {meta.channels[0].identifier: data}
+
         out_path = Path(filename) if filename is not None else self.filepath
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # CPHD signal layout: (NumVectors=N_az, NumSamples=N_rng)
-        # phase_history from nisar_to_cphd is (N_rng, N_az), so transpose.
-        if data.ndim != 2:
-            raise ValidationError(
-                f"data must be 2-D (N_rng, N_az), got shape {data.shape}."
-            )
-        signal_array = data.T.astype(np.complex64, copy=False)   # (N_az, N_rng)
-        # Ensure C-contiguity for sarkit compatibility
-        signal_array = np.ascontiguousarray(signal_array)
-        n_az, n_rng = signal_array.shape
+        r_min = float(meta.extras.get('slant_range_min_m', 0.0) or 0.0)
+        r_max = float(meta.extras.get('slant_range_max_m', 1.0) or 1.0)
+        # Use the actual sampling rate stored by nisar_to_cphd for correct SCSS.
+        fs = float(meta.extras.get('nisar_fs_hz') or
+                   (meta.rcv_parameters.sample_rate if meta.rcv_parameters else 1.0))
 
-        channel_id = meta.channels[0].identifier if meta.channels else 'ch0'
-        sp = meta.swath_parameters if hasattr(meta, 'swath_parameters') else None
-        bw = (meta.global_params.bandwidth if meta.global_params else
-              meta.extras.get('nisar_bw_hz', 1.0))
-        r_min = meta.extras.get('slant_range_min_m', 0.0) or 0.0
-        r_max = meta.extras.get('slant_range_max_m', 1.0) or 1.0
-
-        pvp = meta.pvp
-        if pvp is None:
-            raise ValidationError("CPHDMetadata.pvp is None — cannot build PVP array.")
-
-        # Recover az_times from pvp.tx_time for XML TxTime1/TxTime2
-        az_times = pvp.tx_time if pvp.tx_time is not None else np.zeros(n_az)
-
-        # Build lxml XML tree
-        xmltree = self._build_cphd_xml(meta, channel_id, n_az, n_rng, az_times)
-
-        # Build structured PVP array matching the XML-declared dtype
+        # Build XML tree (metadata-driven, multi-channel).
+        xmltree = self._build_cphd_xml(meta)
         pvp_dtype = sc.get_pvp_dtype(xmltree)
-        pvp_array = self._build_pvp_array(
-            pvp=pvp,
-            pvp_dtype=pvp_dtype,
-            n_az=n_az,
-            n_rng=n_rng,
-            bw=float(bw),
-            slant_range_min=float(r_min),
-            slant_range_max=float(r_max),
-        )
-
         sarkit_meta = sc.Metadata(xmltree=xmltree)
 
         try:
             with open(str(out_path), 'wb') as fh:
                 writer = sc.Writer(fh, sarkit_meta)
-                writer.write_pvp(channel_id, pvp_array)
-                writer.write_signal(channel_id, signal_array)
+
+                for ch in meta.channels:
+                    ch_id = ch.identifier
+                    if ch_id not in data:
+                        raise ValidationError(
+                            f"Channel '{ch_id}' is defined in CPHDMetadata but "
+                            "has no entry in the data dict."
+                        )
+
+                    # Resolve PVP: prefer per-channel, fall back to top-level.
+                    ch_pvp = ch.pvp if ch.pvp is not None else meta.pvp
+                    if ch_pvp is None:
+                        raise ValidationError(
+                            f"No PVP available for channel '{ch_id}'. "
+                            "Ensure nisar_to_cphd() was called for this channel."
+                        )
+
+                    pvp_array = self._build_pvp_array(
+                        pvp=ch_pvp,
+                        pvp_dtype=pvp_dtype,
+                        n_az=ch.num_vectors,
+                        n_rng=ch.num_samples,
+                        fs=fs,
+                        slant_range_min=r_min,
+                        slant_range_max=r_max,
+                    )
+
+                    # CPHD signal layout: (NumVectors=N_az, NumSamples=N_rng).
+                    # Input array is (N_rng, N_az), so transpose.
+                    signal_arr = data[ch_id]
+                    if signal_arr.ndim != 2:
+                        raise ValidationError(
+                            f"data['{ch_id}'] must be 2-D (N_rng, N_az), "
+                            f"got shape {signal_arr.shape}."
+                        )
+                    signal_t = np.ascontiguousarray(
+                        signal_arr.T.astype(np.complex64, copy=False)
+                    )  # (N_az, N_rng)
+
+                    writer.write_pvp(ch_id, pvp_array)
+                    writer.write_signal(ch_id, signal_t)
+
+                    # Release per-channel intermediates immediately to cap
+                    # peak memory usage when writing many polarizations.
+                    del pvp_array, signal_t
+
                 writer.done()
+        except (ValidationError, ProcessorError):
+            raise
         except Exception as exc:
             raise ProcessorError(
                 f"sarkit CPHD write failed for {out_path}: {exc}"
