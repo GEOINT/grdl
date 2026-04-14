@@ -111,7 +111,7 @@ class BIOMASSL1Reader(ImageReader):
                 "Install with: pip install rasterio"
             )
 
-        self.read_config = read_config or ReadConfig(parallel=True)
+        self.read_config = read_config or ReadConfig(parallel=False)
 
         filepath = Path(filepath)
         if not filepath.exists():
