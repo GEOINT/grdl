@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 from grdl.image_processing.params import ParamSpec, collect_param_specs, _make_init
 
 if TYPE_CHECKING:
-    from grdl.IO.models.base import ImageMetadata
+    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
     from grdl.image_processing.versioning import DetectionInputSpec
     from grdl.image_processing.detection.models import DetectionSet
 
@@ -434,14 +434,102 @@ class ImageTransform(ImageProcessor):
             Copy of *metadata* with rows, cols, bands, dtype updated.
         """
         updates: Dict[str, Any] = {'dtype': str(result.dtype)}
-        if result.ndim >= 2:
+
+        if result.ndim == 2:
             updates['rows'] = result.shape[0]
             updates['cols'] = result.shape[1]
-        if result.ndim == 3:
-            updates['bands'] = result.shape[2]
-        elif result.ndim == 2:
             updates['bands'] = 1
+            updates['axis_order'] = 'YX'
+            if getattr(metadata, 'channel_metadata', None):
+                updates['channel_metadata'] = metadata.channel_metadata[:1]
+        elif result.ndim == 3:
+            axis_order = ImageTransform._infer_3d_axis_order(metadata, result)
+            updates['axis_order'] = axis_order
+            if axis_order == 'CYX':
+                updates['bands'] = result.shape[0]
+                updates['rows'] = result.shape[1]
+                updates['cols'] = result.shape[2]
+            else:
+                updates['rows'] = result.shape[0]
+                updates['cols'] = result.shape[1]
+                updates['bands'] = result.shape[2]
+
+            channel_metadata = getattr(metadata, 'channel_metadata', None)
+            if channel_metadata is not None:
+                expected = updates['bands']
+                if len(channel_metadata) == expected:
+                    updates['channel_metadata'] = channel_metadata
+                else:
+                    updates['channel_metadata'] = ImageTransform._make_derived_channels(
+                        names=[f'C{i}' for i in range(expected)],
+                        source_indices=[[i] for i in range(expected)],
+                        role='derived',
+                    )
         return dataclasses.replace(metadata, **updates)
+
+    @staticmethod
+    def _infer_3d_axis_order(
+        metadata: 'ImageMetadata',
+        result: np.ndarray,
+    ) -> str:
+        """Infer whether a 3D result uses CYX or YXC layout."""
+        axis_order = getattr(metadata, 'axis_order', None)
+        if axis_order in ('CYX', 'YXC'):
+            return axis_order
+
+        channel_metadata = getattr(metadata, 'channel_metadata', None)
+        if channel_metadata is not None:
+            num_channels = len(channel_metadata)
+            if result.shape[0] == num_channels and result.shape[2] != num_channels:
+                return 'CYX'
+            if result.shape[2] == num_channels and result.shape[0] != num_channels:
+                return 'YXC'
+
+        bands = getattr(metadata, 'bands', None)
+        if bands is not None:
+            if result.shape[0] == bands and result.shape[2] != bands:
+                return 'CYX'
+            if result.shape[2] == bands and result.shape[0] != bands:
+                return 'YXC'
+            if result.shape[0] == bands:
+                return 'CYX'
+            if result.shape[2] == bands:
+                return 'YXC'
+
+        return 'CYX'
+
+    @staticmethod
+    def _select_channel_metadata(
+        metadata: 'ImageMetadata',
+        indices: list[int],
+    ) -> Optional[list['ChannelMetadata']]:
+        """Select and reindex channel metadata for a subset of channels."""
+        channel_metadata = getattr(metadata, 'channel_metadata', None)
+        if channel_metadata is None:
+            return None
+        return [
+            dataclasses.replace(channel_metadata[in_idx], index=out_idx)
+            for out_idx, in_idx in enumerate(indices)
+        ]
+
+    @staticmethod
+    def _make_derived_channels(
+        names: list[str],
+        source_indices: list[list[int]],
+        role: str,
+    ) -> list['ChannelMetadata']:
+        """Construct new channel descriptors for derived outputs."""
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=i,
+                name=name,
+                role=role,
+                source_indices=src,
+            )
+            for i, (name, src) in enumerate(zip(names, source_indices))
+        ]
 
     @abstractmethod
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:

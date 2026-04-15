@@ -479,6 +479,10 @@ class TestSentinel1SLCReader:
             assert meta.rows == _TOTAL_LINES
             assert meta.cols == _TOTAL_SAMPLES
             assert meta.dtype == 'complex64'
+            assert meta.axis_order == 'YX'
+            assert meta.channel_metadata is not None
+            assert meta.channel_metadata[0].name == 'VV'
+            assert meta.channel_metadata[0].polarization == 'VV'
 
     def test_product_info_parsed(self, synthetic_safe):
         """Product info is extracted from adsHeader."""

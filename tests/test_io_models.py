@@ -35,6 +35,7 @@ import pytest
 
 # GRDL internal
 from grdl.IO.models import (
+    ChannelMetadata,
     ImageMetadata,
     SICDMetadata,
     SIDDMetadata,
@@ -119,6 +120,8 @@ def test_optional_fields_default_none(basic_meta):
     assert basic_meta.bands is None
     assert basic_meta.crs is None
     assert basic_meta.nodata is None
+    assert basic_meta.axis_order is None
+    assert basic_meta.channel_metadata is None
 
 
 def test_optional_fields_set(full_meta):
@@ -132,6 +135,37 @@ def test_extras_default_empty():
     """Extras defaults to empty dict."""
     meta = ImageMetadata(format='X', rows=1, cols=1, dtype='uint8')
     assert meta.extras == {}
+
+
+def test_channel_metadata_from_dicts():
+    """Channel descriptors normalize dict inputs to dataclasses."""
+    meta = ImageMetadata(
+        format='BIOMASS_L1_SCS',
+        rows=100,
+        cols=200,
+        dtype='complex64',
+        bands=2,
+        axis_order='CYX',
+        channel_metadata=[
+            {'index': 0, 'name': 'HH', 'polarization': 'HH'},
+            {'index': 1, 'name': 'HV', 'polarization': 'HV'},
+        ],
+    )
+    assert isinstance(meta.channel_metadata[0], ChannelMetadata)
+    assert meta.channel_metadata[1].name == 'HV'
+    assert meta.get_channel(0).polarization == 'HH'
+
+
+def test_with_channels_returns_updated_copy(basic_meta):
+    """with_channels creates a copy with channel metadata and CYX shape."""
+    updated = basic_meta.with_channels([
+        ChannelMetadata(index=0, name='HH', polarization='HH'),
+        ChannelMetadata(index=1, name='HV', polarization='HV'),
+    ])
+    assert updated is not basic_meta
+    assert updated.bands == 2
+    assert updated.axis_order == 'CYX'
+    assert updated.channel_metadata[1].name == 'HV'
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +777,13 @@ class TestBIOMASSMetadata:
             cols=10000,
             dtype='complex64',
             bands=4,
+            axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=0, name='HH', polarization='HH'),
+                ChannelMetadata(index=1, name='HV', polarization='HV'),
+                ChannelMetadata(index=2, name='VH', polarization='VH'),
+                ChannelMetadata(index=3, name='VV', polarization='VV'),
+            ],
             mission='BIOMASS',
             swath='S1',
             product_type='SCS',
@@ -774,6 +815,7 @@ class TestBIOMASSMetadata:
     def test_biomass_fields(self, biomass_meta):
         """BIOMASS-specific typed fields accessible."""
         assert biomass_meta.mission == 'BIOMASS'
+        assert biomass_meta.axis_order == 'CYX'
         assert biomass_meta.swath == 'S1'
         assert biomass_meta.product_type == 'SCS'
         assert biomass_meta.orbit_number == 1234
@@ -784,6 +826,8 @@ class TestBIOMASSMetadata:
         assert biomass_meta.azimuth_pixel_spacing == pytest.approx(6.25)
         assert biomass_meta.nodata_value == pytest.approx(-9999.0)
         assert biomass_meta.prf == pytest.approx(3000.0)
+        assert biomass_meta.channel_metadata[0].name == 'HH'
+        assert biomass_meta.channel_metadata[3].polarization == 'VV'
 
     def test_optional_fields_default_none(self):
         """Unset BIOMASS fields default to None."""

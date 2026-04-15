@@ -57,6 +57,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.common import XYZ, LatLonHAE
 from grdl.IO.models.terrasar import (
     TerraSARMetadata,
@@ -913,12 +914,28 @@ class TerraSARReader(ImageReader):
             product_type = product_info.product_type or 'Unknown'
             format_str = f'TerraSAR-X_{product_type}'
 
+            active_pol = None
+            if product_info.polarization_list:
+                active_pol = product_info.polarization_list[0]
+
+            channel_metadata = [
+                ChannelMetadata(
+                    index=0,
+                    name=active_pol or 'channel0',
+                    role='measurement',
+                    polarization=active_pol,
+                    source_indices=[0],
+                )
+            ]
+
             self.metadata = TerraSARMetadata(
                 format=format_str,
                 rows=rows,
                 cols=cols,
                 dtype=dtype_str,
                 bands=1,
+                axis_order='YX',
+                channel_metadata=channel_metadata,
                 product_info=product_info,
                 scene_info=scene_info,
                 image_info=image_info,

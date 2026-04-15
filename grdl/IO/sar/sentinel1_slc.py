@@ -55,6 +55,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.common import XYZ
 from grdl.IO.models.sentinel1_slc import (
     Sentinel1SLCMetadata,
@@ -725,12 +726,26 @@ class Sentinel1SLCReader(ImageReader):
                     f"match annotation XML ({xml_rows}x{xml_cols})"
                 )
 
+            channel_name = self._polarization or swath_info.polarization
+            channel_metadata = [
+                ChannelMetadata(
+                    index=0,
+                    name=channel_name,
+                    role='measurement',
+                    polarization=channel_name,
+                    swath=self._swath,
+                    source_indices=[0],
+                )
+            ]
+
             self.metadata = Sentinel1SLCMetadata(
                 format='Sentinel-1_IW_SLC',
                 rows=xml_rows,
                 cols=xml_cols,
                 dtype='complex64',
                 bands=1,
+                axis_order='YX',
+                channel_metadata=channel_metadata,
                 product_info=product_info,
                 swath_info=swath_info,
                 bursts=bursts if bursts else None,

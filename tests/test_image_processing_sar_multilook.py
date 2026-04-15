@@ -29,6 +29,7 @@ Modified
 import pytest
 import numpy as np
 
+from grdl.IO.models import ChannelMetadata
 from grdl.image_processing.sar.multilook import MultilookDecomposition
 from grdl.IO.models import SICDMetadata
 from grdl.IO.models.sicd import SICDGrid, SICDDirParam
@@ -221,6 +222,18 @@ class TestDecompose:
         image = _synthetic_complex_image()
         result = ml.decompose(image)
         assert np.iscomplexobj(result)
+
+    def test_execute_emits_derived_channel_metadata(self):
+        meta = _make_metadata()
+        meta.channel_metadata = [ChannelMetadata(index=0, name='HH')]
+        meta.axis_order = 'YX'
+        ml = MultilookDecomposition(meta, looks_rg=2, looks_az=3)
+        image = _synthetic_complex_image()
+        _, out_meta = ml.execute(meta, image)
+        assert out_meta.axis_order == 'RAYX'
+        assert out_meta.bands == 6
+        assert out_meta.channel_metadata[0].name == 'HH_rg0_az0'
+        assert out_meta.channel_metadata[-1].name == 'HH_rg1_az2'
 
     def test_output_dtype_matches_input(self):
         meta = _make_metadata()

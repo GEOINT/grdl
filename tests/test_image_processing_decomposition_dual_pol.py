@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 
 # GRDL
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
 
 
@@ -267,3 +268,64 @@ class TestToRgb:
     def test_missing_key_raises(self, halpha):
         with pytest.raises(ValueError, match="Missing"):
             halpha.to_rgb({'entropy': np.zeros((3, 3))})
+
+
+class TestExecuteExtraction:
+
+    def test_execute_extracts_cyx_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=0, name='VV'),
+                ChannelMetadata(index=1, name='VH'),
+            ],
+        )
+        source = np.zeros((2, 6, 7), dtype=np.complex64)
+        source[0] = 11
+        source[1] = 22
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 11)
+        assert np.all(dec.seen[1] == 22)
+
+    def test_execute_extracts_yxc_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='YXC',
+        )
+        source = np.zeros((6, 7, 2), dtype=np.complex64)
+        source[..., 0] = 3
+        source[..., 1] = 4
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 3)
+        assert np.all(dec.seen[1] == 4)

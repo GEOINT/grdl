@@ -47,7 +47,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
-from grdl.IO.models import BIOMASSMetadata
+from grdl.IO.models import BIOMASSMetadata, ChannelMetadata
 from grdl.IO.performance import ReadConfig, _ensure_gdal_threads, _resolve_workers
 
 logger = logging.getLogger(__name__)
@@ -273,6 +273,19 @@ class BIOMASSL1Reader(ImageReader):
                 ]
                 crs_str = str(crs_val)
 
+            channel_metadata = None
+            if polarizations is not None:
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=i,
+                        name=pol,
+                        role='measurement',
+                        polarization=pol,
+                        source_indices=[i],
+                    )
+                    for i, pol in enumerate(polarizations)
+                ]
+
             self.metadata = BIOMASSMetadata(
                 format='BIOMASS_L1_SCS',
                 rows=rows,
@@ -280,6 +293,8 @@ class BIOMASSL1Reader(ImageReader):
                 dtype='complex64',
                 bands=bands,
                 crs=crs_str,
+                axis_order='CYX' if bands > 1 else 'YX',
+                channel_metadata=channel_metadata,
                 mission=mission,
                 swath=swath,
                 product_type=product_type,

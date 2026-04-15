@@ -52,6 +52,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.nisar import (
     NISARMetadata,
     NISARIdentification,
@@ -583,12 +584,30 @@ class NISARReader(ImageReader):
             if grid_params.epsg is not None:
                 crs = f'EPSG:{grid_params.epsg}'
 
+        channel_metadata = [
+            ChannelMetadata(
+                index=0,
+                name=(
+                    f'{self._frequency}_{self._polarization}'
+                    if self._frequency and self._polarization
+                    else self._polarization or self._frequency or 'channel0'
+                ),
+                role='measurement',
+                polarization=self._polarization,
+                frequency=self._frequency,
+                source_indices=[0],
+            )
+        ]
+
         self.metadata = NISARMetadata(
             format=f'NISAR_{self._product_type}',
             rows=rows,
             cols=cols,
             dtype=dtype_str,
+            bands=1,
             crs=crs,
+            axis_order='YX',
+            channel_metadata=channel_metadata,
             product_type=self._product_type,
             radar_band=self._radar_band,
             frequency=self._frequency,

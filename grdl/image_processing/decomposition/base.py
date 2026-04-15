@@ -43,7 +43,7 @@ import numpy as np
 from grdl.image_processing.base import ImageProcessor
 
 if TYPE_CHECKING:
-    from grdl.IO.models.base import ImageMetadata
+    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
 class PolarimetricDecomposition(ImageProcessor):
@@ -106,14 +106,73 @@ class PolarimetricDecomposition(ImageProcessor):
         shv = kwargs.pop('shv', None)
         svh = kwargs.pop('svh', None)
         svv = kwargs.pop('svv', None)
-        if shh is None and source.ndim == 3 and source.shape[-1] >= 4:
-            shh = source[..., 0]
-            shv = source[..., 1]
-            svh = source[..., 2]
-            svv = source[..., 3]
+        if shh is None and source.ndim == 3:
+            axis_order = getattr(metadata, 'axis_order', None)
+
+            if axis_order in ('CYX', 'YXC'):
+                inferred_order = axis_order
+            else:
+                inferred_order = None
+                channel_metadata = getattr(metadata, 'channel_metadata', None)
+                if channel_metadata is not None:
+                    n_channels = len(channel_metadata)
+                    if source.shape[0] == n_channels and source.shape[-1] != n_channels:
+                        inferred_order = 'CYX'
+                    elif source.shape[-1] == n_channels and source.shape[0] != n_channels:
+                        inferred_order = 'YXC'
+                if inferred_order is None:
+                    bands = getattr(metadata, 'bands', None)
+                    if bands is not None:
+                        if source.shape[0] == bands and source.shape[-1] != bands:
+                            inferred_order = 'CYX'
+                        elif source.shape[-1] == bands and source.shape[0] != bands:
+                            inferred_order = 'YXC'
+
+            if inferred_order == 'CYX' and source.shape[0] >= 4:
+                shh = source[0]
+                shv = source[1]
+                svh = source[2]
+                svv = source[3]
+            elif inferred_order == 'YXC' and source.shape[-1] >= 4:
+                shh = source[..., 0]
+                shv = source[..., 1]
+                svh = source[..., 2]
+                svv = source[..., 3]
+            elif source.shape[0] >= 4:
+                shh = source[0]
+                shv = source[1]
+                svh = source[2]
+                svv = source[3]
+            elif source.shape[-1] >= 4:
+                shh = source[..., 0]
+                shv = source[..., 1]
+                svh = source[..., 2]
+                svv = source[..., 3]
         components = self.decompose(shh, shv, svh, svv)
-        updated = dataclasses.replace(metadata, bands=len(components))
+        updated = dataclasses.replace(
+            metadata,
+            bands=len(components),
+            axis_order='CYX',
+            channel_metadata=self._build_component_metadata(metadata),
+        )
         return components, updated
+
+    def _build_component_metadata(
+        self,
+        metadata: 'ImageMetadata',
+    ) -> list['ChannelMetadata']:
+        """Build per-component metadata for decomposition outputs."""
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=i,
+                name=name,
+                role='decomposition',
+                source_indices=[],
+            )
+            for i, name in enumerate(self.component_names)
+        ]
 
     @abstractmethod
     def decompose(

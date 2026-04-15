@@ -277,9 +277,24 @@ class DualPolHAlpha(PolarimetricDecomposition):
         self._metadata = metadata
         s_co = kwargs.pop('s_co', None)
         s_cross = kwargs.pop('s_cross', None)
-        if s_co is None and source.ndim == 3 and source.shape[-1] >= 2:
-            s_co = source[..., 0]
-            s_cross = source[..., 1]
+        if s_co is None and source.ndim == 3:
+            axis_order = getattr(metadata, 'axis_order', None)
+            if axis_order == 'CYX' and source.shape[0] >= 2:
+                s_co = source[0]
+                s_cross = source[1]
+            elif axis_order == 'YXC' and source.shape[-1] >= 2:
+                s_co = source[..., 0]
+                s_cross = source[..., 1]
+            else:
+                channel_metadata = getattr(metadata, 'channel_metadata', None)
+                bands = getattr(metadata, 'bands', None)
+                n_channels = len(channel_metadata) if channel_metadata else bands
+                if n_channels == 2 and source.shape[0] == 2 and source.shape[-1] != 2:
+                    s_co = source[0]
+                    s_cross = source[1]
+                elif source.shape[-1] >= 2:
+                    s_co = source[..., 0]
+                    s_cross = source[..., 1]
         components = self.decompose_dual(s_co, s_cross)
         updated = dataclasses.replace(metadata, bands=len(components))
         return components, updated

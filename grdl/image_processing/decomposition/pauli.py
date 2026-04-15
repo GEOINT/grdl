@@ -41,7 +41,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -52,6 +52,9 @@ from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
 @processor_version('0.1.0')
@@ -116,6 +119,34 @@ class PauliDecomposition(PolarimetricDecomposition):
             ``('surface', 'double_bounce', 'volume')``.
         """
         return ('surface', 'double_bounce', 'volume')
+
+    def _build_component_metadata(
+        self,
+        metadata: 'ImageMetadata',
+    ) -> list['ChannelMetadata']:
+        """Return Pauli-specific output lineage metadata."""
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=0,
+                name='surface',
+                role='decomposition',
+                source_indices=[0, 3],
+            ),
+            ChannelMetadata(
+                index=1,
+                name='double_bounce',
+                role='decomposition',
+                source_indices=[0, 3],
+            ),
+            ChannelMetadata(
+                index=2,
+                name='volume',
+                role='decomposition',
+                source_indices=[1, 2],
+            ),
+        ]
 
     def decompose(
         self,

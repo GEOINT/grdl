@@ -60,7 +60,7 @@ except ImportError:
     _HAS_CUPY = False
 
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality, ProcessorCategory
@@ -523,8 +523,26 @@ class MultilookDecomposition(ImageProcessor):
         """
         self._metadata = metadata
         result = self.decompose(source)
+
+        base_name = 'channel0'
+        if getattr(metadata, 'channel_metadata', None):
+            base_name = metadata.channel_metadata[0].name
+
+        names = [
+            f'{base_name}_rg{rg}_az{az}'
+            for rg in range(result.shape[0])
+            for az in range(result.shape[1])
+        ]
+        channel_metadata = ImageTransform._make_derived_channels(
+            names=names,
+            source_indices=[[0] for _ in names],
+            role='look',
+        )
         updated = dataclasses.replace(
-            metadata, bands=result.shape[0] * result.shape[1]
+            metadata,
+            bands=result.shape[0] * result.shape[1],
+            axis_order='RAYX',
+            channel_metadata=channel_metadata,
         )
         return result, updated
 
