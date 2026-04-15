@@ -58,6 +58,7 @@ class ProcessorCategory(Enum):
     FILTERS = "filters"
     BACKGROUND = "background"
     BINARY = "binary"
+    DECOMPOSITION = "decomposition"
     ENHANCE = "enhance"
     EDGES = "edges"
     FFT = "fft"
@@ -186,6 +187,27 @@ class OutputFormat(Enum):
     PNG = "png"
     HDF5 = "hdf5"
     NITF = "nitf"
+
+
+class PolarimetricMode(Enum):
+    """Polarimetric collection mode for SAR processor and workflow tagging.
+
+    Declares the polarimetric diversity required by a processor or workflow.
+    Used by grdk widgets to gate actions on quad-pol completeness and by
+    grdl-runtime to validate workflow–dataset compatibility.
+    """
+
+    SINGLE_POL = "single_pol"
+    """Single polarization (e.g., HH-only, VV-only)."""
+
+    DUAL_POL = "dual_pol"
+    """Dual polarization (co-pol + cross-pol, e.g., HH+HV or VV+VH)."""
+
+    COMPACT_POL = "compact_pol"
+    """Compact/hybrid polarimetry (e.g., Pi/4, CTLR modes)."""
+
+    QUAD_POL = "quad_pol"
+    """Full quad-polarization: HH, HV, VH, VV simultaneously."""
 
 
 class DataType(str, Enum):

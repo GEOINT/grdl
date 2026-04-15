@@ -249,19 +249,23 @@ class TestToRgb:
     def test_output_shape(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.shape == (3, s_co.shape[0], s_co.shape[1])
+        assert meta.rows == s_co.shape[0]
+        assert meta.cols == s_co.shape[1]
+        assert meta.bands == 3
 
     def test_output_dtype(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.dtype == np.float32
+        assert meta.dtype == 'float32'
 
     def test_output_range(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, _ = halpha.to_rgb(result)
         assert np.all(rgb >= 0.0)
         assert np.all(rgb <= 1.0)
 

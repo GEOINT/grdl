@@ -233,7 +233,7 @@ class PolarimetricDecomposition(ImageProcessor):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """
         Create an RGB composite from decomposition components.
 
@@ -255,9 +255,10 @@ class PolarimetricDecomposition(ImageProcessor):
 
         Returns
         -------
-        np.ndarray
-            RGB image, shape (3, rows, cols), dtype float32,
-            values in [0, 1].
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb is shape (3, rows, cols), dtype
+            float32, values in [0, 1]; metadata carries the channel
+            descriptors for the three output bands.
         """
         ...
 

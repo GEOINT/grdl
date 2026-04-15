@@ -115,8 +115,8 @@ class StubDecomposition(PolarimetricDecomposition):
         return ('alpha', 'beta')
 
     def to_rgb(self, components, representation='db',
-               percentile_low=2.0, percentile_high=98.0) -> np.ndarray:
-        return np.zeros((10, 10, 3), dtype=np.float32)
+               percentile_low=2.0, percentile_high=98.0):
+        return np.zeros((10, 10, 3), dtype=np.float32), None
 
 
 class BareProcessor(ImageProcessor):
