@@ -264,7 +264,7 @@ class JP2Reader(ImageReader):
             format='JPEG2000',
             rows=rows,
             cols=cols,
-            dtype=str(jp2.dtype),
+            dtype=np.dtype(jp2.dtype).name,
             bands=bands,
             extras=extras,
         )

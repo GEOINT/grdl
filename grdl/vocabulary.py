@@ -209,6 +209,57 @@ class PolarimetricMode(Enum):
     QUAD_POL = "quad_pol"
     """Full quad-polarization: HH, HV, VH, VV simultaneously."""
 
+    @classmethod
+    def from_reader(cls, reader) -> 'PolarimetricMode | None':
+        """Classify the polarimetric mode of *reader* from its metadata.
+
+        Inspects ``reader.metadata.channel_metadata`` for multi-band
+        readers (e.g. NISAR opened with ``polarizations='all'``, BIOMASS)
+        and ``reader.metadata.polarization`` for single-band readers.
+        No array data is loaded.
+
+        Parameters
+        ----------
+        reader : ImageReader
+            Any grdl reader instance.
+
+        Returns
+        -------
+        PolarimetricMode or None
+            - ``QUAD_POL`` — all four HH/HV/VH/VV channels present.
+            - ``DUAL_POL`` — exactly two channels from a recognised pair.
+            - ``SINGLE_POL`` — one polarization channel detected.
+            - ``None`` — no polarization metadata found.
+        """
+        _QUAD = frozenset({'HH', 'HV', 'VH', 'VV'})
+        _DUAL_PAIRS = (
+            frozenset({'HH', 'HV'}),
+            frozenset({'VV', 'VH'}),
+            frozenset({'HH', 'VV'}),
+            frozenset({'HV', 'VH'}),
+        )
+        meta = getattr(reader, 'metadata', None)
+        channel_metadata = getattr(meta, 'channel_metadata', None)
+        if channel_metadata:
+            pols = frozenset(
+                ch.polarization.strip().upper()
+                for ch in channel_metadata
+                if isinstance(getattr(ch, 'polarization', None), str)
+                and ch.polarization.strip()
+            )
+            if _QUAD.issubset(pols):
+                return cls.QUAD_POL
+            if len(pols) == 2 and pols in _DUAL_PAIRS:
+                return cls.DUAL_POL
+            if len(pols) == 1:
+                return cls.SINGLE_POL
+            return None
+
+        pol = getattr(meta, 'polarization', None)
+        if isinstance(pol, str) and pol.strip():
+            return cls.SINGLE_POL
+        return None
+
 
 class DataType(str, Enum):
     """Logical data type flowing through a processing pipeline.
