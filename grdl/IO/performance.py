@@ -153,10 +153,12 @@ def parallel_band_read(
     width = int(window.width)
     dtype = dataset.dtypes[0]
     out = np.empty((n_bands, height, width), dtype=dtype)
+    filepath = dataset.name  # each thread opens its own handle
 
     def _read_one(args: Tuple[int, int]) -> None:
         idx, band = args
-        out[idx] = dataset.read(band, window=window)
+        with rasterio.open(filepath) as ds:
+            out[idx] = ds.read(band, window=window)
 
     with ThreadPoolExecutor(max_workers=min(max_workers, n_bands)) as pool:
         list(pool.map(_read_one, enumerate(band_indices)))
@@ -225,9 +227,12 @@ def chunked_parallel_read(
             )
             sub_windows.append((r_start, r_end, c_start, c_end, sub_win))
 
+    filepath = dataset.name  # each thread opens its own handle
+
     def _read_sub(args: Tuple[int, int, int, int, 'Window']) -> None:
         r_s, r_e, c_s, c_e, sw = args
-        data = dataset.read(bands_list, window=sw)
+        with rasterio.open(filepath) as ds:
+            data = ds.read(bands_list, window=sw)
         out[:, r_s:r_e, c_s:c_e] = data
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
