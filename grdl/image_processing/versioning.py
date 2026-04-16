@@ -36,6 +36,7 @@ from grdl.vocabulary import (
     ExecutionPhase,
     GpuCapability,
     ImageModality,
+    PolarimetricMode,
     ProcessorCategory,
     SegmentationType,
 )
@@ -106,6 +107,7 @@ def processor_tags(
     phases: Optional[Sequence[ExecutionPhase]] = None,
     gpu_capability: Optional[GpuCapability] = None,
     required_bands: Optional[int] = None,
+    pol_mode: Optional[PolarimetricMode] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -209,6 +211,10 @@ def processor_tags(
                 f"required_bands must be a positive integer, "
                 f"got {required_bands!r}"
             )
+    if pol_mode is not None and not isinstance(pol_mode, PolarimetricMode):
+        raise TypeError(
+            f"pol_mode must be a PolarimetricMode member, got {pol_mode!r}"
+        )
 
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
@@ -224,6 +230,7 @@ def processor_tags(
             'phases': tuple(phases) if phases else (),
             'gpu_capability': gpu_capability,
             'required_bands': required_bands,
+            'pol_mode': pol_mode,
         }
         return cls
     return decorator

@@ -29,6 +29,7 @@ Modified
 import pytest
 import numpy as np
 
+from grdl.IO.models import ChannelMetadata
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.IO.models import SICDMetadata
 from grdl.IO.models.sicd import SICDGrid, SICDDirParam, SICDWgtType
@@ -209,6 +210,19 @@ class TestDecompose:
         sd = SublookDecomposition(meta)
         with pytest.raises(ValueError, match="2D"):
             sd.decompose(np.ones((2, 64, 128), dtype=np.complex64))
+
+    def test_execute_emits_derived_channel_metadata(self):
+        meta = _make_metadata()
+        meta.channel_metadata = [ChannelMetadata(index=0, name='HH')]
+        meta.axis_order = 'YX'
+        sd = SublookDecomposition(meta, num_looks=3)
+        image = _synthetic_complex_image()
+        _, out_meta = sd.execute(meta, image)
+        assert out_meta.axis_order == 'CYX'
+        assert out_meta.bands == 3
+        assert [ch.name for ch in out_meta.channel_metadata] == [
+            'HH_sublook_0', 'HH_sublook_1', 'HH_sublook_2'
+        ]
 
 
 # ===================================================================

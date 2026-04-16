@@ -55,6 +55,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.common import XYZ
 from grdl.IO.models.sentinel1_slc import (
     Sentinel1SLCMetadata,
@@ -521,10 +522,9 @@ def _discover_available(
 class Sentinel1SLCReader(ImageReader):
     """Read Sentinel-1 IW SLC data from ESA SAFE products.
 
-    Each instance opens one swath+polarization combination from the
-    SAFE archive. The measurement TIFF is accessed via rasterio; the
-    annotation, calibration, and noise XMLs are parsed into typed
-    ``Sentinel1SLCMetadata``.
+    A single swath+polarization combination is loaded by default.
+    Pass ``polarizations`` to load multiple polarizations for the same
+    swath as a CYX data cube.
 
     Parameters
     ----------
@@ -535,8 +535,14 @@ class Sentinel1SLCReader(ImageReader):
         Swath to open (``'IW1'``, ``'IW2'``, ``'IW3'``). Default
         ``'IW1'``.
     polarization : str
-        Polarization to open (``'VV'``, ``'VH'``, ``'HH'``, ``'HV'``).
-        Default ``'VV'``.
+        Single polarization to open (``'VV'``, ``'VH'``, ``'HH'``,
+        ``'HV'``).  Default ``'VV'``.  Ignored when ``polarizations``
+        is given.
+    polarizations : str or list of str, optional
+        Multiple polarizations to load as a CYX cube for the selected
+        swath.  Pass ``'all'`` for every available polarization, or a
+        list such as ``['VV', 'VH']``.  Mutually exclusive with
+        ``polarization``.
 
     Attributes
     ----------
@@ -557,10 +563,10 @@ class Sentinel1SLCReader(ImageReader):
     Examples
     --------
     >>> from grdl.IO.sar import Sentinel1SLCReader
-    >>> with Sentinel1SLCReader('product.SAFE', swath='IW1') as reader:
-    ...     chip = reader.read_chip(0, 1000, 0, 1000)
-    ...     burst = reader.read_burst(0)
-    ...     print(reader.get_burst_count())
+    >>> with Sentinel1SLCReader('product.SAFE', swath='IW1',
+    ...                         polarizations=['VV', 'VH']) as reader:
+    ...     cube = reader.read_full()   # (2, rows, cols)
+    ...     print(reader.metadata.axis_order)  # 'CYX'
     """
 
     def __init__(
@@ -568,6 +574,7 @@ class Sentinel1SLCReader(ImageReader):
         filepath: Union[str, Path],
         swath: str = 'IW1',
         polarization: str = 'VV',
+        polarizations: Optional[Union[str, List[str]]] = None,
     ) -> None:
         if not _HAS_RASTERIO:
             raise DependencyError(
@@ -578,6 +585,15 @@ class Sentinel1SLCReader(ImageReader):
         self._swath = swath.upper()
         self._polarization = polarization.upper()
         self._apply_valid_mask: bool = False
+
+        # Multi-pol mode
+        self._multi_pol: bool = polarizations is not None
+        if polarizations == 'all' or polarizations == []:
+            self._requested_polarizations: List[str] = []
+        elif polarizations is None:
+            self._requested_polarizations = []
+        else:
+            self._requested_polarizations = [p.upper() for p in polarizations]
 
         # Resolve SAFE directory
         self._safe_dir = _resolve_safe_dir(Path(filepath))
@@ -603,38 +619,96 @@ class Sentinel1SLCReader(ImageReader):
             self._available_swaths, self._available_polarizations,
         )
 
-        # Locate matching files
         swath_lower = self._swath.lower()
-        pol_lower = self._polarization.lower()
-        match_parts = [swath_lower, pol_lower, 'slc']
-
-        self._annotation_path = _find_matching_file(ann_dir, match_parts)
-        if self._annotation_path is None:
-            raise ValueError(
-                f"No annotation XML found for swath={self._swath}, "
-                f"polarization={self._polarization} in {ann_dir}. "
-                f"Available: swaths={self._available_swaths}, "
-                f"polarizations={self._available_polarizations}"
-            )
-
-        self._measurement_path = _find_matching_file(
-            meas_dir, [swath_lower, pol_lower]
-        )
-        if self._measurement_path is None:
-            raise ValueError(
-                f"No measurement TIFF found for swath={self._swath}, "
-                f"polarization={self._polarization} in {meas_dir}"
-            )
-
-        # Calibration and noise paths (optional)
         cal_dir = ann_dir / 'calibration'
-        self._calibration_path = _find_matching_file(
-            cal_dir, ['calibration', swath_lower, pol_lower]
-        ) if cal_dir.is_dir() else None
 
-        self._noise_path = _find_matching_file(
-            cal_dir, ['noise', swath_lower, pol_lower]
-        ) if cal_dir.is_dir() else None
+        if self._multi_pol:
+            # Resolve active polarizations
+            if not self._requested_polarizations:  # 'all'
+                self._active_polarizations: List[str] = list(
+                    self._available_polarizations
+                )
+            else:
+                invalid = (
+                    set(self._requested_polarizations)
+                    - set(self._available_polarizations)
+                )
+                if invalid:
+                    raise ValueError(
+                        f"Requested polarizations {sorted(invalid)} not "
+                        f"available. Available: {self._available_polarizations}"
+                    )
+                self._active_polarizations = self._requested_polarizations
+
+            # Locate annotation + measurement files for each pol
+            self._annotation_paths: List[Optional[Path]] = []
+            self._measurement_paths: List[Optional[Path]] = []
+            self._calibration_paths: List[Optional[Path]] = []
+            self._noise_paths: List[Optional[Path]] = []
+            for pol in self._active_polarizations:
+                pl = pol.lower()
+                ann = _find_matching_file(ann_dir, [swath_lower, pl, 'slc'])
+                if ann is None:
+                    raise ValueError(
+                        f"No annotation XML for swath={self._swath}, "
+                        f"polarization={pol} in {ann_dir}"
+                    )
+                meas = _find_matching_file(meas_dir, [swath_lower, pl])
+                if meas is None:
+                    raise ValueError(
+                        f"No measurement TIFF for swath={self._swath}, "
+                        f"polarization={pol} in {meas_dir}"
+                    )
+                self._annotation_paths.append(ann)
+                self._measurement_paths.append(meas)
+                self._calibration_paths.append(
+                    _find_matching_file(
+                        cal_dir, ['calibration', swath_lower, pl]
+                    ) if cal_dir.is_dir() else None
+                )
+                self._noise_paths.append(
+                    _find_matching_file(
+                        cal_dir, ['noise', swath_lower, pl]
+                    ) if cal_dir.is_dir() else None
+                )
+
+            # Primary annotation path (first pol) used for geometry
+            self._annotation_path = self._annotation_paths[0]
+            self._measurement_path = self._measurement_paths[0]
+            self._calibration_path = self._calibration_paths[0]
+            self._noise_path = self._noise_paths[0]
+            # primary polarization for metadata
+            self._polarization = self._active_polarizations[0]
+        else:
+            self._active_polarizations = [self._polarization]
+            pol_lower = self._polarization.lower()
+            match_parts = [swath_lower, pol_lower, 'slc']
+
+            self._annotation_path = _find_matching_file(ann_dir, match_parts)
+            if self._annotation_path is None:
+                raise ValueError(
+                    f"No annotation XML found for swath={self._swath}, "
+                    f"polarization={self._polarization} in {ann_dir}. "
+                    f"Available: swaths={self._available_swaths}, "
+                    f"polarizations={self._available_polarizations}"
+                )
+
+            self._measurement_path = _find_matching_file(
+                meas_dir, [swath_lower, pol_lower]
+            )
+            if self._measurement_path is None:
+                raise ValueError(
+                    f"No measurement TIFF found for swath={self._swath}, "
+                    f"polarization={self._polarization} in {meas_dir}"
+                )
+
+            self._calibration_path = _find_matching_file(
+                cal_dir, ['calibration', swath_lower, pol_lower]
+            ) if cal_dir.is_dir() else None
+
+            self._noise_path = _find_matching_file(
+                cal_dir, ['noise', swath_lower, pol_lower]
+            ) if cal_dir.is_dir() else None
 
         # Initialize base (validates path existence, calls _load_metadata)
         super().__init__(self._safe_dir)
@@ -710,10 +784,18 @@ class Sentinel1SLCReader(ImageReader):
                     self._noise_path
                 )
 
-            # Open measurement TIFF
-            self._dataset = rasterio.open(str(self._measurement_path))
+            # Open measurement TIFF(s)
+            if self._multi_pol:
+                self._datasets: List = [
+                    rasterio.open(str(p))
+                    for p in self._measurement_paths
+                ]
+                self._dataset = self._datasets[0]
+            else:
+                self._dataset = rasterio.open(str(self._measurement_path))
+                self._datasets = [self._dataset]
 
-            # Cross-check dimensions
+            # Cross-check dimensions (use primary/first dataset)
             tiff_rows = self._dataset.height
             tiff_cols = self._dataset.width
             xml_rows = swath_info.lines
@@ -725,12 +807,43 @@ class Sentinel1SLCReader(ImageReader):
                     f"match annotation XML ({xml_rows}x{xml_cols})"
                 )
 
+            if self._multi_pol:
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=i,
+                        name=pol,
+                        role='measurement',
+                        polarization=pol,
+                        swath=self._swath,
+                        source_indices=[i],
+                    )
+                    for i, pol in enumerate(self._active_polarizations)
+                ]
+                bands_count = len(self._active_polarizations)
+                axis_order_val = 'CYX'
+            else:
+                channel_name = self._polarization or swath_info.polarization
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=0,
+                        name=channel_name,
+                        role='measurement',
+                        polarization=channel_name,
+                        swath=self._swath,
+                        source_indices=[0],
+                    )
+                ]
+                bands_count = 1
+                axis_order_val = 'YX'
+
             self.metadata = Sentinel1SLCMetadata(
                 format='Sentinel-1_IW_SLC',
                 rows=xml_rows,
                 cols=xml_cols,
                 dtype='complex64',
-                bands=1,
+                bands=bands_count,
+                axis_order=axis_order_val,
+                channel_metadata=channel_metadata,
                 product_info=product_info,
                 swath_info=swath_info,
                 bursts=bursts if bursts else None,
@@ -752,7 +865,7 @@ class Sentinel1SLCReader(ImageReader):
                 "Loaded Sentinel-1 SLC %s swath=%s pol=%s (%d x %d)",
                 self._safe_dir.name,
                 self._swath,
-                self._polarization,
+                ','.join(self._active_polarizations),
                 xml_rows,
                 xml_cols,
             )
@@ -925,6 +1038,12 @@ class Sentinel1SLCReader(ImageReader):
             col_start, row_start,
             col_end - col_start, row_end - row_start,
         )
+        if self._multi_pol:
+            chips = [
+                self._to_complex(ds.read(window=window))
+                for ds in self._datasets
+            ]
+            return np.stack(chips, axis=0)   # (C, rows, cols)
         raw = self._dataset.read(window=window)
         data = self._to_complex(raw)
         if self._apply_valid_mask:
@@ -1033,6 +1152,12 @@ class Sentinel1SLCReader(ImageReader):
         return np.dtype('complex64')
 
     def close(self) -> None:
-        """Close the rasterio dataset and release resources."""
-        if hasattr(self, '_dataset') and self._dataset is not None:
+        """Close the rasterio dataset(s) and release resources."""
+        if hasattr(self, '_datasets'):
+            for ds in self._datasets:
+                if ds is not None:
+                    ds.close()
+            self._datasets = []
+        elif hasattr(self, '_dataset') and self._dataset is not None:
             self._dataset.close()
+        self._dataset = None

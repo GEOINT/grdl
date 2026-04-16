@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 
 # GRDL
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
 
 
@@ -248,22 +249,87 @@ class TestToRgb:
     def test_output_shape(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.shape == (3, s_co.shape[0], s_co.shape[1])
+        assert meta.rows == s_co.shape[0]
+        assert meta.cols == s_co.shape[1]
+        assert meta.bands == 3
 
     def test_output_dtype(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.dtype == np.float32
+        assert meta.dtype == 'float32'
 
     def test_output_range(self, halpha, copol_only):
         s_co, s_cross = copol_only
         result = halpha.decompose_dual(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        rgb, _ = halpha.to_rgb(result)
         assert np.all(rgb >= 0.0)
         assert np.all(rgb <= 1.0)
 
     def test_missing_key_raises(self, halpha):
         with pytest.raises(ValueError, match="Missing"):
             halpha.to_rgb({'entropy': np.zeros((3, 3))})
+
+
+class TestExecuteExtraction:
+
+    def test_execute_extracts_cyx_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=0, name='VV'),
+                ChannelMetadata(index=1, name='VH'),
+            ],
+        )
+        source = np.zeros((2, 6, 7), dtype=np.complex64)
+        source[0] = 11
+        source[1] = 22
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 11)
+        assert np.all(dec.seen[1] == 22)
+
+    def test_execute_extracts_yxc_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='YXC',
+        )
+        source = np.zeros((6, 7, 2), dtype=np.complex64)
+        source[..., 0] = 3
+        source[..., 1] = 4
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 3)
+        assert np.all(dec.seen[1] == 4)

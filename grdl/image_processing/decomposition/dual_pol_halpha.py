@@ -277,12 +277,60 @@ class DualPolHAlpha(PolarimetricDecomposition):
         self._metadata = metadata
         s_co = kwargs.pop('s_co', None)
         s_cross = kwargs.pop('s_cross', None)
-        if s_co is None and source.ndim == 3 and source.shape[-1] >= 2:
-            s_co = source[..., 0]
-            s_cross = source[..., 1]
+        if s_co is None and source.ndim == 3:
+            axis_order = getattr(metadata, 'axis_order', None)
+            if axis_order == 'CYX' and source.shape[0] >= 2:
+                s_co = source[0]
+                s_cross = source[1]
+            elif axis_order == 'YXC' and source.shape[-1] >= 2:
+                s_co = source[..., 0]
+                s_cross = source[..., 1]
+            else:
+                channel_metadata = getattr(metadata, 'channel_metadata', None)
+                bands = getattr(metadata, 'bands', None)
+                n_channels = len(channel_metadata) if channel_metadata else bands
+                if n_channels == 2 and source.shape[0] == 2 and source.shape[-1] != 2:
+                    s_co = source[0]
+                    s_cross = source[1]
+                elif source.shape[-1] >= 2:
+                    s_co = source[..., 0]
+                    s_cross = source[..., 1]
         components = self.decompose_dual(s_co, s_cross)
         updated = dataclasses.replace(metadata, bands=len(components))
         return components, updated
+
+    @classmethod
+    def rgb_channel_metadata(cls) -> list:
+        """Canonical ChannelMetadata descriptors for the 3-band H/Alpha RGB output.
+
+        Returns
+        -------
+        list[ChannelMetadata]
+            Three entries in R/G/B band order:
+            ``[span_db, entropy, alpha_norm]``.
+        """
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=0, name='span_db', role='decomposition',
+                extras={'halpha_component': 'span',
+                        'formula': '10\u00b7log10(span)',
+                        'display': 'Red'},
+            ),
+            ChannelMetadata(
+                index=1, name='entropy', role='decomposition',
+                extras={'halpha_component': 'entropy',
+                        'formula': 'H \u2208 [0, 1]',
+                        'display': 'Green'},
+            ),
+            ChannelMetadata(
+                index=2, name='alpha_norm', role='decomposition',
+                extras={'halpha_component': 'alpha',
+                        'formula': '\u03b1 / 90 \u2208 [0, 1]',
+                        'display': 'Blue'},
+            ),
+        ]
 
     def to_rgb(
         self,
@@ -290,7 +338,7 @@ class DualPolHAlpha(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from H/Alpha decomposition.
 
         Channel mapping:
@@ -313,10 +361,13 @@ class DualPolHAlpha(PolarimetricDecomposition):
 
         Returns
         -------
-        np.ndarray
-            RGB image, shape ``(3, rows, cols)``, dtype float32,
-            values in [0, 1].
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb is shape ``(3, rows, cols)``, dtype
+            float32, values in [0, 1]; metadata carries H/Alpha channel
+            descriptors and spatial dimensions.
         """
+        from grdl.IO.models.base import ImageMetadata
+
         required = {'entropy', 'alpha', 'span'}
         missing = required - set(components.keys())
         if missing:
@@ -336,7 +387,17 @@ class DualPolHAlpha(PolarimetricDecomposition):
         # Blue: Alpha normalised to [0, 1] (0-90 degrees)
         b = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
 
-        return np.stack([r, g, b], axis=0)
+        rgb = np.stack([r, g, b], axis=0)  # (3, rows, cols) float32
+        metadata = ImageMetadata(
+            format='HAlphaRGB',
+            rows=int(rgb.shape[1]),
+            cols=int(rgb.shape[2]),
+            dtype=str(rgb.dtype),
+            bands=3,
+            axis_order='CYX',
+            channel_metadata=self.rgb_channel_metadata(),
+        )
+        return rgb, metadata
 
     # ------------------------------------------------------------------
     # Internal helpers

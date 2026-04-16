@@ -139,6 +139,16 @@ class GeoTIFFReader(ImageReader):
                 extras=extras,
             )
 
+            # LERC-based compression is not safe for concurrent reads
+            # on a shared dataset object (GDAL decoder shares internal state).
+            compress = self.dataset.profile.get('compress', '') or ''
+            self._lerc_compression: bool = compress.upper().startswith('LERC')
+            if self._lerc_compression:
+                logger.debug(
+                    "GeoTIFF uses LERC compression (%s) — parallel reads disabled",
+                    compress,
+                )
+
             logger.info(
                 "Opened GeoTIFF %s (%d bands, %d x %d)",
                 self.filepath.name, self.dataset.count,
@@ -194,7 +204,8 @@ class GeoTIFFReader(ImageReader):
         )
 
         cfg = self.read_config
-        if cfg.parallel:
+        use_parallel = cfg.parallel and not self._lerc_compression
+        if use_parallel:
             _ensure_gdal_threads(cfg)
             workers = _resolve_workers(cfg)
             n_pixels = (row_end - row_start) * (col_end - col_start)

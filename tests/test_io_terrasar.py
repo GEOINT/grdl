@@ -812,6 +812,9 @@ class TestTerraSARSSCReader:
         with TerraSARReader(synthetic_tsx_ssc) as reader:
             pols = reader.get_available_polarizations()
             assert pols == ['HH']
+            assert reader.metadata.channel_metadata is not None
+            assert reader.metadata.channel_metadata[0].name == 'HH'
+            assert reader.metadata.channel_metadata[0].polarization == 'HH'
 
     def test_context_manager(self, synthetic_tsx_ssc):
         """Context manager opens and closes cleanly."""

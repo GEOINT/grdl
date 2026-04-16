@@ -55,7 +55,7 @@ except ImportError:
     _HAS_CUPY = False
 
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.intensity import ToDecibels, PercentileStretch
@@ -265,6 +265,12 @@ class CSIProcessor(ImageProcessor):
             rows=result.shape[0],
             cols=result.shape[1],
             bands=3,
+            axis_order='YXC',
+            channel_metadata=ImageTransform._make_derived_channels(
+                names=['R', 'G', 'B'],
+                source_indices=[[0], [1], [2]],
+                role='display',
+            ),
             dtype=str(result.dtype),
         )
         return result, updated

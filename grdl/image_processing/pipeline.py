@@ -28,13 +28,16 @@ Modified
 
 # Standard library
 import logging
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Sequence, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -135,3 +138,45 @@ class Pipeline(ImageTransform):
                 outer_cb((i + 1) / n)
 
         return result
+
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, 'ImageMetadata']:
+        """Execute all steps while threading updated metadata forward."""
+        n = len(self._steps)
+        outer_cb = kwargs.pop('progress_callback', None)
+
+        result = source
+        current_meta = metadata
+        self._metadata = metadata
+
+        for i, step in enumerate(self._steps):
+            logger.debug(
+                "Pipeline execute step %d/%d: %s",
+                i + 1,
+                n,
+                type(step).__qualname__,
+            )
+
+            step_kwargs = dict(kwargs)
+            if outer_cb is not None:
+                base = i / n
+                scale = 1.0 / n
+                step_kwargs['progress_callback'] = (
+                    lambda f, _b=base, _s=scale: outer_cb(_b + f * _s)
+                )
+
+            result, current_meta = step.execute(
+                current_meta,
+                result,
+                **step_kwargs,
+            )
+
+            if outer_cb is not None:
+                outer_cb((i + 1) / n)
+
+        self._metadata = current_meta
+        return result, current_meta

@@ -27,7 +27,7 @@ Modified
 """
 
 # Base
-from grdl.IO.models.base import ImageMetadata
+from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
 # Common primitives
 from grdl.IO.models.common import (
@@ -220,6 +220,7 @@ from grdl.IO.models.eo_nitf import (
 __all__ = [
     # Base
     'ImageMetadata',
+    'ChannelMetadata',
     # Common
     'XYZ',
     'LatLon',
