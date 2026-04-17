@@ -46,6 +46,11 @@ from grdl.IO.sar.sidd_writer import SIDDWriter
 
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
+from grdl.IO.sar.sentinel1_l0 import (
+    ReaderConfig as S1L0ReaderConfig,
+    Sentinel1L0Reader,
+    open_safe_product,
+)
 
 # TerraSAR-X / TanDEM-X
 from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
@@ -59,7 +64,7 @@ from grdl.IO.sar.nisar import NISARReader, open_nisar
 # Metadata models
 from grdl.IO.models import (
     SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
-    TerraSARMetadata, NISARMetadata,
+    Sentinel1L0Metadata, TerraSARMetadata, NISARMetadata,
 )
 
 # Base class (for return type)
@@ -126,11 +131,18 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
-    # Try Sentinel-1 SAFE
+    # Try Sentinel-1 SAFE — dispatch between L0 (RAW) and L1 (SLC)
+    # by product identifier in the directory name.
     if filepath.is_dir() and (
         filepath.suffix.upper() == '.SAFE'
         or (filepath / 'manifest.safe').exists()
     ):
+        name_upper = filepath.name.upper()
+        if 'RAW' in name_upper:
+            try:
+                return Sentinel1L0Reader(filepath)
+            except (ValueError, ImportError, Exception):
+                pass
         try:
             return Sentinel1SLCReader(filepath)
         except (ValueError, ImportError, Exception):
@@ -186,6 +198,9 @@ __all__ = [
     'SIDDWriter',
     # Sentinel-1
     'Sentinel1SLCReader',
+    'Sentinel1L0Reader',
+    'S1L0ReaderConfig',
+    'open_safe_product',
     # TerraSAR-X / TanDEM-X
     'TerraSARReader',
     'TerraSARMetadata',
@@ -200,6 +215,7 @@ __all__ = [
     'SIDDMetadata',
     'BIOMASSMetadata',
     'Sentinel1SLCMetadata',
+    'Sentinel1L0Metadata',
     # Convenience functions
     'open_sar',
     'open_biomass',
