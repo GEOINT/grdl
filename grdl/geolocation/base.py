@@ -9,7 +9,7 @@ different coordinate systems (geocoded raster, slant range SAR, etc.).
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -376,6 +376,10 @@ class Geolocation(ABC):
         Tuple[np.ndarray, np.ndarray]
             (rows, cols) pixel coordinate arrays.
         """
+        # Caller pre-sampled per-point heights — skip DEM lookup entirely.
+        if np.ndim(height) > 0:
+            return self._latlon_to_image_array(lats, lons, height)
+
         if self.elevation is None or self._handles_dem_internally:
             return self._latlon_to_image_array(lats, lons, height)
 
