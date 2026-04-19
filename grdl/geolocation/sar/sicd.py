@@ -19,7 +19,7 @@ sarkit (optional, for sarkit backend)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -375,14 +375,16 @@ class SICDGeolocation(Geolocation):
             image_to_ground_plane, wgs84_norm)
         from grdl.geolocation.coordinates import geodetic_to_ecef
 
-        # Determine per-point heights: DEM → explicit → default_hae
-        if self.elevation is not None:
+        # Determine per-point heights: explicit array → DEM → default_hae.
+        # Array `height` means the caller pre-sampled heights (e.g. the
+        # ortho pipeline), so we must use them as-is and skip DEM lookup.
+        if np.ndim(height) > 0:
+            heights_arr = np.asarray(height, dtype=np.float64)
+        elif self.elevation is not None:
             heights_arr = self.elevation.get_elevation(lats, lons)
             if isinstance(heights_arr, (int, float)):
                 heights_arr = np.full_like(lats, float(heights_arr))
             self._fill_nan_heights(heights_arr, height)
-        elif np.ndim(height) > 0:
-            heights_arr = np.asarray(height, dtype=np.float64)
         else:
             heights_arr = np.full_like(lats, self._resolve_height(height))
 
@@ -485,14 +487,16 @@ class SICDGeolocation(Geolocation):
             image_to_ground_plane, wgs84_norm,
         )
 
-        # Height resolution — same as _latlon_to_image_native
-        if self.elevation is not None:
+        # Height resolution — same as _latlon_to_image_native.
+        # Explicit per-point heights (array input) take precedence over DEM
+        # so the ortho pipeline can pre-sample once and avoid re-querying.
+        if np.ndim(height) > 0:
+            heights_arr = np.asarray(height, dtype=np.float64)
+        elif self.elevation is not None:
             heights_arr = self.elevation.get_elevation(lats, lons)
             if isinstance(heights_arr, (int, float)):
                 heights_arr = np.full_like(lats, float(heights_arr))
             self._fill_nan_heights(heights_arr, height)
-        elif np.ndim(height) > 0:
-            heights_arr = np.asarray(height, dtype=np.float64)
         else:
             heights_arr = np.full_like(lats, self._resolve_height(height))
 

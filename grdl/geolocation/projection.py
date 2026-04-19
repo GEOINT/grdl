@@ -34,7 +34,7 @@ scipy (for iterative convergence only)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-04-17  Enforce RgAzComp validation; derive AzSF from KazPoly fallback.
 2026-03-31  Add nan_fill_height parameter to image_to_ground_hae.
 2026-03-27  Add numba dispatch for image_to_ground_plane and wgs84_norm.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
@@ -515,12 +516,27 @@ class COAProjection:
                 r_ca_scp=inca.r_ca_scp,
                 d_rate_sf_poly=inca.d_rate_sf_poly,
             )
-        elif (algo == 'RGAZCOMP'
-              and metadata.rg_az_comp is not None
-              and metadata.rg_az_comp.az_sf is not None):
+        elif algo == 'RGAZCOMP':
+            # Per SICD Vol3 §4.3: RgAzComp requires AzSF (or KazPoly from
+            # which AzSF can be evaluated at the SCP COA time).
+            if metadata.rg_az_comp is None:
+                raise ValueError(
+                    "ImageFormation.ImageFormAlgo='RGAZCOMP' but "
+                    "RgAzComp metadata section is missing")
+            az_sf = metadata.rg_az_comp.az_sf
+            if az_sf is None and metadata.rg_az_comp.kaz_poly is not None:
+                # KazPoly is evaluated at SCP COA time; AzSF is its value
+                # (SICD Vol3 §4.3 / Vol1 §15: cos(DCA_COA) = AzSF * az).
+                # TimeCOAPoly is defined over (row_offset, col_offset)
+                # relative to SCP, so at the SCP the offsets are (0, 0).
+                t_scp_coa = float(grid.time_coa_poly(0.0, 0.0))
+                az_sf = float(metadata.rg_az_comp.kaz_poly(t_scp_coa))
+            if az_sf is None:
+                raise ValueError(
+                    "RgAzComp requires AzSF or KazPoly per SICD Vol3 §4.3")
             projector = _rgazcomp_projector(
                 scp_ecf=scp_ecf,
-                az_sf=metadata.rg_az_comp.az_sf,
+                az_sf=az_sf,
             )
         else:
             # PLANE / XRGYCR / XCTYAT or fallback

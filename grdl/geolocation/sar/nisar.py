@@ -13,6 +13,19 @@ imagery.
   coordinate grid with an EPSG code, so we delegate to
   ``AffineGeolocation``.
 
+Accuracy note
+-------------
+The RSLC path interpolates the product-level geolocation grid rather
+than running a native zero-Doppler range/Doppler projection from the
+orbit state vectors (``NISAROrbit``) and Doppler centroid 2-D LUT
+(``NISARDopplerCentroid``) that the reader does capture.  Per the
+NISAR L1 RSLC spec (JPL D-102268 Rev E), the authoritative projection
+uses Lagrange interpolation of the orbit (8-point) plus the Doppler
+centroid LUT.  Grid interpolation suffices for most scenes, but a
+future ``NISARRSLCNativeGeolocation`` should consume the orbit +
+Doppler metadata directly for sub-meter accuracy near scene edges and
+in steep terrain.
+
 Dependencies
 ------------
 scipy (for RSLC)
@@ -21,7 +34,7 @@ rasterio, pyproj (for GSLC, via ``AffineGeolocation``)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -35,6 +48,7 @@ Created
 
 Modified
 --------
+2026-04-18  Document RSLC grid-vs-native accuracy limitation.
 2026-03-10
 """
 

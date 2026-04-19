@@ -9,6 +9,20 @@ use ``RectBivariateSpline`` for smooth, fast interpolation.  The inverse
 uses ``LinearNDInterpolator`` (Delaunay triangulation) since the grid in
 geographic space is warped by SAR geometry.
 
+Accuracy note
+-------------
+This implementation interpolates the annotation geolocation grid (at
+whatever sample spacing ESA provides -- typically ~10 km at scene
+center) rather than running a native zero-Doppler R/Rdot projection
+from the orbit state vectors (``S1SLCOrbitStateVector``) and Doppler
+centroid / FM-rate polynomials (``S1SLCDopplerCentroid``,
+``S1SLCDopplerFmRate``) that the reader does capture.  The two
+approaches converge to sub-meter agreement inside the grid coverage
+but can diverge to tens of meters near scene edges, in steep terrain,
+or when the grid point density is low.  For highest accuracy, a future
+``Sentinel1SLCNativeGeolocation`` should use the orbit + zero-Doppler
+geometry directly.
+
 Dependencies
 ------------
 scipy
@@ -16,7 +30,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -30,6 +44,7 @@ Created
 
 Modified
 --------
+2026-04-18  Document grid-vs-native accuracy limitation.
 2026-03-10
 """
 
