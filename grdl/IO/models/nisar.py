@@ -27,6 +27,7 @@ Created
 
 Modified
 --------
+2026-04-17  Add NISARDopplerCentroid 2D-LUT metadata model.
 2026-02-25
 """
 
@@ -299,6 +300,45 @@ class NISARGeolocationGrid:
 
 
 @dataclass
+class NISARDopplerCentroid:
+    """NISAR RSLC Doppler centroid 2D lookup table.
+
+    Per NISAR L1 RSLC spec (JPL D-102268 Rev E), the Doppler centroid
+    is stored under
+    ``science/{band}/RSLC/metadata/processingInformation/parameters/
+    frequency{A|B}/`` as a 2D grid on (zero-Doppler time × slant range).
+    There is no polynomial representation — evaluation at an arbitrary
+    (t, r) is a 2D interpolation over this LUT.
+
+    Parameters
+    ----------
+    doppler_centroid : np.ndarray, optional
+        Doppler centroid samples in Hz, shape
+        ``(n_azimuth, n_range)``.
+    zero_doppler_time : np.ndarray, optional
+        Azimuth-time axis for ``doppler_centroid``, shape ``(n_azimuth,)``.
+        Seconds since ``reference_epoch``.
+    slant_range : np.ndarray, optional
+        Range axis for ``doppler_centroid``, shape ``(n_range,)``, meters.
+    reference_epoch : str, optional
+        Time reference for ``zero_doppler_time``.
+    reference_terrain_height : np.ndarray, optional
+        Per-azimuth reference terrain height assumed during centroid
+        estimation, shape ``(n_azimuth,)``, meters.
+    estimation_algorithm : str, optional
+        Name of the algorithm that produced the grid, from
+        ``processingInformation/algorithms/dopplerCentroidEstimation``.
+    """
+
+    doppler_centroid: Optional[np.ndarray] = None
+    zero_doppler_time: Optional[np.ndarray] = None
+    slant_range: Optional[np.ndarray] = None
+    reference_epoch: Optional[str] = None
+    reference_terrain_height: Optional[np.ndarray] = None
+    estimation_algorithm: Optional[str] = None
+
+
+@dataclass
 class NISARCalibration:
     """NISAR radiometric calibration information.
 
@@ -374,6 +414,8 @@ class NISARMetadata(ImageMetadata):
         Geolocation grid (RSLC only).
     calibration : NISARCalibration, optional
         Radiometric calibration data.
+    doppler_centroid : NISARDopplerCentroid, optional
+        Doppler centroid 2D LUT (RSLC only).
     processing_info : NISARProcessingInfo, optional
         Processing information.
 
@@ -403,4 +445,5 @@ class NISARMetadata(ImageMetadata):
     grid_parameters: Optional[NISARGridParameters] = None
     geolocation_grid: Optional[NISARGeolocationGrid] = None
     calibration: Optional[NISARCalibration] = None
+    doppler_centroid: Optional[NISARDopplerCentroid] = None
     processing_info: Optional[NISARProcessingInfo] = None

@@ -16,7 +16,7 @@ rasterio
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -30,6 +30,7 @@ Created
 
 Modified
 --------
+2026-04-17  Parse CSEPHA and RSMGGA TREs (ephemeris + ground grid).
 2026-04-01
 """
 
@@ -53,12 +54,15 @@ from grdl.IO.base import ImageReader
 from grdl.IO.models.eo_nitf import (
     AccuracyInfo,
     BLOCKAMetadata,
+    CSEPHAMetadata,
     CSEXRAMetadata,
     CollectionInfo,
     EONITFMetadata,
     ICHIPBMetadata,
     RPCCoefficients,
     RSMCoefficients,
+    RSMGGAGridPlane,
+    RSMGGAMetadata,
     RSMIdentification,
     RSMSegmentGrid,
     USE00AMetadata,
@@ -854,6 +858,220 @@ def _parse_piaimc_tre(tre_value: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _parse_csepha_tre(tre_value: str) -> Optional[CSEPHAMetadata]:
+    """Parse a CSEPHA TRE CEDATA string.
+
+    Commercial Support Ephemeris Data -- ECEF position samples of the
+    sensor during the collection.  Layout per STDI-0002 Vol 1
+    Appendix D (Table D-3)::
+
+        EPHEM_FLAG(12 A) DT_EPHEM(5 N) DATE_EPHEM(8 N) T0_EPHEM(13 N)
+        NUM_EPHEM(3 N) [EPHEM_X(12 N) EPHEM_Y(12 N) EPHEM_Z(12 N)] * N
+
+    ``EPHEM_X/Y/Z`` are signed decimals including the sign character in
+    their 12-byte width.  CEL ranges from 77 to 36005 bytes.
+    """
+    try:
+        v = tre_value
+        # 41 bytes fixed header + at least 36 bytes for one sample
+        if len(v) < 41 + 36:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_signed_float(n: int) -> float:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            return float(raw)
+
+        ephem_flag = read_str(12) or None
+        dt_ephem = float(read_str(5))
+        date_ephem = read_str(8) or None
+        t0_raw = read_str(13)
+        # HHMMSS.mmmmmm → seconds since midnight
+        hh = int(t0_raw[0:2])
+        mm = int(t0_raw[2:4])
+        ss = float(t0_raw[4:])
+        t0_ephem = hh * 3600.0 + mm * 60.0 + ss
+
+        num = int(read_str(3))
+        if num < 1 or 41 + 36 * num > len(v):
+            return None
+
+        pos_array = np.empty((num, 3), dtype=np.float64)
+        for i in range(num):
+            pos_array[i, 0] = read_signed_float(12)
+            pos_array[i, 1] = read_signed_float(12)
+            pos_array[i, 2] = read_signed_float(12)
+
+        return CSEPHAMetadata(
+            ephem_flag=ephem_flag,
+            dt_ephem=dt_ephem,
+            date_ephem=date_ephem,
+            t0_ephem=t0_ephem,
+            num_ephem=num,
+            position=pos_array,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_rsmgga_tre(tre_value: str) -> Optional[RSMGGAMetadata]:
+    """Parse an RSMGGA TRE CEDATA string.
+
+    RSM Ground-to-Image Grid -- stacked ground→image grid planes.
+    Layout per STDI-0002 Vol 1 Appendix U, Table 12::
+
+        IID(80 A) EDITION(40 A) GGRSN(3 N) GGCSN(3 N)
+        GGRFEP(21 A) GGCFEP(21 A) INTORD(1 A)
+        NPLN(3 N) DELTAZ(21 A) DELTAX(21 A) DELTAY(21 A)
+        ZPLN1(21 A) XIPLN1(21 A) YIPLN1(21 A)
+        REFROW(9 A/signed) REFCOL(9 A/signed)
+        TNUMRD(2 N) TNUMCD(2 N) FNUMRD(1 N) FNUMCD(1 N)
+        [IXO(4 A/signed) IYO(4 A/signed)] × (NPLN - 1)
+        per plane: NXPTS(3 N) NYPTS(3 N)
+                   RCOORD(TNUMRD A) CCOORD(TNUMCD A) per grid point
+
+    Grid points are matrix row-major over the X axis; all sci-notation
+    real fields are ``±d.ddddddddddddddE±dd``.
+    """
+    try:
+        v = tre_value
+        # Fixed header is 324 bytes (after CETAG/CEL stripped by caller)
+        if len(v) < 324:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        def read_optional_float(n: int = 21) -> Optional[float]:
+            nonlocal pos
+            raw = v[pos:pos + n]
+            pos += n
+            s = raw.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        def read_required_float(n: int = 21) -> float:
+            nonlocal pos
+            raw = v[pos:pos + n].strip()
+            pos += n
+            return float(raw)
+
+        iid = read_str(80) or None
+        edition = read_str(40) or None
+        ggrsn = int(read_str(3))
+        ggcsn = int(read_str(3))
+        row_fit_error = read_optional_float(21)
+        col_fit_error = read_optional_float(21)
+
+        intord_raw = v[pos:pos + 1]
+        pos += 1
+        interpolation_order = (
+            int(intord_raw) if intord_raw.strip() else None)
+
+        num_planes = int(read_str(3))
+        if num_planes < 2:
+            return None
+
+        delta_z = read_required_float(21)
+        delta_x = read_required_float(21)
+        delta_y = read_required_float(21)
+        z1 = read_required_float(21)
+        x1 = read_required_float(21)
+        y1 = read_required_float(21)
+
+        ref_row = int(read_str(9))
+        ref_col = int(read_str(9))
+        tnumrd = int(read_str(2))
+        tnumcd = int(read_str(2))
+        fnumrd = int(read_str(1))
+        fnumcd = int(read_str(1))
+        # Unused but keep cursor advance explicit for clarity
+        _ = (fnumrd, fnumcd)
+
+        if not (3 <= tnumrd <= 11 and 3 <= tnumcd <= 11):
+            return None
+
+        # Planes 2..P store integer offsets of their initial (x, y) in
+        # multiples of (delta_x, delta_y) -- signed 4-byte fields.
+        offsets: List[Tuple[int, int]] = [(0, 0)]
+        for _ in range(num_planes - 1):
+            ixo = int(read_str(4))
+            iyo = int(read_str(4))
+            offsets.append((ixo, iyo))
+
+        planes: List[RSMGGAGridPlane] = []
+        for p_idx in range(num_planes):
+            nxpts = int(read_str(3))
+            nypts = int(read_str(3))
+            if nxpts < 2 or nypts < 2:
+                return None
+
+            rows_arr = np.full((nxpts, nypts), np.nan, dtype=np.float64)
+            cols_arr = np.full((nxpts, nypts), np.nan, dtype=np.float64)
+
+            # Grid points are matrix row-major: outer loop over X.
+            for ix in range(nxpts):
+                for iy in range(nypts):
+                    r_raw = v[pos:pos + tnumrd]
+                    pos += tnumrd
+                    c_raw = v[pos:pos + tnumcd]
+                    pos += tnumcd
+                    r_s = r_raw.strip()
+                    c_s = c_raw.strip()
+                    if r_s:
+                        rows_arr[ix, iy] = float(r_s)
+                    if c_s:
+                        cols_arr[ix, iy] = float(c_s)
+
+            ixo, iyo = offsets[p_idx]
+            planes.append(RSMGGAGridPlane(
+                z_plane=z1 + p_idx * delta_z,
+                xi=x1 + ixo * delta_x,
+                yi=y1 + iyo * delta_y,
+                num_x=nxpts,
+                num_y=nypts,
+                rows=rows_arr,
+                cols=cols_arr,
+            ))
+
+        return RSMGGAMetadata(
+            iid=iid,
+            edition=edition,
+            ggrsn=ggrsn,
+            ggcsn=ggcsn,
+            row_fit_error=row_fit_error,
+            col_fit_error=col_fit_error,
+            interpolation_order=interpolation_order,
+            num_planes=num_planes,
+            delta_z=delta_z,
+            delta_x=delta_x,
+            delta_y=delta_y,
+            ref_row=ref_row,
+            ref_col=ref_col,
+            planes=planes,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
 def _build_accuracy_info(
     csexra: Optional[CSEXRAMetadata],
     use00a: Optional[USE00AMetadata],
@@ -1041,6 +1259,8 @@ class EONITFReader(ImageReader):
         use00a = None
         ichipb = None
         blocka = None
+        csepha = None
+        rsmgga_list: List[RSMGGAMetadata] = []
         aimidb = None
         stdidc = None
         piaimc = None
@@ -1067,6 +1287,12 @@ class EONITFReader(ImageReader):
                         ichipb = _parse_ichipb_tre(val)
                     elif 'BLOCKA' in key_upper and blocka is None:
                         blocka = _parse_blocka_tre(val)
+                    elif 'CSEPHA' in key_upper and csepha is None:
+                        csepha = _parse_csepha_tre(val)
+                    elif 'RSMGGA' in key_upper:
+                        gga = _parse_rsmgga_tre(val)
+                        if gga is not None:
+                            rsmgga_list.append(gga)
                     elif 'AIMIDB' in key_upper and aimidb is None:
                         aimidb = _parse_aimidb_tre(val)
                     elif 'STDIDC' in key_upper and stdidc is None:
@@ -1126,6 +1352,8 @@ class EONITFReader(ImageReader):
             use00a=use00a,
             ichipb=ichipb,
             blocka=blocka,
+            csepha=csepha,
+            rsmgga=rsmgga_list[0] if rsmgga_list else None,
             collection_info=collection_info,
             accuracy=accuracy,
             iid1=iid1,

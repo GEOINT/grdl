@@ -32,6 +32,7 @@ Created
 
 Modified
 --------
+2026-04-17  Extract Doppler centroid 2D LUT from processingInformation.
 2026-03-10
 """
 
@@ -62,6 +63,7 @@ from grdl.IO.models.nisar import (
     NISARGridParameters,
     NISARGeolocationGrid,
     NISARCalibration,
+    NISARDopplerCentroid,
     NISARProcessingInfo,
 )
 
@@ -520,6 +522,45 @@ class NISARReader(ImageReader):
             gamma0=_read_array(grp, 'gamma0'),
         )
 
+    def _extract_doppler_centroid(self) -> Optional[NISARDopplerCentroid]:
+        """Extract the RSLC Doppler centroid 2D LUT.
+
+        Located at ``processingInformation/parameters/frequency{A|B}/``
+        per NISAR L1 RSLC spec JPL D-102268 Rev E, §5. The grid is
+        stored on (zero-Doppler time × slant range) — no polynomial.
+        """
+        params_path = (
+            f'{self._base_path}/metadata/processingInformation/'
+            f'parameters/frequency{self._frequency}'
+        )
+        if params_path not in self._file:
+            return None
+        grp = self._file[params_path]
+
+        doppler = _read_array(grp, 'dopplerCentroid')
+        if doppler is None:
+            return None
+
+        # Estimation algorithm name from sibling algorithms group
+        algo_path = (
+            f'{self._base_path}/metadata/processingInformation/algorithms'
+        )
+        estimation_algorithm = None
+        if algo_path in self._file:
+            estimation_algorithm = _read_scalar_str(
+                self._file[algo_path], 'dopplerCentroidEstimation'
+            )
+
+        return NISARDopplerCentroid(
+            doppler_centroid=doppler,
+            zero_doppler_time=_read_array(grp, 'zeroDopplerTime'),
+            slant_range=_read_array(grp, 'slantRange'),
+            reference_epoch=_read_time_reference(grp, 'zeroDopplerTime'),
+            reference_terrain_height=_read_array(
+                grp, 'referenceTerrainHeight'),
+            estimation_algorithm=estimation_algorithm,
+        )
+
     def _extract_processing_info(self) -> Optional[NISARProcessingInfo]:
         """Extract processing information."""
         proc_path = f'{self._base_path}/metadata/processingInformation'
@@ -617,6 +658,10 @@ class NISARReader(ImageReader):
             if self._product_type == 'RSLC' else None
         )
         calibration = self._extract_calibration()
+        doppler_centroid = (
+            self._extract_doppler_centroid()
+            if self._product_type == 'RSLC' else None
+        )
         processing = self._extract_processing_info()
 
         # Determine CRS
@@ -679,6 +724,7 @@ class NISARReader(ImageReader):
             grid_parameters=grid_params,
             geolocation_grid=geolocation,
             calibration=calibration,
+            doppler_centroid=doppler_centroid,
             processing_info=processing,
         )
 

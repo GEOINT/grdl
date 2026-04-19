@@ -13,7 +13,7 @@ rasterio (for ``RPCCoefficients.from_rasterio`` factory method)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,6 +27,7 @@ Created
 
 Modified
 --------
+2026-04-17  Add CSEPHA, RSMGGA dataclasses and RSMSegmentGrid helper.
 2026-04-01
 """
 
@@ -374,6 +375,59 @@ class RSMSegmentGrid:
     segments: Dict[Tuple[int, int], RSMCoefficients] = field(
         default_factory=dict)
 
+    def segment_for_pixel(
+        self,
+        row: float,
+        col: float,
+    ) -> Optional[RSMCoefficients]:
+        """Return the RSM segment whose validity region covers a pixel.
+
+        Each RSMPCA segment declares its valid-row / valid-col window via
+        ``(row_off ± |row_norm_sf|, col_off ± |col_norm_sf|)``.  This
+        helper returns the first segment whose window contains the
+        given (row, col).  When the pixel falls outside every segment
+        (which can happen near image boundaries due to the
+        normalization-window / partition-grid mismatch allowed by
+        STDI-0002 §U.7), the spatially nearest segment is returned.
+
+        Parameters
+        ----------
+        row, col : float
+            Full-image pixel coordinates (not chip coordinates).
+
+        Returns
+        -------
+        RSMCoefficients or None
+            The selected segment, or ``None`` when the grid is empty.
+        """
+        if not self.segments:
+            return None
+
+        best_key: Optional[Tuple[int, int]] = None
+        best_dist = float('inf')
+        for key, seg in self.segments.items():
+            row_half = abs(seg.row_norm_sf)
+            col_half = abs(seg.col_norm_sf)
+            d_row = row - seg.row_off
+            d_col = col - seg.col_off
+            inside = (abs(d_row) <= row_half) and (abs(d_col) <= col_half)
+            dist = d_row * d_row + d_col * d_col
+            if inside and dist < best_dist:
+                best_dist = dist
+                best_key = key
+
+        if best_key is None:
+            # No segment contains the point; pick the nearest by centre.
+            for key, seg in self.segments.items():
+                d_row = row - seg.row_off
+                d_col = col - seg.col_off
+                dist = d_row * d_row + d_col * d_col
+                if dist < best_dist:
+                    best_dist = dist
+                    best_key = key
+
+        return self.segments.get(best_key) if best_key is not None else None
+
 
 # ===================================================================
 # Geospatial Accuracy and Context TREs
@@ -522,6 +576,142 @@ class BLOCKAMetadata:
 
 
 @dataclass
+class CSEPHAMetadata:
+    """Commercial Support Ephemeris metadata (CSEPHA TRE).
+
+    Dense ECEF position samples of the sensor during the collection,
+    per STDI-0002 Vol 1 Appendix D (Table D-3).  Combined with
+    CSEXRA ``time_image_duration`` this reconstructs a position curve
+    that a native R/Rdot geolocation chain can differentiate or
+    interpolate (Lagrange) for higher accuracy than corner GCPs.
+
+    Parameters
+    ----------
+    ephem_flag : str, optional
+        ``'PREDICTED'``, ``'COLLECT-TIME'``, or ``'REFINED'``.
+    dt_ephem : float, optional
+        Time interval between vectors, seconds.
+    date_ephem : str, optional
+        Date of first vector, ``YYYYMMDD`` (UTC).
+    t0_ephem : float, optional
+        Time of first vector as seconds since ``date_ephem`` 00:00 UTC
+        (converted from the raw ``HHMMSS.mmmmmm`` field).
+    num_ephem : int, optional
+        Number of ephemeris samples.
+    position : np.ndarray, optional
+        ECEF position samples in meters, shape ``(num_ephem, 3)``
+        with columns ``[x, y, z]``.  Ordered chronologically (reversed
+        when ``CSEXRA.time_image_duration`` is negative — callers must
+        honour that flag to restore time-ordering).
+    """
+
+    ephem_flag: Optional[str] = None
+    dt_ephem: Optional[float] = None
+    date_ephem: Optional[str] = None
+    t0_ephem: Optional[float] = None
+    num_ephem: Optional[int] = None
+    position: Optional[np.ndarray] = None
+
+
+@dataclass
+class RSMGGAGridPlane:
+    """One plane of the RSM Ground-to-Image Grid (RSMGGA TRE).
+
+    Each plane samples (row, col) at a regularly spaced ground grid at
+    a fixed height-above-ellipsoid.  Stacking planes provides the
+    volumetric lookup used for fast, inverse-polynomial-free ground→
+    image projection (STDI-0002 Vol 1 Appendix U Table 12).
+
+    Parameters
+    ----------
+    z_plane : float
+        Plane height-above-ellipsoid, meters.
+    xi : float
+        X-coordinate of the first grid point in this plane (radians for
+        geodetic ground domain, meters for rectangular).
+    yi : float
+        Y-coordinate of the first grid point in this plane.
+    num_x : int
+        Number of grid points along the X axis for this plane.
+    num_y : int
+        Number of grid points along the Y axis for this plane.
+    rows : np.ndarray
+        Image-row offsets from ``REFROW`` at each grid point,
+        shape ``(num_x, num_y)``.  NaN when the spec places a
+        "no measurement" (all-spaces) entry.
+    cols : np.ndarray
+        Image-column offsets from ``REFCOL`` at each grid point,
+        shape ``(num_x, num_y)``.  NaN where unavailable.
+    """
+
+    z_plane: float
+    xi: float
+    yi: float
+    num_x: int
+    num_y: int
+    rows: np.ndarray
+    cols: np.ndarray
+
+
+@dataclass
+class RSMGGAMetadata:
+    """RSM Ground-to-Image Grid metadata (RSMGGA TRE).
+
+    Container for the volumetric ground→image grid produced alongside
+    the RSMPCA polynomial section, used either as a seed for iterative
+    inversion or as the primary projector when configured.  Fields
+    follow STDI-0002 Vol 1 Appendix U Table 12.
+
+    Parameters
+    ----------
+    iid : str, optional
+        Image identifier.
+    edition : str, optional
+        RSM support data edition.
+    ggrsn : int, optional
+        Row section number this grid corresponds to (1-based).
+    ggcsn : int, optional
+        Column section number this grid corresponds to (1-based).
+    row_fit_error : float, optional
+        Reported row fit error (pixels).
+    col_fit_error : float, optional
+        Reported column fit error (pixels).
+    interpolation_order : int, optional
+        Interpolation order (0–3) declared by the producer.
+    num_planes : int, optional
+        Number of grid planes (``P``).
+    delta_z : float, optional
+        Height step between adjacent planes (meters).
+    delta_x : float, optional
+        Step along the X axis (radians or meters).
+    delta_y : float, optional
+        Step along the Y axis (radians or meters).
+    ref_row : int, optional
+        Reference image row (``REFROW``); plane-level ``rows`` arrays
+        are offsets relative to this value.
+    ref_col : int, optional
+        Reference image column (``REFCOL``).
+    planes : List[RSMGGAGridPlane], optional
+        One entry per height plane in ascending index.
+    """
+
+    iid: Optional[str] = None
+    edition: Optional[str] = None
+    ggrsn: Optional[int] = None
+    ggcsn: Optional[int] = None
+    row_fit_error: Optional[float] = None
+    col_fit_error: Optional[float] = None
+    interpolation_order: Optional[int] = None
+    num_planes: Optional[int] = None
+    delta_z: Optional[float] = None
+    delta_x: Optional[float] = None
+    delta_y: Optional[float] = None
+    ref_row: Optional[int] = None
+    ref_col: Optional[int] = None
+    planes: Optional[List[RSMGGAGridPlane]] = None
+
+
+@dataclass
 class CollectionInfo:
     """Aggregated collection context from AIMIDB, STDIDC, and PIAIMC TREs.
 
@@ -608,6 +798,12 @@ class EONITFMetadata(ImageMetadata):
         Image chip transform from ICHIPB TRE.
     blocka : BLOCKAMetadata, optional
         Geographic corner coordinates from BLOCKA TRE.
+    csepha : CSEPHAMetadata, optional
+        Dense ECEF ephemeris samples (CSEPHA TRE) — enables native
+        R/Rdot-style projection from the raw sensor path.
+    rsmgga : RSMGGAMetadata, optional
+        RSM volumetric ground-to-image grid (RSMGGA TRE) — faster /
+        non-iterative ground→image projection than RSMPCA alone.
     collection_info : CollectionInfo, optional
         Aggregated collection context from AIMIDB/STDIDC/PIAIMC.
     accuracy : AccuracyInfo, optional
@@ -655,6 +851,8 @@ class EONITFMetadata(ImageMetadata):
     use00a: Optional[USE00AMetadata] = None
     ichipb: Optional[ICHIPBMetadata] = None
     blocka: Optional[BLOCKAMetadata] = None
+    csepha: Optional[CSEPHAMetadata] = None
+    rsmgga: Optional[RSMGGAMetadata] = None
     collection_info: Optional[CollectionInfo] = None
     accuracy: Optional[AccuracyInfo] = None
     iid1: Optional[str] = None

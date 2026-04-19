@@ -9,7 +9,7 @@ Re-exports all metadata classes from submodules for convenient access:
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -213,6 +213,14 @@ from grdl.IO.models.cphd import (
     create_subaperture_metadata,
 )
 
+# CRSD
+from grdl.IO.models.crsd import (
+    CRSDMetadata,
+    CRSDChannelParameters,
+    CRSDDwellPolynomialSet,
+    CRSDReferenceGeometry,
+)
+
 # NISAR
 from grdl.IO.models.nisar import (
     NISARMetadata,
@@ -223,6 +231,7 @@ from grdl.IO.models.nisar import (
     NISARGridParameters,
     NISARGeolocationGrid,
     NISARCalibration,
+    NISARDopplerCentroid,
     NISARProcessingInfo,
 )
 
@@ -232,6 +241,10 @@ from grdl.IO.models.eo_nitf import (
     RPCCoefficients,
     RSMIdentification,
     RSMCoefficients,
+    RSMSegmentGrid,
+    CSEPHAMetadata,
+    RSMGGAMetadata,
+    RSMGGAGridPlane,
 )
 
 __all__ = [
@@ -384,6 +397,10 @@ __all__ = [
     'TSXProcessingInfo',
     # CPHD
     'CPHDMetadata',
+    'CRSDMetadata',
+    'CRSDChannelParameters',
+    'CRSDDwellPolynomialSet',
+    'CRSDReferenceGeometry',
     'CPHDChannel',
     'CPHDPVP',
     'CPHDGlobal',
@@ -404,10 +421,15 @@ __all__ = [
     'NISARGridParameters',
     'NISARGeolocationGrid',
     'NISARCalibration',
+    'NISARDopplerCentroid',
     'NISARProcessingInfo',
     # EO NITF
     'EONITFMetadata',
     'RPCCoefficients',
     'RSMIdentification',
     'RSMCoefficients',
+    'RSMSegmentGrid',
+    'CSEPHAMetadata',
+    'RSMGGAMetadata',
+    'RSMGGAGridPlane',
 ]

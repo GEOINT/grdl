@@ -52,7 +52,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -66,6 +66,7 @@ Created
 
 Modified
 --------
+2026-04-17  Prefer RSM over RPC in create_geolocation factory.
 2026-04-01
 """
 
@@ -204,11 +205,14 @@ def create_geolocation(reader: object, **kwargs) -> Geolocation:
     try:
         from grdl.IO.models.eo_nitf import EONITFMetadata
         if isinstance(meta, EONITFMetadata):
-            # Prefer RPC (more common), fall back to RSM
-            if getattr(meta, 'rpc', None) is not None:
-                return RPCGeolocation.from_reader(reader, **kwargs)
+            # Prefer RSM when present: per STDI-0002, RSM (Replacement
+            # Sensor Model) encodes higher-fidelity sensor geometry than
+            # RPC (Rational Polynomial Coefficients) and should be used
+            # whenever both TREs are available.
             if getattr(meta, 'rsm', None) is not None:
                 return RSMGeolocation.from_reader(reader, **kwargs)
+            if getattr(meta, 'rpc', None) is not None:
+                return RPCGeolocation.from_reader(reader, **kwargs)
     except ImportError:
         pass
 
