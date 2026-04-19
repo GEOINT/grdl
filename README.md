@@ -64,6 +64,61 @@ with SICDReader('image.nitf') as reader:
     looks = sublook.decompose(chip)
 ```
 
+### Example: SICD Orthorectification
+
+SAR imagery is natively collected in the **slant plane** -- pixel rows are azimuth samples, columns are range samples, and the scene appears squeezed and sheared relative to the map. Orthorectification projects each pixel through the sensor's range/Doppler geometry (plus a terrain model) onto a regular geographic grid, producing an image that can be overlaid on a map or compared to other imagery.
+
+The script [grdl/example/ortho/sicd_ortho_demo.py](grdl/example/ortho/sicd_ortho_demo.py) reads an UMBRA-05 SICD of the Port of Savannah (graze angle 45.6°), attaches a FABDEM terrain model to the `SICDGeolocation` object, and orthorectifies a 2048×2048 center chip with a single call to `orthorectify()`. The two figures below are its output:
+
+| Slant range (native SAR geometry) | Orthorectified (WGS-84, DEM-corrected) |
+|---|---|
+| ![SICD slant range chip](docs/images/sicd_slant_range.png) | ![Orthorectified SICD](docs/images/sicd_orthorectified.png) |
+
+Note how the dock structures and shipping containers -- which appear sheared in the slant-range chip -- reproject into a geographically meaningful layout once the SICD's R/Rdot projection is intersected with the terrain model.
+
+```python
+from grdl.IO.sar import SICDReader
+from grdl.data_prep import ChipExtractor
+from grdl.geolocation.chip import ChipGeolocation
+from grdl.geolocation.elevation import open_elevation
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.image_processing.ortho import orthorectify
+import numpy as np
+
+with SICDReader('2025-06-20-02-42-41_UMBRA-05_SICD.nitf') as reader:
+    meta = reader.metadata
+    rows, cols = meta.rows, meta.cols
+
+    region = ChipExtractor(nrows=rows, ncols=cols).chip_at_point(
+        rows // 2, cols // 2, row_width=2048, col_width=2048,
+    )
+
+    geo = ChipGeolocation(
+        SICDGeolocation.from_reader(reader),
+        row_offset=region.row_start,
+        col_offset=region.col_start,
+        shape=(region.row_end - region.row_start,
+               region.col_end - region.col_start),
+    )
+    geo.elevation = open_elevation('/path/to/FABDEM_V12',
+                                   location=(32.13, -81.14))
+
+    chip = reader.read_chip(region.row_start, region.row_end,
+                            region.col_start, region.col_end)
+
+magnitude = np.abs(chip).astype(np.float32)
+
+result = orthorectify(
+    geolocation=geo,
+    source_array=magnitude,
+    metadata=meta,
+    interpolation='bilinear',
+    nodata=np.nan,
+)
+
+result.save_geotiff('savannah_ortho.tif')
+```
+
 ## Module Areas
 
 | Domain | Description | Status |
