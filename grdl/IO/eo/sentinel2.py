@@ -17,7 +17,7 @@ rasterio or glymur (via JP2Reader)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

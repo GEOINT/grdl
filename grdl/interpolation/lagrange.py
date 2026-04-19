@@ -34,7 +34,7 @@ IEEE Signal Processing Magazine, vol. 13, no. 1, pp. 30-60, Jan. 1996.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

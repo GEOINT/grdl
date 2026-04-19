@@ -48,7 +48,7 @@ on Circuit Theory, vol. CT-19, no. 2, pp. 189-194, Mar. 1972.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

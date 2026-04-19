@@ -8,7 +8,7 @@ and ``Rasterize`` for burning feature geometries into raster arrays.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

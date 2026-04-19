@@ -10,7 +10,7 @@ both forward and inverse directions, and bbox refit/polygon modes.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

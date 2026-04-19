@@ -11,7 +11,7 @@ subclassing by sensor-specific metadata classes (e.g., ``SICDMetadata``,
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

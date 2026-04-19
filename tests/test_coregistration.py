@@ -8,7 +8,7 @@ and utility functions using synthetic image data with known transforms.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

@@ -14,7 +14,7 @@ Conversion to magnitude, power, or dB is a separate explicit step.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

@@ -10,7 +10,7 @@ parameters, etc.) belongs in each concrete class's ``__init__``.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

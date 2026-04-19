@@ -12,7 +12,7 @@ enabling direct use in R/Rdot geolocation computations per SICD Volume 3.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

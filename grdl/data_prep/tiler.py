@@ -9,7 +9,7 @@ decoupling tile layout planning from pixel data access.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

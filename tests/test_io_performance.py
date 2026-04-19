@@ -5,7 +5,7 @@ Tests for grdl.IO.performance — ReadConfig and parallel helpers.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

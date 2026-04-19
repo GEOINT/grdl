@@ -16,7 +16,7 @@ requests (for CDSE remote queries and downloads)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 Ava Courtney
 courtney-ava@zai.com

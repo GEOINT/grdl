@@ -8,7 +8,7 @@ discovery and the ``PluginRegistry`` for managing registered plugins.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

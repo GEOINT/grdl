@@ -9,7 +9,7 @@ Defines the ``VectorProcessor`` ABC for processors that operate on
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
