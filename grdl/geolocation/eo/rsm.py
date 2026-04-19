@@ -14,7 +14,7 @@ maps ground→image; Newton-Raphson iteration inverts it at a given HAE.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -28,6 +28,7 @@ Created
 
 Modified
 --------
+2026-04-17  Replace FD Jacobian with closed-form analytic Jacobian.
 2026-04-01  Add multi-segment RSM support and ICHIPB integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-22  Update coordinate function calls to (N, M) stacked convention.
@@ -122,6 +123,48 @@ def _rsm_monomials(
     return result
 
 
+def _rsm_monomials_with_partials(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    exponents: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate RSM monomials and their partials w.r.t. x and y.
+
+    The Jacobian of an RSM polynomial in normalized coordinates is
+    computed analytically — ``∂(x^i y^j z^k)/∂x = i·x^(i-1) y^j z^k`` —
+    avoiding the step-size tuning and cancellation of finite differences.
+
+    Returns
+    -------
+    mono, dmono_dx, dmono_dy : np.ndarray
+        Shape ``(N, M)`` each.
+    """
+    n = len(x)
+    m = len(exponents)
+    mono = np.ones((n, m), dtype=np.float64)
+    dmono_dx = np.zeros((n, m), dtype=np.float64)
+    dmono_dy = np.zeros((n, m), dtype=np.float64)
+
+    for idx in range(m):
+        ei, ej, ek = int(exponents[idx, 0]), int(exponents[idx, 1]), int(exponents[idx, 2])
+
+        x_pow = x ** ei if ei > 0 else np.ones(n)
+        y_pow = y ** ej if ej > 0 else np.ones(n)
+        z_pow = z ** ek if ek > 0 else np.ones(n)
+
+        mono[:, idx] = x_pow * y_pow * z_pow
+
+        if ei > 0:
+            x_pow_m1 = x ** (ei - 1) if ei > 1 else np.ones(n)
+            dmono_dx[:, idx] = ei * x_pow_m1 * y_pow * z_pow
+        if ej > 0:
+            y_pow_m1 = y ** (ej - 1) if ej > 1 else np.ones(n)
+            dmono_dy[:, idx] = ej * x_pow * y_pow_m1 * z_pow
+
+    return mono, dmono_dx, dmono_dy
+
+
 def _rsm_evaluate(
     lats: np.ndarray,
     lons: np.ndarray,
@@ -197,6 +240,99 @@ def _rsm_evaluate(
     cols = rsm.col_off + rsm.col_norm_sf * (col_num / col_den)
 
     return rows, cols
+
+
+def _rsm_evaluate_with_jacobian(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    heights: np.ndarray,
+    rsm: 'RSMCoefficients',
+    ground_domain_type: str = 'G',
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate RSM and its analytic Jacobian w.r.t. (lat, lon).
+
+    For ``ground_domain_type`` 'G' or 'H' the chain rule converts
+    normalized→radian→degree; for 'R' (ECEF) the Jacobian is returned
+    w.r.t. the two horizontal ECEF axes (callers using 'R' should
+    compose with the geodetic→ECEF Jacobian before inversion).
+
+    Returns
+    -------
+    rows, cols, dr_dlat, dr_dlon, dc_dlat, dc_dlon : np.ndarray
+        Shape ``(N,)`` each.  Derivatives are w.r.t. degrees.
+    """
+    if ground_domain_type == 'R':
+        ecef = geodetic_to_ecef(np.column_stack([lats, lons, heights]))
+        x_raw, y_raw, z_raw = ecef[:, 0], ecef[:, 1], ecef[:, 2]
+    else:
+        x_raw = np.deg2rad(lons)
+        y_raw = np.deg2rad(lats)
+        z_raw = heights
+
+    x = (x_raw - rsm.x_off) / rsm.x_norm_sf
+    y = (y_raw - rsm.y_off) / rsm.y_norm_sf
+    z = (z_raw - rsm.z_off) / rsm.z_norm_sf
+
+    row_num_exp = _build_monomial_exponents(rsm.row_num_powers)
+    row_den_exp = _build_monomial_exponents(rsm.row_den_powers)
+    col_num_exp = _build_monomial_exponents(rsm.col_num_powers)
+    col_den_exp = _build_monomial_exponents(rsm.col_den_powers)
+
+    rn_m, rn_dx, rn_dy = _rsm_monomials_with_partials(x, y, z, row_num_exp)
+    rd_m, rd_dx, rd_dy = _rsm_monomials_with_partials(x, y, z, row_den_exp)
+    cn_m, cn_dx, cn_dy = _rsm_monomials_with_partials(x, y, z, col_num_exp)
+    cd_m, cd_dx, cd_dy = _rsm_monomials_with_partials(x, y, z, col_den_exp)
+
+    rn_coefs = rsm.row_num_coefs[:rn_m.shape[1]]
+    rd_coefs = rsm.row_den_coefs[:rd_m.shape[1]]
+    cn_coefs = rsm.col_num_coefs[:cn_m.shape[1]]
+    cd_coefs = rsm.col_den_coefs[:cd_m.shape[1]]
+
+    row_num = rn_m @ rn_coefs
+    row_den = rd_m @ rd_coefs
+    col_num = cn_m @ cn_coefs
+    col_den = cd_m @ cd_coefs
+
+    row_num_dx = rn_dx @ rn_coefs
+    row_den_dx = rd_dx @ rd_coefs
+    col_num_dx = cn_dx @ cn_coefs
+    col_den_dx = cd_dx @ cd_coefs
+
+    row_num_dy = rn_dy @ rn_coefs
+    row_den_dy = rd_dy @ rd_coefs
+    col_num_dy = cn_dy @ cn_coefs
+    col_den_dy = cd_dy @ cd_coefs
+
+    # Quotient rule in normalized coordinates
+    inv_row_den_sq = 1.0 / (row_den * row_den)
+    inv_col_den_sq = 1.0 / (col_den * col_den)
+
+    d_row_norm_dx = (row_num_dx * row_den - row_num * row_den_dx) * inv_row_den_sq
+    d_row_norm_dy = (row_num_dy * row_den - row_num * row_den_dy) * inv_row_den_sq
+    d_col_norm_dx = (col_num_dx * col_den - col_num * col_den_dx) * inv_col_den_sq
+    d_col_norm_dy = (col_num_dy * col_den - col_num * col_den_dy) * inv_col_den_sq
+
+    rows = rsm.row_off + rsm.row_norm_sf * (row_num / row_den)
+    cols = rsm.col_off + rsm.col_norm_sf * (col_num / col_den)
+
+    # Chain rule: d/dlat = d/dy_norm · (dy_norm/dy_raw) · (dy_raw/dlat)
+    # For G/H domains: y_raw = deg2rad(lat), x_raw = deg2rad(lon).
+    # dy_norm/dy_raw = 1/y_norm_sf; dy_raw/dlat = π/180.
+    if ground_domain_type == 'R':
+        # x_raw, y_raw are ECEF components — return normalized-coord
+        # derivatives; callers compose with geodetic→ECEF outside.
+        lat_factor = 1.0 / rsm.y_norm_sf
+        lon_factor = 1.0 / rsm.x_norm_sf
+    else:
+        lat_factor = np.deg2rad(1.0) / rsm.y_norm_sf
+        lon_factor = np.deg2rad(1.0) / rsm.x_norm_sf
+
+    dr_dlat = rsm.row_norm_sf * d_row_norm_dy * lat_factor
+    dr_dlon = rsm.row_norm_sf * d_row_norm_dx * lon_factor
+    dc_dlat = rsm.col_norm_sf * d_col_norm_dy * lat_factor
+    dc_dlon = rsm.col_norm_sf * d_col_norm_dx * lon_factor
+
+    return rows, cols, dr_dlat, dr_dlon, dc_dlat, dc_dlon
 
 
 def _apply_ichipb_forward(
@@ -565,20 +701,18 @@ class RSMGeolocation(Geolocation):
             lats = np.full(n, np.rad2deg(rsm.y_off))
             lons = np.full(n, np.rad2deg(rsm.x_off))
 
-        # Finite difference steps (degrees)
-        if self._ground_domain == 'R':
-            dlat = max(abs(rsm.y_norm_sf) * 1e-6, 1e-8)
-            dlon = max(abs(rsm.x_norm_sf) * 1e-6, 1e-8)
-        else:
-            dlat = max(np.rad2deg(abs(rsm.y_norm_sf)) * 1e-6, 1e-8)
-            dlon = max(np.rad2deg(abs(rsm.x_norm_sf)) * 1e-6, 1e-8)
-
+        # Newton-Raphson with closed-form analytic Jacobian. The RSM
+        # polynomials are ratios of monomials in normalized coordinates,
+        # so partial derivatives are exact (quotient rule on ∂x^i/∂x).
+        # This is both faster and numerically cleaner than finite
+        # differences — no step-size tuning, no cancellation.
         max_iter = 20
         tol = 1e-8  # pixels
 
         for _ in range(max_iter):
-            r0, c0 = _rsm_evaluate(
-                lats, lons, h_arr, rsm, self._ground_domain)
+            r0, c0, dr_dlat, dr_dlon, dc_dlat, dc_dlon = \
+                _rsm_evaluate_with_jacobian(
+                    lats, lons, h_arr, rsm, self._ground_domain)
 
             dr = rows - r0
             dc = cols - c0
@@ -586,17 +720,6 @@ class RSMGeolocation(Geolocation):
             err = np.sqrt(dr ** 2 + dc ** 2)
             if np.max(err) < tol:
                 break
-
-            # Jacobian via finite differences
-            r_dlat, c_dlat = _rsm_evaluate(
-                lats + dlat, lons, h_arr, rsm, self._ground_domain)
-            r_dlon, c_dlon = _rsm_evaluate(
-                lats, lons + dlon, h_arr, rsm, self._ground_domain)
-
-            dr_dlat = (r_dlat - r0) / dlat
-            dc_dlat = (c_dlat - c0) / dlat
-            dr_dlon = (r_dlon - r0) / dlon
-            dc_dlon = (c_dlon - c0) / dlon
 
             det = dr_dlat * dc_dlon - dr_dlon * dc_dlat
             det = np.where(np.abs(det) < 1e-30, 1e-30, det)
