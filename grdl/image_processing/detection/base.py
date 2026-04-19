@@ -10,7 +10,7 @@ checking and detection input flow.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -110,6 +110,7 @@ class ImageDetector(ImageProcessor):
         self,
         source: np.ndarray,
         geolocation: Optional['Geolocation'] = None,
+        valid_mask: Optional[np.ndarray] = None,
         **kwargs: Any,
     ) -> DetectionSet:
         """
@@ -124,6 +125,13 @@ class ImageDetector(ImageProcessor):
         geolocation : Geolocation, optional
             Geolocation object for pixel-to-geographic transforms.
             If None, detections will contain pixel coordinates only.
+        valid_mask : np.ndarray, optional
+            Boolean array matching ``source.shape[:2]``. Detections are
+            suppressed wherever the mask is ``False``. Useful for cueing
+            a detector to a specific region of interest -- see
+            ``grdl.shapes.cued_detect``. Background statistics (where
+            applicable) are still computed from the full image; only
+            the final candidate set is gated.
 
         Returns
         -------

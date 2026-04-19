@@ -22,7 +22,7 @@ torch (optional — GPU/CPU acceleration)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -495,6 +495,7 @@ class Orthorectifier(ImageTransform):
         geolocation: 'Geolocation',
         output_grid: OutputGridProtocol,
         interpolation: str = 'bilinear',
+        batch_size: int = 2_000_000,
     ) -> None:
         """
         Initialize orthorectifier.
@@ -532,10 +533,16 @@ class Orthorectifier(ImageTransform):
                 f"Must be one of: {list(_INTERPOLATION_ORDERS.keys())}"
             )
 
+        if batch_size is not None and batch_size <= 0:
+            raise ValueError(
+                f"batch_size must be positive or None, got {batch_size}"
+            )
+
         self.geolocation = geolocation
         self.output_grid = output_grid
         self.interpolation = interpolation
         self._order = _INTERPOLATION_ORDERS[interpolation]
+        self.batch_size = batch_size
 
         # Cached mapping (computed lazily)
         self._source_rows: Optional[np.ndarray] = None
@@ -641,16 +648,42 @@ class Orthorectifier(ImageTransform):
         col_g, row_g = np.meshgrid(out_cols, strip_rows)
 
         lats, lons = grid.image_to_latlon(row_g.ravel(), col_g.ravel())
-        lats_flat = np.asarray(lats).ravel()
-        lons_flat = np.asarray(lons).ravel()
+        lats_flat = np.asarray(lats, dtype=np.float64).ravel()
+        lons_flat = np.asarray(lons, dtype=np.float64).ravel()
 
-        # Pass (N, 2) coords — the geolocation object handles DEM
-        # lookup internally via its own elevation model.
-        coords = np.column_stack([lats_flat, lons_flat])
-        src_px = self.geolocation.latlon_to_image(coords)
+        total = lats_flat.size
+        batch = self.batch_size if self.batch_size else total
+        elevation = getattr(self.geolocation, 'elevation', None)
+
+        src_rows = np.empty(total, dtype=np.float64)
+        src_cols = np.empty(total, dtype=np.float64)
+
+        for start in range(0, total, batch):
+            end = min(start + batch, total)
+            lats_b = lats_flat[start:end]
+            lons_b = lons_flat[start:end]
+
+            if elevation is not None:
+                # Pre-sample the DEM once per batch so the inverse
+                # projection does not re-query it during iteration.
+                h_b = np.asarray(
+                    elevation.get_elevation(lats_b, lons_b),
+                    dtype=np.float64,
+                )
+                if h_b.ndim == 0:
+                    h_b = np.full(lats_b.size, float(h_b))
+                self.geolocation._fill_nan_heights(h_b, 0.0)
+                coords = np.column_stack([lats_b, lons_b, h_b])
+            else:
+                coords = np.column_stack([lats_b, lons_b])
+
+            src_px = self.geolocation.latlon_to_image(coords)
+            src_rows[start:end] = src_px[:, 0]
+            src_cols[start:end] = src_px[:, 1]
+
         return (
-            src_px[:, 0].reshape(n_rows, grid.cols),
-            src_px[:, 1].reshape(n_rows, grid.cols),
+            src_rows.reshape(n_rows, grid.cols),
+            src_cols.reshape(n_rows, grid.cols),
         )
 
     def _compute_mapping_parallel(

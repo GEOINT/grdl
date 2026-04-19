@@ -31,7 +31,7 @@ shapely
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -500,6 +500,7 @@ class CFARDetector(ImageDetector):
         self,
         source: np.ndarray,
         geolocation: Optional[Any] = None,
+        valid_mask: Optional[np.ndarray] = None,
         **kwargs: Any,
     ) -> DetectionSet:
         """Run CFAR detection on a 2D image.
@@ -512,6 +513,13 @@ class CFARDetector(ImageDetector):
             ``assumption='exponential'``).
         geolocation : Geolocation, optional
             For pixel-to-geographic coordinate transforms on detections.
+        valid_mask : np.ndarray, optional
+            Boolean ``(rows, cols)`` region of interest. Pixels where
+            ``valid_mask`` is ``False`` are suppressed before connected-
+            component labeling, so candidates that originate outside
+            the region are dropped. Background statistics remain
+            computed from the full image -- this keeps CFAR's adaptive
+            noise floor physically meaningful.
 
         Returns
         -------
@@ -565,6 +573,14 @@ class CFARDetector(ImageDetector):
             thr_cpu = cp.asnumpy(threshold)
         else:
             mask_cpu, img_cpu, thr_cpu = detection_mask, img, threshold
+        if valid_mask is not None:
+            vm = np.asarray(valid_mask, dtype=bool)
+            if vm.shape != mask_cpu.shape:
+                raise ValidationError(
+                    f"valid_mask shape {vm.shape} does not match image "
+                    f"shape {mask_cpu.shape}"
+                )
+            mask_cpu = mask_cpu & vm
         labeled_arr, n_components = label(mask_cpu)
 
         # Step 4: Build detections

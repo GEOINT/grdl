@@ -23,7 +23,7 @@ data dictionary (see ``grdl.image_processing.detection.fields``).
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -242,6 +242,66 @@ class DetectionSet:
             detector_version=self.detector_version,
             output_fields=self.output_fields,
             metadata=self.metadata,
+        )
+
+    def filter_by_region(
+        self,
+        shape: Any,
+        geolocation: Any,
+        mode: str = 'centroid',
+    ) -> 'DetectionSet':
+        """Return detections whose pixel geometry relates to ``shape``.
+
+        Parameters
+        ----------
+        shape : grdl.shapes.GeographicShape
+            Region of interest in geographic coordinates.
+        geolocation : grdl.geolocation.Geolocation
+            Geolocation used to project ``shape`` into pixel space.
+        mode : str
+            How a detection's ``pixel_geometry`` must relate to the
+            projected shape polygon to be kept:
+
+            * ``'centroid'`` (default) : centroid lies inside the shape.
+            * ``'intersects'``         : shapely ``intersects`` is True.
+            * ``'contained'``          : shapely ``within`` is True.
+
+        Returns
+        -------
+        DetectionSet
+            Filtered detection set. Metadata is preserved and augmented
+            with the filter mode.
+        """
+        if mode not in ('centroid', 'intersects', 'contained'):
+            raise ValueError(
+                f"mode must be one of 'centroid', 'intersects', "
+                f"'contained'; got {mode!r}"
+            )
+        from shapely.geometry import Polygon as _ShapelyPolygon
+
+        pixels = shape.to_pixels(geolocation)
+        # shapely x=col, y=row
+        xy = [(float(p[1]), float(p[0])) for p in pixels]
+        shape_poly = _ShapelyPolygon(xy)
+
+        def _keep(d: 'Detection') -> bool:
+            if d.pixel_geometry is None:
+                return False
+            if mode == 'centroid':
+                return shape_poly.contains(d.pixel_geometry.centroid)
+            if mode == 'intersects':
+                return shape_poly.intersects(d.pixel_geometry)
+            return d.pixel_geometry.within(shape_poly)
+
+        kept = [d for d in self.detections if _keep(d)]
+        new_meta = dict(self.metadata)
+        new_meta['filter_by_region'] = mode
+        return DetectionSet(
+            detections=kept,
+            detector_name=self.detector_name,
+            detector_version=self.detector_version,
+            output_fields=self.output_fields,
+            metadata=new_meta,
         )
 
     def __repr__(self) -> str:

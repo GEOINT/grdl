@@ -23,7 +23,7 @@ torch (optional — GPU/CPU acceleration)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -231,6 +231,7 @@ class OrthoBuilder:
         self._roi_bounds: Optional[Tuple[float, float, float, float]] = None
         self._tile_size: Optional[Union[int, Tuple[int, int]]] = None
         self._enu_params: Optional[Dict[str, Any]] = None
+        self._batch_size: int = 2_000_000
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -341,6 +342,31 @@ class OrthoBuilder:
             Self for chaining.
         """
         self._interpolation = method
+        return self
+
+    def with_batch_size(self, batch_size: int) -> 'OrthoBuilder':
+        """Set inverse-mapping batch size (points per chunk).
+
+        Caps peak memory during the Newton-Raphson inverse projection
+        by chunking the flat output grid into slices of ``batch_size``
+        points. Each chunk is projected independently and the DEM is
+        pre-sampled once per chunk.
+
+        Parameters
+        ----------
+        batch_size : int
+            Points per chunk. Default 2,000,000.
+
+        Returns
+        -------
+        OrthoBuilder
+            Self for chaining.
+        """
+        if batch_size <= 0:
+            raise ValueError(
+                f"batch_size must be positive, got {batch_size}"
+            )
+        self._batch_size = batch_size
         return self
 
     def with_bands(self, bands: List[int]) -> 'OrthoBuilder':
@@ -571,6 +597,7 @@ class OrthoBuilder:
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
+            batch_size=self._batch_size,
         )
 
         # 3. Compute mapping (geolocation handles DEM internally)
@@ -720,6 +747,7 @@ class OrthoBuilder:
                 geolocation=self._geolocation,
                 output_grid=sub,
                 interpolation=self._interpolation,
+                batch_size=self._batch_size,
             )
             tile_ortho.compute_mapping()
 
@@ -759,6 +787,7 @@ class OrthoBuilder:
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
+            batch_size=self._batch_size,
         )
         geo_meta = meta_ortho.get_output_geolocation_metadata()
 
@@ -789,6 +818,7 @@ def orthorectify(
     roi: Optional[Tuple[float, float, float, float]] = None,
     tile_size: Optional[Union[int, Tuple[int, int]]] = None,
     enu_grid: Optional[Dict[str, Any]] = None,
+    batch_size: int = 2_000_000,
 ) -> OrthoResult:
     """Orthorectify imagery to a geographic or ENU grid.
 
@@ -876,6 +906,7 @@ def orthorectify(
     builder.with_geolocation(geolocation)
     builder.with_interpolation(interpolation)
     builder.with_nodata(nodata)
+    builder.with_batch_size(batch_size)
 
     if output_grid is not None:
         builder.with_output_grid(output_grid)
