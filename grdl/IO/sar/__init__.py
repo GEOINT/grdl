@@ -172,6 +172,20 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
+    # Try BIOMASS — directory with 'BIO' in name, may be nested
+    if filepath.is_dir() and 'BIO' in filepath.name.upper():
+        product_dir = filepath
+        if not (product_dir / 'annotation').is_dir():
+            for child in filepath.iterdir():
+                if child.is_dir() and (child / 'annotation').is_dir():
+                    product_dir = child
+                    break
+        if (product_dir / 'annotation').is_dir():
+            try:
+                return open_biomass(product_dir)
+            except (ValueError, ImportError, Exception):
+                pass
+
     # Try GeoTIFF fallback (SAR GRD products)
     if filepath.suffix.lower() in ('.tif', '.tiff'):
         try:
@@ -183,7 +197,7 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
     raise ValueError(
         f"Could not determine SAR format for {filepath}. "
         "Ensure file is valid SICD, CPHD, CRSD, SIDD, Sentinel-1 SAFE, "
-        "TerraSAR-X/TanDEM-X, NISAR, or GeoTIFF format and required "
+        "TerraSAR-X/TanDEM-X, BIOMASS, NISAR, or GeoTIFF format and required "
         "libraries (sarkit, sarpy, rasterio, h5py) are installed."
     )
 

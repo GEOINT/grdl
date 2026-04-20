@@ -32,6 +32,7 @@ import importlib.metadata
 
 # GRDL vocabulary
 from grdl.vocabulary import (
+    DataPortType,
     DetectionType,
     ExecutionPhase,
     GpuCapability,
@@ -108,6 +109,8 @@ def processor_tags(
     gpu_capability: Optional[GpuCapability] = None,
     required_bands: Optional[int] = None,
     pol_mode: Optional[PolarimetricMode] = None,
+    input_type: Optional[DataPortType] = None,
+    output_type: Optional[DataPortType] = None,
 ):
     """Class decorator for processor capability metadata.
 
@@ -148,6 +151,14 @@ def processor_tags(
         array to match (e.g., repeat a 1-band image to 3 bands).
         Must be a positive integer.  ``None`` (default) means the
         processor accepts any band count.
+    input_type : DataPortType, optional
+        Data type this processor expects as input.  ``None`` means
+        the processor accepts any type (implicit ANY).  Used by
+        grdk to filter the palette to compatible processors and by
+        grdl-runtime's graph validator for type checking.
+    output_type : DataPortType, optional
+        Data type this processor produces.  ``None`` means the output
+        type matches the input type (pass-through contract).
 
     Raises
     ------
@@ -215,6 +226,14 @@ def processor_tags(
         raise TypeError(
             f"pol_mode must be a PolarimetricMode member, got {pol_mode!r}"
         )
+    if input_type is not None and not isinstance(input_type, DataPortType):
+        raise TypeError(
+            f"input_type must be a DataPortType member, got {input_type!r}"
+        )
+    if output_type is not None and not isinstance(output_type, DataPortType):
+        raise TypeError(
+            f"output_type must be a DataPortType member, got {output_type!r}"
+        )
 
     def decorator(cls: Type[T]) -> Type[T]:
         cls.__processor_tags__ = {
@@ -231,6 +250,8 @@ def processor_tags(
             'gpu_capability': gpu_capability,
             'required_bands': required_bands,
             'pol_mode': pol_mode,
+            'input_type': input_type,
+            'output_type': output_type,
         }
         return cls
     return decorator

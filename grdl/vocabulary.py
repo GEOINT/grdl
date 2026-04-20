@@ -189,12 +189,36 @@ class OutputFormat(Enum):
     NITF = "nitf"
 
 
+class DataPortType(str, Enum):
+    """Data type flowing between processing steps in a workflow.
+
+    Used by ``@processor_tags(input_type=..., output_type=...)`` to declare
+    what a processor consumes and produces.  grdl-runtime uses these to
+    validate step-to-step connectivity; grdk uses them to filter the
+    processor palette to only compatible next-steps.
+
+    These values are also used as string literals in ``ProcessingStep``
+    and ``Artifact`` (``input_type``/``output_type`` fields) so that
+    serialized workflows remain human-readable.
+    """
+
+    RASTER = "raster"
+    """Continuous-valued floating-point image array (the default)."""
+
+    BINARY_MASK = "binary_mask"
+    """Boolean or 0/1 array produced by a threshold or segmentation step.
+    Compatible as input to any ``RASTER`` processor."""
+
+    DETECTION_SET = "detection_set"
+    """Sparse vector detections (``DetectionSet``).  A specialisation of
+    ``FEATURE_SET`` — compatible wherever ``FEATURE_SET`` is expected."""
+
+    FEATURE_SET = "feature_set"
+    """Generic vector features / GeoJSON polygons."""
+
+
 class PolarimetricMode(Enum):
     """Polarimetric collection mode for SAR processor and workflow tagging.
-
-    Declares the polarimetric diversity required by a processor or workflow.
-    Used by grdk widgets to gate actions on quad-pol completeness and by
-    grdl-runtime to validate workflow–dataset compatibility.
     """
 
     SINGLE_POL = "single_pol"
