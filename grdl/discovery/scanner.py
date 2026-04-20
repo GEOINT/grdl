@@ -149,6 +149,82 @@ class ScanResult:
         }
 
 
+def extract_modality(meta: 'ImageMetadata') -> Optional[str]:
+    """Classify the image modality from a reader's metadata object.
+
+    This is the canonical modality-from-metadata function in grdl.
+    It is used internally by :class:`MetadataScanner` and should be
+    used by any downstream layer (grdl-runtime, grdk) that needs to
+    determine modality from a reader, rather than reimplementing the
+    heuristics.
+
+    Classification priority:
+
+    1. Metadata class name — SAR formats (SICD, CPHD, NISAR, etc.)
+       and EO/MSI/IR formats are identified by their metadata type.
+    2. NumPy dtype — ``complex64`` / ``complex128`` indicates SAR.
+    3. Band count — ``>=100`` → HSI, ``>=10`` → MSI, ``3 or 4`` → EO.
+    4. ``extras['modality']`` — explicit override stored by readers such
+       as :class:`~grdl.IO.generic.GDALFallbackReader`.
+
+    Parameters
+    ----------
+    meta : ImageMetadata
+        Metadata object from any grdl reader.
+
+    Returns
+    -------
+    str or None
+        One of ``'SAR'``, ``'EO'``, ``'IR'``, ``'MSI'``, ``'HSI'``,
+        or ``None`` when classification is not possible.
+    """
+    type_name = type(meta).__name__
+
+    _SAR_TYPES = {
+        'SICDMetadata', 'SIDDMetadata', 'CPHDMetadata', 'CRSDMetadata',
+        'Sentinel1SLCMetadata', 'BIOMASSMetadata', 'TerraSARMetadata',
+        'NISARMetadata',
+    }
+    if type_name in _SAR_TYPES:
+        return 'SAR'
+
+    _EO_TYPES = {'EONITFMetadata', 'Sentinel2Metadata'}
+    if type_name in _EO_TYPES:
+        return 'EO'
+
+    _IR_TYPES = {'ASTERMetadata'}
+    if type_name in _IR_TYPES:
+        return 'IR'
+
+    _MSI_TYPES = {'VIIRSMetadata'}
+    if type_name in _MSI_TYPES:
+        return 'MSI'
+
+    # Heuristic: complex dtype -> SAR
+    dtype_str = str(getattr(meta, 'dtype', ''))
+    if 'complex' in dtype_str:
+        return 'SAR'
+
+    # Band count heuristics
+    bands = getattr(meta, 'bands', None)
+    if bands is not None:
+        if bands >= 100:
+            return 'HSI'
+        if bands >= 10:
+            return 'MSI'
+        if bands in (3, 4):
+            return 'EO'
+
+    # Explicit override stored in extras by readers like GDALFallbackReader
+    extras = getattr(meta, 'extras', {})
+    if isinstance(extras, dict):
+        modality = extras.get('modality')
+        if modality:
+            return str(modality)
+
+    return None
+
+
 class MetadataScanner:
     """Fast metadata-only scanner for imagery files and directories.
 
@@ -387,53 +463,11 @@ class MetadataScanner:
 
     @staticmethod
     def _extract_modality(meta: ImageMetadata) -> Optional[str]:
-        """Classify modality from metadata type."""
-        type_name = type(meta).__name__
+        """Classify modality from metadata type.
 
-        # Explicit type checks
-        _SAR_TYPES = {
-            'SICDMetadata', 'SIDDMetadata', 'CPHDMetadata',
-            'Sentinel1SLCMetadata', 'BIOMASSMetadata', 'TerraSARMetadata',
-            'NISARMetadata',
-        }
-        if type_name in _SAR_TYPES:
-            return 'SAR'
-
-        _EO_TYPES = {'EONITFMetadata', 'Sentinel2Metadata'}
-        if type_name in _EO_TYPES:
-            return 'EO'
-
-        _IR_TYPES = {'ASTERMetadata'}
-        if type_name in _IR_TYPES:
-            return 'IR'
-
-        _MSI_TYPES = {'VIIRSMetadata'}
-        if type_name in _MSI_TYPES:
-            return 'MSI'
-
-        # Heuristic fallback: complex dtype -> SAR
-        dtype_str = str(getattr(meta, 'dtype', ''))
-        if 'complex' in dtype_str:
-            return 'SAR'
-
-        # Band count heuristic
-        bands = getattr(meta, 'bands', None)
-        if bands is not None:
-            if bands >= 100:
-                return 'HSI'
-            if bands >= 10:
-                return 'MSI'
-            if bands in (3, 4):
-                return 'EO'
-
-        # Check extras for modality hint
-        extras = getattr(meta, 'extras', {})
-        if isinstance(extras, dict):
-            modality = extras.get('modality')
-            if modality:
-                return str(modality)
-
-        return None
+        Delegates to the module-level :func:`extract_modality`.
+        """
+        return extract_modality(meta)
 
     @staticmethod
     def _extract_sensor(meta: ImageMetadata) -> Optional[str]:

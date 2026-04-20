@@ -49,7 +49,7 @@ Modified
 """
 
 from grdl.discovery.base import DiscoveryPlugin, PluginRegistry
-from grdl.discovery.scanner import MetadataScanner, ScanResult, compute_beam_footprint
+from grdl.discovery.scanner import MetadataScanner, ScanResult, compute_beam_footprint, extract_modality
 from grdl.discovery.catalog import LocalCatalog
 from grdl.discovery.synthesizer import DataSynthesizer
 from grdl.discovery.plugins import GRDLCatalogPlugin
@@ -60,6 +60,7 @@ __all__ = [
     'MetadataScanner',
     'ScanResult',
     'compute_beam_footprint',
+    'extract_modality',
     'LocalCatalog',
     'DataSynthesizer',
     'GRDLCatalogPlugin',
