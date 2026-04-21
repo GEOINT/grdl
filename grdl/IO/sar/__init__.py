@@ -33,10 +33,16 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Union
 
+import numpy as np
+
+_log = logging.getLogger(__name__)
+
 # SAR readers and writers
+from grdl.exceptions import UnsupportedFormatError
 from grdl.IO.sar.sicd import SICDReader
 from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.cphd import CPHDReader
@@ -147,7 +153,7 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
             return Sentinel1SLCReader(filepath)
         except (ValueError, ImportError, Exception):
             pass
-
+            
     # Try TerraSAR-X / TanDEM-X
     # Check directory name prefix, or look for TSX1_SAR/TDX1_SAR XML inside
     if filepath.is_dir():
@@ -186,19 +192,39 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
             except (ValueError, ImportError, Exception):
                 pass
 
-    # Try GeoTIFF fallback (SAR GRD products)
+    # Try GeoTIFF fallback for SAR GRD amplitude products.
+    # Complex TIFFs (CInt16, complex64) are NOT SAR GRD products; they come
+    # from folder-structured SLC formats (Sentinel-1, etc.) and must be
+    # opened via the product directory.
     if filepath.suffix.lower() in ('.tif', '.tiff'):
         try:
             from grdl.IO.geotiff import GeoTIFFReader
-            return GeoTIFFReader(filepath)
+            reader = GeoTIFFReader(filepath)
         except (ValueError, ImportError, Exception):
             pass
+        else:
+            if np.dtype(reader.get_dtype()).kind == 'c':
+                reader.close()
+                raise UnsupportedFormatError(
+                    f"'{filepath.name}' is a complex TIFF and cannot be opened "
+                    "as a SAR GRD product. For folder-structured formats such as "
+                    "Sentinel-1 SLC, use 'Open' and select the product directory "
+                    "(e.g. the .SAFE folder)."
+                )
+            return reader
 
+    _log.warning(
+        "open_sar: no reader matched %s. "
+        "Directory-structured formats (Sentinel-1, BIOMASS, TerraSAR-X) "
+        "must be opened as a directory, not as an individual file.",
+        filepath,
+    )
     raise ValueError(
-        f"Could not determine SAR format for {filepath}. "
-        "Ensure file is valid SICD, CPHD, CRSD, SIDD, Sentinel-1 SAFE, "
-        "TerraSAR-X/TanDEM-X, BIOMASS, NISAR, or GeoTIFF format and required "
-        "libraries (sarkit, sarpy, rasterio, h5py) are installed."
+        f"Cannot open '{filepath.name}'. "
+        "Supported formats: SICD/CPHD/CRSD/SIDD (NITF), NISAR (HDF5), "
+        "GeoTIFF (SAR GRD). "
+        "For Sentinel-1 IW SLC, BIOMASS, or TerraSAR-X, use "
+        "'Open Directory' and select the product directory."
     )
 
 

@@ -80,6 +80,7 @@ from grdl.image_processing.detection.cfar import (
     SOCFARDetector,
     OSCFARDetector,
 )
+from grdl.image_processing.detection.blob import BlobDetector
 
 __all__ = [
     'ImageDetector',
@@ -97,4 +98,6 @@ __all__ = [
     'GOCFARDetector',
     'SOCFARDetector',
     'OSCFARDetector',
+    # Blob (connected-component) detector
+    'BlobDetector',
 ]

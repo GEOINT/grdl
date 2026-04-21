@@ -61,3 +61,16 @@ class GeolocationError(GrdlError, RuntimeError):
     Raised for out-of-bounds transforms, missing GCPs, or
     unsupported geometry types.
     """
+
+
+class UnsupportedFormatError(GrdlError, ValueError):
+    """File is a recognised format opened at the wrong level.
+
+    Raised when a reader can identify a file as belonging to a
+    known format (e.g. a Sentinel-1 SLC measurement TIFF inside a
+    .SAFE product) but cannot open it correctly at this path level.
+    Unlike a plain ``ValueError`` ("I don't handle this format"),
+    this exception carries an actionable message and must NOT be
+    silently swallowed by ``open_any`` — it propagates immediately
+    to the caller (e.g. grdk's error dialog).
+    """

@@ -59,6 +59,17 @@ from grdl.IO.performance import (
 
 logger = logging.getLogger(__name__)
 
+# GDAL / rasterio dtype strings that numpy cannot parse directly.
+# These appear in metadata but rasterio converts the data automatically
+# on read (e.g. CInt16 → complex64).  _gdal_dtype_to_numpy() normalises
+# only when np.dtype() would otherwise raise TypeError.
+_GDAL_DTYPE_MAP: dict = {
+    'complex_int16': 'complex64',   # GDAL CInt16  — S-1 SLC, SRTM phase
+    'complex_int32': 'complex64',   # GDAL CInt32
+    'cint16': 'complex64',
+    'cint32': 'complex64',
+}
+
 
 class GeoTIFFReader(ImageReader):
     """Read GeoTIFF and Cloud-Optimized GeoTIFF imagery.
@@ -280,7 +291,9 @@ class GeoTIFFReader(ImageReader):
         -------
         np.dtype
         """
-        return np.dtype(self.metadata['dtype'])
+        raw = self.metadata['dtype']
+        normalised = _GDAL_DTYPE_MAP.get(raw.lower(), raw)
+        return np.dtype(normalised)
 
     def close(self) -> None:
         """Close the rasterio dataset."""

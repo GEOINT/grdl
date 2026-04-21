@@ -53,9 +53,13 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
-from grdl.exceptions import DependencyError
+import logging
+
+from grdl.exceptions import DependencyError, UnsupportedFormatError
 from grdl.IO.base import ImageReader
 from grdl.IO.models import ImageMetadata
+
+_log = logging.getLogger(__name__)
 from grdl.IO.performance import (
     ReadConfig,
     _ensure_gdal_threads,
@@ -650,7 +654,6 @@ def _retry_identified_reader(
 
     return None
 
-
 # ===================================================================
 # open_any — universal entry point
 # ===================================================================
@@ -704,13 +707,22 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
         ('grdl.IO.multispectral', 'open_multispectral'),
     ]
 
+    # Keep the open_sar error: it carries actionable guidance (e.g. "use
+    # Open Directory") and is chained into the final exception so grdk
+    # can surface it in the error dialog.
+    _sar_error: Optional[Exception] = None
     for mod_path, func_name in _openers:
         try:
             mod = importlib.import_module(mod_path)
             opener = getattr(mod, func_name)
             return opener(filepath)
-        except (ValueError, ImportError, Exception):
-            pass
+        except UnsupportedFormatError:
+            raise  # known wrong level — propagate immediately, skip all fallbacks
+        except (ValueError, ImportError, Exception) as exc:
+            if func_name == 'open_sar' and isinstance(exc, ValueError):
+                _sar_error = exc
+            # All other opener errors are silently skipped — they simply
+            # indicate the format doesn't match, not a user-facing problem.
 
     # --- Phase 2: Try base format readers directly ---
     _readers = [
@@ -748,8 +760,24 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
     except (ValueError, ImportError):
         pass
 
-    raise ValueError(
-        f"No reader can open {filepath}. "
-        "Tried all specialized readers, GDAL fallback, "
-        "and invasive file probing."
+    _log.warning(
+        "open_any: all readers failed for %s. "
+        "Directory-structured formats (Sentinel-1 .SAFE, BIOMASS, TerraSAR-X) "
+        "must be opened as a directory via 'Open'.",
+        filepath,
     )
+    # Build the error message.  If open_sar produced a specific rejection
+    # message (e.g. "use Open to select the product directory"), surface it
+    # directly so the GUI shows the actionable text rather than a generic
+    # wrapper.  Fall back to a generic message when no specialised reader
+    # even attempted the file.
+    generic_msg = (
+        f"No reader can open '{filepath.name}'. "
+        "Tried all specialized readers, GDAL fallback, and invasive file probing. "
+        "For directory-structured formats (Sentinel-1 .SAFE, BIOMASS, TerraSAR-X), "
+        "use 'Open' and select the product directory."
+    )
+    if _sar_error:
+        sar_msg = str(_sar_error)
+        raise ValueError(f"{sar_msg}\n\n({generic_msg})") from _sar_error
+    raise ValueError(generic_msg)
