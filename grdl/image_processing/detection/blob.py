@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
     input_type=DataPortType.BINARY_MASK,
     output_type=DataPortType.DETECTION_SET,
     category=ProcessorCategory.FIND_MAXIMA,
+    required_bands=1,
     description='Connected-component blob detection from a binary mask',
 )
 class BlobDetector(ImageDetector):
@@ -62,6 +63,18 @@ class BlobDetector(ImageDetector):
        detection geometry.
     4. Recording ``physical.area`` and ``physical.perimeter`` in each
        detection's properties.
+
+    **Strict 2-D input policy**: ``source`` must be a 2-D array of shape
+    ``(rows, cols)``.  No automatic band collapsing or shape normalization
+    is performed.  If you have a multi-polarization stack (e.g., Sentinel-1
+    VV+VH or NISAR quad-pol), apply a dimensionality-reduction step first
+    — such as Dual-Pol H-Alpha decomposition, Pauli decomposition, or
+    intensity averaging — to produce a single 2-D raster, then threshold it
+    before calling this detector.
+
+    The ``required_bands=1`` processor tag communicates this constraint to
+    grdl-runtime so that the graph validator rejects multi-band inputs at
+    workflow-construction time.
 
     Parameters
     ----------
@@ -131,29 +144,67 @@ class BlobDetector(ImageDetector):
         Parameters
         ----------
         source : np.ndarray
-            Binary mask array.  Values > 0 are treated as foreground.
-            Shape: ``(rows, cols)`` or ``(rows, cols, 1)``.
+            Binary mask array, shape ``(rows, cols)`` **only**.
+            Values > 0 are treated as foreground.
+
+            This detector enforces a strict 2-D input policy.  No automatic
+            band collapsing or shape normalization is performed, so sensor
+            geometry (e.g., multi-swath Sentinel-1, multi-pol NISAR) is
+            never silently misrepresented.
+
+            If you need to pass multi-polarization data, first apply a
+            dimensionality-reduction step (Dual-Pol H-Alpha decomposition,
+            Pauli decomposition, intensity averaging, etc.) to obtain a
+            single 2-D channel, then threshold it to produce a binary mask
+            before calling this detector.
         geolocation : Geolocation, optional
-            Not used by this detector (no geo-registration performed).
+            Not used by this detector (no geo-registration performed here).
+            Detections carry pixel-space geometries only.
         valid_mask : np.ndarray, optional
-            Boolean gate applied to ``source`` before labeling.
+            Boolean 2-D gate, same shape as ``source``.  Applied after
+            binarization; pixels where the gate is ``False`` are excluded
+            from connected-component labeling.
 
         Returns
         -------
         DetectionSet
+
+        Raises
+        ------
+        ValueError
+            If ``source`` is not exactly 2-D.
         """
         from scipy.ndimage import label as nd_label
 
-        # Flatten to 2-D boolean
         arr = np.asarray(source)
-        if arr.ndim == 3 and arr.shape[2] == 1:
-            arr = arr[:, :, 0]
-        elif arr.ndim == 3:
-            arr = arr.any(axis=2)
+
+        # ------------------------------------------------------------------
+        # Strict 2-D input policy — no automatic normalization.
+        # Raise with actionable guidance so the caller knows exactly what
+        # pre-processing step is missing.
+        # ------------------------------------------------------------------
         if arr.ndim != 2:
+            if arr.ndim == 3:
+                n_bands = arr.shape[2] if arr.shape[0] > arr.shape[2] else arr.shape[0]
+                raise ValueError(
+                    f"BlobDetector requires a single-channel 2-D array "
+                    f"(rows, cols), but received a {arr.ndim}-D array with "
+                    f"shape {arr.shape}.\n\n"
+                    f"Multi-band inputs are rejected without normalization to "
+                    f"preserve sensor geometry and data provenance.  If your "
+                    f"data is a multi-polarization stack (e.g., Sentinel-1 "
+                    f"VV+VH, NISAR quad-pol), apply a dimensionality-reduction "
+                    f"step first — for example:\n"
+                    f"  • Dual-Pol H-Alpha decomposition (DualPolHAlpha)\n"
+                    f"  • Pauli decomposition\n"
+                    f"  • Single-band extraction (select one polarization)\n"
+                    f"  • Coherence or intensity averaging\n"
+                    f"then threshold the resulting 2-D raster to obtain a "
+                    f"binary mask before passing it to BlobDetector."
+                )
             raise ValueError(
-                f"BlobDetector expects a 2-D (or single-band 3-D) array, "
-                f"got shape {source.shape}"
+                f"BlobDetector requires a 2-D array (rows, cols), "
+                f"got {arr.ndim}-D array with shape {arr.shape}."
             )
 
         mask = arr > 0
