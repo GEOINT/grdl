@@ -1445,10 +1445,13 @@ class Sentinel1L0ToCRSD:
         rel_rf = abs_rf - ref_time_gps
 
         # Orbit: OrbitInterpolator uses times relative to its reference_time
-        # Convert GPS absolute times to orbit's relative times
+        # (UTC datetime).  ISP Coarse Time is GPS time; GPS is ahead of UTC
+        # by GPS_LEAP_SECONDS.  Subtract leap seconds to convert GPS → UTC
+        # before computing relative times, otherwise all orbit queries are
+        # shifted by ~18 s (~135 km positional error).
         ref_dt = orbit.reference_time
         orbit_ref_gps = _datetime_to_gps(ref_dt)
-        orbit_rel_times = abs_rf - orbit_ref_gps
+        orbit_rel_times = (abs_rf - GPS_LEAP_SECONDS) - orbit_ref_gps
 
         positions, velocities = orbit.interpolate(orbit_rel_times)
         acx, acy = _compute_antenna_frame(positions, velocities)
@@ -1521,7 +1524,8 @@ class Sentinel1L0ToCRSD:
 
         ref_dt = orbit.reference_time
         orbit_ref_gps = _datetime_to_gps(ref_dt)
-        orbit_rel_times = abs_rcv - orbit_ref_gps
+        # GPS → UTC: subtract leap seconds before computing orbit-relative time
+        orbit_rel_times = (abs_rcv - GPS_LEAP_SECONDS) - orbit_ref_gps
 
         positions, velocities = orbit.interpolate(orbit_rel_times)
         acx, acy = _compute_antenna_frame(positions, velocities)
@@ -1584,7 +1588,8 @@ class Sentinel1L0ToCRSD:
 
         ref_dt = orbit.reference_time
         orbit_ref_gps = _datetime_to_gps(ref_dt)
-        orbit_rel = ref_time_gps - orbit_ref_gps
+        # ref_time_gps is GPS; orbit reference is UTC → subtract leap seconds
+        orbit_rel = (ref_time_gps - GPS_LEAP_SECONDS) - orbit_ref_gps
         pos, vel = orbit.interpolate_single(float(orbit_rel))
 
         # Get IARP ECF from XML
