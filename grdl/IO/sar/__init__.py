@@ -51,7 +51,7 @@ from grdl.IO.sar.sentinel1_l0 import Sentinel1L0Reader
 from grdl.IO.sar.crsd_writer import CRSDWriter
 
 # Conversion pipelines
-from grdl.IO.sar.sentinel1_l0_to_crsd import Sentinel1L0ToCRSD
+from grdl.IO.sar.sentinel1_l0 import Sentinel1L0ToCRSD
 from grdl.IO.sar.crsd_to_cphd import CRSDToCPHD
 from grdl.IO.sar.cphd_to_sicd import CPHDToSICD
 

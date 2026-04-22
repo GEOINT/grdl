@@ -189,11 +189,11 @@ from grdl.IO.models.cphd import (
 # Sentinel-1 Level-0
 from grdl.IO.models.sentinel1_l0 import (
     Sentinel1L0Metadata,
-    S1L0ProductInfo,
-    S1L0RadarParams,
-    S1L0ChannelInfo,
-    S1L0SwathInfo,
-    S1L0FootprintCoord,
+    Sentinel1Mission,
+    Sentinel1Mode,
+    S1L0OrbitStateVector,
+    S1L0RadarParameters,
+    S1L0SwathParameters,
 )
 
 # NISAR
@@ -349,11 +349,11 @@ __all__ = [
     'create_subaperture_metadata',
     # Sentinel-1 Level-0
     'Sentinel1L0Metadata',
-    'S1L0ProductInfo',
-    'S1L0RadarParams',
-    'S1L0ChannelInfo',
-    'S1L0SwathInfo',
-    'S1L0FootprintCoord',
+    'Sentinel1Mission',
+    'Sentinel1Mode',
+    'S1L0OrbitStateVector',
+    'S1L0RadarParameters',
+    'S1L0SwathParameters',
     # NISAR
     'NISARMetadata',
     'NISARIdentification',
