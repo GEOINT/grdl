@@ -9,6 +9,20 @@ use ``RectBivariateSpline`` for smooth, fast interpolation.  The inverse
 uses ``LinearNDInterpolator`` (Delaunay triangulation) since the grid in
 geographic space is warped by SAR geometry.
 
+Accuracy note
+-------------
+This implementation interpolates the annotation geolocation grid (at
+whatever sample spacing ESA provides -- typically ~10 km at scene
+center) rather than running a native zero-Doppler R/Rdot projection
+from the orbit state vectors (``S1SLCOrbitStateVector``) and Doppler
+centroid / FM-rate polynomials (``S1SLCDopplerCentroid``,
+``S1SLCDopplerFmRate``) that the reader does capture.  The two
+approaches converge to sub-meter agreement inside the grid coverage
+but can diverge to tens of meters near scene edges, in steep terrain,
+or when the grid point density is low.  For highest accuracy, a future
+``Sentinel1SLCNativeGeolocation`` should use the orbit + zero-Doppler
+geometry directly.
+
 Dependencies
 ------------
 scipy
@@ -16,7 +30,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -30,7 +44,8 @@ Created
 
 Modified
 --------
-2026-02-16
+2026-04-18  Document grid-vs-native accuracy limitation.
+2026-03-10
 """
 
 # Standard library
@@ -38,6 +53,9 @@ from typing import List, Optional, Tuple, Union, Any, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import RectBivariateSpline, LinearNDInterpolator
@@ -95,9 +113,10 @@ class Sentinel1SLCGeolocation(Geolocation):
         metadata: 'Sentinel1SLCMetadata',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> None:
         if not _HAS_SCIPY:
-            raise ImportError(
+            raise DependencyError(
                 "Sentinel-1 SLC geolocation requires scipy. "
                 "Install with: conda install -c conda-forge scipy"
             )
@@ -113,7 +132,8 @@ class Sentinel1SLCGeolocation(Geolocation):
 
         shape = (metadata.rows, metadata.cols)
         super().__init__(shape, crs='WGS84', dem_path=dem_path,
-                         geoid_path=geoid_path)
+                         geoid_path=geoid_path,
+                         interpolation=interpolation)
 
     def _build_interpolators(
         self,
@@ -189,7 +209,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel arrays to geographic arrays.
 
@@ -199,7 +219,7 @@ class Sentinel1SLCGeolocation(Geolocation):
             Row (line) coordinates, 1D float64.
         cols : np.ndarray
             Column (pixel) coordinates, 1D float64.
-        height : float
+        height : float or np.ndarray
             Not used (heights come from the grid).
 
         Returns

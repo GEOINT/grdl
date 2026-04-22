@@ -9,7 +9,7 @@ Re-exports all metadata classes from submodules for convenient access:
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -23,11 +23,11 @@ Created
 
 Modified
 --------
-2026-03-02
+2026-04-22
 """
 
 # Base
-from grdl.IO.models.base import ImageMetadata
+from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
 # Common primitives
 from grdl.IO.models.common import (
@@ -139,7 +139,17 @@ from grdl.IO.models.viirs import VIIRSMetadata
 from grdl.IO.models.aster import ASTERMetadata
 
 # Sentinel-2
-from grdl.IO.models.sentinel2 import Sentinel2Metadata
+from grdl.IO.models.sentinel2 import (
+    Sentinel2Metadata,
+    S2ProductInfo,
+    S2QualityIndicators,
+    S2TileGeocoding,
+    S2AngleGrid,
+    S2MeanAngles,
+    S2RadiometricInfo,
+    S2SpectralBand,
+    S2Footprint,
+)
 
 # Sentinel-1 SLC
 from grdl.IO.models.sentinel1_slc import (
@@ -154,6 +164,23 @@ from grdl.IO.models.sentinel1_slc import (
     S1SLCCalibrationVector,
     S1SLCNoiseRangeVector,
     S1SLCNoiseAzimuthVector,
+)
+
+# Sentinel-1 L0
+from grdl.IO.models.sentinel1_l0 import (
+    Sentinel1L0Metadata,
+    Sentinel1Mission,
+    Sentinel1Mode,
+    Sentinel1Polarization,
+    S1L0SwathID,
+    S1L0OrbitStateVector,
+    S1L0AttitudeRecord,
+    S1L0RadarParameters,
+    S1L0DownlinkInfo,
+    S1L0BurstRecord,
+    S1L0SwathParameters,
+    S1L0InstrumentTiming,
+    S1L0GeolocationGrid,
 )
 
 # TerraSAR-X / TanDEM-X
@@ -186,14 +213,12 @@ from grdl.IO.models.cphd import (
     create_subaperture_metadata,
 )
 
-# Sentinel-1 Level-0
-from grdl.IO.models.sentinel1_l0 import (
-    Sentinel1L0Metadata,
-    Sentinel1Mission,
-    Sentinel1Mode,
-    S1L0OrbitStateVector,
-    S1L0RadarParameters,
-    S1L0SwathParameters,
+# CRSD
+from grdl.IO.models.crsd import (
+    CRSDMetadata,
+    CRSDChannelParameters,
+    CRSDDwellPolynomialSet,
+    CRSDReferenceGeometry,
 )
 
 # NISAR
@@ -206,12 +231,26 @@ from grdl.IO.models.nisar import (
     NISARGridParameters,
     NISARGeolocationGrid,
     NISARCalibration,
+    NISARDopplerCentroid,
     NISARProcessingInfo,
+)
+
+# EO NITF
+from grdl.IO.models.eo_nitf import (
+    EONITFMetadata,
+    RPCCoefficients,
+    RSMIdentification,
+    RSMCoefficients,
+    RSMSegmentGrid,
+    CSEPHAMetadata,
+    RSMGGAMetadata,
+    RSMGGAGridPlane,
 )
 
 __all__ = [
     # Base
     'ImageMetadata',
+    'ChannelMetadata',
     # Common
     'XYZ',
     'LatLon',
@@ -311,6 +350,14 @@ __all__ = [
     'ASTERMetadata',
     # Sentinel-2
     'Sentinel2Metadata',
+    'S2ProductInfo',
+    'S2QualityIndicators',
+    'S2TileGeocoding',
+    'S2AngleGrid',
+    'S2MeanAngles',
+    'S2RadiometricInfo',
+    'S2SpectralBand',
+    'S2Footprint',
     # Sentinel-1 SLC
     'Sentinel1SLCMetadata',
     'S1SLCProductInfo',
@@ -323,6 +370,20 @@ __all__ = [
     'S1SLCCalibrationVector',
     'S1SLCNoiseRangeVector',
     'S1SLCNoiseAzimuthVector',
+    # Sentinel-1 L0
+    'Sentinel1L0Metadata',
+    'Sentinel1Mission',
+    'Sentinel1Mode',
+    'Sentinel1Polarization',
+    'S1L0SwathID',
+    'S1L0OrbitStateVector',
+    'S1L0AttitudeRecord',
+    'S1L0RadarParameters',
+    'S1L0DownlinkInfo',
+    'S1L0BurstRecord',
+    'S1L0SwathParameters',
+    'S1L0InstrumentTiming',
+    'S1L0GeolocationGrid',
     # TerraSAR-X / TanDEM-X
     'TerraSARMetadata',
     'TSXProductInfo',
@@ -336,6 +397,10 @@ __all__ = [
     'TSXProcessingInfo',
     # CPHD
     'CPHDMetadata',
+    'CRSDMetadata',
+    'CRSDChannelParameters',
+    'CRSDDwellPolynomialSet',
+    'CRSDReferenceGeometry',
     'CPHDChannel',
     'CPHDPVP',
     'CPHDGlobal',
@@ -363,5 +428,15 @@ __all__ = [
     'NISARGridParameters',
     'NISARGeolocationGrid',
     'NISARCalibration',
+    'NISARDopplerCentroid',
     'NISARProcessingInfo',
+    # EO NITF
+    'EONITFMetadata',
+    'RPCCoefficients',
+    'RSMIdentification',
+    'RSMCoefficients',
+    'RSMSegmentGrid',
+    'CSEPHAMetadata',
+    'RSMGGAMetadata',
+    'RSMGGAGridPlane',
 ]

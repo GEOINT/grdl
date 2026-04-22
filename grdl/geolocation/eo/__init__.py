@@ -8,7 +8,7 @@ using affine transforms for geocoded rasters.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -26,7 +26,11 @@ Modified
 """
 
 from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.eo.rpc import RPCGeolocation
+from grdl.geolocation.eo.rsm import RSMGeolocation
 
 __all__ = [
     'AffineGeolocation',
+    'RPCGeolocation',
+    'RSMGeolocation',
 ]

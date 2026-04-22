@@ -2,7 +2,7 @@
 """
 Elevation Module Tests - Tests for ElevationModel ABC and concrete implementations.
 
-Tests ConstantElevation, ElevationModel ABC contract, scalar/(2,N) dispatch,
+Tests ConstantElevation, ElevationModel ABC contract, scalar/(N,2) dispatch,
 geoid correction math, and error handling for DTEDElevation and GeoTIFFDEM.
 
 Dependencies
@@ -12,7 +12,7 @@ pytest
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -105,12 +105,12 @@ class TestConstantElevation:
         assert result.shape == (3,)
         assert np.all(result == 100.0)
 
-    def test_stacked_2xN_dispatch(self):
-        """Test (2,N) stacked array input."""
+    def test_stacked_Nx2_dispatch(self):
+        """Test (N, 2) stacked array input."""
         elev = ConstantElevation(height=200.0)
         pts = np.array([
-            [34.0, 35.0],
-            [-118.0, -117.0],
+            [34.0, -118.0],
+            [35.0, -117.0],
         ])
         result = elev.get_elevation(pts)
         assert isinstance(result, np.ndarray)
@@ -118,14 +118,13 @@ class TestConstantElevation:
         assert np.all(result == 200.0)
 
     def test_bad_stacked_shape(self):
-        """Test that non-(2,N) stacked array raises ValueError."""
+        """Test that non-(N, 2) stacked array raises ValueError."""
         elev = ConstantElevation()
         bad_pts = np.array([
-            [1.0, 2.0],
-            [3.0, 4.0],
-            [5.0, 6.0],
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
         ])
-        with pytest.raises(ValueError, match="Expected \\(2, N\\)"):
+        with pytest.raises(ValueError, match="Expected \\(N, 2\\)"):
             elev.get_elevation(bad_pts)
 
     def test_list_input(self):

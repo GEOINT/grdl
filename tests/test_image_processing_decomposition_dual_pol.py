@@ -7,7 +7,7 @@ All tests use synthetic data — no real SAR imagery required.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 
 # GRDL
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
 
 
@@ -92,19 +93,19 @@ class TestDecomposeStructure:
 
     def test_output_keys(self, halpha, copol_only):
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         assert set(result.keys()) == {'entropy', 'alpha', 'anisotropy', 'span'}
 
     def test_output_shapes(self, halpha, copol_only):
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         for key in result:
             assert result[key].shape == s_co.shape
 
     def test_output_real(self, halpha, copol_only):
         """All outputs must be real-valued."""
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         for key in result:
             assert not np.iscomplexobj(result[key])
 
@@ -118,7 +119,7 @@ class TestDecomposePhysics:
     def test_copol_only_low_entropy(self, halpha, copol_only):
         """Pure co-pol (no cross-pol) should have low entropy."""
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         # With zero cross-pol, one eigenvalue dominates → H ≈ 0
         mean_h = np.mean(result['entropy'])
         assert mean_h < 0.1
@@ -126,7 +127,7 @@ class TestDecomposePhysics:
     def test_copol_only_low_alpha(self, halpha, copol_only):
         """Pure co-pol (no cross-pol) should have alpha near 0."""
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         mean_alpha = np.mean(result['alpha'])
         # Surface scattering → alpha close to 0 degrees
         assert mean_alpha < 10.0
@@ -138,7 +139,7 @@ class TestDecomposePhysics:
         s_co = (rng.standard_normal(shape) + 1j * rng.standard_normal(shape)).astype(np.complex64)
         s_cross = (rng.standard_normal(shape) + 1j * rng.standard_normal(shape)).astype(np.complex64)
         halpha = DualPolHAlpha(window_size=7)
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         mean_h = np.mean(result['entropy'])
         # Uncorrelated equal-power → H close to 1
         assert mean_h > 0.7
@@ -146,34 +147,34 @@ class TestDecomposePhysics:
     def test_entropy_bounded(self, halpha, equal_power):
         """Entropy must be in [0, 1]."""
         s_co, s_cross = equal_power
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         assert np.all(result['entropy'] >= 0.0)
         assert np.all(result['entropy'] <= 1.0)
 
     def test_alpha_bounded(self, halpha, equal_power):
         """Alpha must be in [0, 90] degrees."""
         s_co, s_cross = equal_power
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         assert np.all(result['alpha'] >= 0.0)
         assert np.all(result['alpha'] <= 90.0)
 
     def test_anisotropy_bounded(self, halpha, equal_power):
         """Anisotropy must be in [0, 1]."""
         s_co, s_cross = equal_power
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         assert np.all(result['anisotropy'] >= 0.0)
         assert np.all(result['anisotropy'] <= 1.0)
 
     def test_span_nonnegative(self, halpha, equal_power):
         """Span must be non-negative."""
         s_co, s_cross = equal_power
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         assert np.all(result['span'] >= 0.0)
 
     def test_span_equals_total_power(self, halpha, copol_only):
         """Span should approximate the spatially averaged total power."""
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         from scipy.ndimage import uniform_filter
         expected = uniform_filter(np.abs(s_co) ** 2, size=3)
         np.testing.assert_allclose(result['span'], expected, rtol=1e-5)
@@ -181,7 +182,7 @@ class TestDecomposePhysics:
     def test_copol_only_high_anisotropy(self, halpha, copol_only):
         """Pure co-pol should have high anisotropy (single mechanism)."""
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
+        result = halpha.decompose_dual(s_co, s_cross)
         mean_a = np.mean(result['anisotropy'])
         assert mean_a > 0.9
 
@@ -205,8 +206,8 @@ class TestWindowSize:
         s_co, s_cross = copol_only
         h3 = DualPolHAlpha(window_size=3)
         h11 = DualPolHAlpha(window_size=11)
-        r3 = h3.decompose(s_co, s_cross)
-        r11 = h11.decompose(s_co, s_cross)
+        r3 = h3.decompose_dual(s_co, s_cross)
+        r11 = h11.decompose_dual(s_co, s_cross)
         # Standard deviation of span should be lower with larger window
         assert np.std(r11['span']) < np.std(r3['span'])
 
@@ -220,23 +221,23 @@ class TestValidation:
     def test_not_complex_raises(self, halpha):
         real = np.ones((10, 10), dtype=np.float32)
         with pytest.raises(TypeError, match="complex"):
-            halpha.decompose(real, real)
+            halpha.decompose_dual(real, real)
 
     def test_not_ndarray_raises(self, halpha):
         with pytest.raises(TypeError, match="ndarray"):
-            halpha.decompose([[1+0j]], np.ones((1, 1), dtype=np.complex64))
+            halpha.decompose_dual([[1+0j]], np.ones((1, 1), dtype=np.complex64))
 
     def test_not_2d_raises(self, halpha):
         arr3d = np.ones((2, 3, 4), dtype=np.complex64)
         arr2d = np.ones((2, 3), dtype=np.complex64)
         with pytest.raises(ValueError, match="2D"):
-            halpha.decompose(arr3d, arr2d)
+            halpha.decompose_dual(arr3d, arr2d)
 
     def test_shape_mismatch_raises(self, halpha):
         a = np.ones((10, 10), dtype=np.complex64)
         b = np.ones((10, 20), dtype=np.complex64)
         with pytest.raises(ValueError, match="Shape mismatch"):
-            halpha.decompose(a, b)
+            halpha.decompose_dual(a, b)
 
 
 # ===================================================================
@@ -247,23 +248,88 @@ class TestToRgb:
 
     def test_output_shape(self, halpha, copol_only):
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        result = halpha.decompose_dual(s_co, s_cross)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.shape == (3, s_co.shape[0], s_co.shape[1])
+        assert meta.rows == s_co.shape[0]
+        assert meta.cols == s_co.shape[1]
+        assert meta.bands == 3
 
     def test_output_dtype(self, halpha, copol_only):
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        result = halpha.decompose_dual(s_co, s_cross)
+        rgb, meta = halpha.to_rgb(result)
         assert rgb.dtype == np.float32
+        assert meta.dtype == 'float32'
 
     def test_output_range(self, halpha, copol_only):
         s_co, s_cross = copol_only
-        result = halpha.decompose(s_co, s_cross)
-        rgb = halpha.to_rgb(result)
+        result = halpha.decompose_dual(s_co, s_cross)
+        rgb, _ = halpha.to_rgb(result)
         assert np.all(rgb >= 0.0)
         assert np.all(rgb <= 1.0)
 
     def test_missing_key_raises(self, halpha):
         with pytest.raises(ValueError, match="Missing"):
             halpha.to_rgb({'entropy': np.zeros((3, 3))})
+
+
+class TestExecuteExtraction:
+
+    def test_execute_extracts_cyx_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=0, name='VV'),
+                ChannelMetadata(index=1, name='VH'),
+            ],
+        )
+        source = np.zeros((2, 6, 7), dtype=np.complex64)
+        source[0] = 11
+        source[1] = 22
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 11)
+        assert np.all(dec.seen[1] == 22)
+
+    def test_execute_extracts_yxc_channels(self):
+        class CapturingDualPol(DualPolHAlpha):
+            seen = None
+
+            def decompose_dual(self, s_co, s_cross):
+                self.seen = (s_co.copy(), s_cross.copy())
+                zeros = np.zeros_like(np.abs(s_co), dtype=np.float64)
+                return {
+                    'entropy': zeros,
+                    'alpha': zeros,
+                    'anisotropy': zeros,
+                    'span': zeros,
+                }
+
+        meta = ImageMetadata(
+            format='test', rows=6, cols=7, dtype='complex64',
+            bands=2, axis_order='YXC',
+        )
+        source = np.zeros((6, 7, 2), dtype=np.complex64)
+        source[..., 0] = 3
+        source[..., 1] = 4
+
+        dec = CapturingDualPol(window_size=3)
+        dec.execute(meta, source)
+        assert np.all(dec.seen[0] == 3)
+        assert np.all(dec.seen[1] == 4)

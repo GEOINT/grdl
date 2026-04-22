@@ -18,11 +18,12 @@ window before splitting using separable 2D deweighting.
 Dependencies
 ------------
 torch (optional, for GPU-accelerated FFT path)
+cupy (optional, for GPU-accelerated FFT path via CuPy)
 
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -36,7 +37,7 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-09
 """
 
 # Standard library
@@ -52,8 +53,14 @@ try:
 except ImportError:
     _HAS_TORCH = False
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality, ProcessorCategory
@@ -69,12 +76,14 @@ if TYPE_CHECKING:
 # ===================================================================
 
 def _validate_complex_2d(image: np.ndarray) -> None:
-    """Validate that *image* is a 2D complex numpy array."""
-    if not isinstance(image, np.ndarray):
+    """Validate that *image* is a 2D complex numpy or cupy array."""
+    is_cupy = _HAS_CUPY and isinstance(image, cp.ndarray)
+    if not isinstance(image, np.ndarray) and not is_cupy:
         raise TypeError(
-            f"image must be a numpy ndarray, got {type(image).__name__}"
+            f"image must be a numpy or cupy ndarray, got {type(image).__name__}"
         )
-    if not np.iscomplexobj(image):
+    xp = cp if is_cupy else np
+    if not xp.iscomplexobj(image):
         raise TypeError(
             f"image must be complex-valued (complex64 or complex128), "
             f"got {image.dtype}"
@@ -514,8 +523,26 @@ class MultilookDecomposition(ImageProcessor):
         """
         self._metadata = metadata
         result = self.decompose(source)
+
+        base_name = 'channel0'
+        if getattr(metadata, 'channel_metadata', None):
+            base_name = metadata.channel_metadata[0].name
+
+        names = [
+            f'{base_name}_rg{rg}_az{az}'
+            for rg in range(result.shape[0])
+            for az in range(result.shape[1])
+        ]
+        channel_metadata = ImageTransform._make_derived_channels(
+            names=names,
+            source_indices=[[0] for _ in names],
+            role='look',
+        )
         updated = dataclasses.replace(
-            metadata, bands=result.shape[0] * result.shape[1]
+            metadata,
+            bands=result.shape[0] * result.shape[1],
+            axis_order='RAYX',
+            channel_metadata=channel_metadata,
         )
         return result, updated
 
@@ -537,10 +564,10 @@ class MultilookDecomposition(ImageProcessor):
 
         Returns
         -------
-        np.ndarray
+        np.ndarray or cupy.ndarray
             Complex sub-look grid, shape
             ``(looks_rg, looks_az, rows, cols)``.
-            Always a numpy array regardless of input type.
+            Same array type as *image*.
 
         Raises
         ------
@@ -553,8 +580,8 @@ class MultilookDecomposition(ImageProcessor):
             return self._decompose_torch(image)
         return self._decompose_numpy(image)
 
-    def _decompose_numpy(self, image: np.ndarray) -> np.ndarray:
-        """Numpy 2D FFT path.
+    def _decompose_numpy(self, image: np.ndarray) -> 'Union[np.ndarray, cp.ndarray]':
+        """Numpy / CuPy 2D FFT path.
 
         Parameters
         ----------
@@ -566,6 +593,7 @@ class MultilookDecomposition(ImageProcessor):
         np.ndarray
             Shape ``(looks_rg, looks_az, rows, cols)``.
         """
+        xp = cp if (_HAS_CUPY and isinstance(image, cp.ndarray)) else np
         _validate_complex_2d(image)
         rows, cols = image.shape
 
@@ -583,12 +611,13 @@ class MultilookDecomposition(ImageProcessor):
         n_support_az = az_stop - az_start
 
         # 2. 2D FFT + fftshift
-        spectrum = np.fft.fftshift(np.fft.fft2(image))
+        spectrum = xp.fft.fftshift(xp.fft.fft2(image))
 
         # 3. Deweight the 2D support region
+        #    dw_2d is numpy (scalar geometry); upload to device via xp.asarray()
         dw_2d = self._build_deweight_2d(n_support_rg, n_support_az)
         if dw_2d is not None:
-            spectrum[rg_start:rg_stop, az_start:az_stop] *= dw_2d
+            spectrum[rg_start:rg_stop, az_start:az_stop] *= xp.asarray(dw_2d)
 
         # 4. Build Tiler over the support region
         #    Tiler rows = range bins, Tiler cols = azimuth bins
@@ -596,7 +625,7 @@ class MultilookDecomposition(ImageProcessor):
         regions = tiler.tile_positions()
 
         # 5. Extract sub-looks
-        result = np.zeros(
+        result = xp.zeros(
             (self._looks_rg, self._looks_az, rows, cols),
             dtype=image.dtype,
         )
@@ -611,11 +640,11 @@ class MultilookDecomposition(ImageProcessor):
             c0 = region.col_start + az_start
             c1 = region.col_end + az_start
 
-            sub_spectrum = np.zeros_like(spectrum)
+            sub_spectrum = xp.zeros_like(spectrum)
             sub_spectrum[r0:r1, c0:c1] = spectrum[r0:r1, c0:c1]
 
-            result[i_rg, i_az] = np.fft.ifft2(
-                np.fft.ifftshift(sub_spectrum)
+            result[i_rg, i_az] = xp.fft.ifft2(
+                xp.fft.ifftshift(sub_spectrum)
             )
 
         return result

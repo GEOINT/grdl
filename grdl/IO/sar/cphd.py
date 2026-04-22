@@ -12,7 +12,7 @@ sarkit (primary) or sarpy (fallback)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -30,6 +30,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -57,6 +58,8 @@ from grdl.IO.sar._backend import (
     _HAS_SARPY,
     require_sar_backend,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CPHDReader(ImageReader):
@@ -103,6 +106,7 @@ class CPHDReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('CPHD')
+        logger.info("CPHD backend selected: %s", self.backend)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -241,6 +245,18 @@ class CPHDReader(ImageReader):
                 dwell=dwell,
                 num_channels=len(channel_list),
                 extras={'backend': 'sarkit'},
+            )
+
+            logger.info(
+                "Loaded CPHD %s (%d x %d) via sarkit",
+                self.filepath.name,
+                first_ch.num_vectors,
+                first_ch.num_samples,
+            )
+            logger.debug(
+                "CPHD channels=%d, has_waveform=%s",
+                len(channel_list),
+                tx_waveform is not None,
             )
 
         except Exception as e:
@@ -736,6 +752,18 @@ class CPHDReader(ImageReader):
                 extras={'backend': 'sarpy'},
             )
 
+            logger.info(
+                "Loaded CPHD %s (%d x %d) via sarpy",
+                self.filepath.name,
+                first_ch.num_vectors,
+                first_ch.num_samples,
+            )
+            logger.debug(
+                "CPHD channels=%d, has_waveform=%s",
+                len(channel_list),
+                tx_waveform is not None,
+            )
+
         except Exception as e:
             raise ValueError(f"Failed to load CPHD metadata: {e}") from e
 
@@ -887,12 +915,12 @@ class CPHDReader(ImageReader):
         else:
             return self._reader.read(index=channel)
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get phase history dimensions for first channel.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(num_vectors, num_samples)`` for the first channel.
         """
         first_ch = self.metadata.channels[0]

@@ -13,7 +13,7 @@ rasterio
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,9 +27,10 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -43,8 +44,13 @@ try:
 except ImportError:
     _HAS_RASTERIO = False
 
+# GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
-from grdl.IO.models import BIOMASSMetadata
+from grdl.IO.models import BIOMASSMetadata, ChannelMetadata
+from grdl.IO.performance import ReadConfig, _ensure_gdal_threads, _resolve_workers
+
+logger = logging.getLogger(__name__)
 
 
 class BIOMASSL1Reader(ImageReader):
@@ -94,12 +100,18 @@ class BIOMASSL1Reader(ImageReader):
     ...     hh_db = 20 * np.log10(np.abs(hh_chip) + 1e-10)
     """
 
-    def __init__(self, filepath: Union[str, Path]) -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        read_config: Optional[ReadConfig] = None,
+    ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for BIOMASS reading. "
                 "Install with: pip install rasterio"
             )
+
+        self.read_config = read_config or ReadConfig(parallel=False)
 
         filepath = Path(filepath)
         if not filepath.exists():
@@ -125,6 +137,11 @@ class BIOMASSL1Reader(ImageReader):
             # SAFE-format: outer wrapper contains inner dir with same name
             inner = self.filepath / self.filepath.name
             if inner.is_dir() and (inner / "annotation").exists():
+                logger.warning(
+                    "BIOMASS annotation not at top level; using nested "
+                    "directory %s",
+                    inner.name,
+                )
                 self.filepath = inner
                 annot_dir = self.filepath / "annotation"
             else:
@@ -256,6 +273,19 @@ class BIOMASSL1Reader(ImageReader):
                 ]
                 crs_str = str(crs_val)
 
+            channel_metadata = None
+            if polarizations is not None:
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=i,
+                        name=pol,
+                        role='measurement',
+                        polarization=pol,
+                        source_indices=[i],
+                    )
+                    for i, pol in enumerate(polarizations)
+                ]
+
             self.metadata = BIOMASSMetadata(
                 format='BIOMASS_L1_SCS',
                 rows=rows,
@@ -263,6 +293,8 @@ class BIOMASSL1Reader(ImageReader):
                 dtype='complex64',
                 bands=bands,
                 crs=crs_str,
+                axis_order='CYX' if bands > 1 else 'YX',
+                channel_metadata=channel_metadata,
                 mission=mission,
                 swath=swath,
                 product_type=product_type,
@@ -281,6 +313,17 @@ class BIOMASSL1Reader(ImageReader):
                 corner_coords=corner_coords,
                 prf=prf,
                 gcps=gcps,
+            )
+
+            logger.info(
+                "Loaded BIOMASS L1 %s (%d x %d)",
+                self.filepath.name, rows, cols,
+            )
+            logger.debug(
+                "BIOMASS polarizations=%s, bands=%d, GCPs=%d",
+                polarizations,
+                bands,
+                len(gcps) if gcps else 0,
             )
 
         except Exception as e:
@@ -373,12 +416,25 @@ class BIOMASSL1Reader(ImageReader):
         else:
             bands_to_read = [b + 1 for b in bands]
 
-        mag_data = self.magnitude_dataset.read(
-            bands_to_read, window=window
-        )
-        phase_data = self.phase_dataset.read(
-            bands_to_read, window=window
-        )
+        cfg = self.read_config
+        if cfg.parallel:
+            _ensure_gdal_threads(cfg)
+            from concurrent.futures import ThreadPoolExecutor
+            workers = _resolve_workers(cfg)
+            with ThreadPoolExecutor(max_workers=min(workers, 2)) as pool:
+                mag_future = pool.submit(
+                    self.magnitude_dataset.read,
+                    bands_to_read, window=window)
+                phase_future = pool.submit(
+                    self.phase_dataset.read,
+                    bands_to_read, window=window)
+                mag_data = mag_future.result()
+                phase_data = phase_future.result()
+        else:
+            mag_data = self.magnitude_dataset.read(
+                bands_to_read, window=window)
+            phase_data = self.phase_dataset.read(
+                bands_to_read, window=window)
 
         if mag_data.ndim == 2:
             complex_chip = self._reconstruct_complex(mag_data, phase_data)

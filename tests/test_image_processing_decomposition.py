@@ -9,7 +9,7 @@ imagery required.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -29,6 +29,7 @@ Modified
 import numpy as np
 import pytest
 
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
 
@@ -116,6 +117,29 @@ class TestABCContract:
 
     def test_repr(self, pauli):
         assert repr(pauli) == "PauliDecomposition()"
+
+    def test_execute_sets_pauli_lineage(self, pauli):
+        meta = ImageMetadata(
+            format='test', rows=8, cols=8, dtype='complex64',
+            bands=4, axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=0, name='HH', polarization='HH'),
+                ChannelMetadata(index=1, name='HV', polarization='HV'),
+                ChannelMetadata(index=2, name='VH', polarization='VH'),
+                ChannelMetadata(index=3, name='VV', polarization='VV'),
+            ],
+        )
+        source = np.zeros((4, 8, 8), dtype=np.complex64)
+        source[0] = 1
+        source[1] = 2
+        source[2] = 3
+        source[3] = 4
+        _, out_meta = pauli.execute(meta, source)
+        assert out_meta.bands == 3
+        assert out_meta.channel_metadata[0].name == 'surface'
+        assert out_meta.channel_metadata[0].source_indices == [0, 3]
+        assert out_meta.channel_metadata[2].name == 'volume'
+        assert out_meta.channel_metadata[2].source_indices == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -393,25 +417,29 @@ class TestConversions:
 
     def test_to_rgb_shape(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
-        rgb = pauli.to_rgb(c)
+        rgb, meta = pauli.to_rgb(c)
         rows, cols = quad_pol_random[0].shape
         assert rgb.shape == (3, rows, cols)
+        assert meta.rows == rows
+        assert meta.cols == cols
+        assert meta.bands == 3
 
     def test_to_rgb_range(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
-        rgb = pauli.to_rgb(c)
+        rgb, _ = pauli.to_rgb(c)
         assert np.all(rgb >= 0.0)
         assert np.all(rgb <= 1.0)
 
     def test_to_rgb_dtype(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
-        rgb = pauli.to_rgb(c)
+        rgb, meta = pauli.to_rgb(c)
         assert rgb.dtype == np.float32
+        assert meta.dtype == 'float32'
 
     def test_to_rgb_representations(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
         for rep in ('db', 'magnitude', 'power'):
-            rgb = pauli.to_rgb(c, representation=rep)
+            rgb, _ = pauli.to_rgb(c, representation=rep)
             assert rgb.shape[0] == 3
             assert np.all(rgb >= 0.0)
             assert np.all(rgb <= 1.0)

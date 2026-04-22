@@ -49,7 +49,7 @@ Created
 
 Modified
 --------
-2026-02-26
+2026-03-09
 """
 
 # Standard library
@@ -57,7 +57,16 @@ from typing import Annotated, Any, TYPE_CHECKING
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.image_processing.base import ImageTransform
@@ -93,8 +102,11 @@ def compute_dominance(
 
     Parameters
     ----------
-    sublooks : np.ndarray
+    sublooks : np.ndarray or cupy.ndarray
         Complex sub-aperture stack, shape ``(n_looks, rows, cols)``.
+        If a cupy array is passed, all computation is performed on the
+        GPU using ``cupyx.scipy.ndimage.uniform_filter``.  The return
+        value is a cupy array when the input is cupy, numpy otherwise.
     window_size : int
         Spatial smoothing kernel size (uniform_filter side length).
         Default is 7.
@@ -104,10 +116,13 @@ def compute_dominance(
 
     Returns
     -------
-    np.ndarray
-        Dominance ratio, shape ``(rows, cols)``, values in
-        ``[dom_window / n_looks, 1.0]``.  High values indicate power
-        concentrated in a contiguous aperture block.
+    np.ndarray or cupy.ndarray
+        Dominance ratio, shape ``(rows, cols)``, values in ``[0, 1]``.
+        High values indicate power concentrated in a contiguous
+        aperture block.  When power is perfectly uniform across looks,
+        dominance equals ``dom_window / n_looks`` exactly.  Non-uniform
+        power distributions can produce values below that ratio.
+        Return type matches the input array type.
 
     Raises
     ------
@@ -125,17 +140,21 @@ def compute_dominance(
             f"dom_window ({dom_window}) cannot exceed n_looks ({num_looks})"
         )
 
-    eps = np.finfo(np.float64).tiny
+    _is_gpu = _HAS_CUPY and isinstance(sublooks, cp.ndarray)
+    xp = cp if _is_gpu else np
+    ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
 
-    power = np.abs(sublooks) ** 2
-    smooth_power = np.stack([
-        uniform_filter(power[i], size=window_size)
+    eps = xp.finfo(xp.float64).tiny
+
+    power = xp.abs(sublooks) ** 2
+    smooth_power = xp.stack([
+        ndi_uniform(power[i], size=window_size)
         for i in range(num_looks)
     ])
     total_power = smooth_power.sum(axis=0) + eps
 
     n_windows = num_looks - dom_window + 1
-    window_sums = np.stack([
+    window_sums = xp.stack([
         smooth_power[i:i + dom_window].sum(axis=0)
         for i in range(n_windows)
     ])
@@ -162,18 +181,21 @@ def compute_sublook_entropy(
 
     Parameters
     ----------
-    sublooks : np.ndarray
+    sublooks : np.ndarray or cupy.ndarray
         Complex sub-aperture stack, shape ``(n_looks, rows, cols)``.
+        If a cupy array is passed, all computation is performed on the
+        GPU using ``cupyx.scipy.ndimage.uniform_filter``.  The return
+        value is a cupy array when the input is cupy, numpy otherwise.
     window_size : int
         Spatial smoothing kernel size (uniform_filter side length).
         Default is 7.
 
     Returns
     -------
-    np.ndarray
+    np.ndarray or cupy.ndarray
         Entropy array, shape ``(rows, cols)``, values in
         ``[0, log(n_looks)]``.  Lower values indicate more concentrated
-        power.
+        power.  Return type matches the input array type.
 
     Raises
     ------
@@ -185,20 +207,24 @@ def compute_sublook_entropy(
             f"sublooks must be 3-D (n_looks, rows, cols), got {sublooks.ndim}-D"
         )
 
-    eps = np.finfo(np.float64).tiny
+    _is_gpu = _HAS_CUPY and isinstance(sublooks, cp.ndarray)
+    xp = cp if _is_gpu else np
+    ndi_uniform = _cupyx_ndimage.uniform_filter if _is_gpu else _scipy_uniform_filter
+
+    eps = xp.finfo(xp.float64).tiny
     num_looks = sublooks.shape[0]
 
-    power = np.abs(sublooks) ** 2
-    smooth_power = np.stack([
-        uniform_filter(power[i], size=window_size)
+    power = xp.abs(sublooks) ** 2
+    smooth_power = xp.stack([
+        ndi_uniform(power[i], size=window_size)
         for i in range(num_looks)
     ])
     total_power = smooth_power.sum(axis=0) + eps
 
     p = smooth_power / total_power
-    p = np.clip(p, eps, None)
+    p = xp.clip(p, eps, None)
 
-    return -(p * np.log(p)).sum(axis=0)
+    return -(p * xp.log(p)).sum(axis=0)
 
 
 # ===================================================================
@@ -308,4 +334,5 @@ class DominanceFeatures(ImageTransform):
         dominance = compute_dominance(looks, window_size, dom_window)
         entropy = compute_sublook_entropy(looks, window_size)
 
-        return np.stack([dominance, entropy], axis=0)
+        xp = cp if (_HAS_CUPY and isinstance(dominance, cp.ndarray)) else np
+        return xp.stack([dominance, entropy], axis=0)

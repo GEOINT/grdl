@@ -22,7 +22,7 @@ span of the scattering matrix.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -36,21 +36,29 @@ Created
 
 Modified
 --------
-2026-02-06
+2026-03-10
 """
 
 # Standard library
-from typing import Dict, Tuple
+import logging
+from typing import Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
 @processor_version('0.1.0')
+@processor_tags(modalities=[ImageModality.SAR])
 class PauliDecomposition(PolarimetricDecomposition):
     """
     Quad-pol Pauli basis decomposition.
@@ -112,6 +120,34 @@ class PauliDecomposition(PolarimetricDecomposition):
         """
         return ('surface', 'double_bounce', 'volume')
 
+    def _build_component_metadata(
+        self,
+        metadata: 'ImageMetadata',
+    ) -> list['ChannelMetadata']:
+        """Return Pauli-specific output lineage metadata."""
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=0,
+                name='surface',
+                role='decomposition',
+                source_indices=[0, 3],
+            ),
+            ChannelMetadata(
+                index=1,
+                name='double_bounce',
+                role='decomposition',
+                source_indices=[0, 3],
+            ),
+            ChannelMetadata(
+                index=2,
+                name='volume',
+                role='decomposition',
+                source_indices=[1, 2],
+            ),
+        ]
+
     def decompose(
         self,
         shh: np.ndarray,
@@ -160,6 +196,10 @@ class PauliDecomposition(PolarimetricDecomposition):
             If inputs are not 2D or have mismatched shapes.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        logger.info(
+            "Pauli decomposition: shape %s, 4 channels, dtype %s",
+            shh.shape, shh.dtype,
+        )
 
         # Normalization constant in matching precision to avoid
         # silent upcast from complex64 to complex128.
@@ -168,11 +208,58 @@ class PauliDecomposition(PolarimetricDecomposition):
         else:
             norm = 1.0 / np.sqrt(2.0)
 
-        return {
+        result = {
             'surface': (shh + svv) * norm,
             'double_bounce': (shh - svv) * norm,
             'volume': (shv + svh) * norm,
         }
+        logger.debug(
+            "Pauli magnitudes: surface=[%.4f, %.4f], "
+            "double_bounce=[%.4f, %.4f], volume=[%.4f, %.4f]",
+            float(np.min(np.abs(result['surface']))),
+            float(np.max(np.abs(result['surface']))),
+            float(np.min(np.abs(result['double_bounce']))),
+            float(np.max(np.abs(result['double_bounce']))),
+            float(np.min(np.abs(result['volume']))),
+            float(np.max(np.abs(result['volume']))),
+        )
+        return result
+
+    @classmethod
+    def rgb_channel_metadata(cls) -> list:
+        """Canonical ChannelMetadata descriptors for the 3-band Pauli RGB output.
+
+        Returns
+        -------
+        list[ChannelMetadata]
+            Three entries in R/G/B band order:
+            ``[double_bounce, volume, surface]``.
+        """
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=0, name='double_bounce', role='decomposition',
+                source_indices=[0, 3],
+                extras={'pauli_component': 'double_bounce',
+                        'formula': 'T3[1,1] = <|S_HH-S_VV|\u00b2>/2',
+                        'display': 'Red'},
+            ),
+            ChannelMetadata(
+                index=1, name='volume', role='decomposition',
+                source_indices=[1, 2],
+                extras={'pauli_component': 'volume',
+                        'formula': 'T3[2,2] = 2\u00b7<|S_HV|\u00b2>',
+                        'display': 'Green'},
+            ),
+            ChannelMetadata(
+                index=2, name='surface', role='decomposition',
+                source_indices=[0, 3],
+                extras={'pauli_component': 'surface',
+                        'formula': 'T3[0,0] = <|S_HH+S_VV|\u00b2>/2',
+                        'display': 'Blue'},
+            ),
+        ]
 
     def to_rgb(
         self,
@@ -180,7 +267,7 @@ class PauliDecomposition(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """
         Create Pauli RGB composite.
 
@@ -206,9 +293,10 @@ class PauliDecomposition(PolarimetricDecomposition):
 
         Returns
         -------
-        np.ndarray
-            RGB image, shape (3, rows, cols), dtype float32,
-            values in [0, 1].
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb is shape (3, rows, cols), dtype
+            float32, values in [0, 1]; metadata carries Pauli channel
+            descriptors and spatial dimensions.
 
         Raises
         ------
@@ -216,6 +304,8 @@ class PauliDecomposition(PolarimetricDecomposition):
             If ``representation`` is not one of the supported values,
             or if required component keys are missing.
         """
+        from grdl.IO.models.base import ImageMetadata
+
         required = {'surface', 'double_bounce', 'volume'}
         missing = required - set(components.keys())
         if missing:
@@ -247,7 +337,17 @@ class PauliDecomposition(PolarimetricDecomposition):
             real_components['surface'], percentile_low, percentile_high
         )
 
-        return np.stack([r, g, b], axis=0)
+        rgb = np.stack([r, g, b], axis=0)  # (3, rows, cols) float32
+        metadata = ImageMetadata(
+            format='PauliRGB',
+            rows=int(rgb.shape[1]),
+            cols=int(rgb.shape[2]),
+            dtype=str(rgb.dtype),
+            bands=3,
+            axis_order='CYX',
+            channel_metadata=self.rgb_channel_metadata(),
+        )
+        return rgb, metadata
 
     def __repr__(self) -> str:
         return "PauliDecomposition()"

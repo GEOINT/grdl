@@ -20,7 +20,7 @@ Optional display normalisation uses grdl's
 
 Dependencies
 ------------
-numpy
+cupy (optional, for GPU-accelerated path)
 
 Author
 ------
@@ -38,7 +38,7 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-09
 """
 
 # Standard library
@@ -48,8 +48,14 @@ from typing import Annotated, Any, TYPE_CHECKING
 # Third-party
 import numpy as np
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.intensity import ToDecibels, PercentileStretch
@@ -259,6 +265,12 @@ class CSIProcessor(ImageProcessor):
             rows=result.shape[0],
             cols=result.shape[1],
             bands=3,
+            axis_order='YXC',
+            channel_metadata=ImageTransform._make_derived_channels(
+                names=['R', 'G', 'B'],
+                source_indices=[[0], [1], [2]],
+                role='display',
+            ),
             dtype=str(result.dtype),
         )
         return result, updated
@@ -294,23 +306,25 @@ class CSIProcessor(ImageProcessor):
         params = self._resolve_params(kwargs)
         norm_mode = params['normalization']
 
+        xp = cp if (_HAS_CUPY and isinstance(source, cp.ndarray)) else np
+
         # 1. Sub-look decomposition (grdl SublookDecomposition)
         looks = self._sublook.decompose(source)  # (3, rows, cols) complex
 
         # 2. Detection -- magnitude of each sub-look
-        mag = np.abs(looks)  # (3, rows, cols)
+        mag = xp.abs(looks)  # (3, rows, cols)
 
         # 3. Intensity preservation (sarpy approach)
         #    Scale RGB so max(R,G,B) = |original| at each pixel,
         #    preserving full spatial resolution in intensity.
-        original_mag = np.abs(source)
+        original_mag = xp.abs(source)
         rgb_max = mag.max(axis=0)
-        np.maximum(rgb_max, np.finfo(np.float64).tiny, out=rgb_max)
+        xp.maximum(rgb_max, xp.finfo(xp.float64).tiny, out=rgb_max)
         scale = original_mag / rgb_max
         mag *= scale
 
         # 4. Composite -- stack as (rows, cols, 3) RGB
-        rgb = np.dstack([mag[0], mag[1], mag[2]])
+        rgb = xp.dstack([mag[0], mag[1], mag[2]])
 
         # 5. Platform direction correction
         if self._platform_direction == 'R':
@@ -393,18 +407,20 @@ class CSIProcessor(ImageProcessor):
                 f"got {normalization!r}"
             )
 
+        xp = cp if (_HAS_CUPY and isinstance(source, cp.ndarray)) else np
+
         # 1. Detection -- magnitude of each sub-look
-        mag = np.abs(looks)  # (3, rows, cols)
+        mag = xp.abs(looks)  # (3, rows, cols)
 
         # 2. Intensity preservation (sarpy approach)
-        original_mag = np.abs(source)
+        original_mag = xp.abs(source)
         rgb_max = mag.max(axis=0)
-        np.maximum(rgb_max, np.finfo(np.float64).tiny, out=rgb_max)
+        xp.maximum(rgb_max, xp.finfo(xp.float64).tiny, out=rgb_max)
         scale = original_mag / rgb_max
         mag *= scale
 
         # 3. Composite -- (3, rows, cols) RGB
-        rgb = np.stack([mag[0], mag[1], mag[2]], axis=0)
+        rgb = xp.stack([mag[0], mag[1], mag[2]], axis=0)
 
         # 4. Platform direction correction
         if self._platform_direction == 'R':

@@ -16,7 +16,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -38,7 +38,17 @@ from typing import Annotated, Any
 
 # Third-party
 import numpy as np
-from scipy.ndimage import gaussian_filter, uniform_filter
+from scipy.ndimage import gaussian_filter as _scipy_gaussian_filter
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
@@ -76,7 +86,7 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
     >>> smoothed = f.apply(image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Square kernel side length (odd)')] = 3
@@ -95,7 +105,7 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -108,11 +118,17 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         validate_kernel_size(ks)
         validate_mode(mode)
 
-        if source.dtype == np.float64:
-            working = source.astype(np.float64)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi = _cupyx_ndimage if _is_gpu else None
+
+        if source.dtype == xp.float64:
+            working = source.astype(xp.float64)
         else:
-            working = source.astype(np.float32)
-        return uniform_filter(working, size=ks, mode=mode)
+            working = source.astype(xp.float32)
+        if _is_gpu:
+            return ndi.uniform_filter(working, size=ks, mode=mode)
+        return _scipy_uniform_filter(working, size=ks, mode=mode)
 
 
 @processor_version('1.0.0')
@@ -142,7 +158,7 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
     >>> smoothed = f.apply(image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     sigma: Annotated[float, Range(min=0.1, max=100.0),
                      Desc('Gaussian standard deviation')] = 1.0
@@ -168,7 +184,7 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -179,11 +195,22 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
         mode = params['mode']
         validate_mode(mode)
 
-        if source.dtype == np.float64:
-            working = source.astype(np.float64)
+        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
+        xp = cp if _is_gpu else np
+        ndi = _cupyx_ndimage if _is_gpu else None
+
+        if source.dtype == xp.float64:
+            working = source.astype(xp.float64)
         else:
-            working = source.astype(np.float32)
-        return gaussian_filter(
+            working = source.astype(xp.float32)
+        if _is_gpu:
+            return ndi.gaussian_filter(
+                working,
+                sigma=params['sigma'],
+                truncate=params['truncate'],
+                mode=mode,
+            )
+        return _scipy_gaussian_filter(
             working,
             sigma=params['sigma'],
             truncate=params['truncate'],

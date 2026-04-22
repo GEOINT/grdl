@@ -13,7 +13,7 @@ rasterio
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,8 +27,11 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 _HAS_RASTERIO = False
 
@@ -49,7 +52,7 @@ def require_elevation_backend() -> None:
         instructions.
     """
     if not _HAS_RASTERIO:
-        raise ImportError(
+        raise DependencyError(
             "DEM/DTED elevation lookup requires rasterio. "
             "Install with: pip install rasterio"
         )

@@ -11,8 +11,9 @@ Key Classes
 -----------
 - ElevationModel: Abstract base class for all elevation models
 - ConstantElevation: Returns a fixed height (default fallback)
-- DTEDElevation: Reads DTED Level 0/1/2 tiles via rasterio
-- GeoTIFFDEM: Reads a single GeoTIFF DEM file via rasterio
+- DTEDElevation: Reads DTED Level 0/1/2 tiles via rasterio, bicubic default,
+  cross-tile boundary stitching, nodata void handling
+- GeoTIFFDEM: Reads a single GeoTIFF DEM file via rasterio, bicubic default
 - GeoidCorrection: EGM96 geoid undulation lookup
 
 Usage
@@ -35,7 +36,7 @@ pyproj
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -49,11 +50,13 @@ Created
 
 Modified
 --------
+2026-03-27  Update DTEDElevation description for interpolation/stitching.
 2026-02-11
 """
 
 from grdl.geolocation.elevation.base import ElevationModel
 from grdl.geolocation.elevation.constant import ConstantElevation
+from grdl.geolocation.elevation.open_elevation import open_elevation
 
 # Optional: may fail if rasterio not available
 try:
@@ -67,6 +70,11 @@ except ImportError:
     pass
 
 try:
+    from grdl.geolocation.elevation.tiled_geotiff_dem import TiledGeoTIFFDEM
+except ImportError:
+    pass
+
+try:
     from grdl.geolocation.elevation.geoid import GeoidCorrection
 except ImportError:
     pass
@@ -74,7 +82,9 @@ except ImportError:
 __all__ = [
     'ElevationModel',
     'ConstantElevation',
+    'open_elevation',
     'DTEDElevation',
     'GeoTIFFDEM',
+    'TiledGeoTIFFDEM',
     'GeoidCorrection',
 ]

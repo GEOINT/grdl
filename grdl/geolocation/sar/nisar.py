@@ -13,6 +13,19 @@ imagery.
   coordinate grid with an EPSG code, so we delegate to
   ``AffineGeolocation``.
 
+Accuracy note
+-------------
+The RSLC path interpolates the product-level geolocation grid rather
+than running a native zero-Doppler range/Doppler projection from the
+orbit state vectors (``NISAROrbit``) and Doppler centroid 2-D LUT
+(``NISARDopplerCentroid``) that the reader does capture.  Per the
+NISAR L1 RSLC spec (JPL D-102268 Rev E), the authoritative projection
+uses Lagrange interpolation of the orbit (8-point) plus the Doppler
+centroid LUT.  Grid interpolation suffices for most scenes, but a
+future ``NISARRSLCNativeGeolocation`` should consume the orbit +
+Doppler metadata directly for sub-meter accuracy near scene edges and
+in steep terrain.
+
 Dependencies
 ------------
 scipy (for RSLC)
@@ -21,7 +34,7 @@ rasterio, pyproj (for GSLC, via ``AffineGeolocation``)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -35,7 +48,8 @@ Created
 
 Modified
 --------
-2026-02-25
+2026-04-18  Document RSLC grid-vs-native accuracy limitation.
+2026-03-10
 """
 
 # Standard library
@@ -43,6 +57,9 @@ from typing import Optional, Tuple, Union, Any, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import RectBivariateSpline, LinearNDInterpolator
@@ -92,9 +109,10 @@ class NISARGeolocation(Geolocation):
         metadata: 'NISARMetadata',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> None:
         if not _HAS_SCIPY:
-            raise ImportError(
+            raise DependencyError(
                 "NISAR RSLC geolocation requires scipy. "
                 "Install with: conda install -c conda-forge scipy"
             )
@@ -118,7 +136,8 @@ class NISARGeolocation(Geolocation):
         self._build_interpolators(metadata)
         shape = (metadata.rows, metadata.cols)
         super().__init__(shape, crs='WGS84', dem_path=dem_path,
-                         geoid_path=geoid_path)
+                         geoid_path=geoid_path,
+                         interpolation=interpolation)
 
     def _build_interpolators(self, metadata: 'NISARMetadata') -> None:
         """Build forward and inverse interpolators from the geolocation grid.
@@ -206,12 +225,15 @@ class NISARGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel arrays to geographic arrays."""
         lats = self._lat_spline.ev(rows, cols)
         lons = self._lon_spline.ev(rows, cols)
-        heights = np.full_like(lats, height)
+        if np.ndim(height) > 0:
+            heights = np.asarray(height, dtype=np.float64)
+        else:
+            heights = np.full_like(lats, float(height))
         return lats, lons, heights
 
     def _latlon_to_image_array(

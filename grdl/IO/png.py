@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
 
 # Standard library
@@ -43,6 +43,7 @@ except ImportError:
     _HAS_PIL = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageWriter
 from grdl.IO.models import ImageMetadata
 
@@ -81,7 +82,7 @@ class PngWriter(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_PIL:
-            raise ImportError(
+            raise DependencyError(
                 "Pillow is required for PNG writing. "
                 "Install with: pip install Pillow"
             )
@@ -109,9 +110,9 @@ class PngWriter(ImageWriter):
             If array shape is not 2D grayscale or 3D RGB.
         """
         if data.ndim == 2:
-            mode = 'L'
+            pass  # grayscale
         elif data.ndim == 3 and data.shape[2] == 3:
-            mode = 'RGB'
+            pass  # RGB
         else:
             raise ValueError(
                 f"Expected 2D grayscale (rows, cols) or 3D RGB "
@@ -136,7 +137,7 @@ class PngWriter(ImageWriter):
         if data.dtype != np.uint8:
             data = data.astype(np.uint8)
 
-        img = Image.fromarray(data, mode=mode)
+        img = Image.fromarray(data)
         img.save(str(self.filepath))
 
     def write_chip(

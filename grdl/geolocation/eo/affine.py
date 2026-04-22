@@ -23,7 +23,7 @@ pyproj
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -126,6 +126,7 @@ class AffineGeolocation(Geolocation):
         crs: str,
         dem_path: Optional[Union[str, object]] = None,
         geoid_path: Optional[Union[str, object]] = None,
+        interpolation: int = 3,
     ) -> None:
         # Fail fast if dependencies are missing
         require_affine_backend()
@@ -172,7 +173,8 @@ class AffineGeolocation(Geolocation):
 
         # Initialize base class (output CRS is always WGS84)
         super().__init__(
-            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path
+            shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation,
         )
 
         # Store the native CRS for reference
@@ -182,7 +184,7 @@ class AffineGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0,
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Transform pixel coordinate arrays to WGS84 geographic coordinates.
 
@@ -195,9 +197,8 @@ class AffineGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
-            Height above WGS84 ellipsoid in meters. Applied uniformly to
-            all output points.
+        height : float or np.ndarray, default=0.0
+            Height above WGS84 ellipsoid in meters.
 
         Returns
         -------
@@ -217,7 +218,10 @@ class AffineGeolocation(Geolocation):
             # pyproj with always_xy=True: input (x, y), output (lon, lat)
             lons, lats = self._to_wgs84.transform(xs, ys)
 
-        heights = np.full_like(lats, height)
+        if np.ndim(height) > 0:
+            heights = np.asarray(height, dtype=np.float64)
+        else:
+            heights = np.full_like(lats, float(height))
         return lats, lons, heights
 
     def _latlon_to_image_array(
@@ -277,9 +281,9 @@ class AffineGeolocation(Geolocation):
         """Create an AffineGeolocation from a GRDL imagery reader.
 
         Extracts the affine transform, CRS, and image shape from the
-        reader's metadata. Works with any reader that stores a rasterio
-        ``Affine`` transform in ``metadata['transform']`` and a CRS string
-        in ``metadata['crs']`` (e.g. ``GeoTIFFReader``).
+        reader's metadata.  Works with any reader whose metadata has
+        ``transform`` and ``crs`` attributes (e.g., ``GeoTIFFReader``,
+        ``Sentinel2Reader``).
 
         Parameters
         ----------
@@ -304,22 +308,23 @@ class AffineGeolocation(Geolocation):
         ...     geo = AffineGeolocation.from_reader(reader)
         ...     lat, lon, h = geo.image_to_latlon(0, 0)
         """
-        transform = reader.metadata.get('transform')
+        meta = reader.metadata
+        transform = getattr(meta, 'transform', None)
         if transform is None:
             raise ValueError(
                 "Reader metadata does not contain an affine transform. "
-                "AffineGeolocation requires metadata['transform'] to be a "
+                "AffineGeolocation requires metadata.transform to be a "
                 "rasterio.transform.Affine instance."
             )
 
-        crs = reader.metadata.get('crs')
+        crs = getattr(meta, 'crs', None)
         if crs is None:
             raise ValueError(
                 "Reader metadata does not contain a CRS. "
-                "AffineGeolocation requires metadata['crs'] to be a valid "
+                "AffineGeolocation requires metadata.crs to be a valid "
                 "coordinate reference system string (e.g. 'EPSG:4326')."
             )
 
-        shape = (reader.metadata['rows'], reader.metadata['cols'])
+        shape = (meta.rows, meta.cols)
 
         return cls(transform=transform, shape=shape, crs=crs)

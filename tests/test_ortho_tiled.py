@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Tiled Ortho Tests - Tests for OutputGrid.sub_grid, ROI, and tiled processing.
+Tiled Ortho Tests - Tests for GeographicGrid.sub_grid, ROI, and tiled processing.
 
 Dependencies
 ------------
@@ -10,7 +10,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -38,8 +38,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from grdl.geolocation.base import Geolocation
 from grdl.geolocation.elevation.constant import ConstantElevation
-from grdl.image_processing.ortho.ortho import OutputGrid, Orthorectifier
-from grdl.image_processing.ortho.ortho_pipeline import OrthoPipeline, OrthoResult
+from grdl.image_processing.ortho.ortho import GeographicGrid, Orthorectifier
+from grdl.image_processing.ortho.ortho_builder import OrthoBuilder, OrthoResult
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +132,14 @@ def source_3d():
 
 
 # ---------------------------------------------------------------------------
-# Tests: OutputGrid.sub_grid
+# Tests: GeographicGrid.sub_grid
 # ---------------------------------------------------------------------------
 
 class TestSubGrid:
 
     def test_full_extent(self):
         """sub_grid covering entire grid returns equivalent grid."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(0, 0, grid.rows, grid.cols)
         assert sub.rows == grid.rows
         assert sub.cols == grid.cols
@@ -150,7 +150,7 @@ class TestSubGrid:
 
     def test_upper_left_tile(self):
         """First tile has correct northern/western bounds."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(0, 0, 50, 50)
         assert sub.rows == 50
         assert sub.cols == 50
@@ -161,7 +161,7 @@ class TestSubGrid:
 
     def test_lower_right_tile(self):
         """Last tile has correct southern/eastern bounds."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(50, 50, grid.rows, grid.cols)
         assert sub.rows == 50
         assert sub.cols == 50
@@ -172,30 +172,30 @@ class TestSubGrid:
 
     def test_pixel_sizes_preserved(self):
         """Sub-grid pixel sizes match parent."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.005)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.005)
         sub = grid.sub_grid(10, 20, 60, 80)
         assert sub.pixel_size_lat == grid.pixel_size_lat
         assert sub.pixel_size_lon == grid.pixel_size_lon
 
     def test_dimensions_match_tile(self):
         """Sub-grid rows/cols match tile extent."""
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         sub = grid.sub_grid(10, 20, 40, 70)
         assert sub.rows == 30
         assert sub.cols == 50
 
     def test_negative_index_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="non-negative"):
             grid.sub_grid(-1, 0, 50, 50)
 
     def test_exceeding_bounds_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="exceed"):
             grid.sub_grid(0, 0, grid.rows + 1, grid.cols)
 
     def test_empty_region_raises(self):
-        grid = OutputGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
+        grid = GeographicGrid(-31.0, -30.0, 115.0, 116.0, 0.01, 0.01)
         with pytest.raises(ValueError, match="Empty"):
             grid.sub_grid(50, 50, 50, 100)
 
@@ -209,7 +209,7 @@ class TestPipelineROI:
     def test_roi_restricts_output_bounds(self, geo, source_2d):
         """ROI bounds should control the output grid."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -226,7 +226,7 @@ class TestPipelineROI:
     def test_roi_smaller_than_footprint(self, geo, source_2d):
         """ROI grid should be smaller than full footprint grid."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -234,7 +234,7 @@ class TestPipelineROI:
             .run()
         )
         result_roi = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -249,7 +249,7 @@ class TestPipelineROI:
         """ROI should work with reader path."""
         reader = MockReader(source_2d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -263,7 +263,7 @@ class TestPipelineROI:
     def test_roi_outside_footprint_all_nodata(self, geo, source_2d):
         """ROI outside source coverage → all nodata."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -276,17 +276,17 @@ class TestPipelineROI:
 
     def test_roi_with_elevation(self, geo, source_2d):
         """ROI + DEM should not error."""
-        elev = ConstantElevation(height=100.0)
+        geo.elevation = ConstantElevation(height=100.0)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.01, 0.005)
             .with_roi(-30.5, -30.2, 115.2, 115.5)
             .with_interpolation('nearest')
             .run()
         )
+        geo.elevation = None
         assert isinstance(result, OrthoResult)
 
 
@@ -305,7 +305,7 @@ class TestPipelineTiled:
         is ambiguous between the two arithmetic paths.
         """
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -313,7 +313,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -326,7 +326,7 @@ class TestPipelineTiled:
     def test_tiled_output_dimensions(self, geo, source_2d):
         """Tiled output shape should match full grid dimensions."""
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -341,7 +341,7 @@ class TestPipelineTiled:
         """Tiled path should work with reader."""
         reader = MockReader(source_2d)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_reader(reader)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -355,7 +355,7 @@ class TestPipelineTiled:
     def test_tiled_larger_than_output(self, geo, source_2d):
         """Tile larger than output → one tile, matches full result."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -363,7 +363,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.01, 0.005)
@@ -376,7 +376,7 @@ class TestPipelineTiled:
     def test_tiled_with_roi(self, geo, source_2d):
         """ROI + tiling should compose correctly."""
         result_roi = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -385,7 +385,7 @@ class TestPipelineTiled:
             .run()
         )
         result_roi_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -400,32 +400,31 @@ class TestPipelineTiled:
 
     def test_tiled_with_elevation(self, geo, source_2d):
         """Tiling + DEM should match non-tiled + DEM."""
-        elev = ConstantElevation(height=0.0)
+        geo.elevation = ConstantElevation(height=0.0)
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.009, 0.004)
             .with_interpolation('nearest')
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
-            .with_elevation(elev)
             .with_resolution(0.009, 0.004)
             .with_interpolation('nearest')
             .with_tile_size(32)
             .run()
         )
+        geo.elevation = None
         np.testing.assert_array_equal(result_full.data, result_tiled.data)
 
     def test_tiled_multiband(self, geo, source_3d):
         """Tiling should work with multi-band source arrays."""
         result_full = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_3d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -433,7 +432,7 @@ class TestPipelineTiled:
             .run()
         )
         result_tiled = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_3d)
             .with_geolocation(geo)
             .with_resolution(0.009, 0.004)
@@ -447,9 +446,9 @@ class TestPipelineTiled:
 
     def test_tiled_nodata_fill(self, geo, source_2d):
         """Nodata value should be correctly applied in tiled path."""
-        big_grid = OutputGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
+        big_grid = GeographicGrid(-32.0, -28.0, 113.0, 118.0, 0.01, 0.005)
         result = (
-            OrthoPipeline()
+            OrthoBuilder()
             .with_source_array(source_2d)
             .with_geolocation(geo)
             .with_output_grid(big_grid)
@@ -463,7 +462,7 @@ class TestPipelineTiled:
 
     def test_builder_returns_self(self, geo):
         """with_roi and with_tile_size should return self."""
-        p = OrthoPipeline()
+        p = OrthoBuilder()
         assert p.with_roi(0, 1, 0, 1) is p
         assert p.with_tile_size(256) is p
 

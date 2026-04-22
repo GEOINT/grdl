@@ -19,7 +19,7 @@ EGM96 Grid Specification
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -33,10 +33,15 @@ Created
 
 Modified
 --------
+2026-03-27  Read scale/offset from file metadata (GeoTIFF tags, PGM comments)
+            instead of always using hardcoded EGM96 defaults.
+2026-03-18  Fix _interpolate_array to use actual grid dimensions instead of
+            hardcoded EGM96 constants — was silently wrong for GeoTIFF geoids.
 2026-02-11
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Optional, Union
 
@@ -45,6 +50,8 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.base import _is_scalar, _to_array
+
+logger = logging.getLogger(__name__)
 
 # EGM96 15-arc-minute grid constants
 _EGM96_NROWS = 721
@@ -103,14 +110,23 @@ class GeoidCorrection:
         Parameters
         ----------
         geoid_path : str or Path
-            Path to the EGM96 geoid grid file in PGM format.
+            Path to a geoid undulation grid file.  Supported formats:
+
+            - **PGM** (``*.pgm``): EGM96 15-arc-minute grid (P5 binary
+              or P2 ASCII).  Fixed 721 x 1440 global grid.
+            - **GeoTIFF** (``*.tif``, ``*.tiff``): Any geoid model
+              (EGM96, EGM2008, etc.) stored as a single-band GeoTIFF
+              with geographic CRS.  Grid dimensions and extent are read
+              from the file.
 
         Raises
         ------
         FileNotFoundError
             If ``geoid_path`` does not exist.
         ValueError
-            If the file is not a valid EGM96 PGM grid.
+            If the file format is not recognized.
+        ImportError
+            If rasterio is required but not installed (GeoTIFF path).
         """
         geoid_path = Path(geoid_path)
         if not geoid_path.exists():
@@ -119,19 +135,86 @@ class GeoidCorrection:
             )
 
         self._path = geoid_path
-        self._grid = self._load_pgm(geoid_path)
 
-        # Pre-compute latitude and longitude vectors for interpolation
-        # Latitude: 90 (north) to -90 (south), 721 points
-        self._lats = np.linspace(
-            _EGM96_LAT_MAX, -_EGM96_LAT_MAX, _EGM96_NROWS
-        )
-        # Longitude: 0 to 359.75, 1440 points
-        self._lons = np.linspace(
-            _EGM96_LON_MIN,
-            _EGM96_LON_MIN + (_EGM96_NCOLS - 1) * _EGM96_LON_STEP,
-            _EGM96_NCOLS,
-        )
+        suffix = geoid_path.suffix.lower()
+        if suffix in ('.tif', '.tiff', '.geotiff'):
+            self._load_geotiff(geoid_path)
+        elif suffix in ('.pgm',):
+            self._grid = self._load_pgm(geoid_path)
+            # Pre-compute latitude and longitude vectors for interpolation
+            # Latitude: 90 (north) to -90 (south), 721 points
+            self._lats = np.linspace(
+                _EGM96_LAT_MAX, -_EGM96_LAT_MAX, _EGM96_NROWS
+            )
+            # Longitude: 0 to 359.75, 1440 points
+            self._lons = np.linspace(
+                _EGM96_LON_MIN,
+                _EGM96_LON_MIN + (_EGM96_NCOLS - 1) * _EGM96_LON_STEP,
+                _EGM96_NCOLS,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported geoid file format: {suffix!r}. "
+                f"Expected .pgm, .tif, or .tiff."
+            )
+        logger.info("Loaded geoid grid %s", geoid_path.name)
+
+    def _load_geotiff(self, filepath: Path) -> None:
+        """Load a geoid GeoTIFF and set up interpolation arrays.
+
+        Reads the raster band and extracts the geographic extent from
+        the transform to build latitude/longitude vectors.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path to the GeoTIFF file.
+        """
+        try:
+            import rasterio
+        except ImportError:
+            raise ImportError(
+                "rasterio is required for GeoTIFF geoid files. "
+                "Install with: pip install rasterio"
+            )
+
+        with rasterio.open(str(filepath)) as ds:
+            raw = ds.read(1).astype(np.float64)
+            nrows, ncols = raw.shape
+            transform = ds.transform
+
+            # Apply scale and offset if present in the file metadata.
+            # rasterio exposes these as per-band tuples; default is
+            # scale=1.0, offset=0.0 when not set.
+            scale = ds.scales[0] if ds.scales else 1.0
+            offset = ds.offsets[0] if ds.offsets else 0.0
+            if scale != 1.0 or offset != 0.0:
+                self._grid = raw * scale + offset
+                logger.debug(
+                    "Applied GeoTIFF scale=%.6g, offset=%.6g", scale, offset
+                )
+            else:
+                self._grid = raw
+
+            # Build lat/lon vectors from the affine transform
+            # transform: col → lon, row → lat
+            # For geographic CRS: transform.c = west lon,
+            # transform.f = north lat
+            lon_min = transform.c
+            lat_max = transform.f
+            lon_step = transform.a
+            lat_step = transform.e  # negative (north → south)
+
+            self._lons = np.linspace(
+                lon_min + lon_step * 0.5,
+                lon_min + lon_step * (ncols - 0.5),
+                ncols,
+            )
+            self._lats = np.linspace(
+                lat_max + lat_step * 0.5,
+                lat_max + lat_step * (nrows - 0.5),
+                nrows,
+            )
 
     @staticmethod
     def _load_pgm(filepath: Path) -> np.ndarray:
@@ -177,6 +260,38 @@ class GeoidCorrection:
                 )
 
     @staticmethod
+    def _parse_pgm_comments(comment_lines: list) -> tuple:
+        """Extract scale and offset from PGM comment lines if present.
+
+        Parameters
+        ----------
+        comment_lines : list of bytes
+            Comment lines (starting with ``#``) from the PGM header.
+
+        Returns
+        -------
+        tuple of (float or None, float or None)
+            ``(scale, offset)`` parsed from comments, or ``None`` for
+            each if not found.
+        """
+        scale = None
+        offset = None
+        for line in comment_lines:
+            text = line.decode('ascii', errors='ignore').strip().lstrip('#').strip()
+            lower = text.lower()
+            if lower.startswith('scale'):
+                try:
+                    scale = float(text.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif lower.startswith('offset'):
+                try:
+                    offset = float(text.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+        return scale, offset
+
+    @staticmethod
     def _load_pgm_binary(f) -> np.ndarray:
         """Load binary (P5) PGM file.
 
@@ -190,9 +305,11 @@ class GeoidCorrection:
         np.ndarray
             Undulation grid in meters. Shape ``(721, 1440)``.
         """
-        # Skip comment lines
+        # Collect comment lines for scale/offset parsing
+        comment_lines = []
         line = f.readline()
         while line.startswith(b'#'):
+            comment_lines.append(line)
             line = f.readline()
 
         # Parse dimensions
@@ -219,8 +336,18 @@ class GeoidCorrection:
         )
         raw = raw.reshape((nrows, ncols))
 
-        # Convert to undulation in meters
-        grid = (raw.astype(np.float64) - _EGM96_OFFSET) / 100.0
+        # Use file-embedded scale/offset if available, else EGM96 defaults
+        file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
+            comment_lines
+        )
+        scale = file_scale if file_scale is not None else (1.0 / 100.0)
+        offset = file_offset if file_offset is not None else _EGM96_OFFSET
+        if file_scale is not None or file_offset is not None:
+            logger.debug(
+                "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset
+            )
+
+        grid = (raw.astype(np.float64) - offset) * scale
         return grid
 
     @staticmethod
@@ -241,13 +368,15 @@ class GeoidCorrection:
         content = f.read().decode('ascii')
         lines = content.split('\n')
 
-        # Skip comment lines and extract tokens
+        # Collect comment lines for scale/offset, extract data tokens
+        comment_lines = []
         tokens = []
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith('#') or not stripped:
-                continue
-            tokens.extend(stripped.split())
+            if stripped.startswith('#'):
+                comment_lines.append(stripped.encode('ascii'))
+            elif stripped:
+                tokens.extend(stripped.split())
 
         # Parse header: width height maxval
         if len(tokens) < 3:
@@ -276,8 +405,18 @@ class GeoidCorrection:
         )
         raw = raw.reshape((nrows, ncols))
 
-        # Convert to undulation in meters
-        grid = (raw - _EGM96_OFFSET) / 100.0
+        # Use file-embedded scale/offset if available, else EGM96 defaults
+        file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
+            comment_lines
+        )
+        scale = file_scale if file_scale is not None else (1.0 / 100.0)
+        offset = file_offset if file_offset is not None else _EGM96_OFFSET
+        if file_scale is not None or file_offset is not None:
+            logger.debug(
+                "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset
+            )
+
+        grid = (raw - offset) * scale
         return grid
 
     def get_undulation(
@@ -290,7 +429,7 @@ class GeoidCorrection:
         Accepts three input forms:
 
         - **Scalar:** ``get_undulation(lat, lon)`` returns a single float.
-        - **Stacked (2, N) array:** ``get_undulation(points_2xN)`` returns
+        - **Stacked (N, 2) array:** ``get_undulation(points_Nx2)`` returns
           an ``(N,)`` ndarray.
         - **Separate arrays:** ``get_undulation(lats_arr, lons_arr)`` returns
           an ndarray.
@@ -298,10 +437,10 @@ class GeoidCorrection:
         Parameters
         ----------
         lat_or_points : float, list, or np.ndarray
-            Latitude(s) when ``lon`` is provided, or a ``(2, N)`` ndarray
-            of stacked ``[lats; lons]`` when ``lon`` is None.
+            Latitude(s) when ``lon`` is provided, or an ``(N, 2)`` ndarray
+            of stacked ``[lat, lon]`` rows when ``lon`` is None.
         lon : float, list, or np.ndarray, optional
-            Longitude(s). Omit to pass a ``(2, N)`` stacked array.
+            Longitude(s). Omit to pass an ``(N, 2)`` stacked array.
 
         Returns
         -------
@@ -314,7 +453,7 @@ class GeoidCorrection:
         Raises
         ------
         ValueError
-            If a ``(2, N)`` array is expected but the shape is wrong.
+            If an ``(N, 2)`` array is expected but the shape is wrong.
 
         Examples
         --------
@@ -323,11 +462,11 @@ class GeoidCorrection:
         """
         if lon is None:
             pts = np.asarray(lat_or_points, dtype=np.float64)
-            if pts.ndim != 2 or pts.shape[0] != 2:
+            if pts.ndim != 2 or pts.shape[1] != 2:
                 raise ValueError(
-                    f"Expected (2, N) array, got shape {pts.shape}"
+                    f"Expected (N, 2) array, got shape {pts.shape}"
                 )
-            return self._interpolate_array(pts[0], pts[1])
+            return self._interpolate_array(pts[:, 0], pts[:, 1])
         elif _is_scalar(lat_or_points) and _is_scalar(lon):
             lats_arr = _to_array(lat_or_points)
             lons_arr = _to_array(lon)
@@ -343,9 +482,10 @@ class GeoidCorrection:
     ) -> np.ndarray:
         """Bilinear interpolation of geoid undulation values.
 
-        Vectorized implementation using numpy array operations. Handles
-        longitude wrapping (input range [-180, 180] mapped to grid range
-        [0, 360]) and latitude clamping to [-90, 90].
+        Vectorized implementation using numpy array operations. Works
+        with any grid resolution by using the actual ``self._lats`` and
+        ``self._lons`` vectors built at load time.  Handles longitude
+        wrapping and latitude clamping.
 
         Parameters
         ----------
@@ -359,37 +499,61 @@ class GeoidCorrection:
         np.ndarray
             Interpolated undulation values in meters. Shape ``(N,)``.
         """
-        # Clamp latitude to valid range
-        lats_clamped = np.clip(lats, -90.0, 90.0)
+        nrows, ncols = self._grid.shape
 
-        # Normalize longitude to [0, 360) range for grid lookup
-        lons_normalized = lons % 360.0
+        # Grid parameters from the actual loaded vectors
+        lat_max = float(self._lats[0])
+        lat_min = float(self._lats[-1])
+        lon_min = float(self._lons[0])
+        lon_max = float(self._lons[-1])
+
+        lat_step = (lat_max - lat_min) / (nrows - 1)  # positive
+        lon_step = (lon_max - lon_min) / (ncols - 1)
+
+        # Determine if grid is global (wraps in longitude)
+        lon_span = lon_max - lon_min + lon_step
+        is_global = lon_span > 359.0
+
+        # Clamp latitude to grid range
+        lats_clamped = np.clip(lats, lat_min, lat_max)
+
+        # Normalize longitude into the grid range
+        if is_global:
+            lons_normalized = lons % 360.0
+            if lon_min < 0:
+                # Grid uses [-180, 180) convention
+                lons_normalized = np.where(
+                    lons_normalized > 180.0,
+                    lons_normalized - 360.0,
+                    lons_normalized,
+                )
+        else:
+            lons_normalized = np.clip(lons, lon_min, lon_max)
 
         # Convert to fractional grid indices
-        # Latitude: row 0 = 90N, row 720 = 90S
-        row_frac = (_EGM96_LAT_MAX - lats_clamped) / _EGM96_LAT_STEP
-        # Longitude: col 0 = 0E, col 1439 = 359.75E
-        col_frac = lons_normalized / _EGM96_LON_STEP
+        # Latitude runs north-to-south (row 0 = lat_max)
+        row_frac = (lat_max - lats_clamped) / lat_step
+        col_frac = (lons_normalized - lon_min) / lon_step
 
-        # Floor and ceil indices for bilinear interpolation
+        # Floor indices for bilinear interpolation
         row0 = np.floor(row_frac).astype(np.intp)
         col0 = np.floor(col_frac).astype(np.intp)
 
         # Clamp row indices to valid grid range
-        row0 = np.clip(row0, 0, _EGM96_NROWS - 2)
+        row0 = np.clip(row0, 0, nrows - 2)
         row1 = row0 + 1
 
         # Handle longitude wrapping for column indices
-        col0 = col0 % _EGM96_NCOLS
-        col1 = (col0 + 1) % _EGM96_NCOLS
+        if is_global:
+            col0 = col0 % ncols
+            col1 = (col0 + 1) % ncols
+        else:
+            col0 = np.clip(col0, 0, ncols - 2)
+            col1 = col0 + 1
 
         # Fractional parts for interpolation weights
-        dr = row_frac - row0.astype(np.float64)
-        dc = col_frac - np.floor(col_frac)
-
-        # Clamp fractional parts
-        dr = np.clip(dr, 0.0, 1.0)
-        dc = np.clip(dc, 0.0, 1.0)
+        dr = np.clip(row_frac - row0.astype(np.float64), 0.0, 1.0)
+        dc = np.clip(col_frac - np.floor(col_frac), 0.0, 1.0)
 
         # Sample four corners
         q00 = self._grid[row0, col0]

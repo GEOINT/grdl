@@ -9,7 +9,7 @@ decoupling tile layout planning from pixel data access.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -159,10 +159,8 @@ class Tiler(ChipBase):
         c_origins = cc.ravel()
 
         return [
-            self._snap_region(
-                int(r_origins[i]), int(c_origins[i]), tr, tc
-            )
-            for i in range(len(r_origins))
+            self._snap_region(int(r), int(c), tr, tc)
+            for r, c in zip(r_origins, c_origins)
         ]
 
     def __repr__(self) -> str:

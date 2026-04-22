@@ -2,6 +2,8 @@
 
 Technical design documentation for the IO module.
 
+Modified: 2026-03-29
+
 ## Design Philosophy
 
 The IO module is built on three core principles:
@@ -14,10 +16,10 @@ The IO module is built on three core principles:
 
 ```
 grdl/
-├── exceptions.py            # Custom exception hierarchy (GrdlError, ValidationError, etc.)
+├── exceptions.py            # Custom exception hierarchy (GrdlError, DependencyError, etc.)
 ├── py.typed                 # PEP 561 type stub marker
 ├── IO/
-│   ├── __init__.py          # Public API exports + open_image()
+│   ├── __init__.py          # Public API exports + open_image(), get_writer(), write()
 │   ├── base.py              # Abstract base classes (ABCs)
 │   ├── models/              # Typed metadata dataclasses
 │   │   ├── __init__.py      # Re-exports all metadata classes
@@ -25,20 +27,32 @@ grdl/
 │   │   ├── common.py        # Shared primitives (XYZ, LatLonHAE, RowCol, Poly1D, Poly2D, XYZPoly)
 │   │   ├── sicd.py          # SICDMetadata + ~35 nested section dataclasses
 │   │   ├── sidd.py          # SIDDMetadata + ~25 nested section dataclasses
+│   │   ├── cphd.py          # CPHDMetadata + channel/PVP/waveform dataclasses
 │   │   ├── biomass.py       # BIOMASSMetadata (flat typed fields)
 │   │   ├── viirs.py         # VIIRSMetadata (flat typed fields)
-│   │   └── aster.py         # ASTERMetadata (flat typed fields)
-│   ├── geotiff.py           # GeoTIFFReader (base data format, rasterio)
-│   ├── hdf5.py              # HDF5Reader (base data format, h5py)
-│   ├── jpeg2000.py          # JP2Reader (base data format, glymur)
-│   ├── nitf.py              # NITFReader (base data format, rasterio/GDAL)
-│   ├── eo/                  # EO (visible/panchromatic) readers — scaffold
+│   │   ├── aster.py         # ASTERMetadata (flat typed fields)
+│   │   ├── sentinel2.py     # Sentinel2Metadata (flat typed fields)
+│   │   ├── sentinel1_slc.py # Sentinel1SLCMetadata + burst/orbit/calibration dataclasses
+│   │   ├── terrasar.py      # TerraSARMetadata + product/scene/radar dataclasses
+│   │   ├── nisar.py         # NISARMetadata + identification/orbit/swath dataclasses
+│   │   └── eo_nitf.py       # EONITFMetadata + RPCCoefficients + RSMCoefficients
+│   ├── geotiff.py           # GeoTIFFReader, GeoTIFFWriter (rasterio)
+│   ├── hdf5.py              # HDF5Reader, HDF5Writer (h5py)
+│   ├── jpeg2000.py          # JP2Reader (glymur/rasterio)
+│   ├── nitf.py              # NITFReader, NITFWriter (rasterio/GDAL)
+│   ├── png.py               # PngWriter
+│   ├── numpy_io.py          # NumpyWriter
+│   ├── generic.py           # GDALFallbackReader, open_any()
+│   ├── probe.py             # InvasiveProbeReader
+│   ├── eo/                  # EO (visible/panchromatic) readers
 │   │   ├── __init__.py      # EO exports + open_eo()
-│   │   └── _backend.py      # rasterio/glymur availability detection
+│   │   ├── _backend.py      # rasterio/glymur availability detection
+│   │   ├── sentinel2.py     # Sentinel2Reader (wraps JP2Reader)
+│   │   └── nitf.py          # EONITFReader (RPC/RSM extraction)
 │   ├── ir/                  # IR/thermal readers
 │   │   ├── __init__.py      # IR exports + open_ir()
 │   │   ├── _backend.py      # rasterio/h5py availability detection
-│   │   └── aster.py         # ASTERReader (wraps GeoTIFFReader)
+│   │   └── aster.py         # ASTERReader (wraps rasterio)
 │   ├── multispectral/       # Multispectral/hyperspectral readers
 │   │   ├── __init__.py      # MS exports + open_multispectral()
 │   │   ├── _backend.py      # h5py/xarray/spectral availability detection
@@ -47,11 +61,16 @@ grdl/
 │   │   ├── __init__.py      # SAR exports + open_sar()
 │   │   ├── _backend.py      # sarkit/sarpy availability detection
 │   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback)
+│   │   ├── sicd_writer.py   # SICDWriter
 │   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback)
 │   │   ├── crsd.py          # CRSDReader (sarkit-only)
 │   │   ├── sidd.py          # SIDDReader (sarkit-only)
-│   │   ├── biomass.py       # BIOMASSL1Reader (rasterio)
-│   │   └── biomass_catalog.py  # BIOMASSCatalog + load_credentials
+│   │   ├── sidd_writer.py   # SIDDWriter
+│   │   ├── biomass.py       # BIOMASSL1Reader (rasterio) + open_biomass()
+│   │   ├── biomass_catalog.py  # BIOMASSCatalog + load_credentials
+│   │   ├── sentinel1_slc.py # Sentinel1SLCReader (rasterio)
+│   │   ├── terrasar.py      # TerraSARReader + open_terrasar()
+│   │   └── nisar.py         # NISARReader + open_nisar()
 │   ├── README.md            # User documentation
 │   ├── ARCHITECTURE.md      # This file
 │   └── TODO.md              # Roadmap and planned features
@@ -85,7 +104,6 @@ The root abstract class for all imagery readers.
 - **Context Managers**: `__enter__`/`__exit__` for automatic cleanup
   - Ensures file handles are properly closed
   - Prevents resource leaks in long-running processes
-  - Pythonic interface users expect
 
 **Key Methods:**
 
@@ -114,9 +132,15 @@ Format-specific metadata is provided via typed subclasses:
 | GeoTIFF, NITF, HDF5 | `ImageMetadata` | Base class; `bands`, `crs` on base |
 | SICD | `SICDMetadata(ImageMetadata)` | 17 nested section dataclasses (collection_info, geo_data, grid, etc.) |
 | SIDD | `SIDDMetadata(ImageMetadata)` | 13 nested section dataclasses (product_creation, display, measurement, etc.) |
+| CPHD | `CPHDMetadata(ImageMetadata)` | Channel, PVP, waveform, antenna, scene coordinates |
 | BIOMASS | `BIOMASSMetadata(ImageMetadata)` | Flat typed fields (mission, swath, polarizations, etc.) |
 | VIIRS | `VIIRSMetadata(ImageMetadata)` | Flat typed fields (satellite, product, calibration, etc.) |
 | ASTER | `ASTERMetadata(ImageMetadata)` | Flat typed fields (acquisition, orbital, solar geometry, etc.) |
+| Sentinel-2 | `Sentinel2Metadata(ImageMetadata)` | Flat typed fields (tile, processing level, bands, etc.) |
+| Sentinel-1 SLC | `Sentinel1SLCMetadata(ImageMetadata)` | Burst, orbit, Doppler, calibration/noise vectors |
+| TerraSAR-X | `TerraSARMetadata(ImageMetadata)` | Product, scene, radar params, orbit, calibration |
+| NISAR | `NISARMetadata(ImageMetadata)` | Identification, orbit, attitude, swath, geolocation grid |
+| EO NITF | `EONITFMetadata(ImageMetadata)` | RPC/RSM coefficients, sensor ID, target geometry |
 
 All metadata classes support dict-like `[]` access for backward compatibility (`meta['format']`, `'rows' in meta`, `meta.keys()`) alongside native attribute access (`meta.format`, `meta.collection_info.radar_mode.mode_type`)
 
@@ -131,12 +155,12 @@ Abstract class for writing imagery.
   - Update existing files without rewriting
   - Support for tiled output formats
 
-- **Metadata Preservation**: Constructor accepts metadata dict
+- **Metadata Preservation**: Constructor accepts metadata
   - Ensures geolocation survives read-write cycles
   - Maintains sensor-specific annotations
   - Format conversion without information loss
 
-**Not Yet Implemented** - writers are lower priority than readers.
+**Implementations:** `GeoTIFFWriter`, `HDF5Writer`, `NITFWriter`, `SICDWriter`, `SIDDWriter`, `PngWriter`, `NumpyWriter`. Factory access via `get_writer(format, path)` or the convenience `write(data, path)` function.
 
 ### CatalogInterface (ABC)
 
@@ -152,18 +176,12 @@ Abstract class for image discovery and spatial queries.
 - **Format Agnostic**: Works across SAR, EO, MSI
   - Unified interface for heterogeneous collections
   - Enables multi-sensor workflows
-  - Simplifies collection management
 
-**Implemented**: `BIOMASSCatalog` in `sar/biomass_catalog.py` provides local
-discovery, ESA MAAP STAC search, OAuth2-authenticated download, and SQLite tracking.
+**Implemented**: `BIOMASSCatalog`, `Sentinel1SLCCatalog`, `Sentinel2Catalog`, `NISARCatalog`, `TerraSARCatalog`, `ASTERCatalog`, `VIIRSCatalog` — all inherit from `CatalogInterface` with local discovery, SQLite tracking, and (where applicable) remote search and download.
 
 ### Integration with Other GRDL Modules
 
-IO readers are designed to compose with other GRDL modules. **Always use the purpose-built GRDL module for each task** — IO for loading, `data_prep` for chip planning, `image_processing` for transforms:
-
-**Data Preparation (chip/tile planning):**
-- `ChipExtractor` and `Tiler` from `grdl.data_prep` compute chip and tile index bounds (index-only, no pixel data). Use their `ChipRegion` output to drive `reader.read_chip()` calls instead of hand-rolling `for r in range(0, rows, chunk):` loops.
-- `Normalizer` handles intensity normalization (`minmax`, `zscore`, `percentile`, `unit_norm`).
+IO readers compose with other GRDL modules. **Use the purpose-built module for each task** -- IO for loading, `data_prep` for chip planning, `image_processing` for transforms:
 
 **Full integration example** (see `grdl/example/image_processing/sar/sublook_compare.py`):
 
@@ -193,13 +211,8 @@ with SICDReader('image.nitf') as reader:
 - **Geolocation**: `Geolocation.from_reader(reader)` constructs coordinate transforms
 - **Orthorectification**: `Orthorectifier.apply_from_reader()` reads chips directly from a reader
 - **Decomposition**: Complex data from `BIOMASSL1Reader` feeds directly into `PauliDecomposition`
-- **Detection**: `ImageDetector._geo_register_detections()` uses Geolocation for pixel-to-latlon transforms
-- **Pipeline**: `Pipeline` chains multiple `ImageTransform` instances into a single callable with progress
-  callback rescaling. Pipelines are themselves `ImageTransform` instances and can be nested.
-- **BandwiseTransformMixin**: Mixin that auto-applies 2D transforms across 3D `(bands, rows, cols)` stacks,
-  enabling all single-band processors to work on multi-band imagery without manual band looping.
-- **Progress Callbacks**: Long-running processors (SRM, CLAHE, RollingBall) accept an optional
-  `progress_callback` keyword argument for real-time progress reporting.
+- **Pipeline**: `Pipeline` chains multiple `ImageTransform` instances; pipelines are themselves `ImageTransform` instances and can be nested
+- **BandwiseTransformMixin**: Auto-applies 2D transforms across 3D `(bands, rows, cols)` stacks
 
 ## SAR Readers Implementation
 
@@ -210,17 +223,20 @@ with SICDReader('image.nitf') as reader:
 | SICD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
 | CPHD | sarkit (primary), sarpy (fallback) | sarkit is the modern NGA library; sarpy fallback for compatibility |
 | CRSD | sarkit (only) | sarpy does not fully support CRSD |
-| SIDD | sarkit (only) | sarpy does not fully support SIDD |
+| SIDD | sarkit (primary), sarpy (fallback) | sarkit preferred; sarpy fallback for compatibility |
+| BIOMASS | rasterio | Magnitude/phase GeoTIFFs + XML annotation |
+| Sentinel-1 SLC | rasterio | SAFE archive with TIFF measurements + XML annotation |
+| TerraSAR-X / TanDEM-X | rasterio | CoSSC GeoTIFFs + XML annotation |
+| NISAR | h5py | HDF5 with SLC/RSLC datasets |
 | GeoTIFF | rasterio | Industry standard for GeoTIFF, handles COGs |
 | NITF | rasterio (GDAL) | Generic NITF via GDAL driver; SAR NITF uses sarkit/sarpy |
-| BIOMASS | rasterio | Magnitude/phase GeoTIFFs + XML annotation |
 
 ### Backend Fallback Pattern (`_backend.py`)
 
 SAR readers use a shared backend detection module:
 - `_HAS_SARKIT` / `_HAS_SARPY` flags set at import time
 - `require_sar_backend()` returns `'sarkit'` or `'sarpy'` (prefers sarkit)
-- `require_sarkit()` raises `ImportError` when sarkit is required (CRSD, SIDD)
+- `require_sarkit()` raises `DependencyError` when sarkit is required (CRSD, SIDD)
 - Key API difference: sarkit takes `BinaryIO`, sarpy takes filepath strings
 
 ### SICDReader
@@ -230,18 +246,6 @@ SAR readers use a shared backend detection module:
 - Complex-valued SAR imagery (I+jQ channels)
 - Typically in NITF container format
 - Rich metadata including collection geometry, sensor params
-
-**Implementation Details:**
-
-```python
-class SICDReader(ImageReader):
-    def __init__(self, filepath):
-        self.backend = require_sar_backend('SICD')  # 'sarkit' or 'sarpy'
-        super().__init__(filepath)
-
-    # sarkit path: file opened as binary, sarkit.sicd.NitfReader(file)
-    # sarpy path: sarpy.io.complex.converter.open_complex(str(filepath))
-```
 
 **Key Decisions:**
 
@@ -258,20 +262,16 @@ class SICDReader(ImageReader):
 3. **Geolocation format**: Returns lat/lon/height
    - SICD stores Scene Center Point (SCP) and corner coords
    - Native geometry, not projected coordinates
-   - Users transform to desired projection separately
 
 ### CPHDReader
 
 **Format Background:**
 - CPHD = Compensated Phase History Data (NGA standard)
 - Raw phase history (unfocused SAR)
-- Used for custom SAR focusing algorithms
 - Multi-channel support (multiple apertures/polarizations)
 
-**Implementation Details:**
-
 Unlike SICD (formed imagery), CPHD doesn't have fixed rows/cols. Instead:
-- Multiple channels, each with vectors × samples
+- Multiple channels, each with vectors x samples
 - `get_shape()` returns dimensions of first channel
 - `read_chip()` accepts channel index in `bands` parameter
 
@@ -283,94 +283,80 @@ Unlike SICD (formed imagery), CPHD doesn't have fixed rows/cols. Instead:
    - Consistent with ImageReader API despite different semantics
 
 2. **No automatic focusing**: Returns raw phase history
-   - Focusing algorithms are complex and use-case specific
+   - Focusing algorithms are use-case specific
    - Belongs in processing module, not I/O
-   - Users apply SARPY's focusing or custom algorithms
 
 ### GeoTIFFReader
 
 **Format Background:**
-- GeoTIFF is the foundational raster format for geospatial imagery
+- Foundational raster format for geospatial imagery
 - Covers SAR GRD products, EO imagery, MSI, Cloud-Optimized GeoTIFFs (COG)
-- Lives at IO base level (`IO/geotiff.py`) — not in a modality submodule
-- Previously named `GRDReader`; renamed to reflect general-purpose nature
-
-**Implementation Details:**
-
-Uses Rasterio for GeoTIFF reading:
-- Native support for Cloud-Optimized GeoTIFFs (COG)
-- Handles coordinate reference systems (CRS)
-- Affine transform for pixel ↔ coordinate mapping
+- Lives at IO base level (`IO/geotiff.py`) -- not in a modality submodule
 
 **Key Decisions:**
 
 1. **Real-valued data**: Returns magnitude, not complex
-   - GRD products are already detected (|I+jQ|²)
+   - GRD products are already detected (|I+jQ|^2)
    - Standard EO/MSI imagery is real-valued
-   - Simpler data type (float32 instead of complex64)
 
 2. **Geolocation includes CRS**: Unlike SICD
    - GeoTIFF is geocoded with embedded CRS and affine transform
-   - Users can directly map pixels to lat/lon
    - Supports any projection (UTM, Geographic, etc.)
 
-3. **Band indexing**: Follows rasterio convention
-   - Users provide 0-based indices
-   - Internally converts to rasterio's 1-based indexing
-   - Consistent with NumPy/Python conventions
+3. **Band indexing**: Users provide 0-based indices; internally converts to rasterio's 1-based indexing
 
 ### open_sar() Auto-Detection
 
 Convenience function that tries readers in order:
-1. SICDReader (NITF containers often SICD)
+1. SICDReader (NITF containers)
 2. CPHDReader
-3. CRSDReader
+3. CRSDReader (sarkit-only)
 4. SIDDReader
-5. GeoTIFFReader (fallback for GRD products)
+5. Sentinel1SLCReader (SAFE directories)
+6. TerraSARReader (TSX/TDX directories)
+7. NISARReader (HDF5)
+8. GeoTIFFReader (fallback for GRD products)
 
 **Trade-offs:**
-- **Pro**: User-friendly for unknown files
-- **Pro**: Enables format-agnostic batch processing
-- **Con**: Slower than direct reader (multiple open attempts)
-- **Con**: May misidentify ambiguous formats
+- **Pro**: User-friendly for unknown files; enables format-agnostic batch processing
+- **Con**: Slower than direct reader (multiple open attempts); may misidentify ambiguous formats
 
-**Recommended Use:**
-- Interactive exploration of unknown files
-- Scripts processing mixed-format collections
-- Prototyping before production code
-
-**Not Recommended:**
-- High-performance pipelines (use specific reader)
-- Large batch jobs (overhead adds up)
+Best for interactive exploration and prototyping. Use specific readers in performance-critical pipelines.
 
 ## Metadata Architecture
 
 ### Package Structure (`models/`)
 
-Metadata is organized as a Python package at `grdl/IO/models/` with the following modules:
+Metadata is organized as a Python package at `grdl/IO/models/`:
 
 | Module | Contents |
 |--------|----------|
-| `base.py` | `ImageMetadata` — base dataclass with `format`, `rows`, `cols`, `dtype`, `bands`, `crs`; dict-like `__getitem__`/`__contains__`/`keys()` |
+| `base.py` | `ImageMetadata` -- base dataclass with `format`, `rows`, `cols`, `dtype`, `bands`, `crs`; dict-like access |
 | `common.py` | Shared primitive types: `XYZ`, `LatLon`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly` |
 | `sicd.py` | `SICDMetadata` + ~35 nested dataclasses covering all 17 SICD sections |
 | `sidd.py` | `SIDDMetadata` + ~25 nested dataclasses covering all 13 SIDD sections |
-| `biomass.py` | `BIOMASSMetadata` — flat typed fields for BIOMASS annotation XML |
-| `viirs.py` | `VIIRSMetadata` — flat typed fields for VIIRS HDF5 attributes |
-| `aster.py` | `ASTERMetadata` — flat typed fields for ASTER GeoTIFF + XML |
+| `cphd.py` | `CPHDMetadata` + channel, PVP, waveform, antenna, scene coordinate dataclasses |
+| `biomass.py` | `BIOMASSMetadata` -- flat typed fields for BIOMASS annotation XML |
+| `viirs.py` | `VIIRSMetadata` -- flat typed fields for VIIRS HDF5 attributes |
+| `aster.py` | `ASTERMetadata` -- flat typed fields for ASTER GeoTIFF + XML |
+| `sentinel2.py` | `Sentinel2Metadata` -- flat typed fields for Sentinel-2 JP2 products |
+| `sentinel1_slc.py` | `Sentinel1SLCMetadata` + burst, orbit, Doppler, calibration/noise dataclasses |
+| `terrasar.py` | `TerraSARMetadata` + product, scene, radar, orbit, calibration dataclasses |
+| `nisar.py` | `NISARMetadata` + identification, orbit, attitude, swath, geolocation dataclasses |
+| `eo_nitf.py` | `EONITFMetadata` -- RPC/RSM coefficients for EO NITF imagery |
 | `__init__.py` | Re-exports everything; preserves `from grdl.IO.models import ...` paths |
 
 ### Design Decisions
 
-1. **Dataclasses over dicts**: Provides IDE autocomplete, type checking, and self-documenting field names while remaining lightweight (no runtime overhead vs. plain attributes).
+1. **Dataclasses over dicts**: IDE autocomplete, type checking, and self-documenting field names with no runtime overhead.
 
 2. **Nested composition**: Complex formats (SICD, SIDD) use deeply nested dataclasses mirroring the source specification structure. Example: `meta.geo_data.scp.llh.lat` mirrors the SICD XML path `GeoData/SCP/LLH/Lat`.
 
-3. **Optional sections**: All format-specific nested sections default to `None`, so metadata is always constructible even when the source file has incomplete metadata.
+3. **Optional sections**: All format-specific nested sections default to `None`, so metadata is always constructible even from incomplete source files.
 
-4. **Backward-compatible dict access**: `ImageMetadata.__getitem__` and `__contains__` use `dataclasses.fields()` introspection, so existing code using `meta['format']` continues to work.
+4. **Backward-compatible dict access**: `ImageMetadata.__getitem__` and `__contains__` use `dataclasses.fields()` introspection, so `meta['format']` continues to work alongside `meta.format`.
 
-5. **Shared primitives**: Types like `XYZ`, `LatLonHAE`, `Poly2D` are reused across SICD and SIDD, avoiding duplication.
+5. **Shared primitives**: Types like `XYZ`, `LatLonHAE`, `Poly2D` are reused across SICD, SIDD, and CPHD.
 
 ## Mission-Specific Readers
 
@@ -378,234 +364,65 @@ Metadata is organized as a Python package at `grdl/IO/models/` with the followin
 
 **Format Background:**
 - BIOMASS is ESA's P-band SAR satellite mission (435 MHz)
-- L1 SCS (Single-look Complex Slant) products store complex data
-- Unlike other SAR formats, uses magnitude + phase GeoTIFFs (not complex-valued TIFFs)
+- L1 SCS products store complex data as magnitude + phase GeoTIFFs (not complex-valued TIFFs)
 - SAFE-like directory structure with XML annotation
-
-**Implementation Details:**
-
-```python
-class BIOMASSL1Reader(ImageReader):
-    """Reader for BIOMASS L1 SCS products."""
-
-    def __init__(self, filepath):
-        # filepath is a directory (SAFE-like structure)
-        # annotation/: XML metadata
-        # measurement/: magnitude and phase TIFFs
-```
 
 **Key Decisions:**
 
 1. **Mission-Specific Module**: Created `biomass.py` instead of adding to generic `sar.py`
-   - **Rationale**: BIOMASS has mission-specific processing levels (L1a/b/c, L2a/b, L3)
-   - Users expect mission-specific interfaces, not generic format readers
-   - Sets precedent for future satellite readers (Sentinel-1, RADARSAT, etc.)
-   - Decision deferred on whether to create readers for other missions
+   - BIOMASS has mission-specific processing levels (L1a/b/c, L2a/b, L3)
+   - Sets precedent adopted by Sentinel-1, TerraSAR-X, and NISAR readers
 
-2. **Complex Data Reconstruction**: Magnitude and phase stored separately
-   - Phase TIFFs store phase in radians
-   - Reconstruct complex: `complex = magnitude * exp(1j * phase)`
-   - Handled transparently in `read_chip()` and `read_full()`
+2. **Complex Data Reconstruction**: `complex = magnitude * exp(1j * phase)`, handled transparently in `read_chip()` and `read_full()`
 
-3. **Multi-Polarization**: All 4 polarizations in same TIFF files
-   - Band 1: HH, Band 2: HV, Band 3: VH, Band 4: VV
-   - `bands` parameter selects polarizations (0-based indexing)
-   - Consistent with multi-band imagery convention
+3. **Multi-Polarization**: All 4 polarizations in same TIFF files (HH/HV/VH/VV as bands 1-4); `bands` parameter selects polarizations (0-based)
 
-4. **Metadata Format**: Mission-specific fields
-   - Standard fields: `rows`, `cols`, `polarizations`, `orbit_number`
-   - BIOMASS-specific: `swath`, `product_type`, pixel spacings
-   - Enables multi-sensor fusion with consistent metadata keys
-
-5. **Geolocation**: Slant range geometry with GCPs
-   - BIOMASS L1 is not geocoded (unlike GRD products)
-   - GCPs provided for geolocation transforms
-   - Compatible with SICD geolocation format
-
-**Format vs. Mission Trade-off:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Format-based (sar.py) | Consistent with current code | Loses mission context and processing levels |
-| Mission-specific (biomass.py) | Captures mission structure | Different pattern, may proliferate files |
-
-**Decision**: Mission-specific for BIOMASS
-- Mission processing levels (L1a/b/c, L2a/b, L3) are important to users
-- Rich mission metadata doesn't fit generic readers
-- Pattern may be adopted for other missions in future
+4. **Geolocation**: Slant range geometry with GCPs (not geocoded like GRD products)
 
 ### BIOMASS Catalog System
 
-**Implementation Details:**
+`BIOMASSCatalog(CatalogInterface)` provides:
 
-```python
-class BIOMASSCatalog(CatalogInterface):
-    """Catalog and download manager for BIOMASS products.
+1. **Local Discovery**: File system scan with pattern matching, SQLite indexing
+2. **ESA MAAP STAC API**: POST-based search with CQL2 filtering (product type, orbit, bbox, date)
+3. **OAuth2 Authentication**: Offline token from `~/.config/geoint/credentials.json` or `ESA_MAAP_OFFLINE_TOKEN` env var
+4. **Download Management**: Streaming download with progress, automatic ZIP extraction, database tracking
+5. **SQLite Database**: Unified local/remote product tracking with indexed query fields
 
-    Uses ESA MAAP STAC API for search and OAuth2 for downloads.
-    """
-```
-
-**Key Features:**
-
-1. **Local Discovery**: Scans file system for BIOMASS product directories
-   - Pattern matching on directory names (BIO_S*_SCS*)
-   - Indexes products in SQLite database
-   - Extracts metadata without loading pixel data
-
-2. **ESA MAAP STAC API**: Queries the operational MAAP catalog
-   - POST-based STAC search at `catalog.maap.eo.esa.int/catalogue`
-   - CQL2 filtering by product type, orbit, bounding box, date range
-   - Collection IDs: `BiomassLevel1a`, `BiomassLevel1b`, `BiomassLevel2a`
-   - Stores results in local database for offline access
-
-3. **OAuth2 Authentication**: Token-based access to ESA data
-   - Offline token stored in `~/.config/geoint/credentials.json` (repo-agnostic)
-   - Exchanged for short-lived access tokens via MAAP IAM endpoint
-   - Public client secret shared by all MAAP users (published in ESA docs)
-   - Fallback to environment variables (`ESA_MAAP_OFFLINE_TOKEN`)
-   - `load_credentials()` utility exported from `grdl.IO`
-
-4. **Download Management**: Streaming product download with extraction
-   - Bearer token authentication on download requests
-   - Streaming to disk with progress reporting
-   - Automatic ZIP extraction to product directory
-   - Database updated with local path on completion
-
-5. **SQLite Database**: Unified tracking of local and remote products
-   - Schema supports all BIOMASS product levels
-   - Indexed on common query fields (date, orbit, processing level)
-   - Tracks download URL, corner coordinates, full STAC metadata JSON
-   - Enables fast queries without re-scanning file system or re-querying API
-
-**Design Decisions:**
-
-1. **Mission-Specific Catalog**: `BIOMASSCatalog` instead of generic `ImageCatalog`
-   - BIOMASS has specific product naming conventions
-   - ESA MAAP API endpoints are mission-specific
-   - Allows optimized schema for BIOMASS metadata
-   - Generic catalog planned for future (multi-mission support)
-
-2. **SQLite vs. Other Databases**: Chose SQLite for simplicity
-   - No server setup required
-   - File-based, portable
-   - Sufficient for most use cases (thousands of products)
-   - Can migrate to PostgreSQL/PostGIS for large-scale deployments
-
-3. **Dual Index**: Products tracked both locally and remotely
-   - Enables "download missing products" workflows
-   - Tracks download status
-   - Supports offline work (query database without ESA access)
-
-4. **Repo-Agnostic Credentials**: `~/.config/geoint/credentials.json`
-   - Shared across all projects using ESA data (not tied to GRDL)
-   - Never committed to version control
-   - Follows XDG Base Directory convention
+Design chose mission-specific catalog over generic `ImageCatalog` because BIOMASS has unique naming conventions, API endpoints, and metadata schema. SQLite chosen for zero-config portability. Credentials follow XDG convention and are repo-agnostic.
 
 ## EO / IR / Multispectral Submodules
 
-### Modality-Based Organization
+Following the `sar/` pattern, modality submodules wrap base-level format readers
+(GeoTIFFReader, HDF5Reader, JP2Reader) with sensor-specific metadata extraction:
 
-Following the `sar/` pattern, new modality submodules wrap base-level format readers
-(GeoTIFFReader, HDF5Reader) with sensor-specific metadata extraction:
-
-| Submodule | Modality | Sensors | Backend |
-|-----------|----------|---------|---------|
-| `eo/` | Electro-Optical (VIS/NIR) | _(scaffold — planned: Landsat OLI, Sentinel-2, HLS)_ | rasterio, glymur |
+| Submodule | Modality | Implemented Sensors | Backend |
+|-----------|----------|---------------------|---------|
+| `eo/` | Electro-Optical (VIS/NIR) | Sentinel-2 (L1C, L2A) | glymur, rasterio |
 | `ir/` | Thermal / Infrared | ASTER (L1T, GDEM) | rasterio |
 | `multispectral/` | Multispectral / Hyperspectral | VIIRS (VNP46A1, VNP13A1) | h5py |
 
+### Sentinel2Reader (`eo/sentinel2.py`)
+
+- Wraps `JP2Reader` for pixel access on JPEG2000 band files
+- Supports Level-1C (TOA Reflectance) and Level-2A (Surface Reflectance) products
+- Handles both standalone JP2 files and SAFE archive directory structure
+- Detects Sentinel-2 products from filename patterns (T*_*_B*.jp2, S2A/S2B/S2C prefixes)
+- Populates `Sentinel2Metadata` dataclass
+
 ### ASTERReader (`ir/aster.py`)
 
-**Format Background:**
-- ASTER = Advanced Spaceborne Thermal Emission and Reflection Radiometer (Terra satellite)
-- L1T products: Registered Radiance at Sensor, GeoTIFF format
-- ASTGTM products: Global Digital Elevation Model v3, GeoTIFF format
-- TIR subsystem (bands 10-14, 90 m) is the only active subsystem
-- SWIR detector failed April 2008; VNIR still operational
-
-**Implementation:**
-- Wraps `rasterio` directly for pixel reads (same as GeoTIFFReader)
+- Wraps `rasterio` directly for pixel reads
 - Extracts ASTER-specific metadata from GeoTIFF tags and companion XML
-- Detects product type (L1T vs GDEM) from filename patterns
-- Detects band availability (VNIR/SWIR/TIR) from filename
+- Detects product type (L1T vs GDEM) and band availability (VNIR/SWIR/TIR) from filename
 - Populates `ASTERMetadata` dataclass with acquisition, orbital, solar geometry fields
 
 ### VIIRSReader (`multispectral/viirs.py`)
 
-**Format Background:**
-- VIIRS = Visible Infrared Imaging Radiometer Suite (Suomi NPP, NOAA-20, NOAA-21)
-- 22 bands from visible (412 nm) through thermal (12 µm)
-- HDF5 format with rich file-level and dataset-level attributes
-- Products: VNP46A1 (nighttime lights), VNP13A1 (vegetation index), surface reflectance
-
-**Implementation:**
-- Wraps `h5py` directly for pixel reads (same as HDF5Reader)
-- Extracts VIIRS-specific metadata from HDF5 file-level attrs (satellite, product, temporal)
-- Extracts dataset-level calibration attrs (scale_factor, add_offset, fill_value)
+- Wraps `h5py` directly for pixel reads
+- Extracts VIIRS-specific metadata from HDF5 file-level and dataset-level attributes
 - Auto-detects first suitable 2D+ numeric dataset or accepts explicit path
 - Populates `VIIRSMetadata` dataclass with satellite, temporal, spatial, and calibration fields
-
-## Memory Management
-
-### Lazy Loading Strategy
-
-```python
-# Constructor: Load only metadata (~KB)
-reader = SICDReader('large_image.nitf')  # Fast, ~MB of memory
-
-# Chip read: Load only requested region
-chip = reader.read_chip(0, 1024, 0, 1024)  # ~8MB for 1024×1024 complex
-
-# Full read: Load entire image
-full = reader.read_full()  # Could be GB - use with caution
-```
-
-### Complex Data Memory Footprint
-
-| Data Type | Bytes/Pixel | 1K×1K | 10K×10K | 50K×50K |
-|-----------|-------------|-------|---------|---------|
-| complex64 | 8 | 8 MB | 800 MB | 20 GB |
-| float32 (magnitude) | 4 | 4 MB | 400 MB | 10 GB |
-| uint8 (quantized) | 1 | 1 MB | 100 MB | 2.5 GB |
-
-**Implication**: Convert to magnitude early if phase not needed.
-
-### Chunked Processing Pattern
-
-For images that don't fit in memory, use `ChipExtractor` from `grdl.data_prep` to plan chip regions instead of hand-rolling index arithmetic. `ChipExtractor` handles boundary snapping and uniform chip sizing:
-
-```python
-from grdl.data_prep import ChipExtractor
-
-def process_large_image(reader, chunk_size=1024):
-    rows, cols = reader.get_shape()
-    extractor = ChipExtractor(nrows=rows, ncols=cols)
-
-    for region in extractor.chip_positions(row_width=chunk_size,
-                                           col_width=chunk_size):
-        chip = reader.read_chip(region.row_start, region.row_end,
-                                region.col_start, region.col_end)
-        result = process(chip)
-        writer.write_chip(result, region.row_start, region.col_start)
-```
-
-For overlapping tiles (e.g., ML inference with context padding), use `Tiler`:
-
-```python
-from grdl.data_prep import Tiler
-
-tiler = Tiler(nrows=rows, ncols=cols, tile_size=256, stride=128)
-for region in tiler.tile_positions():
-    chip = reader.read_chip(region.row_start, region.row_end,
-                            region.col_start, region.col_end)
-```
-
-This pattern is enabled by:
-- `ChipExtractor` / `Tiler` - index-only chip planning with boundary snapping
-- `read_chip()` - spatial subsetting driven by `ChipRegion` bounds
-- `write_chip()` - incremental writes
-- Standardized indexing across all readers
 
 ## Error Handling Strategy
 
@@ -628,222 +445,96 @@ Built-in exceptions (still raised by IO module):
 ```
 
 Downstream consumers (e.g., GRDK's `WorkflowExecutor`) can catch `GrdlError` to handle
-all GRDL-specific errors distinctly from Python builtins, or catch the built-in base
-class (`ValueError`, `ImportError`, etc.) for backward-compatible handling.
+all GRDL-specific errors, or catch the built-in base class (`ValueError`, `ImportError`,
+etc.) for backward-compatible handling.
 
 ### Graceful Degradation
 
 Readers check for dependencies and fail fast:
 
 ```python
+from grdl.exceptions import DependencyError
+
 if not SARPY_AVAILABLE:
-    raise ImportError("SARPY required. Install: pip install sarpy")
+    raise DependencyError("sarpy required. Install: pip install sarpy")
 ```
 
-**Design Rationale:**
-- Fails at import time, not deep in execution
+- Fails at construction time, not deep in execution
 - Clear error message with installation command
 - Allows partial installation (e.g., only rasterio, no sarpy)
 
 ### Validation Strategy
 
-**File Existence**: Checked in `ImageReader.__init__`
-- Fails fast before attempting format-specific parsing
-- Prevents confusing backend errors
+- **File Existence**: Checked in `ImageReader.__init__` -- fails fast before format-specific parsing
+- **Index Bounds**: Checked in `read_chip()` -- prevents backend crashes with cryptic messages
+- **Format Validation**: Delegated to backend libraries (sarkit, sarpy, rasterio) -- trust authoritative implementations
 
-**Index Bounds**: Checked in `read_chip()`
-- Prevents backend crashes with cryptic messages
-- Provides clear "index out of bounds" errors
+## Memory Management
 
-**Format Validation**: Delegated to backend (SARPY, rasterio)
-- They have comprehensive format validators
-- Don't reimplement complex format checking
-- Trust authoritative libraries
-
-## Type System
-
-All public APIs have full type hints:
+### Lazy Loading Strategy
 
 ```python
-def read_chip(
-    self,
-    row_start: int,
-    row_end: int,
-    col_start: int,
-    col_end: int,
-    bands: Optional[List[int]] = None
-) -> np.ndarray:
+reader = SICDReader('large_image.nitf')  # Constructor: metadata only (~KB)
+chip = reader.read_chip(0, 1024, 0, 1024)  # ~8MB for 1024x1024 complex
+full = reader.read_full()  # Could be GB - use with caution
 ```
 
-**Benefits:**
-- IDE autocomplete and inline documentation
-- Static type checking with mypy
-- Runtime validation with typeguard (optional)
-- Self-documenting code
+### Complex Data Memory Footprint
 
-**Conventions:**
-- `Union[str, Path]` for file paths (accept both)
-- `Optional[X]` for nullable parameters
-- Typed dataclasses for metadata (`ImageMetadata`, `SICDMetadata`, etc.) with ~60 nested types in `grdl.IO.models`
-- `np.ndarray` without shape hints (too complex, varies by reader)
+| Data Type | Bytes/Pixel | 1Kx1K | 10Kx10K | 50Kx50K |
+|-----------|-------------|-------|---------|---------|
+| complex64 | 8 | 8 MB | 800 MB | 20 GB |
+| float32 (magnitude) | 4 | 4 MB | 400 MB | 10 GB |
+| uint8 (quantized) | 1 | 1 MB | 100 MB | 2.5 GB |
 
-## Testing Strategy
+Convert to magnitude early if phase is not needed.
 
-### Unit Tests
+### Chunked Processing
 
-Each reader/module has a dedicated test suite. Shared fixtures live in `tests/conftest.py`:
-- `tests/test_io_biomass.py` - BIOMASS reader, metadata, chip I/O, geolocation
-- `tests/test_geolocation_biomass.py` - GCP geolocation, round-trip accuracy
-- `tests/test_image_processing_ortho.py` - Orthorectification with synthetic data
-- `tests/test_image_processing_decomposition.py` - Pauli decomposition
-- `tests/test_image_processing_detection.py` - Detection models, geo-registration, GeoJSON
-- `tests/test_image_processing_versioning.py` - Processor versioning decorator
-- `tests/test_image_processing_tunable.py` - Tunable parameter validation
-- `tests/test_coregistration.py` - Coregistration tests
-- `tests/test_benchmarks.py` - Performance benchmarks (pytest-benchmark)
+Use `ChipExtractor` or `Tiler` from `grdl.data_prep` for chip/tile planning instead of hand-rolling index arithmetic:
 
-### Test Data
-
-Small synthetic files in `tests/data/`:
-- Avoid large real-world data in repo
-- Generate minimal valid files for format testing
-- Use SARPY's test data generators for SICD/CPHD
-
-### Mock Strategy
-
-For testing without dependencies:
 ```python
-@unittest.mock.patch('grdl.IO.sar.SARPY_AVAILABLE', False)
-def test_sicd_import_error():
-    with pytest.raises(ImportError):
-        SICDReader('dummy.nitf')
+from grdl.data_prep import ChipExtractor
+
+def process_large_image(reader, chunk_size=1024):
+    rows, cols = reader.get_shape()
+    extractor = ChipExtractor(nrows=rows, ncols=cols)
+
+    for region in extractor.chip_positions(row_width=chunk_size,
+                                           col_width=chunk_size):
+        chip = reader.read_chip(region.row_start, region.row_end,
+                                region.col_start, region.col_end)
+        result = process(chip)
+        writer.write_chip(result, region.row_start, region.col_start)
 ```
 
 ## Future Extensions
 
 ### Planned Readers
 
-1. **CRSD** (Compensated Received Signal Data)
-   - NGA standard for raw signal data
-   - Use SARPY backend (supports CRSD 1.0)
-   - Similar to CPHD reader structure
-
-2. **SLC** (Single Look Complex)
-   - Focused complex SAR (like SICD but less metadata)
-   - Often in GeoTIFF format
-   - Use rasterio backend with SAR-specific metadata parsing
-
-3. **EO GeoTIFF**
-   - Standard optical imagery
-   - Already supported by GeoTIFFReader at IO base level
-   - Handle multi-band (RGB, multispectral)
-
-### Planned Writers
-
-Implement `ImageWriter` subclasses:
-- `GeoTIFFWriter` - Generic raster output
-- `SICDWriter` - SICD format (via SARPY)
-- `GeoJSONWriter` - Vector output
+- **Landsat OLI** -- EO GeoTIFF with band-specific metadata
+- **HLS** (Harmonized Landsat Sentinel) -- Cloud-optimized GeoTIFFs
+- **MODIS** -- HDF-EOS2 multispectral products
+- **EMIT / PRISMA / EnMAP** -- Hyperspectral HDF5 / NetCDF products
 
 ### Cloud Support
 
-Add support for cloud-native formats:
-- COG (Cloud-Optimized GeoTIFF) via rasterio
+- COG (Cloud-Optimized GeoTIFF) via rasterio (partially supported via GeoTIFFReader)
 - Zarr for chunked array storage
 - S3/GCS readers with fsspec backend
 
 ### Catalog Extension
 
-`BIOMASSCatalog` is fully implemented with local discovery, ESA MAAP STAC search,
-OAuth2 download, and SQLite tracking. Future catalog work:
 - Generic `ImageCatalog` supporting multiple missions and formats
 - PostGIS backend for large-scale deployments
 - Spatial indexing (R-tree, quad-tree)
-- Metadata caching for fast queries
-
-## Dependencies Rationale
-
-### SARPY
-- **Pros**: Official NGA implementation, comprehensive SICD/CPHD/CRSD support, actively maintained
-- **Cons**: Heavy dependency chain, GDAL dependency can be tricky
-- **Alternative**: Roll our own NITF parser (rejected - massive complexity)
-
-### Rasterio
-- **Pros**: Industry standard, excellent GDAL wrapper, handles all raster formats
-- **Cons**: GDAL dependency (system-level install complexity)
-- **Alternative**: PIL/Pillow (rejected - no georeferencing support)
-
-### NumPy
-- **Pros**: Universal array library, GRDL already depends on it
-- **Cons**: None
-- **Alternative**: None viable
-
-## Performance Considerations
-
-### Benchmark Targets
-
-| Operation | Target Latency | Notes |
-|-----------|----------------|-------|
-| Constructor (metadata only) | <100ms | Even for large files |
-| 1K×1K chip read | <50ms | From local SSD |
-| 10K×10K chip read | <500ms | Complex data, includes decode |
-| Full metadata extraction | <200ms | All available fields |
-
-### Optimization Opportunities
-
-1. **Metadata Caching**: Serialize metadata to sidecar files
-   - Avoid re-parsing NITF headers
-   - Especially valuable for SICD (rich metadata)
-
-2. **Chunk Size Tuning**: Align with format internal blocking
-   - NITF often uses 256×256 or 512×512 blocks
-   - GeoTIFF tiles commonly 256×256 or 512×512
-   - Reading aligned regions is faster
-
-3. **Parallel Reading**: Multi-threaded chip extraction
-   - GIL released in NumPy/rasterio C code
-   - Can parallelize across spatial regions
-   - Especially effective for large full-image reads
 
 ## API Stability
 
-**Semantic Versioning:**
-- Breaking changes to base.py increment major version
+- Breaking changes to `base.py` increment major version
 - New readers/features increment minor version
 - Bug fixes increment patch version
-
-**Processor Versioning:**
-To support both formal, long-term development and rapid prototyping, processor versioning is designed to be flexible. All image processors can be decorated with `@processor_version` to explicitly set their version.
-
-If the `@processor_version` decorator is used without an argument, or not at all, the processor automatically inherits the project-wide version from the package metadata (defined in `pyproject.toml`). This provides a graceful fallback, ensuring that every processor has a version string. This is critical for downstream tools like GRDK, which rely on this metadata for display and caching.
-
-- **Explicit Versioning**: For stable, production-ready processors, explicitly define the version to decouple it from the main project's release cycle. This is crucial for scientific users who need:
-    - **Reproducibility**: To ensure that scientific results obtained with a specific processor version can be replicated consistently over time, independent of subsequent library updates.
-    - **Stability for Research**: To provide control over when changes to the processor are adopted, preventing unexpected alterations to research workflows that rely on a specific algorithm's behavior.
-    - **Independence from Library Release Cycles**: To guarantee a processor's behavior remains fixed even if the main GRDL library undergoes minor or major updates, which might introduce changes to other components.
-  ```python
-  @processor_version('1.2.0')
-  class MyStableProcessor(ImageTransform):
-      ...
-  ```
-
-- **Implicit Versioning**: For rapid development or processors that version in lock-step with the library, omit the version argument.
-  ```python
-  @processor_version
-  class MyRapidProcessor(ImageTransform):
-      ...
-  ```
-This dual approach allows developers to move fast while maintaining a consistent and reliable versioning scheme across the entire system.
-
-**Deprecation Policy:**
-- 2 minor version warning period
-- Use Python warnings module
-- Suggest migration path in warning message
-
-**Backwards Compatibility:**
-- Abstract base classes are the stability contract
-- Format-specific extensions may change more freely
-- Document which APIs are "stable" vs "experimental"
+- Abstract base classes are the stability contract; format-specific extensions may change more freely
 
 ## Related Documentation
 

@@ -18,7 +18,7 @@ rasterio
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-24
+2026-03-10
 """
 
 # Standard library
@@ -51,6 +51,7 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.geotiff import GeoTIFFReader
 from grdl.IO.models import ASTERMetadata
@@ -308,7 +309,7 @@ class ASTERReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for ASTER reading. "
                 "Install with: pip install rasterio"
             )

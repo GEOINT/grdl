@@ -32,10 +32,12 @@ Created
 
 Modified
 --------
-2026-02-25
+2026-04-17  Extract Doppler centroid 2D LUT from processingInformation.
+2026-03-10
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -49,7 +51,9 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.nisar import (
     NISARMetadata,
     NISARIdentification,
@@ -59,8 +63,11 @@ from grdl.IO.models.nisar import (
     NISARGridParameters,
     NISARGeolocationGrid,
     NISARCalibration,
+    NISARDopplerCentroid,
     NISARProcessingInfo,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -190,15 +197,30 @@ class NISARReader(ImageReader):
         filepath: Union[str, Path],
         frequency: Optional[str] = None,
         polarization: Optional[str] = None,
+        polarizations: Optional[Union[str, List[str]]] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "Reading NISAR products requires h5py. "
                 "Install with: pip install h5py"
+            )
+        if polarization is not None and polarizations is not None:
+            raise ValueError(
+                "Specify only one of 'polarization' (single-pol YX) or "
+                "'polarizations' (multi-pol CYX), not both."
             )
 
         self._requested_frequency = frequency
         self._requested_polarization = polarization
+
+        # Multi-pol CYX mode
+        self._multi_pol: bool = polarizations is not None
+        if polarizations == 'all' or polarizations == []:
+            self._requested_polarizations: List[str] = []   # resolved at load time
+        elif polarizations is None:
+            self._requested_polarizations = []
+        else:
+            self._requested_polarizations = [p.upper() for p in polarizations]
 
         # Will be set in _load_metadata
         self._file: Optional["h5py.File"] = None
@@ -210,6 +232,8 @@ class NISARReader(ImageReader):
         self._available_frequencies: List[str] = []
         self._available_polarizations: List[str] = []
         self._imagery_path: str = ''
+        self._active_polarizations: List[str] = []
+        self._imagery_paths: List[str] = []
 
         super().__init__(filepath)
 
@@ -281,6 +305,11 @@ class NISARReader(ImageReader):
             return pols
 
         # Fallback: enumerate dataset names matching polarization codes
+        logger.warning(
+            "NISAR listOfPolarizations not found; falling back to "
+            "dataset enumeration for frequency %s",
+            self._frequency,
+        )
         pol_names = {'HH', 'HV', 'VH', 'VV'}
         pols = sorted(
             k for k in freq_group.keys()
@@ -306,10 +335,14 @@ class NISARReader(ImageReader):
 
     def _resolve_imagery_path(self) -> str:
         """Build the full HDF5 path to the imagery dataset."""
+        return self._resolve_imagery_path_for(self._polarization)
+
+    def _resolve_imagery_path_for(self, pol: str) -> str:
+        """Build the HDF5 path to the imagery dataset for a given polarization."""
         container = 'swaths' if self._product_type == 'RSLC' else 'grids'
         return (
             f'{self._base_path}/{container}/'
-            f'frequency{self._frequency}/{self._polarization}'
+            f'frequency{self._frequency}/{pol}'
         )
 
     # ---------------------------------------------------------------
@@ -489,6 +522,45 @@ class NISARReader(ImageReader):
             gamma0=_read_array(grp, 'gamma0'),
         )
 
+    def _extract_doppler_centroid(self) -> Optional[NISARDopplerCentroid]:
+        """Extract the RSLC Doppler centroid 2D LUT.
+
+        Located at ``processingInformation/parameters/frequency{A|B}/``
+        per NISAR L1 RSLC spec JPL D-102268 Rev E, §5. The grid is
+        stored on (zero-Doppler time × slant range) — no polynomial.
+        """
+        params_path = (
+            f'{self._base_path}/metadata/processingInformation/'
+            f'parameters/frequency{self._frequency}'
+        )
+        if params_path not in self._file:
+            return None
+        grp = self._file[params_path]
+
+        doppler = _read_array(grp, 'dopplerCentroid')
+        if doppler is None:
+            return None
+
+        # Estimation algorithm name from sibling algorithms group
+        algo_path = (
+            f'{self._base_path}/metadata/processingInformation/algorithms'
+        )
+        estimation_algorithm = None
+        if algo_path in self._file:
+            estimation_algorithm = _read_scalar_str(
+                self._file[algo_path], 'dopplerCentroidEstimation'
+            )
+
+        return NISARDopplerCentroid(
+            doppler_centroid=doppler,
+            zero_doppler_time=_read_array(grp, 'zeroDopplerTime'),
+            slant_range=_read_array(grp, 'slantRange'),
+            reference_epoch=_read_time_reference(grp, 'zeroDopplerTime'),
+            reference_terrain_height=_read_array(
+                grp, 'referenceTerrainHeight'),
+            estimation_algorithm=estimation_algorithm,
+        )
+
     def _extract_processing_info(self) -> Optional[NISARProcessingInfo]:
         """Extract processing information."""
         proc_path = f'{self._base_path}/metadata/processingInformation'
@@ -533,10 +605,38 @@ class NISARReader(ImageReader):
         self._available_frequencies = self._discover_frequencies()
         self._frequency = self._resolve_frequency()
         self._available_polarizations = self._discover_polarizations()
-        self._polarization = self._resolve_polarization()
 
-        # Resolve imagery dataset path
-        self._imagery_path = self._resolve_imagery_path()
+        if self._multi_pol:
+            # Resolve which pols to load
+            if not self._requested_polarizations:  # 'all'
+                self._active_polarizations = list(self._available_polarizations)
+            else:
+                invalid = set(self._requested_polarizations) - set(self._available_polarizations)
+                if invalid:
+                    raise ValueError(
+                        f"Requested polarizations {sorted(invalid)} not available. "
+                        f"Available: {self._available_polarizations}"
+                    )
+                self._active_polarizations = self._requested_polarizations
+            self._imagery_paths = [
+                self._resolve_imagery_path_for(pol)
+                for pol in self._active_polarizations
+            ]
+            # Use first pol as primary for geometry / metadata
+            self._polarization = self._active_polarizations[0]
+            self._imagery_path = self._imagery_paths[0]
+        else:
+            self._polarization = self._resolve_polarization()
+            self._imagery_path = self._resolve_imagery_path()
+
+        logger.debug(
+            "NISAR band=%s, product=%s, frequencies=%s, polarizations=%s",
+            self._radar_band,
+            self._product_type,
+            self._available_frequencies,
+            self._available_polarizations,
+        )
+
         ds = self._file[self._imagery_path]
         rows, cols = ds.shape
         dtype_str = str(ds.dtype)
@@ -558,6 +658,10 @@ class NISARReader(ImageReader):
             if self._product_type == 'RSLC' else None
         )
         calibration = self._extract_calibration()
+        doppler_centroid = (
+            self._extract_doppler_centroid()
+            if self._product_type == 'RSLC' else None
+        )
         processing = self._extract_processing_info()
 
         # Determine CRS
@@ -566,12 +670,47 @@ class NISARReader(ImageReader):
             if grid_params.epsg is not None:
                 crs = f'EPSG:{grid_params.epsg}'
 
+        if self._multi_pol:
+            channel_metadata = [
+                ChannelMetadata(
+                    index=i,
+                    name=f'{self._frequency}_{pol}' if self._frequency else pol,
+                    role='measurement',
+                    polarization=pol,
+                    frequency=self._frequency,
+                    source_indices=[i],
+                )
+                for i, pol in enumerate(self._active_polarizations)
+            ]
+            bands = len(self._active_polarizations)
+            axis_order = 'CYX'
+        else:
+            channel_metadata = [
+                ChannelMetadata(
+                    index=0,
+                    name=(
+                        f'{self._frequency}_{self._polarization}'
+                        if self._frequency and self._polarization
+                        else self._polarization or self._frequency or 'channel0'
+                    ),
+                    role='measurement',
+                    polarization=self._polarization,
+                    frequency=self._frequency,
+                    source_indices=[0],
+                )
+            ]
+            bands = 1
+            axis_order = 'YX'
+
         self.metadata = NISARMetadata(
             format=f'NISAR_{self._product_type}',
             rows=rows,
             cols=cols,
             dtype=dtype_str,
+            bands=bands,
             crs=crs,
+            axis_order=axis_order,
+            channel_metadata=channel_metadata,
             product_type=self._product_type,
             radar_band=self._radar_band,
             frequency=self._frequency,
@@ -585,7 +724,20 @@ class NISARReader(ImageReader):
             grid_parameters=grid_params,
             geolocation_grid=geolocation,
             calibration=calibration,
+            doppler_centroid=doppler_centroid,
             processing_info=processing,
+        )
+
+        pol_info = (','.join(self._active_polarizations)
+                    if self._multi_pol else self._polarization)
+        logger.info(
+            "Loaded NISAR %s %s (%d x %d) freq=%s pol=%s",
+            self._product_type,
+            self.filepath.name,
+            rows,
+            cols,
+            self._frequency,
+            pol_info,
         )
 
     def read_chip(
@@ -630,8 +782,13 @@ class NISARReader(ImageReader):
                 f"dimensions ({self.metadata.rows}, {self.metadata.cols})"
             )
 
-        ds = self._file[self._imagery_path]
-        return ds[row_start:row_end, col_start:col_end]
+        if self._multi_pol:
+            chips = [
+                self._file[path][row_start:row_end, col_start:col_end]
+                for path in self._imagery_paths
+            ]
+            return np.stack(chips, axis=0)   # (C, rows, cols)
+        return self._file[self._imagery_path][row_start:row_end, col_start:col_end]
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire image in a single h5py call.
@@ -639,22 +796,27 @@ class NISARReader(ImageReader):
         Parameters
         ----------
         bands : Optional[List[int]]
-            Ignored.
+            Ignored.  In multi-pol mode all polarizations are returned.
 
         Returns
         -------
         np.ndarray
-            Full image array.
+            Full image array.  Shape ``(rows, cols)`` for single-pol,
+            ``(C, rows, cols)`` for multi-pol (``polarizations=`` set).
         """
-        ds = self._file[self._imagery_path]
-        return ds[()]
+        if self._multi_pol:
+            return np.stack(
+                [self._file[path][()] for path in self._imagery_paths],
+                axis=0,
+            )
+        return self._file[self._imagery_path][()]
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)``.
         """
         return (self.metadata.rows, self.metadata.cols)
@@ -745,6 +907,7 @@ def open_nisar(
     filepath: Union[str, Path],
     frequency: Optional[str] = None,
     polarization: Optional[str] = None,
+    polarizations: Optional[Union[str, List[str]]] = None,
 ) -> NISARReader:
     """Open a NISAR RSLC or GSLC product.
 
@@ -758,22 +921,29 @@ def open_nisar(
     frequency : str, optional
         Frequency sub-band (``'A'`` or ``'B'``).  Auto-detects if None.
     polarization : str, optional
-        Polarization channel (``'HH'``, ``'HV'``, ``'VH'``, ``'VV'``).
-        Auto-detects if None.
+        Single polarization channel (``'HH'``, ``'HV'``, ``'VH'``, ``'VV'``).
+        Returns a ``(rows, cols)`` YX array.  Auto-detects if None.
+    polarizations : str or list of str, optional
+        Multiple polarization channels to load as a CYX cube.
+        Pass ``'all'`` for every available polarization, or a list such
+        as ``['HH', 'HV', 'VH', 'VV']``.  Mutually exclusive with
+        ``polarization``.
 
     Returns
     -------
     NISARReader
-        Reader instance for the selected frequency/polarization.
+        Reader instance.  ``metadata.axis_order`` is ``'CYX'`` when
+        ``polarizations`` is given, otherwise ``'YX'``.
 
     Examples
     --------
-    >>> from grdl.IO.sar.nisar import open_nisar
-    >>> reader = open_nisar('NISAR_L1_RSLC_example.h5')
-    >>> print(reader.metadata.product_type)
-    'RSLC'
+    >>> reader = open_nisar('NISAR.h5', polarizations='all')
+    >>> cube = reader.read_full()   # (C, rows, cols)
     >>> reader.close()
     """
     return NISARReader(
-        filepath, frequency=frequency, polarization=polarization
+        filepath,
+        frequency=frequency,
+        polarization=polarization,
+        polarizations=polarizations,
     )

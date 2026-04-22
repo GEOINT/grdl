@@ -8,7 +8,7 @@ and utility functions using synthetic image data with known transforms.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -281,9 +281,8 @@ class TestAffineCoRegistration:
         assert result.inlier_ratio == 1.0
         assert result.is_affine
 
-    def test_has_processor_version(self):
-        assert hasattr(AffineCoRegistration, '__processor_version__')
-        assert AffineCoRegistration.__processor_version__ == '0.1.0'
+    def test_no_processor_version(self):
+        assert not hasattr(AffineCoRegistration, '__processor_version__')
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +353,8 @@ class TestProjectiveCoRegistration:
         assert result.metadata['method'] == 'projective_dlt'
         assert result.is_projective
 
-    def test_has_processor_version(self):
-        assert hasattr(ProjectiveCoRegistration, '__processor_version__')
-        assert ProjectiveCoRegistration.__processor_version__ == '0.1.0'
+    def test_no_processor_version(self):
+        assert not hasattr(ProjectiveCoRegistration, '__processor_version__')
 
 
 # ---------------------------------------------------------------------------

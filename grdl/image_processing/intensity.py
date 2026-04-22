@@ -23,6 +23,10 @@ See LICENSE file for full text.
 Created
 -------
 2026-02-11
+
+Modified
+--------
+2026-03-09
 """
 
 # Standard library
@@ -91,9 +95,10 @@ class ToDecibels(ImageTransform):
         params = self._resolve_params(kwargs)
         floor = params['floor_db']
 
-        mag = np.abs(source)
-        db = 20.0 * np.log10(mag + np.finfo(np.float64).tiny)
-        np.maximum(db, floor, out=db)
+        xp = cp if (_HAS_CUPY and isinstance(source, cp.ndarray)) else np
+        mag = xp.abs(source)
+        db = 20.0 * xp.log10(mag + xp.finfo(xp.float64).tiny)
+        xp.maximum(db, floor, out=db)
         return db
 
 
@@ -155,6 +160,6 @@ class PercentileStretch(ImageTransform):
         vmin = float(xp.percentile(source, plow))
         vmax = float(xp.percentile(source, phigh))
         if vmax - vmin < np.finfo(np.float32).eps:
-            return np.zeros_like(source, dtype=np.float32)
+            return xp.zeros_like(source, dtype=np.float32)
         out = (source - vmin) / (vmax - vmin)
-        return np.clip(out, 0.0, 1.0).astype(np.float32)
+        return xp.clip(out, 0.0, 1.0).astype(np.float32)

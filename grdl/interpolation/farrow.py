@@ -39,7 +39,7 @@ IEEE Signal Processing Magazine, vol. 13, no. 1, pp. 30-60, Jan. 1996.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -371,7 +371,7 @@ class FarrowInterpolator(Interpolator):
         # Build neighbor index matrix: (M, kernel_length)
         # Shift so x_new falls between center-left (half-1) and
         # center-right (half), matching the polynomial centering.
-        offsets = np.arange(-half, half)
+        offsets = np.arange(-half, kl - half)
         neighbor_idx = idx[:, np.newaxis] + offsets[np.newaxis, :]
         neighbor_idx_clipped = np.clip(neighbor_idx, 0, n_in - 1)
 

@@ -15,7 +15,7 @@ sarpy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -29,9 +29,12 @@ Created
 
 Modified
 --------
-2026-02-11  Reversed projection backend preference: sarpy first (implements
+2026-03-10  Reversed projection backend preference: sarpy first (implements
             point_projection), sarkit fallback.
 """
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 _HAS_SARKIT = False
 _HAS_SARPY = False
@@ -77,7 +80,7 @@ def require_projection_backend(format_name: str) -> str:
         return 'sarpy'
     if _HAS_SARKIT:
         return 'sarkit'
-    raise ImportError(
+    raise DependencyError(
         f"Geolocation for {format_name} imagery requires sarpy "
         f"(sarpy.geometry.point_projection) or sarkit. "
         f"Install with: pip install sarpy"

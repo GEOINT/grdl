@@ -31,15 +31,125 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 
 | Task | Use this | Not this |
 |------|----------|----------|
-| Load any imagery format | `grdl.IO` readers | Raw `rasterio.open()` / `h5py.File()` |
+| Load any imagery format | `grdl.IO` readers (`SICDReader`, `NISARReader`, `Sentinel2Reader`, `EONITFReader`, ...) | Raw `rasterio.open()` / `h5py.File()` |
+| Write imagery to disk | `grdl.IO` writers (`GeoTIFFWriter`, `SICDWriter`, `NumpyWriter`, ...) | Raw write calls |
+| Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
 | Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
-| Image to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `GCPGeolocation`) | Manual affine math or GCP interpolation |
+| Image to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual affine math or GCP interpolation |
+| EO NITF geolocation (RPC/RSM) | `grdl.geolocation.eo.rpc` / `grdl.geolocation.eo.rsm` | Manual RPC polynomial evaluation |
+| Coordinate conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |
 | Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
-| SAR decomposition | `grdl.image_processing` | Manual complex arithmetic |
+| SAR decomposition | `grdl.image_processing` (`PauliDecomposition`, `DualPolHAlpha`) | Manual complex arithmetic |
+| Sub-aperture dominance | `grdl.image_processing.sar.dominance` (`compute_dominance`) | Manual sublook power ratios |
+| CSI RGB composite | `grdl.image_processing.sar.CSIProcessor` | Ad-hoc HSV mapping |
+| CFAR target detection | `grdl.image_processing.detection.cfar` (CA, GO, SO, OS) | Manual threshold loops |
+| SAR image formation | `grdl.image_processing.sar.image_formation` (PFA, RDA, FFBP) | Custom FFT pipelines |
+| Interpolation / resampling | `grdl.interpolation` (`PolyphaseInterpolator`, `LanczosInterpolator`, ...) | Manual sinc convolution |
 | Image alignment | `grdl.coregistration` | Custom OpenCV wrappers |
+| Transform detection geometries | `grdl.transforms` | Manual coordinate mapping |
+| Chip geolocation offset | `grdl.geolocation.ChipGeolocation` | Manual row/col offset arithmetic |
+| Auto-detect geolocation from reader | `grdl.geolocation.create_geolocation()` | Manual reader-type inspection |
 
-Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` for a full integration example.
+Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
+
+### DEM / Elevation Ownership
+
+**The geolocation object owns the DEM. The orthorectifier does not.**
+
+The `Geolocation` object (SICD, SIDD, RPC, etc.) is responsible for all coordinate transforms including terrain correction. Attach the DEM to `geo.elevation` and let the geolocation use it internally in its R/Rdot iteration. The orthorectifier maps coordinates *through* the geolocation object -- it does not accept an `elevation` parameter at all.
+
+```python
+# CORRECT: DEM lives on the geolocation object
+geo = SICDGeolocation.from_reader(reader, backend='native')
+geo.elevation = open_elevation(dted_path, geoid_path=geoid_path, ...)
+
+result = orthorectify(
+    geolocation=geo,       # geo.elevation handles terrain internally
+    reader=reader,
+    output_grid=grid,
+)
+```
+
+```python
+# WRONG: forgetting to set geo.elevation — R/Rdot has no terrain data
+geo = SICDGeolocation.from_reader(reader, backend='native')
+# geo.elevation is None — no DEM attached!
+
+result = orthorectify(
+    geolocation=geo,       # projects to height=0 (ellipsoid), ignoring terrain
+    reader=reader,
+    output_grid=grid,
+)
+```
+
+**Why this matters:**
+- SICD's native R/Rdot inverse checks `self.elevation` first and queries DEM directly -- if `geo.elevation` is not set, the projection falls back to the WGS84 ellipsoid (height=0), producing terrain-uncorrected output.
+- SIDD's R/Rdot inverse uses `self.elevation` when the caller passes `height=0.0`.
+- The orthorectifier has no `elevation` parameter. All terrain correction flows through `geo.elevation`.
+
+### Unified Height Resolution and NaN Fill
+
+All geolocation subclasses share two base-class methods for consistent DEM behavior. **Never reimplement height resolution or NaN fill inline** — call these instead.
+
+**`_resolve_height(height)`** — "What height when user passes 0.0?"
+
+Returns the explicit height if non-zero, otherwise falls back to `default_hae` (which each subclass overrides: SICD returns SCP HAE, SIDD returns reference point HAE, etc.). All paths — SICD, SIDD, RPC, RSM, Affine — go through this single method.
+
+**`_fill_nan_heights(dem_h, fallback_height)`** — "What to use when DEM has no coverage?"
+
+Fills NaN gaps in DEM-queried heights. Uses `fallback_height` if non-zero, otherwise `default_hae`. Every DEM NaN fill — base class wrapper, SICD inverse, SIDD inverse, projection.py — uses this method or a `nan_fill_height` parameter computed from it.
+
+```python
+# CORRECT: use base class methods
+hae = self._resolve_height(height)
+self._fill_nan_heights(dem_h, height)
+
+# WRONG: inline reimplementation
+hae = float(height) if height != 0.0 else self._get_scp_hae()  # don't do this
+dem_h[nan_mask] = hae  # don't do this
+```
+
+**DEM interpolation order** is configurable via the `interpolation` parameter on all geolocation constructors (default=3, bicubic). It flows through `_build_elevation_model` → `open_elevation` → the DEM backend.
+
+```python
+geo = SICDGeolocation(metadata, dem_path='/data/dted/', interpolation=1)  # bilinear
+geo = RPCGeolocation(rpc, shape=(4096, 4096), dem_path='/data/srtm.tif', interpolation=5)  # quintic
+```
+
+### API Style: Functions and Constructors over Fluent Chaining
+
+GRDL targets scientific Python developers who expect the NumPy/SciPy calling convention. **Prefer plain functions and constructors with keyword arguments** over fluent builder / method-chaining patterns.
+
+**Good (keyword arguments — Pythonic, debuggable, clear required vs optional):**
+```python
+result = orthorectify(
+    reader=reader,
+    geolocation=geo,
+    interpolation='bilinear',
+    output_grid=grid,
+)
+```
+
+**Avoid (fluent chaining — enterprise Java pattern, hard to debug, hides requirements):**
+```python
+result = (
+    OrthoBuilder()
+    .with_reader(reader)
+    .with_geolocation(geo)
+    .with_interpolation('bilinear')
+    .with_output_grid(grid)
+    .run()
+)
+```
+
+**When fluent builders are acceptable:** Only when construction is genuinely complex — conditional configuration across multiple steps, reuse of partially-configured builders, or validation that must happen across parameters before execution. Even then, provide a simple function entry point for the common case.
+
+**Why this matters:**
+- Stack traces point to the exact failing argument, not a collapsed chain
+- Autocomplete shows all parameters in one signature
+- Required vs optional is explicit in the function signature
+- Easier to set breakpoints and inspect intermediate state
 
 ### Fail Fast
 
@@ -203,61 +313,135 @@ class MedianFilter(ImageTransform):
 GRDL/
   grdl/
     exceptions.py            # Custom exception hierarchy (GrdlError → ValidationError, ProcessorError, etc.)
+    vocabulary.py            # Enum definitions (ImageModality, ProcessorCategory, DetectionType, etc.)
     py.typed                 # PEP 561 type stub marker
     IO/                      # Input/Output — format readers and writers
       base.py                # ImageReader / ImageWriter / CatalogInterface ABCs
-      geotiff.py             # GeoTIFFReader (rasterio), open_image()
-      hdf5.py                # HDF5Reader (h5py)
+      geotiff.py             # GeoTIFFReader, GeoTIFFWriter (rasterio)
+      hdf5.py                # HDF5Reader, HDF5Writer (h5py)
       jpeg2000.py            # JP2Reader (glymur)
-      nitf.py                # NITFReader (rasterio/GDAL)
+      nitf.py                # NITFReader, NITFWriter (rasterio/GDAL)
+      numpy_io.py            # NumpyWriter (.npy / .npz)
+      png.py                 # PngWriter
+      generic.py             # GDALFallbackReader, open_any()
+      probe.py               # InvasiveProbeReader (format sniffing)
       models/                # Typed metadata dataclasses
         base.py              # ImageMetadata base class
-        common.py            # Shared primitives (XYZ, LatLonHAE, Poly2D, ...)
+        common.py            # Shared primitives (XYZ w/ vector math, callable Poly1D/Poly2D/XYZPoly, ...)
         sicd.py              # SICDMetadata (~35 nested dataclasses)
         sidd.py              # SIDDMetadata (~25 nested dataclasses)
+        cphd.py              # CPHDMetadata
         biomass.py           # BIOMASSMetadata
         viirs.py             # VIIRSMetadata
         aster.py             # ASTERMetadata
+        sentinel1_slc.py     # Sentinel1SLCMetadata
+        sentinel2.py         # Sentinel2Metadata
+        terrasar.py          # TerraSARMetadata
+        nisar.py             # NISARMetadata
+        eo_nitf.py           # EONITFMetadata, RPCCoefficients, RSMCoefficients
       sar/                   # SAR modality submodule
         _backend.py          # sarkit/sarpy availability
-        sicd.py, cphd.py     # SICDReader, CPHDReader (sarkit/sarpy)
-        crsd.py, sidd.py     # CRSDReader, SIDDReader (sarkit)
+        sicd.py              # SICDReader (sarkit/sarpy)
+        sicd_writer.py       # SICDWriter
+        cphd.py              # CPHDReader (sarkit/sarpy)
+        crsd.py              # CRSDReader (sarkit)
+        sidd.py              # SIDDReader (sarkit)
+        sidd_writer.py       # SIDDWriter
         biomass.py           # BIOMASSL1Reader
         biomass_catalog.py   # BIOMASSCatalog
+        sentinel1_slc.py     # Sentinel1SLCReader
+        terrasar.py          # TerraSARReader, open_terrasar()
+        nisar.py             # NISARReader, open_nisar()
       ir/                    # IR/thermal modality submodule
         _backend.py          # rasterio/h5py availability
         aster.py             # ASTERReader (L1T, GDEM)
       multispectral/         # Multispectral modality submodule
         _backend.py          # h5py/xarray/spectral availability
         viirs.py             # VIIRSReader
-      eo/                    # EO modality submodule (scaffold)
+      eo/                    # EO modality submodule
         _backend.py          # rasterio/glymur availability
+        sentinel2.py         # Sentinel2Reader
+        nitf.py              # EONITFReader (RPC/RSM extraction)
+      catalog/               # Remote query, download & SQLite cataloging
+        remote_utils.py      # Shared credentials, token auth, streaming download
+        biomass_catalog.py   # BIOMASSCatalog (ESA MAAP STAC)
+        sentinel1_catalog.py # Sentinel1SLCCatalog (CDSE OData)
     geolocation/             # Image-to-geographic coordinate transforms with DEM integration
-      base.py                # Geolocation ABC, NoGeolocation
+      base.py                # Geolocation ABC, NoGeolocation, iterative DEM refinement
       utils.py               # Footprint, bounds, distance helpers
-      __init__.py            # Re-exports all public classes
+      coordinates.py         # geodetic_to_ecef, ecef_to_geodetic, geodetic_to_enu, enu_to_geodetic
+      projection.py          # COAProjection, image_to_ground_hae/dem, ground_to_image, wgs84_norm
+      chip.py                # ChipGeolocation (row/col offset wrapper for chipped images)
+      factory.py             # create_geolocation() (auto-detect geolocation from reader)
+      __init__.py            # Re-exports all public classes, ChipGeolocation, create_geolocation
       sar/                   # SAR geolocation submodule
         _backend.py          # sarpy/sarkit availability probing
         gcp.py               # GCPGeolocation (BIOMASS Delaunay interpolation)
-        sicd.py              # SICDGeolocation (SICD imagery via sarpy/sarkit)
+        sicd.py              # SICDGeolocation (native R/Rdot, sarpy, or sarkit)
+        sidd.py              # SIDDGeolocation (SIDD imagery)
+        nisar.py             # NISARGeolocation
+        sentinel1_slc.py     # Sentinel1SLCGeolocation
         __init__.py
       eo/                    # EO geolocation submodule
         _backend.py          # rasterio/pyproj availability probing
         affine.py            # AffineGeolocation (geocoded rasters, affine + pyproj)
+        rpc.py               # RPCGeolocation (RPC00B rational polynomials)
+        rsm.py               # RSMGeolocation (RSMPCA replacement sensor model)
         __init__.py
       elevation/             # Terrain elevation models
         _backend.py          # rasterio availability probing
         base.py              # ElevationModel ABC
         constant.py          # ConstantElevation (fixed-height fallback)
-        dted.py              # DTEDElevation (DTED tiles via rasterio)
+        dted.py              # DTEDElevation (DTED tiles, bicubic default, cross-tile stitching)
         geotiff_dem.py       # GeoTIFFDEM (GeoTIFF DEM via rasterio)
         geoid.py             # GeoidCorrection (EGM96 geoid undulation lookup)
         __init__.py
-    <domain>/                # Other top-level module areas
-      base.py                # ABCs defining the domain's contracts
-      <submodule>.py         # Concrete implementations
-      __init__.py            # Expose public API
-      <subdomain>/           # Nested subdomains (e.g. detection/, ortho/, decomposition/)
+    image_processing/        # Image transforms, detection, formation
+      base.py                # ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
+      params.py              # Range, Options, Desc, ParamSpec
+      versioning.py          # @processor_version, @processor_tags
+      pipeline.py            # Pipeline (sequential transform composition)
+      ortho/                 # Orthorectification
+        ortho.py             # OutputGridProtocol, validate_sub_grid_indices, GeographicGrid, Orthorectifier
+        ortho_builder.py     # OrthoBuilder, OrthoResult
+        enu_grid.py          # ENUGrid (local East-North-Up grid)
+        utm_grid.py          # UTMGrid (UTM projection grid)
+        web_mercator_grid.py # WebMercatorGrid (Web Mercator projection grid)
+        accelerated.py       # resample(), detect_backend()
+        resolution.py        # compute_output_resolution (auto pixel spacing from metadata)
+      decomposition/         # Polarimetric decomposition
+        base.py              # PolarimetricDecomposition ABC
+        pauli.py             # PauliDecomposition (quad-pol)
+        dual_pol.py          # DualPolHAlpha (dual-pol H/Alpha)
+      detection/             # Target detection
+        base.py              # ImageDetector ABC
+        models.py            # Detection, DetectionSet
+        fields.py            # Data dictionary (Fields.sar, Fields.physical, ...)
+        cfar/                # CFAR detector variants
+          _base.py           # CFARDetector ABC
+          ca.py              # CACFARDetector (Cell-Averaging)
+          go.py              # GOCFARDetector (Greatest-Of)
+          so.py              # SOCFARDetector (Smallest-Of)
+          os.py              # OSCFARDetector (Ordered-Statistics)
+      sar/                   # SAR-specific transforms
+        sublook.py           # SublookDecomposition (sub-aperture splitting)
+        csi.py               # CSIProcessor (Coherent Shape Index RGB)
+        dominance.py         # DominanceFeatures, compute_dominance, compute_sublook_entropy
+        image_formation/     # SAR image formation algorithms
+          pfa.py             # PolarFormatAlgorithm
+          rda.py             # RangeDopplerAlgorithm
+          ffbp.py            # FastBackProjection
+          stripmap_pfa.py    # StripmapPFA
+    interpolation/           # 1D bandwidth-preserving interpolation kernels
+      base.py                # Interpolator, KernelInterpolator ABCs
+      lanczos.py             # LanczosInterpolator
+      windowed_sinc.py       # KaiserSincInterpolator
+      lagrange.py            # LagrangeInterpolator
+      farrow.py              # FarrowInterpolator
+      polyphase.py           # PolyphaseInterpolator
+      thiran.py              # ThiranDelayFilter (IIR allpass)
+    transforms/              # Detection geometry transforms
+      detection.py           # transform_pixel_geometry, transform_detection, transform_detection_set
     data_prep/               # ML/AI data preparation — index-only chip/tile planning
       base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
       tiler.py               # Tiler (stride-based tile region computation)
@@ -279,12 +463,16 @@ Domain directories map to the module areas defined in the README:
 
 | Directory | Domain |
 |-----------|--------|
-| `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules) |
-| `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`) |
-| `geolocation/` | Image-to-geographic coordinate transforms with DEM integration (`sar/`, `eo/`, `elevation/` submodules) |
-| `image_processing/` | Orthorectification, polarimetric decomposition, SAR sublook, detection, versioning, tunable parameters, pipeline, transforms |
+| `IO/` | Format readers and writers (base formats + `sar/`, `ir/`, `multispectral/`, `eo/` modality submodules + writers) |
+| `IO/models/` | Typed metadata dataclasses (`SICDMetadata`, `SIDDMetadata`, `CPHDMetadata`, `BIOMASSMetadata`, `VIIRSMetadata`, `ASTERMetadata`, `Sentinel1SLCMetadata`, `Sentinel2Metadata`, `TerraSARMetadata`, `NISARMetadata`, `EONITFMetadata` + `RPCCoefficients`/`RSMCoefficients`) |
+| `geolocation/` | Image-to-geographic coordinate transforms with DEM integration (`sar/`, `eo/`, `elevation/` submodules + coordinate utilities + native R/Rdot projection engine + RPC/RSM geolocation) |
+| `image_processing/` | Orthorectification (+ ENUGrid, accelerated resampling), polarimetric decomposition (Pauli, DualPolHAlpha), SAR sublook/CSI/dominance, image formation (PFA, RDA, FFBP), CFAR detection, versioning, tunable parameters, pipeline |
+| `interpolation/` | 1D bandwidth-preserving interpolation kernels (Lanczos, Kaiser sinc, Lagrange, Farrow, Polyphase, Thiran) |
+| `transforms/` | Detection geometry transforms (apply coregistration to vector detections) |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
+| `IO/catalog/` | Remote query, download & SQLite cataloging (Sentinel-1, BIOMASS, etc.) |
+| `vocabulary.py` | Enum definitions (ImageModality, ProcessorCategory, DetectionType, SegmentationType) |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |
 | `ml/` | Feature extraction, annotation, dataset builders -- planned |
@@ -471,26 +659,27 @@ Performance is critical for processing large geospatial imagery. Follow these gu
 **Bad (loops):**
 ```python
 def transform_pixels(geo, rows, cols):
-    lats = []
-    lons = []
+    results = []
     for i in range(len(rows)):
         lat, lon, _ = geo.image_to_latlon(rows[i], cols[i])
-        lats.append(lat)
-        lons.append(lon)
-    return np.array(lats), np.array(lons)
+        results.append([lat, lon])
+    return np.array(results)
 ```
 
-**Good (pass arrays directly -- the same method handles both):**
+**Good (pass stacked array directly -- the same method handles both):**
 ```python
-def transform_pixels(geo, rows: np.ndarray, cols: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    lats, lons, _ = geo.image_to_latlon(rows, cols)
-    return lats, lons
+def transform_pixels(geo, pixels: np.ndarray) -> np.ndarray:
+    # pixels is (N, 2) with columns [row, col]
+    coords = geo.image_to_latlon(pixels)  # returns (N, 3) [lat, lon, h]
+    return coords[:, :2]                   # (N, 2) [lat, lon]
 ```
 
-### Unified Scalar/Array Methods
+### Stacked ndarray API (Unified Scalar/Array Methods)
 
-- Public methods should accept scalar, list, or ndarray inputs and return matching types.
-- Implement a single abstract method operating on arrays. The base class handles scalar/array dispatch.
+- Public methods return **stacked ndarrays**: `image_to_latlon` returns `(3,)` for scalar or `(N, 3)` for batch; `latlon_to_image` returns `(2,)` or `(N, 2)`.
+- Scalar tuple unpacking still works: `lat, lon, h = geo.image_to_latlon(500, 1000)`.
+- Batch input uses an `(N, 2)` stacked array (not separate row/col arrays).
+- The **internal** abstract method `_image_to_latlon_array` still operates on separate arrays and returns `Tuple[np.ndarray, np.ndarray, np.ndarray]` -- subclasses do not change.
 - Do not provide separate `*_batch()` methods. One method handles both cases.
 
 **Example:**
@@ -500,24 +689,39 @@ class Geolocation(ABC):
     def _image_to_latlon_array(
         self, rows: np.ndarray, cols: np.ndarray, height: float = 0.0
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Subclasses implement vectorized array transform."""
+        """Subclasses implement vectorized array transform.
+
+        INTERNAL contract: accepts separate 1-D arrays, returns separate
+        1-D arrays. The public method stacks the result.
+        """
         pass
 
     def image_to_latlon(
         self,
-        row: Union[float, list, np.ndarray],
-        col: Union[float, list, np.ndarray],
-        height: float = 0.0
-    ) -> Union[Tuple[float, float, float],
-               Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Public method: scalar in → scalar out, array in → array out."""
-        scalar = _is_scalar(row) and _is_scalar(col)
-        rows_arr = _to_array(row)
-        cols_arr = _to_array(col)
-        lats, lons, heights = self._image_to_latlon_array(rows_arr, cols_arr, height)
-        if scalar:
-            return (float(lats[0]), float(lons[0]), float(heights[0]))
-        return lats, lons, heights
+        row_or_pixels: Union[float, np.ndarray],
+        col: Optional[float] = None,
+        height: float = 0.0,
+    ) -> np.ndarray:
+        """Public method: returns stacked ndarray.
+
+        Scalar: geo.image_to_latlon(500, 1000) → (3,) [lat, lon, h]
+        Batch:  geo.image_to_latlon(pixels_Nx2) → (N, 3)
+        Tuple unpacking works: lat, lon, h = geo.image_to_latlon(r, c)
+        """
+        if col is not None:
+            # Scalar call
+            rows_arr = _to_array(row_or_pixels)
+            cols_arr = _to_array(col)
+            lats, lons, heights = self._image_to_latlon_array(
+                rows_arr, cols_arr, height,
+            )
+            return np.array([lats[0], lons[0], heights[0]])
+        # Stacked (N, 2) call
+        pixels = np.asarray(row_or_pixels)
+        lats, lons, heights = self._image_to_latlon_array(
+            pixels[:, 0], pixels[:, 1], height,
+        )
+        return np.column_stack([lats, lons, heights])
 ```
 
 ### NumPy Best Practices
@@ -558,19 +762,39 @@ Three files must be kept synchronized:
 | `requirements.txt` (if it exists) | Development convenience — pinned versions for reproducible environments | `pip freeze > requirements.txt` after updating dependencies in `pyproject.toml` and installing |
 | `.github/workflows/publish.yml` | PyPI publication — **DO NOT EDIT this file manually** (it extracts version from `pyproject.toml` automatically) | No action needed; the workflow reads `version` from `pyproject.toml` |
 
-**Workflow:**
+**Dependency workflow:**
 1. Update dependencies in `pyproject.toml` (add new packages, change versions, create/rename extras)
 2. Install dependencies: `pip install -e ".[all,dev]"` (or appropriate extras for your work)
 3. If `requirements.txt` exists in this project, regenerate it: `pip freeze > requirements.txt`
 4. Commit both files
-5. When creating a release, bump the `version` field in `pyproject.toml` (semantic versioning: `major.minor.patch`)
-6. Create a git tag (e.g., `v0.2.0`) and push — the publish workflow triggers automatically
 
-### Versioning for PyPI
+### Publishing to PyPI
 
-- Versions follow **semantic versioning**: `major.minor.patch` (e.g., `0.1.0`, `1.2.3`)
-- Update `version = "X.Y.Z"` in `pyproject.toml` before creating a release
-- The publish workflow extracts the version automatically — no manual version extraction needed
+The publish workflow (`.github/workflows/publish.yml`) triggers on **GitHub Release creation** (`release: [published]`), **not** on tag push alone. Pushing a tag without creating a release will not publish.
+
+**Release steps:**
+1. Bump `version` in `pyproject.toml` (semantic versioning: `major.minor.patch`)
+2. Commit and push:
+   ```bash
+   git add pyproject.toml
+   git commit -m "Bump version to X.Y.Z"
+   git push origin main
+   ```
+3. Create a git tag matching the version:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+4. Create a GitHub Release from the tag — this triggers the publish workflow:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes "Release notes here"
+   ```
+5. Verify the workflow succeeded:
+   ```bash
+   gh run list --limit 1
+   ```
+
+The workflow builds wheels via `python -m build` and publishes to PyPI with OIDC trusted publishing (no API keys). Artifacts are available at [pypi.org/p/grdl](https://pypi.org/p/grdl).
 
 ### Dependency Rules
 
@@ -597,7 +821,9 @@ Three files must be kept synchronized:
 
 **Environment setup** (conda-forge preferred):
 ```bash
+conda env create -f environment.yml   # first time
 conda activate grdl
+pip install -e .
 ```
 
 **Import rules:**

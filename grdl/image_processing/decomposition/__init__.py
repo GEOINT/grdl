@@ -26,7 +26,7 @@ When to Use What
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -46,9 +46,19 @@ Modified
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
 from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
+from grdl.image_processing.decomposition.pol_matrix import (
+    CovarianceMatrix,
+    CoherencyMatrix,
+    StokesVector,
+    KennaughMatrix,
+)
 
 __all__ = [
     'PolarimetricDecomposition',
     'PauliDecomposition',
     'DualPolHAlpha',
+    'CovarianceMatrix',
+    'CoherencyMatrix',
+    'StokesVector',
+    'KennaughMatrix',
 ]

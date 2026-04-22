@@ -509,6 +509,10 @@ class TestNISARReaderRSLC:
             # First available is HH
             assert reader.metadata.polarization == 'HH'
             assert reader.get_available_polarizations() == ['HH', 'HV']
+            assert reader.metadata.channel_metadata is not None
+            assert reader.metadata.channel_metadata[0].name == 'A_HH'
+            assert reader.metadata.channel_metadata[0].polarization == 'HH'
+            assert reader.metadata.channel_metadata[0].frequency == 'A'
 
     def test_explicit_polarization_selection(self, synthetic_nisar_rslc):
         from grdl.IO.sar.nisar import NISARReader

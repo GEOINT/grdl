@@ -13,7 +13,7 @@ pytest
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -209,38 +209,40 @@ class TestForwardTransform:
         create=True,
     )
     def test_scalar_forward(self, mock_proj, geo):
-        """Test scalar image_to_latlon returns tuple of floats."""
+        """Test scalar image_to_latlon returns (3,) ndarray."""
         with patch(
             'sarpy.geometry.point_projection.image_to_ground_geo',
             side_effect=_mock_image_to_ground_geo,
         ):
-            lat, lon, h = geo.image_to_latlon(500.0, 1000.0)
-            assert isinstance(lat, float)
-            assert isinstance(lon, float)
-            assert isinstance(h, float)
+            result = geo.image_to_latlon(500.0, 1000.0)
+            assert isinstance(result, np.ndarray)
+            assert result.shape == (3,)
+            # Tuple unpacking still works
+            lat, lon, h = result
 
     @patch(
         'sarpy.geometry.point_projection.image_to_ground_geo',
         side_effect=_mock_image_to_ground_geo,
     )
     def test_array_forward(self, mock_proj, geo):
-        """Test array image_to_latlon returns arrays."""
+        """Test array image_to_latlon returns (N, 3) ndarray."""
         rows = np.array([0.0, 500.0, 1000.0])
         cols = np.array([0.0, 2000.0, 4000.0])
-        lats, lons, heights = geo.image_to_latlon(rows, cols)
+        result = geo.image_to_latlon(np.column_stack([rows, cols]))
+        assert result.shape == (3, 3)
+        lats, lons, heights = result[:, 0], result[:, 1], result[:, 2]
         assert lats.shape == (3,)
-        assert lons.shape == (3,)
-        assert heights.shape == (3,)
 
     @patch(
         'sarpy.geometry.point_projection.image_to_ground_geo',
         side_effect=_mock_image_to_ground_geo,
     )
-    def test_stacked_2xN_forward(self, mock_proj, geo):
-        """Test (2,N) stacked array image_to_latlon returns (3,N)."""
+    def test_stacked_Nx2_forward(self, mock_proj, geo):
+        """Test (N, 2) stacked array image_to_latlon returns (N, 3)."""
         pts = np.array([
-            [0.0, 500.0, 1000.0],
-            [0.0, 2000.0, 4000.0],
+            [0.0, 0.0],
+            [500.0, 2000.0],
+            [1000.0, 4000.0],
         ])
         result = geo.image_to_latlon(pts)
         assert result.shape == (3, 3)
@@ -253,7 +255,7 @@ class TestForwardTransform:
         """Verify sarpy receives Nx2 array of [row, col]."""
         rows = np.array([100.0, 200.0])
         cols = np.array([300.0, 400.0])
-        geo.image_to_latlon(rows, cols)
+        geo.image_to_latlon(np.column_stack([rows, cols]))
 
         call_args = mock_proj.call_args
         im_points = call_args[0][0]
@@ -274,35 +276,39 @@ class TestInverseTransform:
         side_effect=_mock_ground_to_image_geo,
     )
     def test_scalar_inverse(self, mock_proj, geo):
-        """Test scalar latlon_to_image returns tuple of floats."""
-        row, col = geo.latlon_to_image(34.05, -118.25)
-        assert isinstance(row, float)
-        assert isinstance(col, float)
+        """Test scalar latlon_to_image returns (2,) ndarray."""
+        result = geo.latlon_to_image(34.05, -118.25)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (2,)
+        # Tuple unpacking still works
+        row, col = result
 
     @patch(
         'sarpy.geometry.point_projection.ground_to_image_geo',
         side_effect=_mock_ground_to_image_geo,
     )
     def test_array_inverse(self, mock_proj, geo):
-        """Test array latlon_to_image returns arrays."""
+        """Test array latlon_to_image returns (N, 2) ndarray."""
         lats = np.array([34.0, 34.5, 35.0])
         lons = np.array([-118.0, -117.5, -117.0])
-        rows, cols = geo.latlon_to_image(lats, lons)
+        result = geo.latlon_to_image(np.column_stack([lats, lons, np.zeros(3)]))
+        assert result.shape == (3, 2)
+        rows, cols = result[:, 0], result[:, 1]
         assert rows.shape == (3,)
-        assert cols.shape == (3,)
 
     @patch(
         'sarpy.geometry.point_projection.ground_to_image_geo',
         side_effect=_mock_ground_to_image_geo,
     )
-    def test_stacked_2xN_inverse(self, mock_proj, geo):
-        """Test (2,N) stacked array latlon_to_image returns (2,N)."""
+    def test_stacked_Nx3_inverse(self, mock_proj, geo):
+        """Test (N, 3) stacked array latlon_to_image returns (N, 2)."""
         pts = np.array([
-            [34.0, 34.5, 35.0],
-            [-118.0, -117.5, -117.0],
+            [34.0, -118.0, 0.0],
+            [34.5, -117.5, 0.0],
+            [35.0, -117.0, 0.0],
         ])
         result = geo.latlon_to_image(pts)
-        assert result.shape == (2, 3)
+        assert result.shape == (3, 2)
 
     @patch(
         'sarpy.geometry.point_projection.ground_to_image_geo',
@@ -312,7 +318,7 @@ class TestInverseTransform:
         """Verify sarpy receives Nx3 array of [lat, lon, height]."""
         lats = np.array([34.0, 34.5])
         lons = np.array([-118.0, -117.5])
-        geo.latlon_to_image(lats, lons)
+        geo.latlon_to_image(np.column_stack([lats, lons, np.zeros(2)]))
 
         call_args = mock_proj.call_args
         coords = call_args[0][0]
@@ -407,24 +413,75 @@ class TestFromReader:
         assert geo.shape == (2048, 4096)
         mock_open.assert_called_once_with('/fake/path.nitf')
 
-    @patch('grdl.geolocation.sar._backend._HAS_SARPY', False)
+    @patch('grdl.geolocation.sar.sicd._HAS_SARPY', False)
     def test_from_sarkit_reader_sarpy_unavailable(self, metadata):
-        """Test from_reader with sarkit reader when sarpy is not installed."""
+        """Test from_reader with sarkit reader when sarpy is not installed.
+
+        When sarpy is unavailable, auto-selects native backend.
+        Explicit backend='sarkit' overrides to sarkit.
+        """
         xmltree = MagicMock(name='XMLTree')
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
         mock_reader.backend = 'sarkit'
         mock_reader._xmltree = xmltree
 
-        geo = SICDGeolocation.from_reader(mock_reader)
+        geo = SICDGeolocation.from_reader(mock_reader, backend='sarkit')
         assert geo.backend == 'sarkit'
         assert geo.shape == (2048, 4096)
 
-    def test_from_reader_unsupported_backend(self, metadata):
-        """Test from_reader with unsupported backend raises ValueError."""
+    def test_from_reader_explicit_native_backend(self, metadata):
+        """Test from_reader with explicit native backend.
+
+        Mock metadata lacks Grid/Position, so COAProjection can't be
+        built.  The constructor handles this gracefully (_coa_proj=None)
+        and falls back to sarpy for projection.
+        """
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
-        mock_reader.backend = 'unknown'
+        mock_reader.backend = 'sarpy'
 
-        with pytest.raises(ValueError, match="Unsupported"):
-            SICDGeolocation.from_reader(mock_reader)
+        geo = SICDGeolocation.from_reader(mock_reader, backend='native')
+        assert geo._coa_proj is None  # native unavailable
+        assert geo.backend == 'native'
+
+
+# ---------------------------------------------------------------------------
+# Standardized public properties
+# ---------------------------------------------------------------------------
+
+
+class TestStandardizedProperties:
+    """Test the standardized public API shared with SIDDGeolocation."""
+
+    def test_default_hae(self, metadata, raw_meta):
+        """default_hae returns the SCP height from metadata."""
+        geo = SICDGeolocation(metadata, raw_meta, backend='sarpy')
+        hae = geo.default_hae
+        assert isinstance(hae, float)
+        # Should match the SCP LLH height in our mock (100.0)
+        assert hae == pytest.approx(100.0, abs=1.0)
+
+    def test_projection_type(self, metadata, raw_meta):
+        """projection_type is always 'R/Rdot' for SICD."""
+        geo = SICDGeolocation(metadata, raw_meta, backend='sarpy')
+        assert geo.projection_type == 'R/Rdot'
+
+    def test_has_rdot_sarpy(self, metadata, raw_meta):
+        """has_rdot is True when sarpy backend is active."""
+        geo = SICDGeolocation(metadata, raw_meta, backend='sarpy')
+        assert geo.has_rdot is True
+
+    def test_has_rdot_native_no_coa(self, metadata, raw_meta):
+        """has_rdot is False when native backend has no COAProjection."""
+        geo = SICDGeolocation(metadata, raw_meta, backend='native')
+        # Our mock metadata lacks Grid/Position so _coa_proj is None
+        assert geo._coa_proj is None
+        assert geo.has_rdot is False
+
+    @patch('grdl.geolocation.sar.sicd._HAS_SARPY', False)
+    def test_has_rdot_sarkit(self, metadata):
+        """has_rdot is False for sarkit-only backend."""
+        xmltree = MagicMock(name='XMLTree')
+        geo = SICDGeolocation(metadata, xmltree, backend='sarkit')
+        assert geo.has_rdot is False

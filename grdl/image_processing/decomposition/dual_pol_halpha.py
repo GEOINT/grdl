@@ -22,7 +22,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -36,24 +36,30 @@ Created
 
 Modified
 --------
-2026-02-16
+2026-03-10
 """
 
 # Standard library
-from typing import Annotated, Dict, Tuple
+import dataclasses
+from typing import Annotated, Any, Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
 from scipy.ndimage import uniform_filter
 
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
-from grdl.image_processing.versioning import processor_version
+from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
+from grdl.vocabulary import ImageModality
+
+if TYPE_CHECKING:
+    from grdl.IO.models.base import ImageMetadata
 
 
 @processor_version('1.0.0')
-class DualPolHAlpha(ImageProcessor):
+@processor_tags(modalities=[ImageModality.SAR])
+class DualPolHAlpha(PolarimetricDecomposition):
     """Dual-pol H/Alpha eigenvalue decomposition.
 
     Decomposes dual-polarization SAR data (one co-pol + one cross-pol
@@ -71,6 +77,12 @@ class DualPolHAlpha(ImageProcessor):
 
     - **span**: Total backscattered power (trace of C2).
 
+    This is a dual-pol specialization of ``PolarimetricDecomposition``.
+    Use ``decompose_dual()`` for the natural 2-channel interface, or
+    ``decompose()`` for the standard 4-channel quad-pol interface
+    (uses ``shh`` as co-pol and ``shv`` as cross-pol; ``svh`` and
+    ``svv`` are ignored).
+
     Parameters
     ----------
     window_size : int
@@ -84,7 +96,7 @@ class DualPolHAlpha(ImageProcessor):
     >>> from grdl.image_processing.decomposition import DualPolHAlpha
     >>>
     >>> halpha = DualPolHAlpha(window_size=9)
-    >>> components = halpha.decompose(s_vv, s_vh)
+    >>> components = halpha.decompose_dual(s_vv, s_vh)
     >>> print(components['entropy'].shape)  # same as input
     >>> rgb = halpha.to_rgb(components)     # (3, rows, cols) float32
     """
@@ -108,6 +120,40 @@ class DualPolHAlpha(ImageProcessor):
         return ('entropy', 'alpha', 'anisotropy', 'span')
 
     def decompose(
+        self,
+        shh: np.ndarray,
+        shv: np.ndarray,
+        svh: np.ndarray,
+        svv: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """Decompose via the standard quad-pol interface.
+
+        For dual-pol data, ``shh`` is used as the co-pol channel and
+        ``shv`` as the cross-pol channel.  ``svh`` and ``svv`` are
+        ignored.  Prefer ``decompose_dual()`` for clarity when working
+        with dual-pol data directly.
+
+        Parameters
+        ----------
+        shh : np.ndarray
+            Co-pol channel (e.g. S_VV or S_HH).  Complex, shape
+            ``(rows, cols)``.
+        shv : np.ndarray
+            Cross-pol channel (e.g. S_VH or S_HV).  Complex, shape
+            ``(rows, cols)``.
+        svh : np.ndarray
+            Ignored for dual-pol decomposition.
+        svv : np.ndarray
+            Ignored for dual-pol decomposition.
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Keys ``'entropy'``, ``'alpha'``, ``'anisotropy'``, ``'span'``.
+        """
+        return self.decompose_dual(shh, shv)
+
+    def decompose_dual(
         self,
         s_co: np.ndarray,
         s_cross: np.ndarray,
@@ -134,7 +180,7 @@ class DualPolHAlpha(ImageProcessor):
         ValueError
             If inputs are not 2-D or have mismatched shapes.
         """
-        self._validate_inputs(s_co, s_cross)
+        self._validate_dual_inputs(s_co, s_cross)
         ws = self.window_size
 
         # -- 1. Coherency matrix elements (spatial averaging) --
@@ -204,12 +250,95 @@ class DualPolHAlpha(ImageProcessor):
             'span': span,
         }
 
+    def execute(
+        self,
+        metadata: 'ImageMetadata',
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> tuple:
+        """Execute the decomposition via the universal protocol.
+
+        Dual-pol channels can be provided as keyword arguments
+        (``s_co``, ``s_cross``) or extracted from a 2-band source
+        array (band 0 = co-pol, band 1 = cross-pol).
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Input array — 2-D single-channel or 3-D with 2+ bands
+            containing co-pol and cross-pol channels.
+
+        Returns
+        -------
+        tuple[Dict[str, np.ndarray], ImageMetadata]
+        """
+        self._metadata = metadata
+        s_co = kwargs.pop('s_co', None)
+        s_cross = kwargs.pop('s_cross', None)
+        if s_co is None and source.ndim == 3:
+            axis_order = getattr(metadata, 'axis_order', None)
+            if axis_order == 'CYX' and source.shape[0] >= 2:
+                s_co = source[0]
+                s_cross = source[1]
+            elif axis_order == 'YXC' and source.shape[-1] >= 2:
+                s_co = source[..., 0]
+                s_cross = source[..., 1]
+            else:
+                channel_metadata = getattr(metadata, 'channel_metadata', None)
+                bands = getattr(metadata, 'bands', None)
+                n_channels = len(channel_metadata) if channel_metadata else bands
+                if n_channels == 2 and source.shape[0] == 2 and source.shape[-1] != 2:
+                    s_co = source[0]
+                    s_cross = source[1]
+                elif source.shape[-1] >= 2:
+                    s_co = source[..., 0]
+                    s_cross = source[..., 1]
+        components = self.decompose_dual(s_co, s_cross)
+        updated = dataclasses.replace(metadata, bands=len(components))
+        return components, updated
+
+    @classmethod
+    def rgb_channel_metadata(cls) -> list:
+        """Canonical ChannelMetadata descriptors for the 3-band H/Alpha RGB output.
+
+        Returns
+        -------
+        list[ChannelMetadata]
+            Three entries in R/G/B band order:
+            ``[span_db, entropy, alpha_norm]``.
+        """
+        from grdl.IO.models.base import ChannelMetadata
+
+        return [
+            ChannelMetadata(
+                index=0, name='span_db', role='decomposition',
+                extras={'halpha_component': 'span',
+                        'formula': '10\u00b7log10(span)',
+                        'display': 'Red'},
+            ),
+            ChannelMetadata(
+                index=1, name='entropy', role='decomposition',
+                extras={'halpha_component': 'entropy',
+                        'formula': 'H \u2208 [0, 1]',
+                        'display': 'Green'},
+            ),
+            ChannelMetadata(
+                index=2, name='alpha_norm', role='decomposition',
+                extras={'halpha_component': 'alpha',
+                        'formula': '\u03b1 / 90 \u2208 [0, 1]',
+                        'display': 'Blue'},
+            ),
+        ]
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
+        representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from H/Alpha decomposition.
 
         Channel mapping:
@@ -221,7 +350,10 @@ class DualPolHAlpha(ImageProcessor):
         Parameters
         ----------
         components : Dict[str, np.ndarray]
-            Output of ``decompose()``.
+            Output of ``decompose()`` or ``decompose_dual()``.
+        representation : str
+            Ignored for dual-pol (components are already real-valued).
+            Accepted for interface compatibility.
         percentile_low : float
             Lower percentile for Span contrast stretch.  Default 2.0.
         percentile_high : float
@@ -229,10 +361,13 @@ class DualPolHAlpha(ImageProcessor):
 
         Returns
         -------
-        np.ndarray
-            RGB image, shape ``(3, rows, cols)``, dtype float32,
-            values in [0, 1].
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb is shape ``(3, rows, cols)``, dtype
+            float32, values in [0, 1]; metadata carries H/Alpha channel
+            descriptors and spatial dimensions.
         """
+        from grdl.IO.models.base import ImageMetadata
+
         required = {'entropy', 'alpha', 'span'}
         missing = required - set(components.keys())
         if missing:
@@ -252,13 +387,23 @@ class DualPolHAlpha(ImageProcessor):
         # Blue: Alpha normalised to [0, 1] (0-90 degrees)
         b = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
 
-        return np.stack([r, g, b], axis=0)
+        rgb = np.stack([r, g, b], axis=0)  # (3, rows, cols) float32
+        metadata = ImageMetadata(
+            format='HAlphaRGB',
+            rows=int(rgb.shape[1]),
+            cols=int(rgb.shape[2]),
+            dtype=str(rgb.dtype),
+            bands=3,
+            axis_order='CYX',
+            channel_metadata=self.rgb_channel_metadata(),
+        )
+        return rgb, metadata
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _validate_inputs(
+    def _validate_dual_inputs(
         self,
         s_co: np.ndarray,
         s_cross: np.ndarray,
@@ -281,23 +426,6 @@ class DualPolHAlpha(ImageProcessor):
             raise ValueError(
                 f"Shape mismatch: s_co {s_co.shape} vs s_cross {s_cross.shape}"
             )
-
-    @staticmethod
-    def _percentile_stretch(
-        arr: np.ndarray,
-        percentile_low: float = 2.0,
-        percentile_high: float = 98.0,
-    ) -> np.ndarray:
-        """Percentile-stretch a real array to [0, 1]."""
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0:
-            return np.zeros_like(arr, dtype=np.float32)
-        vmin = np.percentile(finite, percentile_low)
-        vmax = np.percentile(finite, percentile_high)
-        span = vmax - vmin
-        if span < np.finfo(np.float32).eps:
-            return np.zeros_like(arr, dtype=np.float32)
-        return np.clip((arr - vmin) / span, 0.0, 1.0).astype(np.float32)
 
     def __repr__(self) -> str:
         return f"DualPolHAlpha(window_size={self.window_size})"

@@ -8,7 +8,7 @@ All concrete implementations (SAR, EO, etc.) must inherit from these classes.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -22,6 +22,7 @@ Created
 
 Modified
 --------
+2026-04-18  Add read_band(index) convenience method to ImageReader.
 2026-02-10
 """
 
@@ -148,6 +149,58 @@ class ImageReader(ABC):
         shape = self.get_shape()
         rows, cols = shape[0], shape[1]
         return self.read_chip(0, rows, 0, cols, bands=bands)
+
+    def read_band(self, band: int) -> np.ndarray:
+        """Read a single band as a 2-D array.
+
+        Convenience wrapper around :meth:`read_full` that returns a
+        2-D ``(rows, cols)`` array regardless of whether the underlying
+        reader returns ``(bands, rows, cols)`` or ``(rows, cols, bands)``.
+
+        Parameters
+        ----------
+        band : int
+            0-based band index.
+
+        Returns
+        -------
+        np.ndarray
+            2-D band data, shape ``(rows, cols)``.
+
+        Raises
+        ------
+        IndexError
+            If ``band`` is out of range for the image.
+        """
+        n_bands = getattr(self.metadata, 'bands', 1) or 1
+        if band < 0 or band >= n_bands:
+            raise IndexError(
+                f"Band index {band} out of range for image with "
+                f"{n_bands} band(s)"
+            )
+
+        data = self.read_full(bands=[band])
+
+        # read_full may return (1, rows, cols), (rows, cols, 1), or
+        # (rows, cols) depending on the concrete reader.  Collapse any
+        # singleton band axis to guarantee a 2-D result.
+        if data.ndim == 2:
+            return data
+        if data.ndim == 3:
+            # Detect which axis is the band by matching the expected
+            # (rows, cols) from get_shape().
+            shape = self.get_shape()
+            rows, cols = shape[0], shape[1]
+            if data.shape == (1, rows, cols):
+                return data[0]
+            if data.shape == (rows, cols, 1):
+                return data[..., 0]
+            # Fall back: squeeze any singleton dim
+            return np.squeeze(data)
+        raise ValueError(
+            f"Unexpected data shape {data.shape} returned by "
+            f"{type(self).__name__}.read_full"
+        )
 
     @abstractmethod
     def get_shape(self) -> Tuple[int, ...]:

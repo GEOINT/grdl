@@ -11,7 +11,7 @@ subclassing by sensor-specific metadata classes (e.g., ``SICDMetadata``,
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -25,12 +25,53 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-27  Add transform, bounds, pixel_resolution as first-class fields.
 """
 
 # Standard library
-from dataclasses import dataclass, field, fields as dc_fields
+from dataclasses import dataclass, field, fields as dc_fields, replace
 from typing import Any, Dict, Iterator, List, Optional
+
+
+@dataclass
+class ChannelMetadata:
+    """Per-channel metadata for multi-channel image cubes.
+
+    Parameters
+    ----------
+    index : int
+        Zero-based channel index in the current cube.
+    name : str
+        Human-readable channel name.
+    role : str, optional
+        Semantic role of the channel, such as ``'measurement'``,
+        ``'derived'``, ``'look'``, or ``'decomposition'``.
+    polarization : str, optional
+        Polarization label for single-pol channels (e.g., ``'HH'``).
+    tx_polarization : str, optional
+        Transmit polarization, when distinct from receive.
+    rcv_polarization : str, optional
+        Receive polarization, when distinct from transmit.
+    frequency : str, optional
+        Frequency sub-band label (e.g., ``'A'``, ``'B'``).
+    swath : str, optional
+        Swath identifier for swath-based products.
+    source_indices : List[int]
+        Source channel indices used to create this channel.
+    extras : Dict[str, Any]
+        Additional channel-specific metadata.
+    """
+
+    index: int
+    name: str
+    role: str = 'measurement'
+    polarization: Optional[str] = None
+    tx_polarization: Optional[str] = None
+    rcv_polarization: Optional[str] = None
+    frequency: Optional[str] = None
+    swath: Optional[str] = None
+    source_indices: List[int] = field(default_factory=list)
+    extras: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,8 +136,57 @@ class ImageMetadata:
     crs: Optional[str] = None
     nodata: Optional[float] = None
 
+    # Geolocation fields (geocoded rasters — GeoTIFF, JP2, etc.)
+    transform: Optional[Any] = None
+    bounds: Optional[Any] = None
+    pixel_resolution: Optional[Any] = None
+
+    # Multi-channel cube metadata
+    axis_order: Optional[str] = None
+    channel_metadata: Optional[List[ChannelMetadata]] = None
+
     # Format/sensor-specific catch-all
     extras: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Normalize nested channel metadata after construction."""
+        if self.channel_metadata is None:
+            return
+
+        normalized: List[ChannelMetadata] = []
+        for index, channel in enumerate(self.channel_metadata):
+            if isinstance(channel, dict):
+                channel = ChannelMetadata(**channel)
+            if channel.index != index:
+                channel = replace(channel, index=index)
+            normalized.append(channel)
+        self.channel_metadata = normalized
+
+    def get_channel(self, index: int) -> Optional[ChannelMetadata]:
+        """Return the channel descriptor for *index*, if available."""
+        if self.channel_metadata is None:
+            return None
+        return self.channel_metadata[index]
+
+    def with_channels(
+        self,
+        channels: List[ChannelMetadata],
+        *,
+        rows: Optional[int] = None,
+        cols: Optional[int] = None,
+        dtype: Optional[str] = None,
+        axis_order: str = 'CYX',
+    ) -> 'ImageMetadata':
+        """Return a copy with updated per-channel metadata."""
+        return replace(
+            self,
+            rows=self.rows if rows is None else rows,
+            cols=self.cols if cols is None else cols,
+            dtype=self.dtype if dtype is None else dtype,
+            bands=len(channels),
+            axis_order=axis_order,
+            channel_metadata=channels,
+        )
 
     # ----------------------------------------------------------------
     # Dict-like access for backward compatibility

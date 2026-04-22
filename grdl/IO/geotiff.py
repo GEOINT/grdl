@@ -13,7 +13,7 @@ rasterio
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,10 +27,11 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-04-01
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -45,8 +46,18 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+from grdl.IO.performance import (
+    ReadConfig,
+    _ensure_gdal_threads,
+    _resolve_workers,
+    chunked_parallel_read,
+    parallel_band_read,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GeoTIFFReader(ImageReader):
@@ -87,12 +98,17 @@ class GeoTIFFReader(ImageReader):
     ...     print(reader.metadata['crs'])
     """
 
-    def __init__(self, filepath: Union[str, Path]) -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        read_config: Optional[ReadConfig] = None,
+    ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for GeoTIFF reading. "
                 "Install with: pip install rasterio"
             )
+        self.read_config = read_config or ReadConfig(parallel=True)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -100,16 +116,14 @@ class GeoTIFFReader(ImageReader):
         try:
             self.dataset = rasterio.open(str(self.filepath))
 
-            extras: Dict[str, Any] = {
-                'transform': self.dataset.transform,
-                'bounds': self.dataset.bounds,
-                'resolution': self.dataset.res,
-            }
+            extras: Dict[str, Any] = {}
 
             if 'TIFFTAG_IMAGEDESCRIPTION' in self.dataset.tags():
                 extras['description'] = (
                     self.dataset.tags()['TIFFTAG_IMAGEDESCRIPTION']
                 )
+
+            crs_str = str(self.dataset.crs) if self.dataset.crs else None
 
             self.metadata = ImageMetadata(
                 format='GeoTIFF',
@@ -117,10 +131,30 @@ class GeoTIFFReader(ImageReader):
                 cols=self.dataset.width,
                 bands=self.dataset.count,
                 dtype=str(self.dataset.dtypes[0]),
-                crs=str(self.dataset.crs) if self.dataset.crs else None,
+                crs=crs_str,
                 nodata=self.dataset.nodata,
+                transform=self.dataset.transform,
+                bounds=tuple(self.dataset.bounds),
+                pixel_resolution=self.dataset.res,
                 extras=extras,
             )
+
+            # LERC-based compression is not safe for concurrent reads
+            # on a shared dataset object (GDAL decoder shares internal state).
+            compress = self.dataset.profile.get('compress', '') or ''
+            self._lerc_compression: bool = compress.upper().startswith('LERC')
+            if self._lerc_compression:
+                logger.debug(
+                    "GeoTIFF uses LERC compression (%s) — parallel reads disabled",
+                    compress,
+                )
+
+            logger.info(
+                "Opened GeoTIFF %s (%d bands, %d x %d)",
+                self.filepath.name, self.dataset.count,
+                self.dataset.height, self.dataset.width,
+            )
+            logger.debug("CRS: %s", crs_str)
 
         except Exception as e:
             raise ValueError(f"Failed to load GeoTIFF metadata: {e}") from e
@@ -169,10 +203,32 @@ class GeoTIFFReader(ImageReader):
             col_end - col_start, row_end - row_start,
         )
 
-        if bands is None:
-            data = self.dataset.read(window=window)
+        cfg = self.read_config
+        use_parallel = cfg.parallel and not self._lerc_compression
+        if use_parallel:
+            _ensure_gdal_threads(cfg)
+            workers = _resolve_workers(cfg)
+            n_pixels = (row_end - row_start) * (col_end - col_start)
+
+            if bands is None:
+                band_indices = list(range(1, self.dataset.count + 1))
+            else:
+                band_indices = [b + 1 for b in bands]
+
+            if n_pixels >= cfg.chunk_threshold:
+                data = chunked_parallel_read(
+                    self.dataset, window, band_indices, workers)
+            elif len(band_indices) > 1:
+                data = parallel_band_read(
+                    self.dataset, window, band_indices, workers)
+            else:
+                data = self.dataset.read(band_indices, window=window)
         else:
-            data = self.dataset.read([b + 1 for b in bands], window=window)
+            if bands is None:
+                data = self.dataset.read(window=window)
+            else:
+                data = self.dataset.read(
+                    [b + 1 for b in bands], window=window)
 
         if data.shape[0] == 1:
             return data[0]
@@ -266,7 +322,7 @@ class GeoTIFFWriter(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for GeoTIFF writing. "
                 "Install with: pip install rasterio"
             )

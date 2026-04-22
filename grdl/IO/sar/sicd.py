@@ -13,7 +13,7 @@ sarkit (primary) or sarpy (fallback)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -31,6 +31,7 @@ Modified
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
@@ -98,6 +99,8 @@ from grdl.IO.models.common import (
     XYZPoly,
 )
 from grdl.IO.sar._backend import require_sar_backend
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -1376,6 +1379,7 @@ class SICDReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('SICD')
+        logger.info("SICD backend selected: %s", self.backend)
         super().__init__(filepath)
 
     @staticmethod
@@ -1451,6 +1455,11 @@ class SICDReader(ImageReader):
             # Store raw XML tree for advanced users
             self._xmltree = xml
 
+            logger.info(
+                "Loaded SICD %s (%d x %d) via sarkit",
+                self.filepath.name, num_rows, num_cols,
+            )
+
         except Exception as e:
             raise ValueError(f"Failed to load SICD metadata: {e}") from e
 
@@ -1483,6 +1492,13 @@ class SICDReader(ImageReader):
             )
 
             self._sarpy_meta = sm
+
+            logger.info(
+                "Loaded SICD %s (%d x %d) via sarpy",
+                self.filepath.name,
+                sm.ImageData.NumRows,
+                sm.ImageData.NumCols,
+            )
 
         except Exception as e:
             raise ValueError(f"Failed to load SICD metadata: {e}") from e
@@ -1556,12 +1572,12 @@ class SICDReader(ImageReader):
         else:
             return self._reader[:, :]
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)``.
         """
         return (self.metadata['rows'], self.metadata['cols'])

@@ -26,7 +26,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | SICD | `SICDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
 | CPHD | `CPHDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
 | CRSD | `CRSDReader` | sarkit | ✅ Implemented |
-| SIDD | `SIDDReader` | sarkit | ✅ Implemented |
+| SIDD | `SIDDReader` | sarkit (primary), sarpy (fallback) | ✅ Implemented |
 | BIOMASS L1 SCS | `BIOMASSL1Reader` | rasterio | ✅ Implemented |
 | Sentinel-1 SLC | `Sentinel1SLCReader` | rasterio | ✅ Implemented |
 | TerraSAR-X / TanDEM-X | `TerraSARReader` | numpy (SSC), rasterio (detected) | ✅ Implemented |
@@ -55,6 +55,8 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | Format | Reader Class | Backend | Status |
 |--------|-------------|---------|--------|
 | Sentinel-2 MSI | `Sentinel2Reader` | JP2Reader (rasterio/glymur) | ✅ Implemented |
+| EO NITF (RPC/RSM) | `EONITFReader` | rasterio | ✅ Implemented |
+| | | Parses: RPC00B, RSMPCA (multi-segment), RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC | |
 | Landsat OLI | - | - | 🔄 Planned |
 | WorldView | - | - | 🔄 Planned |
 
@@ -68,6 +70,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | NumPy (.npy/.npz) | `NumpyWriter` | numpy | ✅ Implemented |
 | PNG | `PngWriter` | Pillow | ✅ Implemented |
 | SICD (NITF) | `SICDWriter` | sarpy | ✅ Implemented |
+| SIDD (NITF) | `SIDDWriter` | sarpy | ✅ Implemented |
 
 ### Geospatial Vector
 
@@ -82,6 +85,12 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | Feature | Status |
 |---------|--------|
 | BIOMASS catalog & download (MAAP STAC API) | ✅ Implemented |
+| Sentinel-1 SLC catalog & download (CDSE OData) | ✅ Implemented |
+| Sentinel-2 catalog & download (CDSE OData) | ✅ Implemented |
+| ASTER catalog & local discovery | ✅ Implemented |
+| VIIRS catalog & local discovery | ✅ Implemented |
+| NISAR catalog & download (NASA Earthdata) | ✅ Implemented |
+| TerraSAR-X catalog & local discovery | ✅ Implemented |
 | OAuth2 credential management | ✅ Implemented |
 | File discovery by extension | ✅ Implemented |
 | Metadata extraction | ✅ Implemented |
@@ -260,7 +269,9 @@ with open_biomass('BIO_S1_SCS__1S_...') as reader:
     hh_chip = reader.read_chip(0, 1024, 0, 1024, bands=[0])
 
     # Convert to magnitude in dB
-    hh_mag_db = 20 * np.log10(np.abs(hh_chip) + 1e-10)
+    from grdl.image_processing.intensity import ToDecibels
+    to_db = ToDecibels()
+    hh_mag_db = to_db.apply(hh_chip)
 
     # Read all polarizations
     all_pols = reader.read_chip(0, 512, 0, 512)  # Shape: (4, 512, 512)
@@ -486,6 +497,46 @@ print(f"Found {len(overlapping)} products overlapping bbox")
 catalog.close()
 ```
 
+## Parallel Reading
+
+Rasterio-based readers support opt-in multi-threaded reads via `ReadConfig`. The `EONITFReader`, `GeoTIFFReader`, and `BIOMASSL1Reader` default to `parallel=True`.
+
+```python
+from grdl.IO import EONITFReader, GeoTIFFReader
+from grdl.IO.performance import ReadConfig
+
+# Default: parallel reading enabled for rasterio-based readers
+with EONITFReader('worldview.ntf') as reader:
+    chip = reader.read_chip(0, 10000, 0, 10000)  # uses parallel chunked read
+
+# Explicit configuration
+config = ReadConfig(
+    parallel=True,           # enable multi-threaded reads
+    max_workers=8,           # thread pool size (default: cpu_count - 1)
+    gdal_num_threads=4,      # GDAL internal decompression threads
+    chunk_threshold=4_000_000,  # min pixels for chunked parallel read
+)
+with GeoTIFFReader('large_scene.tif', read_config=config) as reader:
+    chip = reader.read_chip(0, 5000, 0, 5000)
+
+# Disable parallel reading if needed
+with EONITFReader('small.ntf', read_config=ReadConfig(parallel=False)) as reader:
+    chip = reader.read_chip(0, 512, 0, 512)
+```
+
+**Thread safety by backend:**
+
+| Backend | Readers | Parallel? |
+|---------|---------|-----------|
+| rasterio (GDAL) | EONITFReader, GeoTIFFReader, BIOMASSL1Reader, GDALFallbackReader, Sentinel1SLCReader, TerraSARReader, ASTERReader | Yes (releases GIL) |
+| h5py | HDF5Reader, NISARReader, VIIRSReader | No (holds GIL) |
+| glymur | JP2Reader, Sentinel2Reader | No (not thread-safe) |
+
+**Parallel strategy cascade** (automatic, based on read size):
+1. **Chunked parallel** — large windows (>4M pixels): split into tile-aligned sub-windows, read concurrently
+2. **Parallel bands** — multi-band imagery: read each band in a separate thread
+3. **Serial** — single band, small window: standard single-threaded read
+
 ## Architecture
 
 ### Base Classes
@@ -530,6 +581,7 @@ All readers populate `self.metadata` with a typed dataclass. Format-specific rea
 | `Sentinel2Reader` | `Sentinel2Metadata` | `satellite`, `processing_level`, `product_type`, `band_id`, `mgrs_tile_id`, `resolution_tier`, `sensing_datetime` |
 | `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
 | `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
+| `EONITFReader` | `EONITFMetadata` | `rpc` (RPCCoefficients), `rsm` (RSMCoefficients), `rsm_segments` (RSMSegmentGrid), `rsm_id` (RSMIdentification), `ichipb` (ICHIPBMetadata), `csexra` (CSEXRAMetadata), `use00a` (USE00AMetadata), `blocka` (BLOCKAMetadata), `collection_info` (CollectionInfo), `accuracy` (AccuracyInfo), `idatim`, `tgtid`, `isource`, `igeolo` |
 
 ```python
 from grdl.IO.models import SICDMetadata, LatLonHAE, XYZ
@@ -548,7 +600,7 @@ meta['rows']                       # int
 list(meta.keys())                  # all field names
 ```
 
-The `models/` package provides ~90 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `cphd.py`, `biomass.py`, `sentinel1_slc.py`, `terrasar.py`, `nisar.py`, `sentinel2.py`, `viirs.py`, and `aster.py`.
+The `models/` package provides ~90 dataclasses organized in `common.py` (shared primitives like `XYZ`, `LatLonHAE`, `RowCol`, `Poly1D`, `Poly2D`, `XYZPoly`), `sicd.py`, `sidd.py`, `cphd.py`, `biomass.py`, `sentinel1_slc.py`, `terrasar.py`, `nisar.py`, `sentinel2.py`, `viirs.py`, `aster.py`, and `eo_nitf.py`.
 
 ### Design Principles
 
@@ -628,6 +680,8 @@ except GrdlError as e:
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design decisions.
 
+See [PATTERNS.md](PATTERNS.md) for recurring implementation patterns (TRE parsers, ReadConfig integration, multi-segment TRE collection, etc.).
+
 See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
@@ -635,7 +689,12 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 See `grdl/example/` for working workflows:
 - `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
 - `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
+- `ortho/chip_ortho.py` - Ground-extent chip extraction and ENU orthorectification
+- `ortho/compare_sidd_ortho.py` - Dual-SIDD ortho comparison with PCA, NCC, and coregistration
 - `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
+- `ortho/ortho_combined.py` - Combined SICD/SIDD auto-detect orthorectification
+- `ortho/ortho_sicd.py` - SICD orthorectification with DEM and ENU grids
+- `ortho/ortho_sidd.py` - SIDD orthorectification with DEM and ENU grids
 - `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
 - `image_processing/sar/sublook_compare.py` - **Full GRDL integration**: IO + data_prep + image_processing
 

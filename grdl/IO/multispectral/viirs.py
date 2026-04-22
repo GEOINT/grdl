@@ -18,7 +18,7 @@ h5py
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-02-24
+2026-03-10
 """
 
 # Standard library
@@ -49,6 +49,7 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
 from grdl.IO.hdf5 import HDF5Reader
 from grdl.IO.models import VIIRSMetadata
@@ -139,7 +140,7 @@ class VIIRSReader(ImageReader):
         dataset_path: Optional[str] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for VIIRS reading. "
                 "Install with: pip install h5py"
             )

@@ -33,14 +33,15 @@ Created
 
 Modified
 --------
-2026-02-19
+2026-03-10
 """
 
 # Standard library
 from dataclasses import dataclass
+import logging
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
 import struct
+from typing import List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
 # Third-party
@@ -54,7 +55,9 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader
+from grdl.IO.models import ChannelMetadata
 from grdl.IO.models.common import XYZ, LatLonHAE
 from grdl.IO.models.terrasar import (
     TerraSARMetadata,
@@ -68,6 +71,8 @@ from grdl.IO.models.terrasar import (
     TSXDopplerInfo,
     TSXProcessingInfo,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ===================================================================
@@ -692,8 +697,9 @@ class TerraSARReader(ImageReader):
     """Read TerraSAR-X / TanDEM-X SAR products.
 
     Handles SSC products (COSAR binary, complex data) and detected
-    products (MGD, GEC, EEC via GeoTIFF).  Each instance opens one
-    polarization channel from the product directory.
+    products (MGD, GEC, EEC via GeoTIFF).  A single polarization is
+    loaded by default; pass ``polarizations`` to load multiple pols
+    as a CYX data cube.
 
     Parameters
     ----------
@@ -701,8 +707,13 @@ class TerraSARReader(ImageReader):
         Path to the product directory, main annotation XML, or a
         data file within the product tree.
     polarization : str
-        Polarization to open (``'HH'``, ``'VV'``, ``'HV'``, ``'VH'``).
-        Default ``'HH'``.
+        Single polarization to open (``'HH'``, ``'VV'``, ``'HV'``,
+        ``'VH'``).  Default ``'HH'``.  Ignored when ``polarizations``
+        is given.
+    polarizations : str or list of str, optional
+        Multiple polarizations to load as a CYX cube.  Pass
+        ``'all'`` for every available polarization, or a list such as
+        ``['HH', 'VV']``.  Mutually exclusive with ``polarization``.
 
     Attributes
     ----------
@@ -724,17 +735,30 @@ class TerraSARReader(ImageReader):
     Examples
     --------
     >>> from grdl.IO.sar import TerraSARReader
-    >>> with TerraSARReader('TSX1_SAR__SSC.../') as reader:
-    ...     chip = reader.read_chip(0, 1000, 0, 1000)
-    ...     print(reader.metadata.product_info.imaging_mode)
+    >>> with TerraSARReader('TSX1_SAR__SSC.../', polarizations='all') as reader:
+    ...     cube = reader.read_full()   # (C, rows, cols)
+    ...     print(reader.metadata.axis_order)  # 'CYX'
     """
 
     def __init__(
         self,
         filepath: Union[str, Path],
         polarization: str = 'HH',
+        polarizations: Optional[Union[str, List[str]]] = None,
     ) -> None:
+        if polarizations is not None:
+            # multi-pol mode
+            pass
         self._requested_polarization = polarization.upper()
+
+        # Multi-pol mode
+        self._multi_pol: bool = polarizations is not None
+        if polarizations == 'all' or polarizations == []:
+            self._requested_polarizations: List[str] = []
+        elif polarizations is None:
+            self._requested_polarizations = []
+        else:
+            self._requested_polarizations = [p.upper() for p in polarizations]
 
         # Resolve product directory and main XML
         self._product_dir, self._main_xml_path = (
@@ -749,6 +773,10 @@ class TerraSARReader(ImageReader):
             raise ValueError(
                 f"Failed to parse annotation XML: {e}"
             ) from e
+        logger.debug(
+            "TerraSAR-X parsed annotation XML %s",
+            self._main_xml_path.name,
+        )
 
         data_format = _xml_text(
             self._xmltree, 'productInfo/imageDataInfo/imageDataFormat'
@@ -759,27 +787,88 @@ class TerraSARReader(ImageReader):
         )
 
         if not self._is_cosar and not _HAS_RASTERIO:
-            raise ImportError(
+            raise DependencyError(
                 "Reading TerraSAR-X detected products (GeoTIFF) requires "
                 "rasterio. Install with: "
                 "conda install -c conda-forge rasterio"
             )
 
-        # Locate image data file for requested polarization
         imagedata_dir = self._product_dir / 'IMAGEDATA'
         if not imagedata_dir.is_dir():
             raise ValueError(
                 f"Missing IMAGEDATA directory: {imagedata_dir}"
             )
 
-        self._image_file = self._find_image_file(
-            imagedata_dir, self._requested_polarization,
-        )
-        if self._image_file is None:
-            raise ValueError(
-                f"No image data file found for polarization "
-                f"'{self._requested_polarization}' in {imagedata_dir}"
+        if self._multi_pol:
+            # Discover available pols from the XML
+            acq = self._xmltree.find('productInfo/acquisitionInfo')
+            xml_pols: List[str] = []
+            if acq is not None:
+                xml_pols = [
+                    (acq.find('polarisationList/polLayer') and
+                     (_xml_text(p, '.') or '').upper())
+                    for p in acq.findall('polarisationList/polLayer')
+                    if (_xml_text(p, '.') or '')
+                ]
+            # Resolve which pols to use
+            if not self._requested_polarizations:  # 'all'
+                active_pols = xml_pols if xml_pols else [self._requested_polarization]
+            else:
+                if xml_pols:
+                    invalid = set(self._requested_polarizations) - set(xml_pols)
+                    if invalid:
+                        raise ValueError(
+                            f"Requested polarizations {sorted(invalid)} not available. "
+                            f"Available: {xml_pols}"
+                        )
+                active_pols = self._requested_polarizations
+            self._active_polarizations: List[str] = active_pols
+
+            # Locate image files for all pols
+            self._image_files_multi: List[Path] = []
+            for pol in active_pols:
+                f = self._find_image_file(imagedata_dir, pol)
+                if f is None:
+                    raise ValueError(
+                        f"No image data file found for polarization '{pol}' "
+                        f"in {imagedata_dir}"
+                    )
+                self._image_files_multi.append(f)
+            # Primary (first) for geometry
+            self._image_file = self._image_files_multi[0]
+            self._cosar_headers_multi: List[Optional[_COSARHeader]] = []
+            self._rasterio_datasets_multi: List = []
+            if self._is_cosar:
+                self._cosar_headers_multi = [
+                    _read_cosar_header(f) for f in self._image_files_multi
+                ]
+                self._cosar_header = self._cosar_headers_multi[0]
+            else:
+                self._rasterio_datasets_multi = [
+                    rasterio.open(str(f))
+                    for f in self._image_files_multi
+                ]
+                self._rasterio_dataset = self._rasterio_datasets_multi[0]
+        else:
+            self._active_polarizations = [self._requested_polarization]
+            # Locate image data file for requested polarization
+            self._image_file = self._find_image_file(
+                imagedata_dir, self._requested_polarization,
             )
+            if self._image_file is None:
+                raise ValueError(
+                    f"No image data file found for polarization "
+                    f"'{self._requested_polarization}' in {imagedata_dir}"
+                )
+            self._cosar_header: Optional[_COSARHeader] = None
+            self._rasterio_dataset = None
+            if self._is_cosar:
+                self._cosar_header = _read_cosar_header(self._image_file)
+
+        # For the single-pol path rasterio is opened in _load_metadata
+        # (to cross-check dims). In multi-pol it's already open above.
+        if not self._multi_pol:
+            self._rasterio_dataset = None  # opened in _load_metadata
 
         # Locate optional annotation files
         ann_dir = self._product_dir / 'ANNOTATION'
@@ -802,13 +891,6 @@ class TerraSARReader(ImageReader):
                     if candidate.exists():
                         self._caldata_path = candidate
                         break
-
-        # Read COSAR header if applicable
-        self._cosar_header: Optional[_COSARHeader] = None
-        self._rasterio_dataset = None
-
-        if self._is_cosar:
-            self._cosar_header = _read_cosar_header(self._image_file)
 
         # Initialize base (validates path, calls _load_metadata)
         super().__init__(self._product_dir)
@@ -884,13 +966,22 @@ class TerraSARReader(ImageReader):
 
             # Open rasterio dataset for detected products
             if not self._is_cosar:
-                self._rasterio_dataset = rasterio.open(
-                    str(self._image_file)
-                )
+                if self._multi_pol:
+                    # Already opened in __init__; use the primary dataset
+                    self._rasterio_dataset = self._rasterio_datasets_multi[0]
+                else:
+                    self._rasterio_dataset = rasterio.open(
+                        str(self._image_file)
+                    )
                 # Cross-check dimensions; prefer TIFF as authoritative
                 tiff_rows = self._rasterio_dataset.height
                 tiff_cols = self._rasterio_dataset.width
                 if tiff_rows != rows or tiff_cols != cols:
+                    logger.warning(
+                        "TerraSAR-X TIFF dims (%d x %d) differ from XML "
+                        "(%d x %d); using TIFF",
+                        tiff_rows, tiff_cols, rows, cols,
+                    )
                     rows = tiff_rows
                     cols = tiff_cols
                 # Use actual dtype from TIFF
@@ -900,12 +991,42 @@ class TerraSARReader(ImageReader):
             product_type = product_info.product_type or 'Unknown'
             format_str = f'TerraSAR-X_{product_type}'
 
+            active_pol = self._active_polarizations[0]
+
+            if self._multi_pol:
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=i,
+                        name=pol,
+                        role='measurement',
+                        polarization=pol,
+                        source_indices=[i],
+                    )
+                    for i, pol in enumerate(self._active_polarizations)
+                ]
+                bands_count = len(self._active_polarizations)
+                axis_order_val = 'CYX'
+            else:
+                channel_metadata = [
+                    ChannelMetadata(
+                        index=0,
+                        name=active_pol or 'channel0',
+                        role='measurement',
+                        polarization=active_pol,
+                        source_indices=[0],
+                    )
+                ]
+                bands_count = 1
+                axis_order_val = 'YX'
+
             self.metadata = TerraSARMetadata(
                 format=format_str,
                 rows=rows,
                 cols=cols,
                 dtype=dtype_str,
-                bands=1,
+                bands=bands_count,
+                axis_order=axis_order_val,
+                channel_metadata=channel_metadata,
                 product_info=product_info,
                 scene_info=scene_info,
                 image_info=image_info,
@@ -917,6 +1038,15 @@ class TerraSARReader(ImageReader):
                 calibration=calibration,
                 doppler_info=doppler_info,
                 processing_info=processing_info,
+            )
+
+            logger.info(
+                "Loaded TerraSAR-X %s (%d x %d), product=%s",
+                self._main_xml_path.name, rows, cols, product_type,
+            )
+            logger.debug(
+                "TerraSAR-X geo_grid_points=%d, has_calibration=%s",
+                len(geo_grid), calibration is not None,
             )
 
         except ET.ParseError as e:
@@ -970,6 +1100,24 @@ class TerraSARReader(ImageReader):
                 f"dimensions ({self.metadata.rows}, {self.metadata.cols})"
             )
 
+        if self._multi_pol:
+            chips = []
+            for i, _ in enumerate(self._active_polarizations):
+                if self._is_cosar:
+                    chip = _read_cosar_chip(
+                        self._image_files_multi[i],
+                        row_start, row_end, col_start, col_end,
+                        self._cosar_headers_multi[i],
+                    )
+                else:
+                    window = Window(
+                        col_start, row_start,
+                        col_end - col_start, row_end - row_start,
+                    )
+                    chip = self._rasterio_datasets_multi[i].read(1, window=window)
+                chips.append(chip)
+            return np.stack(chips, axis=0)   # (C, rows, cols)
+
         if self._is_cosar:
             return _read_cosar_chip(
                 self._image_file,
@@ -998,12 +1146,12 @@ class TerraSARReader(ImageReader):
             return list(self.metadata.product_info.polarization_list)
         return [self._requested_polarization]
 
-    def get_shape(self) -> Tuple[int, int]:
+    def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
 
         Returns
         -------
-        Tuple[int, int]
+        Tuple[int, ...]
             ``(rows, cols)`` — total lines and samples.
         """
         return (self.metadata.rows, self.metadata.cols)
@@ -1020,7 +1168,11 @@ class TerraSARReader(ImageReader):
 
     def close(self) -> None:
         """Close resources."""
-        if self._rasterio_dataset is not None:
+        if self._multi_pol:
+            for ds in self._rasterio_datasets_multi:
+                ds.close()
+            self._rasterio_datasets_multi = []
+        elif self._rasterio_dataset is not None:
             self._rasterio_dataset.close()
             self._rasterio_dataset = None
 
@@ -1032,6 +1184,7 @@ class TerraSARReader(ImageReader):
 def open_terrasar(
     filepath: Union[str, Path],
     polarization: str = 'HH',
+    polarizations: Optional[Union[str, List[str]]] = None,
 ) -> TerraSARReader:
     """Open a TerraSAR-X / TanDEM-X product.
 
@@ -1043,18 +1196,25 @@ def open_terrasar(
     filepath : str or Path
         Path to the product directory or main annotation XML.
     polarization : str
-        Polarization to open. Default ``'HH'``.
+        Single polarization to open. Default ``'HH'``.  Ignored when
+        ``polarizations`` is given.
+    polarizations : str or list of str, optional
+        Multiple polarizations to load as a CYX cube.  Pass ``'all'``
+        for every available polarization.  Mutually exclusive with
+        ``polarization``.
 
     Returns
     -------
     TerraSARReader
-        Reader instance.
+        Reader instance.  ``metadata.axis_order`` is ``'CYX'`` when
+        ``polarizations`` is given, otherwise ``'YX'``.
 
     Examples
     --------
-    >>> from grdl.IO.sar import open_terrasar
-    >>> reader = open_terrasar('TSX1_SAR__SSC.../', polarization='HH')
-    >>> chip = reader.read_chip(0, 512, 0, 512)
+    >>> reader = open_terrasar('TSX1_SAR__SSC.../', polarizations='all')
+    >>> cube = reader.read_full()   # (C, rows, cols)
     >>> reader.close()
     """
-    return TerraSARReader(filepath, polarization=polarization)
+    return TerraSARReader(
+        filepath, polarization=polarization, polarizations=polarizations,
+    )

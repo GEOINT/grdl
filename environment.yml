@@ -1,0 +1,36 @@
+name: grdl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - matplotlib
+  - h5py
+  - xarray
+  - rasterio
+  - pyproj
+  - shapely
+  - scikit-image
+  - numba
+  - opencv
+  - cartopy
+  - glymur
+  - sarpy
+  - sarkit
+  - requests
+  - pyyaml
+  - lxml
+  - pyside6
+  # Dev / testing
+  - pytest
+  - pytest-cov
+  - pytest-benchmark
+  - ruff
+  - black
+  - mypy
+  # Pip-only packages (conda-forge builds broken on osx-arm64)
+  - pip
+  - pip:
+    - spectral

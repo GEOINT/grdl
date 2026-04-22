@@ -15,7 +15,7 @@ h5py
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -29,10 +29,11 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-03-10
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -46,8 +47,11 @@ except ImportError:
     _HAS_H5PY = False
 
 # GRDL internal
+from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
 from grdl.IO.models import ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 def _find_datasets(
@@ -142,7 +146,7 @@ class HDF5Reader(ImageReader):
         dataset_path: Optional[str] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 reading. "
                 "Install with: pip install h5py"
             )
@@ -157,6 +161,8 @@ class HDF5Reader(ImageReader):
             raise ValueError(
                 f"Failed to open HDF5 file: {self.filepath}: {e}"
             ) from e
+
+        logger.info("Opened HDF5 %s", self.filepath.name)
 
         # Resolve dataset path
         if self._requested_path is not None:
@@ -185,6 +191,10 @@ class HDF5Reader(ImageReader):
                     "Provide an explicit dataset_path."
                 )
             self.dataset_path = candidates[0][0]
+            logger.debug(
+                "Auto-detected dataset %s from %d candidates",
+                self.dataset_path, len(candidates),
+            )
 
         ds = self._file[self.dataset_path]
         ndim = ds.ndim
@@ -240,6 +250,11 @@ class HDF5Reader(ImageReader):
             dtype=str(ds.dtype),
             bands=bands,
             extras=extras,
+        )
+
+        logger.info(
+            "Loaded %s dataset %s (%d bands, %d x %d)",
+            self.filepath.name, self.dataset_path, bands, rows, cols,
         )
 
     def read_chip(
@@ -394,7 +409,7 @@ class HDF5Reader(ImageReader):
         /HDFEOS/GRIDS/NDVI: (2400, 2400) float32
         """
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 reading. "
                 "Install with: pip install h5py"
             )
@@ -451,7 +466,7 @@ class HDF5Writer(ImageWriter):
         metadata: Optional[ImageMetadata] = None,
     ) -> None:
         if not _HAS_H5PY:
-            raise ImportError(
+            raise DependencyError(
                 "h5py is required for HDF5 writing. "
                 "Install with: pip install h5py"
             )

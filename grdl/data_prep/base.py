@@ -9,7 +9,7 @@ used as the standardized return type for all chip and tile position queries.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

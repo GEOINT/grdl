@@ -13,7 +13,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,12 +27,15 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-03-10
 """
 
 from typing import Dict, List, Tuple, Union, Any
 
 import numpy as np
+
+# GRDL internal
+from grdl.exceptions import DependencyError
 
 try:
     from scipy.interpolate import LinearNDInterpolator
@@ -107,7 +110,7 @@ class GCPGeolocation(Geolocation):
             If scipy is not installed
         """
         if not SCIPY_AVAILABLE:
-            raise ImportError(
+            raise DependencyError(
                 "scipy is required for GCP-based geolocation. "
                 "Install with: pip install scipy>=1.7.0"
             )
@@ -162,7 +165,7 @@ class GCPGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-        height: float = 0.0
+        height: Union[float, np.ndarray] = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Transform pixel coordinate arrays to geographic coordinate arrays.
@@ -175,7 +178,7 @@ class GCPGeolocation(Geolocation):
             Row coordinates (1D array, float64).
         cols : np.ndarray
             Column coordinates (1D array, float64).
-        height : float, default=0.0
+        height : float or np.ndarray, default=0.0
             Height parameter (not used in GCP interpolation, heights come
             from the GCP data itself).
 
@@ -264,6 +267,11 @@ class GCPGeolocation(Geolocation):
             try:
                 # Interpolate using other GCPs
                 interp_lat, interp_lon, _ = temp_geo.image_to_latlon(true_row, true_col)
+
+                # Skip if outside convex hull (LinearNDInterpolator
+                # returns NaN for extrapolated points)
+                if np.isnan(interp_lat) or np.isnan(interp_lon):
+                    continue
 
                 # Calculate error in meters
                 error_m = geographic_distance(true_lat, true_lon, interp_lat, interp_lon)

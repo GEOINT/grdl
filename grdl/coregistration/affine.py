@@ -14,7 +14,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -32,6 +32,7 @@ Modified
 """
 
 # Standard library
+import logging
 from typing import Any, Optional, Tuple
 
 # Third-party
@@ -44,10 +45,9 @@ from grdl.coregistration.utils import (
     compute_rms,
     warp_image,
 )
-from grdl.image_processing.versioning import processor_version
+logger = logging.getLogger(__name__)
 
 
-@processor_version('0.1.0')
 class AffineCoRegistration(CoRegistration):
     """Affine co-registration from control point correspondences.
 
@@ -150,6 +150,9 @@ class AffineCoRegistration(CoRegistration):
             self._cp_fixed, self._cp_moving, transform_matrix
         )
         rms = compute_rms(residuals)
+
+        logger.debug("Point pairs used: %d", n)
+        logger.info("Affine fit RMS residual: %.4f", rms)
 
         return RegistrationResult(
             transform_matrix=transform_matrix,

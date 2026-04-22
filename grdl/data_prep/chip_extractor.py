@@ -9,7 +9,7 @@ chip planning from pixel data access.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -194,10 +194,8 @@ class ChipExtractor(ChipBase):
 
         # Snap each region to fit inside image bounds
         regions = [
-            self._snap_region(
-                int(r_starts[i]), int(c_starts[i]), row_width, col_width
-            )
-            for i in range(len(rows_arr))
+            self._snap_region(int(r), int(c), row_width, col_width)
+            for r, c in zip(r_starts, c_starts)
         ]
 
         if scalar:
@@ -256,8 +254,6 @@ class ChipExtractor(ChipBase):
         c_origins = cc.ravel()
 
         return [
-            self._snap_region(
-                int(r_origins[i]), int(c_origins[i]), row_width, col_width
-            )
-            for i in range(len(r_origins))
+            self._snap_region(int(r), int(c), row_width, col_width)
+            for r, c in zip(r_origins, c_origins)
         ]

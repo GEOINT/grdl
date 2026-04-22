@@ -15,7 +15,7 @@ rasterio (for BIOMASS, Sentinel-1, and GeoTIFF fallback)
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-03-02
+2026-04-22
 """
 
 # Standard library
@@ -42,16 +42,21 @@ from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
+from grdl.IO.sar.sidd_writer import SIDDWriter
 
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
-from grdl.IO.sar.sentinel1_l0 import Sentinel1L0Reader
+from grdl.IO.sar.sentinel1_l0 import (
+    ReaderConfig as S1L0ReaderConfig,
+    Sentinel1L0Reader,
+    Sentinel1L0ToCRSD,
+    open_safe_product,
+)
 
 # CRSD Writer
 from grdl.IO.sar.crsd_writer import CRSDWriter
 
 # Conversion pipelines
-from grdl.IO.sar.sentinel1_l0 import Sentinel1L0ToCRSD
 from grdl.IO.sar.crsd_to_cphd import CRSDToCPHD
 from grdl.IO.sar.cphd_to_sicd import CPHDToSICD
 
@@ -60,7 +65,6 @@ from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
 
 # BIOMASS
 from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
-from grdl.IO.sar.biomass_catalog import BIOMASSCatalog, load_credentials
 
 # NISAR
 from grdl.IO.sar.nisar import NISARReader, open_nisar
@@ -68,7 +72,7 @@ from grdl.IO.sar.nisar import NISARReader, open_nisar
 # Metadata models
 from grdl.IO.models import (
     SICDMetadata, SIDDMetadata, BIOMASSMetadata, Sentinel1SLCMetadata,
-    TerraSARMetadata, NISARMetadata, Sentinel1L0Metadata,
+    Sentinel1L0Metadata, TerraSARMetadata, NISARMetadata,
 )
 
 # Base class (for return type)
@@ -128,19 +132,21 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
         except (ValueError, ImportError, Exception):
             pass
 
-        # Try SIDD
+    # Try SIDD (sarkit preferred, sarpy fallback)
+    if _HAS_SARKIT or _HAS_SARPY:
         try:
             return SIDDReader(filepath)
         except (ValueError, ImportError, Exception):
             pass
 
-    # Try Sentinel-1 SAFE (L0 first, then SLC)
+    # Try Sentinel-1 SAFE — dispatch between L0 (RAW) and L1 (SLC)
+    # by product identifier in the directory name.
     if filepath.is_dir() and (
         filepath.suffix.upper() == '.SAFE'
         or (filepath / 'manifest.safe').exists()
     ):
-        # Detect L0 RAW products by directory name convention
-        if '_RAW_' in filepath.name.upper():
+        name_upper = filepath.name.upper()
+        if 'RAW' in name_upper:
             try:
                 return Sentinel1L0Reader(filepath)
             except (ValueError, ImportError, Exception):
@@ -197,14 +203,16 @@ __all__ = [
     'CPHDReader',
     'CRSDReader',
     'SIDDReader',
+    'SIDDWriter',
     # Sentinel-1
     'Sentinel1SLCReader',
     'Sentinel1L0Reader',
-    'Sentinel1L0Metadata',
+    'Sentinel1L0ToCRSD',
+    'S1L0ReaderConfig',
+    'open_safe_product',
     # CRSD Writer
     'CRSDWriter',
     # Conversion pipelines
-    'Sentinel1L0ToCRSD',
     'CRSDToCPHD',
     'CPHDToSICD',
     # TerraSAR-X / TanDEM-X
@@ -213,7 +221,6 @@ __all__ = [
     'open_terrasar',
     # BIOMASS
     'BIOMASSL1Reader',
-    'BIOMASSCatalog',
     # NISAR
     'NISARReader',
     'NISARMetadata',
@@ -222,9 +229,9 @@ __all__ = [
     'SIDDMetadata',
     'BIOMASSMetadata',
     'Sentinel1SLCMetadata',
+    'Sentinel1L0Metadata',
     # Convenience functions
     'open_sar',
     'open_biomass',
     'open_nisar',
-    'load_credentials',
 ]

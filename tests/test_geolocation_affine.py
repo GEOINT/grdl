@@ -16,7 +16,7 @@ pyproj
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -89,39 +89,37 @@ class TestConstruction:
 
     def test_from_reader(self):
         """Test from_reader factory with mock reader."""
+        from grdl.IO.models.base import ImageMetadata
         transform = Affine(0.01, 0.0, 116.0, 0.0, -0.01, -31.0)
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500,
-                'cols': 600,
-                'transform': transform,
-                'crs': 'EPSG:4326',
-            }
-        })()
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            crs='EPSG:4326', transform=transform,
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         geo = AffineGeolocation.from_reader(mock_reader)
         assert geo.shape == (500, 600)
         assert geo.native_crs == 'EPSG:4326'
 
     def test_from_reader_missing_transform(self):
         """Test from_reader raises ValueError when transform is missing."""
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500, 'cols': 600,
-                'crs': 'EPSG:4326',
-            }
-        })()
+        from grdl.IO.models.base import ImageMetadata
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            crs='EPSG:4326',
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         with pytest.raises(ValueError, match="affine transform"):
             AffineGeolocation.from_reader(mock_reader)
 
     def test_from_reader_missing_crs(self):
         """Test from_reader raises ValueError when CRS is missing."""
+        from grdl.IO.models.base import ImageMetadata
         transform = Affine(0.01, 0.0, 116.0, 0.0, -0.01, -31.0)
-        mock_reader = type('MockReader', (), {
-            'metadata': {
-                'rows': 500, 'cols': 600,
-                'transform': transform,
-            }
-        })()
+        meta = ImageMetadata(
+            format='GeoTIFF', rows=500, cols=600, dtype='float32',
+            transform=transform,
+        )
+        mock_reader = type('MockReader', (), {'metadata': meta})()
         with pytest.raises(ValueError, match="CRS"):
             AffineGeolocation.from_reader(mock_reader)
 
@@ -135,18 +133,20 @@ class TestForwardTransform:
 
     def test_scalar_geographic(self, geo_geographic):
         """Test scalar forward transform with geographic CRS."""
-        lat, lon, h = geo_geographic.image_to_latlon(0, 0)
-        assert isinstance(lat, float)
-        assert isinstance(lon, float)
+        result = geo_geographic.image_to_latlon(0, 0)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (3,)
+        lat, lon, h = result
         # Origin pixel (0,0) -> (lon=116.0, lat=-31.0)
         assert abs(lon - 116.0) < 0.01
         assert abs(lat - (-31.0)) < 0.01
 
     def test_scalar_utm(self, geo_utm):
         """Test scalar forward transform with projected CRS."""
-        lat, lon, h = geo_utm.image_to_latlon(0, 0)
-        assert isinstance(lat, float)
-        assert isinstance(lon, float)
+        result = geo_utm.image_to_latlon(0, 0)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (3,)
+        lat, lon, h = result
         assert -90 <= lat <= 90
         assert -180 <= lon <= 180
 
@@ -154,25 +154,27 @@ class TestForwardTransform:
         """Test array forward transform with geographic CRS."""
         rows = np.array([0.0, 100.0, 500.0, 999.0])
         cols = np.array([0.0, 500.0, 1000.0, 1999.0])
-        lats, lons, heights = geo_geographic.image_to_latlon(rows, cols)
+        result = geo_geographic.image_to_latlon(np.column_stack([rows, cols]))
+        assert result.shape == (4, 3)
+        lats, lons, heights = result[:, 0], result[:, 1], result[:, 2]
         assert lats.shape == (4,)
-        assert lons.shape == (4,)
-        assert heights.shape == (4,)
 
-    def test_stacked_2xN_geographic(self, geo_geographic):
-        """Test (2,N) stacked array forward transform."""
+    def test_stacked_Nx2_geographic(self, geo_geographic):
+        """Test (N, 2) stacked array forward transform."""
         pts = np.array([
-            [0.0, 100.0, 500.0],   # rows
-            [0.0, 500.0, 1000.0],  # cols
+            [0.0, 0.0],
+            [100.0, 500.0],
+            [500.0, 1000.0],
         ])
         result = geo_geographic.image_to_latlon(pts)
-        assert result.shape == (3, 3)  # (3, N): lats, lons, heights
+        assert result.shape == (3, 3)  # (N, 3): [lat, lon, h] per row
 
-    def test_stacked_2xN_utm(self, geo_utm):
-        """Test (2,N) stacked array forward transform with projected CRS."""
+    def test_stacked_Nx2_utm(self, geo_utm):
+        """Test (N, 2) stacked array forward transform with projected CRS."""
         pts = np.array([
-            [0.0, 512.0, 1023.0],
-            [0.0, 1024.0, 2047.0],
+            [0.0, 0.0],
+            [512.0, 1024.0],
+            [1023.0, 2047.0],
         ])
         result = geo_utm.image_to_latlon(pts)
         assert result.shape == (3, 3)
@@ -180,13 +182,9 @@ class TestForwardTransform:
         assert np.all(np.isfinite(result))
 
     def test_bad_stacked_shape(self, geo_geographic):
-        """Test that non-(2,N) stacked array raises ValueError."""
-        bad_pts = np.array([
-            [0.0, 1.0, 2.0],
-            [3.0, 4.0, 5.0],
-            [6.0, 7.0, 8.0],
-        ])
-        with pytest.raises(ValueError, match="Expected \\(2, N\\)"):
+        """Test that (N, 1) stacked array raises ValueError."""
+        bad_pts = np.array([[0.0], [1.0], [2.0]])
+        with pytest.raises(ValueError):
             geo_geographic.image_to_latlon(bad_pts)
 
     def test_height_passthrough(self, geo_geographic):
@@ -204,9 +202,10 @@ class TestInverseTransform:
 
     def test_scalar_geographic(self, geo_geographic):
         """Test scalar inverse transform with geographic CRS."""
-        row, col = geo_geographic.latlon_to_image(-31.0, 116.0)
-        assert isinstance(row, float)
-        assert isinstance(col, float)
+        result = geo_geographic.latlon_to_image(-31.0, 116.0)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (2,)
+        row, col = result
         assert abs(row) < 0.5
         assert abs(col) < 0.5
 
@@ -222,18 +221,21 @@ class TestInverseTransform:
         """Test array inverse transform."""
         lats = np.array([-31.0, -31.5, -32.0])
         lons = np.array([116.0, 118.0, 120.0])
-        rows, cols = geo_geographic.latlon_to_image(lats, lons)
+        result = geo_geographic.latlon_to_image(
+            np.column_stack([lats, lons, np.zeros(3)]))
+        assert result.shape == (3, 2)
+        rows, cols = result[:, 0], result[:, 1]
         assert rows.shape == (3,)
-        assert cols.shape == (3,)
 
-    def test_stacked_2xN(self, geo_geographic):
-        """Test (2,N) stacked array inverse transform."""
+    def test_stacked_Nx3(self, geo_geographic):
+        """Test (N, 3) stacked array inverse transform."""
         pts = np.array([
-            [-31.0, -31.5, -32.0],   # lats
-            [116.0, 118.0, 120.0],    # lons
+            [-31.0, 116.0, 0.0],
+            [-31.5, 118.0, 0.0],
+            [-32.0, 120.0, 0.0],
         ])
         result = geo_geographic.latlon_to_image(pts)
-        assert result.shape == (2, 3)  # (2, N): rows, cols
+        assert result.shape == (3, 2)  # (N, 2): [row, col] per point
 
 
 # ---------------------------------------------------------------------------
@@ -263,20 +265,26 @@ class TestRoundTrip:
         """Test batch round-trip with geographic CRS."""
         rows = np.array([0.0, 250.0, 500.0, 750.0, 999.0])
         cols = np.array([0.0, 500.0, 1000.0, 1500.0, 1999.0])
-        lats, lons, _ = geo_geographic.image_to_latlon(rows, cols)
-        rows_back, cols_back = geo_geographic.latlon_to_image(lats, lons)
+        fwd = geo_geographic.image_to_latlon(np.column_stack([rows, cols]))
+        lats, lons = fwd[:, 0], fwd[:, 1]
+        inv = geo_geographic.latlon_to_image(
+            np.column_stack([lats, lons, np.zeros(5)]))
+        rows_back, cols_back = inv[:, 0], inv[:, 1]
         assert np.max(np.abs(rows_back - rows)) < 0.01
         assert np.max(np.abs(cols_back - cols)) < 0.01
 
     def test_stacked_roundtrip_utm(self, geo_utm):
-        """Test (2,N) round-trip with projected CRS."""
+        """Test (N, 2) round-trip with projected CRS."""
         pts = np.array([
-            [0.0, 256.0, 512.0, 768.0, 1023.0],
-            [0.0, 512.0, 1024.0, 1536.0, 2047.0],
+            [0.0, 0.0],
+            [256.0, 512.0],
+            [512.0, 1024.0],
+            [768.0, 1536.0],
+            [1023.0, 2047.0],
         ])
-        geo_pts = geo_utm.image_to_latlon(pts)  # (3, N)
-        latlon_pts = geo_pts[:2]  # (2, N) = [lats, lons]
-        img_back = geo_utm.latlon_to_image(latlon_pts)  # (2, N)
+        geo_pts = geo_utm.image_to_latlon(pts)  # (N, 3)
+        latlon_pts = geo_pts  # (N, 3) = [lat, lon, h] per row
+        img_back = geo_utm.latlon_to_image(latlon_pts)  # (N, 2)
         assert np.max(np.abs(img_back - pts)) < 0.01
 
 
@@ -326,7 +334,9 @@ class TestConsistency:
         """Scalar and array forward transforms produce same results."""
         rows = np.array([100.0, 200.0, 300.0])
         cols = np.array([400.0, 500.0, 600.0])
-        lats_arr, lons_arr, h_arr = geo_geographic.image_to_latlon(rows, cols)
+        result_arr = geo_geographic.image_to_latlon(
+            np.column_stack([rows, cols]))
+        lats_arr, lons_arr = result_arr[:, 0], result_arr[:, 1]
 
         for i in range(3):
             lat_s, lon_s, h_s = geo_geographic.image_to_latlon(
@@ -339,7 +349,9 @@ class TestConsistency:
         """Scalar and array inverse transforms produce same results."""
         lats = np.array([-31.5, -32.0, -32.5])
         lons = np.array([117.0, 118.0, 119.0])
-        rows_arr, cols_arr = geo_geographic.latlon_to_image(lats, lons)
+        result_arr = geo_geographic.latlon_to_image(
+            np.column_stack([lats, lons, np.zeros(3)]))
+        rows_arr, cols_arr = result_arr[:, 0], result_arr[:, 1]
 
         for i in range(3):
             row_s, col_s = geo_geographic.latlon_to_image(

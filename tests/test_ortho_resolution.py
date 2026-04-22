@@ -9,7 +9,7 @@ pytest
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -36,6 +36,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from grdl.geolocation.coordinates import meters_per_degree
 from grdl.image_processing.ortho.resolution import (
     compute_output_resolution,
     _resolution_from_sicd,
@@ -109,9 +110,13 @@ _OrigSICDMeta = _sicd_mod.SICDMetadata
 class TestMetersToDegreesHelper:
 
     def test_equator(self):
-        """At equator, lat and lon spacing are equal."""
+        """At equator, lat and lon spacing are approximately equal.
+
+        On the WGS-84 ellipsoid M < N at the equator (flattening), so
+        lat spacing is ~0.67% larger than lon spacing in degrees.
+        """
         lat_deg, lon_deg = _meters_to_degrees(111.32, 0.0)
-        assert abs(lat_deg - lon_deg) < 1e-6
+        assert abs(lat_deg - lon_deg) / lat_deg < 0.01
 
     def test_high_latitude(self):
         """At 60 degrees, lon spacing should be ~2x lat spacing."""
@@ -154,7 +159,8 @@ class TestResolutionSICD:
         # At 45 deg graze, range ground resolution = 0.5/sin(45) ~ 0.707 m
         # Column stays 0.5 m, so max is 0.707 m
         expected_m = 0.5 / np.sin(np.radians(45.0))
-        expected_lat = expected_m / 111320.0
+        m_lat, _ = meters_per_degree(34.0)  # scp_lat default
+        expected_lat = expected_m / m_lat
         assert abs(lat_deg - expected_lat) < 1e-10
 
     def test_ground_plane_no_graze(self):
@@ -163,7 +169,8 @@ class TestResolutionSICD:
             row_ss=1.0, col_ss=1.0, image_plane='GROUND', graze_ang=45.0
         )
         lat_deg, lon_deg = _resolution_from_sicd(meta, None, 1.0)
-        expected_lat = 1.0 / 111320.0
+        m_lat, _ = meters_per_degree(34.0)
+        expected_lat = 1.0 / m_lat
         assert abs(lat_deg - expected_lat) < 1e-10
 
     def test_imp_resp_wid_preferred(self):
@@ -174,7 +181,8 @@ class TestResolutionSICD:
         )
         lat_deg, _ = _resolution_from_sicd(meta, None, 1.0)
         # Should use 1.0 m (imp_resp_wid) not 0.5 m (ss)
-        expected_lat = 1.0 / 111320.0
+        m_lat, _ = meters_per_degree(34.0)
+        expected_lat = 1.0 / m_lat
         assert abs(lat_deg - expected_lat) < 1e-10
 
     def test_missing_grid_raises(self):
@@ -209,7 +217,8 @@ class TestResolutionBIOMASS:
             'azimuth_pixel_spacing': 20.0,
         }
         lat_deg, _ = _resolution_from_biomass(meta, None, 1.0)
-        expected = 20.0 / 111320.0
+        m_lat, _ = meters_per_degree(0.0)  # BIOMASS default center lat
+        expected = 20.0 / m_lat
         assert abs(lat_deg - expected) < 1e-10
 
     def test_biomass_missing_spacing_raises(self):

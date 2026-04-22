@@ -10,7 +10,7 @@ coordinate frame of a fixed (reference) image.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

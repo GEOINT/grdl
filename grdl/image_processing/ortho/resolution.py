@@ -4,13 +4,13 @@ Output Resolution Computation - Estimate ortho grid pixel size from metadata.
 
 Computes appropriate output grid pixel spacing in degrees from the native
 pixel spacing of source imagery.  Dispatches by metadata type to handle
-SICD, BIOMASS, GeoTIFF, and other formats.  Used by ``OrthoPipeline`` for
-automatic resolution selection.
+SICD, BIOMASS, Sentinel-1 SLC, NISAR, GeoTIFF, and other formats.  Used
+by ``OrthoBuilder`` for automatic resolution selection.
 
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -24,22 +24,24 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-08
 """
 
 # Standard library
+import logging
 from typing import Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
     from grdl.geolocation.base import Geolocation
 
 
-# Earth constant for latitude-to-meters conversion
-_METERS_PER_DEG_LAT = 111_320.0
+from grdl.geolocation.coordinates import meters_per_degree
 
 
 def compute_output_resolution(
@@ -78,12 +80,14 @@ def compute_output_resolution(
     from grdl.IO.models.sicd import SICDMetadata
 
     if isinstance(metadata, SICDMetadata):
+        logger.debug("Matched metadata type: SICDMetadata")
         return _resolution_from_sicd(metadata, geolocation, scale_factor)
 
     # Sentinel-1 SLC (typed dataclass, not dict-like)
     try:
         from grdl.IO.models.sentinel1_slc import Sentinel1SLCMetadata
         if isinstance(metadata, Sentinel1SLCMetadata):
+            logger.debug("Matched metadata type: Sentinel1SLCMetadata")
             return _resolution_from_sentinel1_slc(
                 metadata, geolocation, scale_factor,
             )
@@ -94,6 +98,7 @@ def compute_output_resolution(
     try:
         from grdl.IO.models.nisar import NISARMetadata
         if isinstance(metadata, NISARMetadata):
+            logger.debug("Matched metadata type: NISARMetadata")
             return _resolution_from_nisar(
                 metadata, geolocation, scale_factor,
             )
@@ -103,8 +108,10 @@ def compute_output_resolution(
     # Dict-like metadata (BIOMASS, GeoTIFF, etc.)
     if hasattr(metadata, 'get'):
         if metadata.get('range_pixel_spacing') is not None:
+            logger.debug("Matched metadata type: BIOMASS (dict-like)")
             return _resolution_from_biomass(metadata, geolocation, scale_factor)
-        if metadata.get('transform') is not None:
+        if getattr(metadata, 'transform', None) is not None:
+            logger.debug("Matched metadata type: GeoTIFF/geocoded raster")
             return _resolution_from_geotiff(metadata, scale_factor)
 
     raise ValueError(
@@ -171,6 +178,10 @@ def _resolution_from_sicd(
             and metadata.scpcoa.graze_ang is not None):
         sin_graze = np.sin(np.radians(metadata.scpcoa.graze_ang))
         if sin_graze > 0.01:
+            logger.debug(
+                "SLANT-plane graze angle correction: %.2f deg",
+                metadata.scpcoa.graze_ang,
+            )
             row_m = row_m / sin_graze
 
     ground_m = max(row_m, col_m)
@@ -239,18 +250,18 @@ def _resolution_from_geotiff(
     Tuple[float, float]
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.
     """
-    resolution = metadata['resolution']
+    resolution = metadata.pixel_resolution
 
-    crs = str(metadata.get('crs', ''))
+    crs = str(getattr(metadata, 'crs', '') or '')
     if '4326' in crs or 'WGS' in crs.upper():
         # Already in degrees
         return (abs(resolution[0]) * scale_factor,
                 abs(resolution[1]) * scale_factor)
 
     # Projected CRS -- resolution is in meters
-    bounds = metadata.get('bounds')
+    bounds = metadata.bounds
     if bounds is not None:
-        center_lat = (bounds.bottom + bounds.top) / 2.0
+        center_lat = (bounds[1] + bounds[3]) / 2.0  # (minx, miny, maxx, maxy)
     else:
         center_lat = 0.0
 
@@ -301,6 +312,9 @@ def _resolution_from_sentinel1_slc(
     if inc is not None and inc > 0.1:
         sin_inc = np.sin(np.radians(inc))
         if sin_inc > 0.01:
+            logger.debug(
+                "SLANT-plane incidence angle correction: %.2f deg", inc,
+            )
             range_m = range_m / sin_inc
 
     ground_m = max(range_m, azimuth_m)
@@ -394,7 +408,7 @@ def _get_center_latitude(
         try:
             center_row = geolocation.shape[0] // 2
             center_col = geolocation.shape[1] // 2
-            lat, _, _ = geolocation.image_to_latlon(center_row, center_col)
+            lat = geolocation.image_to_latlon(center_row, center_col)[0]
             return lat
         except (ValueError, NotImplementedError):
             pass
@@ -407,21 +421,24 @@ def _meters_to_degrees(
 ) -> Tuple[float, float]:
     """Convert a ground spacing in meters to ``(lat_deg, lon_deg)``.
 
+    Uses WGS-84 ellipsoidal radii of curvature for accurate conversion
+    at all latitudes.
+
     Parameters
     ----------
     spacing_m : float
         Ground spacing in meters.
     center_lat : float
-        Scene-center latitude for longitude scaling.
+        Scene-center latitude for latitude/longitude scaling.
 
     Returns
     -------
     Tuple[float, float]
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.
     """
-    pixel_size_lat = spacing_m / _METERS_PER_DEG_LAT
-    cos_lat = np.cos(np.radians(center_lat))
-    if cos_lat < 0.01:
-        cos_lat = 1.0  # near-pole guard
-    pixel_size_lon = spacing_m / (_METERS_PER_DEG_LAT * cos_lat)
+    m_lat, m_lon = meters_per_degree(center_lat)
+    pixel_size_lat = spacing_m / m_lat
+    if m_lon < m_lat * 0.01:
+        m_lon = m_lat  # near-pole guard
+    pixel_size_lon = spacing_m / m_lon
     return pixel_size_lat, pixel_size_lon

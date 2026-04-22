@@ -17,7 +17,7 @@ scipy
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -39,7 +39,18 @@ from typing import Annotated, Any
 
 # Third-party
 import numpy as np
-from scipy.ndimage import maximum_filter, median_filter, minimum_filter
+from scipy.ndimage import maximum_filter as _scipy_maximum_filter
+from scipy.ndimage import median_filter as _scipy_median_filter
+from scipy.ndimage import minimum_filter as _scipy_minimum_filter
+
+try:
+    import cupy as cp
+    import cupyx.scipy.ndimage as _cupyx_ndimage
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+    cp = None
+    _cupyx_ndimage = None
 
 # GRDL internal
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
@@ -77,7 +88,7 @@ class MedianFilter(BandwiseTransformMixin, ImageTransform):
     >>> denoised = f.apply(noisy_image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Square kernel side length (odd)')] = 3
@@ -96,7 +107,7 @@ class MedianFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -108,7 +119,9 @@ class MedianFilter(BandwiseTransformMixin, ImageTransform):
         mode = params['mode']
         validate_kernel_size(ks)
         validate_mode(mode)
-        return median_filter(source, size=ks, mode=mode)
+        if _HAS_CUPY and isinstance(source, cp.ndarray):
+            return _cupyx_ndimage.median_filter(source, size=ks, mode=mode)
+        return _scipy_median_filter(source, size=ks, mode=mode)
 
 
 @processor_version('1.0.0')
@@ -137,7 +150,7 @@ class MinFilter(BandwiseTransformMixin, ImageTransform):
     >>> eroded = f.apply(image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Square kernel side length (odd)')] = 3
@@ -156,7 +169,7 @@ class MinFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -168,7 +181,9 @@ class MinFilter(BandwiseTransformMixin, ImageTransform):
         mode = params['mode']
         validate_kernel_size(ks)
         validate_mode(mode)
-        return minimum_filter(source, size=ks, mode=mode)
+        if _HAS_CUPY and isinstance(source, cp.ndarray):
+            return _cupyx_ndimage.minimum_filter(source, size=ks, mode=mode)
+        return _scipy_minimum_filter(source, size=ks, mode=mode)
 
 
 @processor_version('1.0.0')
@@ -197,7 +212,7 @@ class MaxFilter(BandwiseTransformMixin, ImageTransform):
     >>> dilated = f.apply(image)
     """
 
-    __gpu_compatible__ = False
+    __gpu_compatible__ = True
 
     kernel_size: Annotated[int, Range(min=3, max=101),
                            Desc('Square kernel side length (odd)')] = 3
@@ -216,7 +231,7 @@ class MaxFilter(BandwiseTransformMixin, ImageTransform):
         Parameters
         ----------
         source : np.ndarray
-            2D image array, shape ``(rows, cols)``.
+            2D image array, shape ``(rows, cols)``. Accepts cupy arrays.
 
         Returns
         -------
@@ -228,4 +243,6 @@ class MaxFilter(BandwiseTransformMixin, ImageTransform):
         mode = params['mode']
         validate_kernel_size(ks)
         validate_mode(mode)
-        return maximum_filter(source, size=ks, mode=mode)
+        if _HAS_CUPY and isinstance(source, cp.ndarray):
+            return _cupyx_ndimage.maximum_filter(source, size=ks, mode=mode)
+        return _scipy_maximum_filter(source, size=ks, mode=mode)

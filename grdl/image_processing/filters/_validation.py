@@ -9,7 +9,7 @@ on kernel size (odd, >= 3) and scipy.ndimage boundary modes.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------

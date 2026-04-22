@@ -8,7 +8,7 @@ tests with a single parametrized smoke test plus ``__all__`` verification.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -38,7 +38,9 @@ import pytest
     'VIIRSMetadata', 'ASTERMetadata',
     'GeoTIFFReader', 'HDF5Reader', 'JP2Reader', 'NITFReader',
     'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
-    'BIOMASSL1Reader', 'BIOMASSCatalog',
+    'BIOMASSL1Reader',
+    'BIOMASSCatalog', 'Sentinel1SLCCatalog', 'TerraSARCatalog',
+    'NISARCatalog', 'Sentinel2Catalog', 'ASTERCatalog', 'VIIRSCatalog',
     'ASTERReader', 'VIIRSReader',
     'open_image', 'open_sar', 'open_biomass', 'load_credentials',
     'open_eo', 'open_ir', 'open_multispectral',
@@ -61,7 +63,9 @@ def test_io_all_exports():
         'VIIRSMetadata', 'ASTERMetadata',
         'GeoTIFFReader', 'HDF5Reader', 'JP2Reader', 'NITFReader',
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
-        'BIOMASSL1Reader', 'BIOMASSCatalog',
+        'BIOMASSL1Reader',
+        'BIOMASSCatalog', 'Sentinel1SLCCatalog', 'TerraSARCatalog',
+        'NISARCatalog', 'Sentinel2Catalog', 'ASTERCatalog', 'VIIRSCatalog',
         'ASTERReader', 'VIIRSReader',
         'open_image', 'open_sar', 'open_biomass', 'load_credentials',
         'open_eo', 'open_ir', 'open_multispectral',
@@ -75,9 +79,24 @@ def test_sar_all_exports():
     import grdl.IO.sar as sar_mod
     expected = [
         'SICDReader', 'CPHDReader', 'CRSDReader', 'SIDDReader',
-        'BIOMASSL1Reader', 'BIOMASSCatalog',
+        'BIOMASSL1Reader',
         'SICDMetadata', 'SIDDMetadata', 'BIOMASSMetadata',
-        'open_sar', 'open_biomass', 'load_credentials',
+        'open_sar', 'open_biomass',
     ]
     for name in expected:
         assert name in sar_mod.__all__, f"'{name}' missing from sar.__all__"
+    # Catalog classes live in grdl.IO.catalog, not grdl.IO.sar
+    assert 'BIOMASSCatalog' not in sar_mod.__all__
+    assert 'load_credentials' not in sar_mod.__all__
+
+
+def test_catalog_all_exports():
+    """Catalog __all__ contains expected symbols."""
+    import grdl.IO.catalog as cat_mod
+    expected = [
+        'BIOMASSCatalog', 'load_credentials',
+        'Sentinel1SLCCatalog', 'TerraSARCatalog', 'NISARCatalog',
+        'Sentinel2Catalog', 'ASTERCatalog', 'VIIRSCatalog',
+    ]
+    for name in expected:
+        assert name in cat_mod.__all__, f"'{name}' missing from catalog.__all__"

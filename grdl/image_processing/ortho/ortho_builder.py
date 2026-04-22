@@ -1,19 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Orthorectification Pipeline - Universal pipeline for orthorectifying imagery.
+Orthorectification Builder - Universal builder for orthorectifying imagery.
 
 Orchestrates reader, geolocation, resolution computation, output grid
 construction, terrain-corrected orthorectification, and optional GeoTIFF
 output.  Works with any ``ImageReader`` and ``Geolocation`` subclass.
 
+Supports both WGS-84 geographic grids (``GeographicGrid``) and local ENU
+(East-North-Up) grids in meters (``ENUGrid``) via ``with_enu_grid()``.
+Tiled processing is available via ``with_tile_size()`` for memory-
+efficient handling of large output grids.
+
+Resampling uses the accelerated multi-backend dispatch chain from
+``grdl.image_processing.ortho.accelerated``.
+
 Dependencies
 ------------
 scipy
+numba (optional — JIT parallel acceleration)
+torch (optional — GPU/CPU acceleration)
 
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -27,10 +37,11 @@ Created
 
 Modified
 --------
-2026-02-17
+2026-03-27  DEM attached to geolocation instead of passed to Orthorectifier.
 """
 
 # Standard library
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
@@ -38,12 +49,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 import numpy as np
 
 # GRDL internal
-from grdl.image_processing.ortho.ortho import Orthorectifier, OutputGrid
+from grdl.exceptions import DependencyError
+from grdl.image_processing.ortho.ortho import Orthorectifier, GeographicGrid
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grdl.IO.base import ImageReader
     from grdl.geolocation.base import Geolocation
-    from grdl.geolocation.elevation.base import ElevationModel
 
 
 class OrthoResult:
@@ -58,7 +71,7 @@ class OrthoResult:
     data : np.ndarray
         Orthorectified image.  Shape ``(rows, cols)`` or
         ``(bands, rows, cols)``.
-    output_grid : OutputGrid
+    output_grid : GeographicGrid
         Grid specification for the output.
     geolocation_metadata : Dict[str, Any]
         CRS, affine transform, bounds, and pixel sizes.
@@ -69,7 +82,7 @@ class OrthoResult:
     def __init__(
         self,
         data: np.ndarray,
-        output_grid: OutputGrid,
+        output_grid: GeographicGrid,
         geolocation_metadata: Dict[str, Any],
         orthorectifier: Orthorectifier,
     ) -> None:
@@ -82,6 +95,42 @@ class OrthoResult:
     def shape(self) -> tuple:
         """Shape of the orthorectified data."""
         return self.data.shape
+
+    @property
+    def is_enu(self) -> bool:
+        """Whether the output is in ENU coordinates."""
+        from grdl.image_processing.ortho.enu_grid import ENUGrid
+        return isinstance(self.output_grid, ENUGrid)
+
+    @property
+    def enu_reference_point(
+        self,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Reference point (lat, lon, alt) if ENU, else None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.ref_lat, g.ref_lon, g.ref_alt)
+        return None
+
+    @property
+    def pixel_size_meters(
+        self,
+    ) -> Optional[Tuple[float, float]]:
+        """Pixel size (east_m, north_m) if ENU, else None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.pixel_size_east, g.pixel_size_north)
+        return None
+
+    @property
+    def bounds_meters(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """ENU bounds (min_east, min_north, max_east, max_north) or None."""
+        if self.is_enu:
+            g = self.output_grid
+            return (g.min_east, g.min_north, g.max_east, g.max_north)
+        return None
 
     def save_geotiff(self, filepath: Union[str, Path]) -> None:
         """Save result as a georeferenced GeoTIFF.
@@ -101,7 +150,7 @@ class OrthoResult:
         try:
             from rasterio.transform import Affine
         except ImportError:
-            raise ImportError(
+            raise DependencyError(
                 "rasterio is required for GeoTIFF output. "
                 "Install with: conda install -c conda-forge rasterio"
             )
@@ -126,7 +175,7 @@ class OrthoResult:
         writer.write(self.data, geolocation=geolocation)
 
 
-class OrthoPipeline:
+class OrthoBuilder:
     """Universal orthorectification pipeline.
 
     Wires together reader, geolocation, resolution, elevation, grid,
@@ -143,12 +192,12 @@ class OrthoPipeline:
         from grdl.IO.sar import SICDReader
         from grdl.geolocation.sar.sicd import SICDGeolocation
         from grdl.geolocation.elevation import DTEDElevation
-        from grdl.image_processing.ortho import OrthoPipeline
+        from grdl.image_processing.ortho import OrthoBuilder
 
         with SICDReader('image.nitf') as reader:
             geo = SICDGeolocation.from_reader(reader)
             elev = DTEDElevation('/path/to/dted')
-            result = (OrthoPipeline()
+            result = (OrthoBuilder()
                       .with_reader(reader)
                       .with_geolocation(geo)
                       .with_elevation(elev)
@@ -158,7 +207,7 @@ class OrthoPipeline:
     Pre-processed source array (SAR magnitude computed in slant range)::
 
         mag_db = 20.0 * np.log10(np.abs(reader.read_full()) + 1e-10)
-        result = (OrthoPipeline()
+        result = (OrthoBuilder()
                   .with_source_array(mag_db)
                   .with_metadata(reader.metadata)
                   .with_geolocation(geo)
@@ -170,8 +219,7 @@ class OrthoPipeline:
         self._reader: Optional['ImageReader'] = None
         self._metadata: Optional[Any] = None
         self._geolocation: Optional['Geolocation'] = None
-        self._elevation: Optional['ElevationModel'] = None
-        self._output_grid: Optional[OutputGrid] = None
+        self._output_grid: Optional[GeographicGrid] = None
         self._pixel_size_lat: Optional[float] = None
         self._pixel_size_lon: Optional[float] = None
         self._interpolation: str = 'bilinear'
@@ -182,12 +230,14 @@ class OrthoPipeline:
         self._source_array: Optional[np.ndarray] = None
         self._roi_bounds: Optional[Tuple[float, float, float, float]] = None
         self._tile_size: Optional[Union[int, Tuple[int, int]]] = None
+        self._enu_params: Optional[Dict[str, Any]] = None
+        self._batch_size: int = 2_000_000
 
     # ------------------------------------------------------------------
     # Builder methods
     # ------------------------------------------------------------------
 
-    def with_reader(self, reader: 'ImageReader') -> 'OrthoPipeline':
+    def with_reader(self, reader: 'ImageReader') -> 'OrthoBuilder':
         """Set the source imagery reader.
 
         Parameters
@@ -197,13 +247,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._reader = reader
         return self
 
-    def with_metadata(self, metadata: Any) -> 'OrthoPipeline':
+    def with_metadata(self, metadata: Any) -> 'OrthoBuilder':
         """Set metadata for auto-resolution computation.
 
         Use when working with a pre-loaded source array instead of a
@@ -217,7 +267,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._metadata = metadata
@@ -225,7 +275,7 @@ class OrthoPipeline:
 
     def with_geolocation(
         self, geolocation: 'Geolocation'
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Set the source geolocation.
 
         Parameters
@@ -235,41 +285,23 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._geolocation = geolocation
         return self
 
-    def with_elevation(
-        self, elevation: 'ElevationModel'
-    ) -> 'OrthoPipeline':
-        """Set the elevation model for terrain correction.
-
-        Parameters
-        ----------
-        elevation : ElevationModel
-            DEM / DTED elevation model.
-
-        Returns
-        -------
-        OrthoPipeline
-            Self for chaining.
-        """
-        self._elevation = elevation
-        return self
-
-    def with_output_grid(self, grid: OutputGrid) -> 'OrthoPipeline':
+    def with_output_grid(self, grid: GeographicGrid) -> 'OrthoBuilder':
         """Set an explicit output grid (overrides auto-computation).
 
         Parameters
         ----------
-        grid : OutputGrid
+        grid : GeographicGrid
             Pre-built output grid.
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._output_grid = grid
@@ -277,7 +309,7 @@ class OrthoPipeline:
 
     def with_resolution(
         self, pixel_size_lat: float, pixel_size_lon: float
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Set explicit output resolution in degrees.
 
         Parameters
@@ -289,14 +321,14 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._pixel_size_lat = pixel_size_lat
         self._pixel_size_lon = pixel_size_lon
         return self
 
-    def with_interpolation(self, method: str) -> 'OrthoPipeline':
+    def with_interpolation(self, method: str) -> 'OrthoBuilder':
         """Set resampling interpolation method.
 
         Parameters
@@ -306,13 +338,38 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._interpolation = method
         return self
 
-    def with_bands(self, bands: List[int]) -> 'OrthoPipeline':
+    def with_batch_size(self, batch_size: int) -> 'OrthoBuilder':
+        """Set inverse-mapping batch size (points per chunk).
+
+        Caps peak memory during the Newton-Raphson inverse projection
+        by chunking the flat output grid into slices of ``batch_size``
+        points. Each chunk is projected independently and the DEM is
+        pre-sampled once per chunk.
+
+        Parameters
+        ----------
+        batch_size : int
+            Points per chunk. Default 2,000,000.
+
+        Returns
+        -------
+        OrthoBuilder
+            Self for chaining.
+        """
+        if batch_size <= 0:
+            raise ValueError(
+                f"batch_size must be positive, got {batch_size}"
+            )
+        self._batch_size = batch_size
+        return self
+
+    def with_bands(self, bands: List[int]) -> 'OrthoBuilder':
         """Set which bands to orthorectify (reader mode only).
 
         Parameters
@@ -322,13 +379,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._bands = bands
         return self
 
-    def with_nodata(self, nodata: float) -> 'OrthoPipeline':
+    def with_nodata(self, nodata: float) -> 'OrthoBuilder':
         """Set nodata fill value for pixels without source coverage.
 
         Parameters
@@ -338,13 +395,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._nodata = nodata
         return self
 
-    def with_margin(self, margin: float) -> 'OrthoPipeline':
+    def with_margin(self, margin: float) -> 'OrthoBuilder':
         """Set margin around the footprint bounds (degrees).
 
         Parameters
@@ -354,13 +411,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._margin = margin
         return self
 
-    def with_scale_factor(self, factor: float) -> 'OrthoPipeline':
+    def with_scale_factor(self, factor: float) -> 'OrthoBuilder':
         """Set resolution scale factor for auto-computed resolution.
 
         Parameters
@@ -370,13 +427,13 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._scale_factor = factor
         return self
 
-    def with_source_array(self, array: np.ndarray) -> 'OrthoPipeline':
+    def with_source_array(self, array: np.ndarray) -> 'OrthoBuilder':
         """Use a pre-loaded source array instead of reading from reader.
 
         This is the recommended path for SAR: compute magnitude or other
@@ -390,7 +447,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._source_array = array
@@ -402,7 +459,7 @@ class OrthoPipeline:
         max_lat: float,
         min_lon: float,
         max_lon: float,
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Restrict output to a geographic region of interest.
 
         Only the specified bounding box is orthorectified, rather than
@@ -421,7 +478,7 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._roi_bounds = (min_lat, max_lat, min_lon, max_lon)
@@ -429,7 +486,7 @@ class OrthoPipeline:
 
     def with_tile_size(
         self, tile_size: Union[int, Tuple[int, int]]
-    ) -> 'OrthoPipeline':
+    ) -> 'OrthoBuilder':
         """Enable tiled processing with the given tile dimensions.
 
         When set, the output grid is partitioned into tiles of the
@@ -446,10 +503,52 @@ class OrthoPipeline:
 
         Returns
         -------
-        OrthoPipeline
+        OrthoBuilder
             Self for chaining.
         """
         self._tile_size = tile_size
+        return self
+
+    def with_enu_grid(
+        self,
+        pixel_size_m: float,
+        ref_lat: Optional[float] = None,
+        ref_lon: Optional[float] = None,
+        ref_alt: float = 0.0,
+        margin_m: float = 0.0,
+    ) -> 'OrthoBuilder':
+        """Configure ENU (East-North-Up) output in meters.
+
+        When set, the output grid is defined in local ENU meters
+        centered on a reference point, instead of geographic lat/lon.
+        If ``ref_lat`` / ``ref_lon`` are not provided, the image center
+        is used.
+
+        Parameters
+        ----------
+        pixel_size_m : float
+            Pixel spacing in meters (east and north).
+        ref_lat : float, optional
+            Reference latitude (degrees). Defaults to image center.
+        ref_lon : float, optional
+            Reference longitude (degrees). Defaults to image center.
+        ref_alt : float
+            Reference altitude (meters HAE).
+        margin_m : float
+            Margin around footprint bounds in meters.
+
+        Returns
+        -------
+        OrthoBuilder
+            Self for chaining.
+        """
+        self._enu_params = {
+            'pixel_size_m': pixel_size_m,
+            'ref_lat': ref_lat,
+            'ref_lon': ref_lon,
+            'ref_alt': ref_alt,
+            'margin_m': margin_m,
+        }
         return self
 
     # ------------------------------------------------------------------
@@ -487,15 +586,21 @@ class OrthoPipeline:
         # 1. Resolve output grid
         grid = self._resolve_output_grid()
 
-        # 2. Create orthorectifier with optional DEM
+        # 2. Create orthorectifier
+        logger.info(
+            "Starting mapping for %dx%d grid, DEM %s",
+            grid.rows, grid.cols,
+            "attached" if getattr(self._geolocation, 'elevation', None) is not None
+            else "not provided",
+        )
         ortho = Orthorectifier(
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
-            elevation=self._elevation,
+            batch_size=self._batch_size,
         )
 
-        # 3. Compute mapping (DEM heights injected here if configured)
+        # 3. Compute mapping (geolocation handles DEM internally)
         ortho.compute_mapping()
 
         # 4. Resample
@@ -516,12 +621,12 @@ class OrthoPipeline:
             orthorectifier=ortho,
         )
 
-    def _resolve_output_grid(self) -> OutputGrid:
+    def _resolve_output_grid(self) -> GeographicGrid:
         """Determine the output grid from explicit or auto-computed settings.
 
         Returns
         -------
-        OutputGrid
+        GeographicGrid
             Resolved output grid.
 
         Raises
@@ -531,6 +636,12 @@ class OrthoPipeline:
         """
         if self._output_grid is not None:
             return self._output_grid
+
+        if self._enu_params is not None:
+            from grdl.image_processing.ortho.enu_grid import ENUGrid
+            return ENUGrid.from_geolocation(
+                self._geolocation, **self._enu_params,
+            )
 
         if (self._pixel_size_lat is not None
                 and self._pixel_size_lon is not None):
@@ -556,12 +667,16 @@ class OrthoPipeline:
                 geolocation=self._geolocation,
                 scale_factor=self._scale_factor,
             )
+            logger.info(
+                "Auto-computed resolution: %.8f deg lat, %.8f deg lon",
+                psl, psn,
+            )
 
         if self._roi_bounds is not None:
             min_lat, max_lat, min_lon, max_lon = self._roi_bounds
-            return OutputGrid(min_lat, max_lat, min_lon, max_lon, psl, psn)
+            return GeographicGrid(min_lat, max_lat, min_lon, max_lon, psl, psn)
 
-        return OutputGrid.from_geolocation(
+        return GeographicGrid.from_geolocation(
             self._geolocation,
             pixel_size_lat=psl,
             pixel_size_lon=psn,
@@ -593,6 +708,10 @@ class OrthoPipeline:
             tile_size=self._tile_size,
         )
         tiles = tiler.tile_positions()
+        logger.info(
+            "Tiled processing: %dx%d grid, %d tiles",
+            grid.rows, grid.cols, len(tiles),
+        )
 
         # 3. Determine output dtype and shape
         if self._source_array is not None:
@@ -616,7 +735,9 @@ class OrthoPipeline:
             )
 
         # 4. Process each tile
-        for tile in tiles:
+        total_tiles = len(tiles)
+        last_logged_pct = -1
+        for tile_idx, tile in enumerate(tiles):
             sub = grid.sub_grid(
                 tile.row_start, tile.col_start,
                 tile.row_end, tile.col_end,
@@ -626,9 +747,17 @@ class OrthoPipeline:
                 geolocation=self._geolocation,
                 output_grid=sub,
                 interpolation=self._interpolation,
-                elevation=self._elevation,
+                batch_size=self._batch_size,
             )
             tile_ortho.compute_mapping()
+
+            pct = (tile_idx + 1) * 100 // total_tiles
+            if pct // 10 > last_logged_pct // 10:
+                logger.debug(
+                    "Tile progress: %d/%d (%d%%)",
+                    tile_idx + 1, total_tiles, pct,
+                )
+                last_logged_pct = pct
 
             if self._source_array is not None:
                 tile_data = tile_ortho.apply(
@@ -658,7 +787,7 @@ class OrthoPipeline:
             geolocation=self._geolocation,
             output_grid=grid,
             interpolation=self._interpolation,
-            elevation=self._elevation,
+            batch_size=self._batch_size,
         )
         geo_meta = meta_ortho.get_output_geolocation_metadata()
 
@@ -668,3 +797,132 @@ class OrthoPipeline:
             geolocation_metadata=geo_meta,
             orthorectifier=meta_ortho,
         )
+
+
+# ── Public function API ──────────────────────────────────────────────
+
+
+def orthorectify(
+    geolocation: 'Geolocation',
+    *,
+    reader: Optional['ImageReader'] = None,
+    source_array: Optional[np.ndarray] = None,
+    metadata: Optional[Any] = None,
+    output_grid: Optional['GeographicGrid'] = None,
+    resolution: Optional[Tuple[float, float]] = None,
+    interpolation: str = 'bilinear',
+    bands: Optional[List[int]] = None,
+    nodata: float = 0.0,
+    margin: float = 0.0,
+    scale_factor: float = 1.0,
+    roi: Optional[Tuple[float, float, float, float]] = None,
+    tile_size: Optional[Union[int, Tuple[int, int]]] = None,
+    enu_grid: Optional[Dict[str, Any]] = None,
+    batch_size: int = 2_000_000,
+) -> OrthoResult:
+    """Orthorectify imagery to a geographic or ENU grid.
+
+    Convenience function wrapping ``OrthoBuilder`` with keyword arguments.
+    Provide either ``reader`` (reads pixels on demand) or ``source_array``
+    (pre-loaded data).  Attach a DEM to ``geolocation.elevation`` before
+    calling for terrain-corrected projection.
+
+    Parameters
+    ----------
+    geolocation : Geolocation
+        Source image geolocation (required).  Set
+        ``geolocation.elevation`` for terrain correction.
+    reader : ImageReader, optional
+        Open imagery reader.  Mutually exclusive with ``source_array``.
+    source_array : np.ndarray, optional
+        Pre-loaded source array.  Mutually exclusive with ``reader``.
+    metadata : Any, optional
+        Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
+    output_grid : GeographicGrid or ENUGrid, optional
+        Explicit output grid.  Overrides auto-computation.
+    resolution : (float, float), optional
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+    interpolation : str, default='bilinear'
+        Resampling method: ``'nearest'``, ``'bilinear'``, ``'bicubic'``.
+    bands : list of int, optional
+        Band indices to orthorectify (reader mode only).
+    nodata : float, default=0.0
+        Fill value for pixels without source coverage.
+    margin : float, default=0.0
+        Margin around footprint bounds in degrees.
+    scale_factor : float, default=1.0
+        Multiplier for auto-computed resolution.
+    roi : (min_lat, max_lat, min_lon, max_lon), optional
+        Restrict output to a geographic region of interest.
+    tile_size : int or (int, int), optional
+        Enable tiled processing with this tile dimension.
+    enu_grid : dict, optional
+        ENU grid parameters passed to ``with_enu_grid()``.  Keys:
+        ``pixel_size_m``, ``ref_lat``, ``ref_lon``, ``ref_alt``,
+        ``margin_m``.
+
+    Returns
+    -------
+    OrthoResult
+        Container with ``data``, ``output_grid``, and
+        ``geolocation_metadata``.
+
+    Raises
+    ------
+    ValueError
+        If neither ``reader`` nor ``source_array`` is provided, or if
+        resolution cannot be determined.
+
+    Examples
+    --------
+    From a reader with DEM::
+
+        geo.elevation = dem
+        result = orthorectify(
+            geolocation=geo,
+            reader=reader,
+            interpolation='bilinear',
+        )
+
+    From a pre-loaded array with explicit grid::
+
+        result = orthorectify(
+            geolocation=geo,
+            source_array=mag,
+            output_grid=enu_grid,
+            interpolation='nearest',
+            nodata=np.nan,
+        )
+    """
+    builder = OrthoBuilder()
+
+    if reader is not None:
+        builder.with_reader(reader)
+    if source_array is not None:
+        builder.with_source_array(source_array)
+    if metadata is not None:
+        builder.with_metadata(metadata)
+
+    builder.with_geolocation(geolocation)
+    builder.with_interpolation(interpolation)
+    builder.with_nodata(nodata)
+    builder.with_batch_size(batch_size)
+
+    if output_grid is not None:
+        builder.with_output_grid(output_grid)
+    if resolution is not None:
+        builder.with_resolution(resolution[0], resolution[1])
+    if bands is not None:
+        builder.with_bands(bands)
+    if margin != 0.0:
+        builder.with_margin(margin)
+    if scale_factor != 1.0:
+        builder.with_scale_factor(scale_factor)
+    if roi is not None:
+        builder.with_roi(roi[0], roi[1], roi[2], roi[3])
+    if tile_size is not None:
+        builder.with_tile_size(tile_size)
+    if enu_grid is not None:
+        builder.with_enu_grid(**enu_grid)
+
+    return builder.run()

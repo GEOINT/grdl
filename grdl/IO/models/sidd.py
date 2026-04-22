@@ -12,7 +12,7 @@ corresponding SICD types since they share the same schema.
 Author
 ------
 Duane Smalley, PhD
-duane.d.smalley@gmail.com
+170194430+DDSmalls@users.noreply.github.com
 
 License
 -------
@@ -324,8 +324,112 @@ class SIDDPlaneProjection:
 
 
 @dataclass
+class SIDDGeographicProjection:
+    """Geographic (GGD) projection parameters.
+
+    Maps pixels to geodetic coordinates via constant angular spacing
+    and optional row/col-to-lat/lon polynomials for higher accuracy.
+
+    Parameters
+    ----------
+    reference_point : SIDDReferencePoint, optional
+        Reference point (ECEF + pixel location).
+    sample_spacing : RowCol, optional
+        Row/column spacing in arc-seconds.
+    time_coa_poly : Poly2D, optional
+        Center of aperture time polynomial.
+    row_col_to_lat : Poly2D, optional
+        Polynomial mapping (row, col) → latitude in degrees.
+    row_col_to_lon : Poly2D, optional
+        Polynomial mapping (row, col) → longitude in degrees.
+    row_col_to_alt : Poly2D, optional
+        Polynomial mapping (row, col) → altitude (meters HAE).
+    lat_lon_to_row : Poly2D, optional
+        Inverse polynomial mapping (lat, lon) → row.
+    lat_lon_to_col : Poly2D, optional
+        Inverse polynomial mapping (lat, lon) → col.
+    """
+
+    reference_point: Optional[SIDDReferencePoint] = None
+    sample_spacing: Optional[RowCol] = None
+    time_coa_poly: Optional[Poly2D] = None
+    row_col_to_lat: Optional[Poly2D] = None
+    row_col_to_lon: Optional[Poly2D] = None
+    row_col_to_alt: Optional[Poly2D] = None
+    lat_lon_to_row: Optional[Poly2D] = None
+    lat_lon_to_col: Optional[Poly2D] = None
+
+
+@dataclass
+class SIDDCylindricalProjection:
+    """Cylindrical (CGD) projection parameters.
+
+    Maps pixels onto a cylindrical surface aligned with the stripmap
+    direction.
+
+    Parameters
+    ----------
+    reference_point : SIDDReferencePoint, optional
+        Reference point (ECEF + pixel location).
+    sample_spacing : RowCol, optional
+        Row/column sample spacing (meters/pixel).
+    time_coa_poly : Poly2D, optional
+        Center of aperture time polynomial.
+    product_plane : SIDDProductPlane, optional
+        Row/column unit vectors in ECEF.
+    stripmap_direction : XYZ, optional
+        Stripmap direction unit vector in ECEF.
+    curvature_radius : float, optional
+        Cylinder radius (meters).  If not supplied, computed from
+        an inflated WGS-84 ellipsoid at the reference point.
+    """
+
+    reference_point: Optional[SIDDReferencePoint] = None
+    sample_spacing: Optional[RowCol] = None
+    time_coa_poly: Optional[Poly2D] = None
+    product_plane: Optional[SIDDProductPlane] = None
+    stripmap_direction: Optional[XYZ] = None
+    curvature_radius: Optional[float] = None
+
+
+@dataclass
+class SIDDPolynomialProjection:
+    """Polynomial fit (PFGD) projection parameters.
+
+    Uses polynomial mappings between pixel coordinates and geodetic
+    coordinates.  No constant sample-spacing assumption.
+
+    Parameters
+    ----------
+    reference_point : SIDDReferencePoint, optional
+        Reference point (ECEF + pixel location).
+    row_col_to_lat : Poly2D, optional
+        Polynomial mapping (row, col) → latitude in degrees.
+    row_col_to_lon : Poly2D, optional
+        Polynomial mapping (row, col) → longitude in degrees.
+    row_col_to_alt : Poly2D, optional
+        Polynomial mapping (row, col) → altitude (meters HAE).
+    lat_lon_to_row : Poly2D, optional
+        Inverse polynomial mapping (lat, lon) → row.
+    lat_lon_to_col : Poly2D, optional
+        Inverse polynomial mapping (lat, lon) → col.
+    """
+
+    reference_point: Optional[SIDDReferencePoint] = None
+    row_col_to_lat: Optional[Poly2D] = None
+    row_col_to_lon: Optional[Poly2D] = None
+    row_col_to_alt: Optional[Poly2D] = None
+    lat_lon_to_row: Optional[Poly2D] = None
+    lat_lon_to_col: Optional[Poly2D] = None
+
+
+@dataclass
 class SIDDMeasurement:
     """Measurement parameters.
+
+    Contains the projection type and one populated projection dataclass
+    corresponding to the grid geometry.  Also carries ``arp_poly`` for
+    R/Rdot refinement when available.
 
     Parameters
     ----------
@@ -334,7 +438,13 @@ class SIDDMeasurement:
         ``'GeographicProjection'``, ``'CylindricalProjection'``,
         ``'PolynomialProjection'``.
     plane_projection : SIDDPlaneProjection, optional
-        Plane projection parameters.
+        Plane projection parameters (PGD).
+    geographic_projection : SIDDGeographicProjection, optional
+        Geographic projection parameters (GGD).
+    cylindrical_projection : SIDDCylindricalProjection, optional
+        Cylindrical projection parameters (CGD).
+    polynomial_projection : SIDDPolynomialProjection, optional
+        Polynomial fit projection parameters (PFGD).
     pixel_footprint : RowCol, optional
         Pixel footprint (rows, cols).
     arp_flag : str, optional
@@ -346,6 +456,9 @@ class SIDDMeasurement:
 
     projection_type: Optional[str] = None
     plane_projection: Optional[SIDDPlaneProjection] = None
+    geographic_projection: Optional['SIDDGeographicProjection'] = None
+    cylindrical_projection: Optional['SIDDCylindricalProjection'] = None
+    polynomial_projection: Optional['SIDDPolynomialProjection'] = None
     pixel_footprint: Optional[RowCol] = None
     arp_flag: Optional[str] = None
     arp_poly: Optional[XYZPoly] = None
