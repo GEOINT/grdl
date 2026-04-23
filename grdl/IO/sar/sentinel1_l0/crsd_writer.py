@@ -49,6 +49,7 @@ from lxml import etree
 import sarkit.crsd
 import sarkit.wgs84
 
+from grdl.geolocation.coordinates import geodetic_to_ecef
 from grdl.IO.sar.sentinel1_l0.constants import (
     FDBAQ_AMPLITUDE_SCALE,
     GPS_LEAP_SECONDS,
@@ -342,8 +343,11 @@ class Sentinel1L0ToCRSD:
 
         # Step 2: Decode per-pulse metadata and build swath channels
         full_echo_dfs: Dict[str, Any] = {}
+        cal_noise_dfs: Dict[str, Any] = {}
         for pol in pols:
-            full_echo_dfs[pol] = self._decode_echo_df(reader, pol)
+            echo_df, cal_df = self._decode_echo_df(reader, pol)
+            full_echo_dfs[pol] = echo_df
+            cal_noise_dfs[pol] = cal_df
 
         swath_channels = self._build_swath_channels(
             reader, pols, full_echo_dfs,
@@ -381,6 +385,7 @@ class Sentinel1L0ToCRSD:
             meta,
             swath_channels,
             full_echo_dfs,
+            cal_noise_dfs,
             radar,
             orbit,
             iarp_llh,
@@ -488,12 +493,13 @@ class Sentinel1L0ToCRSD:
 
         Returns
         -------
-        pandas.DataFrame
-            Echo packets only (``Signal Type == ECHO`` filtered by the
-            caller if needed; here we use the full frame because
-            `Sentinel1Decoder.decode_metadata` already returns only ISP
-            packets from the measurement file, which are predominantly
-            ECHO).
+        tuple of (pandas.DataFrame, pandas.DataFrame)
+            ``(echo_df, cal_noise_df)`` — ECHO pulses only (Signal Type
+            == 0) for PPP/PVP construction, and all non-ECHO packets
+            (calibration types, noise) for metadata preservation in the
+            CRSD output.  Calibration/noise packets are never written to
+            the CRSD signal arrays but their timing and type are stored
+            in ``ProductInfo/ProcessingParameters``.
         """
         product = reader.product
         if product is None:
@@ -507,12 +513,30 @@ class Sentinel1L0ToCRSD:
 
         decoder = Sentinel1Decoder(mfs.measurement_file)
         df = decoder.decode_metadata()
+
+        # Split into ECHO-only and non-ECHO (calibration/noise).
+        # PPP and PVP must contain only ECHO pulses (Signal Type == 0)
+        # so that timing and orbit interpolation are valid.  Calibration
+        # and noise packets are returned separately so the caller can
+        # preserve their metadata in the CRSD ProcessingParameters.
+        if "Signal Type" in df.columns:
+            echo_mask = df["Signal Type"] == 0
+            echo_df = df[echo_mask].reset_index(drop=True)
+            cal_noise_df = df[~echo_mask].reset_index(drop=True)
+            logger.info(
+                "Polarization %s: %d ECHO, %d calibration/noise packets.",
+                polarization, len(echo_df), len(cal_noise_df),
+            )
+        else:
+            echo_df = df
+            cal_noise_df = df.iloc[0:0].copy()
+
         logger.debug(
-            "Decoded %d packets for polarization %s",
-            len(df),
+            "Decoded %d ECHO packets for polarization %s",
+            len(echo_df),
             polarization,
         )
-        return df
+        return echo_df, cal_noise_df
 
     # ---------------------------------------------------------------
     # Step 3: Build swath channel descriptors
@@ -662,7 +686,7 @@ class Sentinel1L0ToCRSD:
                 "No footprint in metadata; using (0, 0, 0) IARP"
             )
             iarp_llh = np.array([0.0, 0.0, 0.0])
-            iarp_ecf = sarkit.wgs84.geodetic_to_cartesian(iarp_llh)
+            iarp_ecf = geodetic_to_ecef(iarp_llh)
             return iarp_llh, iarp_ecf
 
         coords = [(c.lat, c.lon) for c in footprint]
@@ -674,7 +698,7 @@ class Sentinel1L0ToCRSD:
         hae = 0.0
 
         iarp_llh = np.array([mean_lat, mean_lon, hae])
-        iarp_ecf = sarkit.wgs84.geodetic_to_cartesian(iarp_llh)
+        iarp_ecf = geodetic_to_ecef(iarp_llh)
         return iarp_llh, iarp_ecf
 
     # ---------------------------------------------------------------
@@ -763,6 +787,7 @@ class Sentinel1L0ToCRSD:
         meta: Any,
         swath_channels: Dict[str, _SwathChannel],
         full_echo_dfs: Dict[str, Any],
+        cal_noise_dfs: Dict[str, Any],
         radar: Any,
         orbit: OrbitInterpolator,
         iarp_llh: np.ndarray,
@@ -778,6 +803,9 @@ class Sentinel1L0ToCRSD:
         meta : Sentinel1L0Metadata
         swath_channels : dict
         full_echo_dfs : dict
+        cal_noise_dfs : dict
+            Per-polarization DataFrames of non-ECHO (calibration/noise)
+            packets.  Not written to signal arrays; stored as metadata.
         radar : S1L0RadarParameters
         orbit : OrbitInterpolator
         iarp_llh : ndarray
@@ -819,6 +847,59 @@ class Sentinel1L0ToCRSD:
             "approximately 1.607x smaller than ESA NRL x sigma reference. "
             "Apply this scale factor before absolute radiometric calibration.",
         )
+
+        # --- Per-packet calibration/compression statistics ---
+        # Aggregate BAQ Mode and ECC Number across all echo packets so that
+        # downstream processors know the compression scheme used.
+        _first_df = next(iter(full_echo_dfs.values()))
+        if "BAQ Mode" in _first_df.columns:
+            _baq_vals = np.concatenate([
+                df["BAQ Mode"].values for df in full_echo_dfs.values()
+            ])
+            _baq_modes, _baq_counts = np.unique(_baq_vals, return_counts=True)
+            _baq_summary = "; ".join(
+                f"mode={int(m)} ({int(c)} pulses)"
+                for m, c in zip(_baq_modes, _baq_counts)
+            )
+            _sub(proc, "BaqModes", _baq_summary)
+            # Primary BAQ mode: mode with the most pulses
+            _sub(proc, "PrimaryBaqMode", str(int(_baq_modes[np.argmax(_baq_counts)])))
+        if "ECC Number" in _first_df.columns:
+            _ecc_vals = np.concatenate([
+                df["ECC Number"].values for df in full_echo_dfs.values()
+            ])
+            _ecc_unique = np.unique(_ecc_vals)
+            _sub(proc, "EccNumbers", ";".join(str(int(e)) for e in _ecc_unique))
+        if "Data Take ID" in _first_df.columns:
+            _dtid = int(_first_df["Data Take ID"].iloc[0])
+            _sub(proc, "DataTakeID", f"0x{_dtid:08X}")
+
+        # Calibration and noise packet statistics, per polarization.
+        # ECHO pulses are written to the CRSD signal arrays; cal/noise
+        # packets are NOT in the signal data.  Their timing and type are
+        # stored here so users can cross-reference with the original SAFE
+        # product (e.g. to apply ESA's noise floor or calibration LUTs).
+        for _pol, _cn_df in cal_noise_dfs.items():
+            if len(_cn_df) == 0:
+                continue
+            cn_elem = _sub(proc, "CalibrationNoiseStats")
+            cn_elem.set("polarization", _pol)
+            _sub(cn_elem, "TotalPackets", str(len(_cn_df)))
+            if "Signal Type" in _cn_df.columns and "Coarse Time" in _cn_df.columns:
+                for _stype in sorted(_cn_df["Signal Type"].unique()):
+                    _grp = _cn_df[_cn_df["Signal Type"] == _stype]
+                    _t_coarse = _grp["Coarse Time"].values.astype(np.float64)
+                    _t_fine = (
+                        _grp["Fine Time"].values.astype(np.float64)
+                        if "Fine Time" in _grp.columns
+                        else np.zeros(len(_grp))
+                    )
+                    _t_gps = _t_coarse + _t_fine
+                    sg = _sub(cn_elem, "SignalTypeGroup")
+                    sg.set("signalType", str(int(_stype)))
+                    sg.set("count", str(len(_grp)))
+                    sg.set("tGpsStart", f"{float(_t_gps.min()):.3f}")
+                    sg.set("tGpsStop", f"{float(_t_gps.max()):.3f}")
 
         # --- SARInfo ---
         si = _sub(root, "SARInfo")
@@ -1327,12 +1408,16 @@ class Sentinel1L0ToCRSD:
                 f0, bw, tx_pulse_len, chirp_rate,
             )
             writer.write_ppp("TX1", ppp)
+            del ppp  # release PPP memory before signal reads
 
-            # Per-channel signal + PVP
+            # Memory-safe strategy: allocate the signal array as a
+            # numpy.memmap backed by a sidecar temp file so only one
+            # burst's decoded I/Q data is resident in RAM at a time.
+
             for key, sc in swath_channels.items():
                 logger.info(
-                    "Reading I/Q for channel %s (swath %d, %s), "
-                    "%d vectors x %d samples ...",
+                    "Writing channel %s (swath %d, %s), "
+                    "%d vectors × %d samples ...",
                     key, sc.swath_number, sc.polarization,
                     sc.num_vectors, sc.num_samples,
                 )
@@ -1341,14 +1426,58 @@ class Sentinel1L0ToCRSD:
                     raise RuntimeError(
                         f"No burst reader for polarization {sc.polarization!r}"
                     )
-                signal = burst_reader.read_swath(sc.raw_swath)
+
+                # Allocate signal as big-endian CF8 memmap backed by a
+                # sidecar temp file alongside the output.  Only one burst's
+                # decoded I/Q is resident in RAM at a time.
+                _tmp_path = self.output_path.with_name(
+                    f".{key}.sig.tmp"
+                )
+                try:
+                    # Shape: (num_vectors, num_samples), dtype '>c8'
+                    signal = np.memmap(
+                        _tmp_path,
+                        dtype=">c8",
+                        mode="w+",
+                        shape=(sc.num_vectors, sc.num_samples),
+                    )
+                    # Fill burst by burst — only one burst in RAM
+                    row = 0
+                    for burst_info, burst_iq in burst_reader.iter_bursts(
+                        swath=sc.raw_swath
+                    ):
+                        if burst_iq is None or len(burst_iq) == 0:
+                            continue
+                        n_rows = burst_iq.shape[0]
+                        n_cols = min(burst_iq.shape[1], sc.num_samples)
+                        end = min(row + n_rows, sc.num_vectors)
+                        actual = end - row
+                        if actual <= 0:
+                            break
+                        # Convert to big-endian complex64 in-place slice
+                        signal[row:end, :n_cols] = burst_iq[:actual, :n_cols].astype(">c8")
+                        row = end
+                        del burst_iq  # free burst memory immediately
+
+                    if row != sc.num_vectors:
+                        logger.warning(
+                            "Channel %s: filled %d/%d vectors from bursts",
+                            key, row, sc.num_vectors,
+                        )
+
+                    # Flush memmap to disk, then pass to sarkit writer
+                    # (sarkit reads shape/dtype via array interface; since
+                    # signal is already '>c8' the .astype call is a no-op)
+                    signal.flush()
+                    writer.write_signal(key, signal)
+                    del signal  # unmap before removing temp file
+                finally:
+                    _tmp_path.unlink(missing_ok=True)
 
                 pvp = self._build_pvp_array(
                     xmltree, sc.echo_df, orbit, ref_time_gps,
                     f0, bw, global_indices=sc.global_indices,
                 )
-
-                writer.write_signal(key, signal)
                 writer.write_pvp(key, pvp)
                 logger.info("Channel %s written.", key)
 
@@ -1462,14 +1591,39 @@ class Sentinel1L0ToCRSD:
         self._set_intfrac(ppp, "TxTime", t_int, t_frac)
         ppp["TxPos"] = positions
         ppp["TxVel"] = velocities
-        ppp["FX1"] = f0 - bw / 2.0
-        ppp["FX2"] = f0 + bw / 2.0
-        ppp["TXmt"] = tx_pulse_len
+
+        # Per-packet chirp parameters — sentinel1decoder provides these
+        # per-pulse (Tx Ramp Rate = chirp rate in Hz/s; Tx Pulse Start
+        # Frequency offsets the start of the chirp from the carrier;
+        # Tx Pulse Length is the transmit duration in seconds).
+        # Fall back to the scalar metadata values when columns are absent.
+        if "Tx Pulse Length" in echo_df.columns:
+            tx_pulse_len_arr = echo_df["Tx Pulse Length"].values.astype(np.float64)
+        else:
+            tx_pulse_len_arr = np.full(n, tx_pulse_len)
+
+        if "Tx Ramp Rate" in echo_df.columns:
+            chirp_rate_arr = echo_df["Tx Ramp Rate"].values.astype(np.float64)
+        else:
+            chirp_rate_arr = np.full(n, chirp_rate)
+
+        if "Tx Pulse Start Frequency" in echo_df.columns:
+            # TXPSF is a frequency offset from the carrier; FX1 = f0 + TXPSF
+            txpsf = echo_df["Tx Pulse Start Frequency"].values.astype(np.float64)
+            fx1_arr = f0 + txpsf
+            fx2_arr = fx1_arr + np.abs(chirp_rate_arr) * tx_pulse_len_arr
+        else:
+            fx1_arr = np.full(n, f0 - bw / 2.0)
+            fx2_arr = np.full(n, f0 + bw / 2.0)
+
+        ppp["FX1"] = fx1_arr
+        ppp["FX2"] = fx2_arr
+        ppp["TXmt"] = tx_pulse_len_arr
         self._set_intfrac(
             ppp, "PhiX0", np.zeros(n, np.int64), np.zeros(n),
         )
-        ppp["FxFreq0"] = f0 - bw / 2.0
-        ppp["FxRate"] = chirp_rate
+        ppp["FxFreq0"] = fx1_arr
+        ppp["FxRate"] = chirp_rate_arr
         ppp["TxRadInt"] = 1.0
         ppp["TxACX"] = acx
         ppp["TxACY"] = acy
