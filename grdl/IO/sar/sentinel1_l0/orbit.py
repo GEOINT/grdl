@@ -56,7 +56,7 @@ from typing import List, Optional, Tuple, Union
 
 # Third-party
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import CubicSpline, CubicHermiteSpline
 
 # GRDL internal
 from grdl.IO.models.sentinel1_l0 import (
@@ -325,12 +325,15 @@ class OrbitInterpolator:
         vy = np.array([osv.vy for osv in self._vectors])
         vz = np.array([osv.vz for osv in self._vectors])
 
-        self._px = CubicSpline(times, px)
-        self._py = CubicSpline(times, py)
-        self._pz = CubicSpline(times, pz)
-        self._vx = CubicSpline(times, vx)
-        self._vy = CubicSpline(times, vy)
-        self._vz = CubicSpline(times, vz)
+        self._px = CubicHermiteSpline(times, px, vx)
+        self._py = CubicHermiteSpline(times, py, vy)
+        self._pz = CubicHermiteSpline(times, pz, vz)
+        # Velocity is the analytical derivative of the position spline.
+        # This guarantees kinematic consistency (RcvVel = d/dt RcvPos)
+        # without fitting an independent spline to the velocity nodes.
+        self._pvx = self._px.derivative()
+        self._pvy = self._py.derivative()
+        self._pvz = self._pz.derivative()
 
         self.valid_start = float(times[0])
         self.valid_end = float(times[-1])
@@ -353,9 +356,9 @@ class OrbitInterpolator:
         px = self._px(times)
         py = self._py(times)
         pz = self._pz(times)
-        vx = self._vx(times)
-        vy = self._vy(times)
-        vz = self._vz(times)
+        vx = self._pvx(times)
+        vy = self._pvy(times)
+        vz = self._pvz(times)
 
         positions = np.column_stack([px, py, pz])
         velocities = np.column_stack([vx, vy, vz])

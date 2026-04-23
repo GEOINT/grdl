@@ -54,9 +54,9 @@ from grdl.IO.sar.sentinel1_l0.constants import (
     FDBAQ_AMPLITUDE_SCALE,
     GPS_LEAP_SECONDS,
     IW_LOGICAL_TO_RAW,
+    IW_RAW_TO_LOGICAL,
     MEAN_EARTH_RADIUS,
     POL_TO_TXRX,
-    S1A_INSTRUMENT_TIMING_BIAS_S,
     SENTINEL1_CENTER_FREQUENCY_HZ,
     SPEED_OF_LIGHT,
 )
@@ -313,6 +313,14 @@ class Sentinel1L0ToCRSD:
         Path
             Path to the written CRSD file.
         """
+        if self.orbit_file is None:
+            raise ValueError(
+                "A precise orbit ephemeris (POE .EOF) file is required. "
+                "Pass orbit_file= to Sentinel1L0ToCRSD. "
+                "Annotation-embedded orbit vectors are insufficient for "
+                "CRSD-quality timing and position accuracy."
+            )
+
         logger.info(
             "Opening Sentinel-1 Level-0: %s", self.safe_path,
         )
@@ -520,7 +528,13 @@ class Sentinel1L0ToCRSD:
         # and noise packets are returned separately so the caller can
         # preserve their metadata in the CRSD ProcessingParameters.
         if "Signal Type" in df.columns:
-            echo_mask = df["Signal Type"] == 0
+            # sentinel1decoder returns "Signal Type" as a custom class
+            # whose __eq__ and __int__ do not work with plain int.
+            # Use getattr(x, 'value', x) which returns .value for enum-
+            # like types and x itself for plain numpy integers.
+            echo_mask = df["Signal Type"].apply(
+                lambda x: getattr(x, "value", x) == 0
+            )
             echo_df = df[echo_mask].reset_index(drop=True)
             cal_noise_df = df[~echo_mask].reset_index(drop=True)
             logger.info(
@@ -569,19 +583,28 @@ class Sentinel1L0ToCRSD:
             swath_info = reader.get_swath_info(pol)
             full_df = full_echo_dfs[pol]
 
-            for logical_sw, sw_info in sorted(swath_info.items()):
+            for raw_sw_key, sw_info in sorted(swath_info.items()):
+                # reader.get_swath_info() keys are raw swath numbers
+                # (10, 11, 12 for IW).  Convert to 1-based logical index
+                # before building the channel key and applying the swath
+                # filter the caller passed in.
+                logical_sw = IW_RAW_TO_LOGICAL.get(
+                    raw_sw_key, raw_sw_key
+                )
+                raw_sw = raw_sw_key
+
                 if self.swath is not None and logical_sw != self.swath:
                     continue
 
-                # IW raw swath number (10, 11, 12) from logical swath
-                raw_sw = IW_LOGICAL_TO_RAW.get(logical_sw, logical_sw)
                 key = f"IW{logical_sw}_{pol}"
 
-                # Filter echo_df to this swath's raw number
+                # Filter echo_df to this raw swath.  sentinel1decoder
+                # returns "Swath Number" as a custom class whose __eq__
+                # does not compare equal to plain int.  Use int() instead.
                 if "Swath Number" in full_df.columns:
-                    mask = (
-                        full_df["Swath Number"].values == raw_sw
-                    )
+                    mask = full_df["Swath Number"].apply(
+                        lambda x: getattr(x, "value", int(x)) == raw_sw
+                    ).values
                     swath_df = full_df[mask].reset_index(drop=True)
                     global_indices = np.where(mask)[0]
                 else:
@@ -733,15 +756,25 @@ class Sentinel1L0ToCRSD:
         for df in full_echo_dfs.values():
             coarse = df["Coarse Time"].values.astype(np.float64)
             fine = df["Fine Time"].values.astype(np.float64)
+            # ISP Coarse+Fine = GPS seconds at first receive sample
+            # (RcvStart).  TX time = RcvStart - SWST - Rank*PRI
+            # per [ISP] S1-IF-ASD-PL-0007 Table 3-2.
             sensing = coarse + fine
-            # Apply timing bias to get true RF transmit time
-            rf_times = sensing - S1A_INSTRUMENT_TIMING_BIAS_S
+            if (
+                "SWST" not in df.columns
+                or "Rank" not in df.columns
+                or "PRI" not in df.columns
+            ):
+                raise ValueError(
+                    "Echo DataFrame missing SWST/Rank/PRI columns — "
+                    "cannot compute TX pulse origin times."
+                )
+            swst_b = df["SWST"].values.astype(np.float64)
+            rank_b = df["Rank"].values.astype(np.float64)
+            pri_b = df["PRI"].values.astype(np.float64)
+            rf_times = sensing - swst_b - rank_b * pri_b
             all_sensing.append(rf_times)
-            if "SWST" in df.columns:
-                swst = df["SWST"].values.astype(np.float64)
-                all_rcv_start.append(rf_times + swst)
-            else:
-                all_rcv_start.append(rf_times)
+            all_rcv_start.append(sensing)  # ISP time IS the receive start
 
         sensing_all = np.concatenate(all_sensing) - ref_time_gps
         rcv_all = np.concatenate(all_rcv_start) - ref_time_gps
@@ -753,12 +786,8 @@ class Sentinel1L0ToCRSD:
         for key, sc in swath_channels.items():
             ch_coarse = sc.echo_df["Coarse Time"].values.astype(np.float64)
             ch_fine = sc.echo_df["Fine Time"].values.astype(np.float64)
-            ch_rf = (ch_coarse + ch_fine) - S1A_INSTRUMENT_TIMING_BIAS_S
-            if "SWST" in sc.echo_df.columns:
-                ch_swst = sc.echo_df["SWST"].values.astype(np.float64)
-                ch_rcv = ch_rf + ch_swst
-            else:
-                ch_rcv = ch_rf.copy()
+            # ISP time is the receive start directly.
+            ch_rcv = ch_coarse + ch_fine
             per_channel[key] = {
                 "rcv_start_time1": float(ch_rcv.min() - ref_time_gps),
                 "rcv_start_time2": float(ch_rcv.max() - ref_time_gps),
@@ -1565,10 +1594,23 @@ class Sentinel1L0ToCRSD:
 
         coarse = echo_df["Coarse Time"].values.astype(np.float64)
         fine = echo_df["Fine Time"].values.astype(np.float64)
-        # Fine Time already fractional (decoded as raw/65536)
+        # Fine Time is already fractional (decoded as raw/65536).
+        # ISP Coarse+Fine = GPS seconds at the receive window start.
+        # TX time = RcvStart - SWST - Rank*PRI  ([ISP] Table 3-2).
         abs_isp = coarse + fine
-        # Apply instrument timing bias: ISP → true RF transmit time
-        abs_rf = abs_isp - S1A_INSTRUMENT_TIMING_BIAS_S
+        if (
+            "SWST" not in echo_df.columns
+            or "Rank" not in echo_df.columns
+            or "PRI" not in echo_df.columns
+        ):
+            raise ValueError(
+                "echo_df missing SWST/Rank/PRI columns — "
+                "cannot compute TX pulse origin times."
+            )
+        swst_tx = echo_df["SWST"].values.astype(np.float64)
+        rank_tx = echo_df["Rank"].values.astype(np.float64)
+        pri_tx = echo_df["PRI"].values.astype(np.float64)
+        abs_rf = abs_isp - swst_tx - rank_tx * pri_tx
 
         # Relative to collection reference time (GPS seconds)
         rel_rf = abs_rf - ref_time_gps
@@ -1666,14 +1708,11 @@ class Sentinel1L0ToCRSD:
 
         coarse = echo_df["Coarse Time"].values.astype(np.float64)
         fine = echo_df["Fine Time"].values.astype(np.float64)
+        # ISP Coarse+Fine IS the GPS time of the first received echo
+        # sample (receive window start).  RcvStart = abs_isp directly;
+        # no subtraction or addition of SWST is needed here.
         abs_isp = coarse + fine
-        # Receive start: RF transmit time + SWST (two-way delay / 2)
-        abs_rf = abs_isp - S1A_INSTRUMENT_TIMING_BIAS_S
-        if "SWST" in echo_df.columns:
-            swst = echo_df["SWST"].values.astype(np.float64)
-        else:
-            swst = np.zeros(n)
-        abs_rcv = abs_rf + swst
+        abs_rcv = abs_isp
         rel_rcv = abs_rcv - ref_time_gps
 
         ref_dt = orbit.reference_time

@@ -399,9 +399,13 @@ class BurstReader:
             for (swath, pol), group_df in df.groupby(
                 ["Swath Number", pol_col]
             ):
+                # SwathNumber is np.int64 (int() works);
+                # Polarisation is an enum-like with .value (int() raises).
+                swath_int = int(getattr(swath, "value", swath))
+                pol_int = int(getattr(pol, "value", pol))
                 bursts.extend(
                     self._detect_burst_boundaries(
-                        group_df, int(swath), int(pol)
+                        group_df, swath_int, pol_int
                     )
                 )
         elif "Swath Number" in df.columns:
@@ -858,7 +862,9 @@ class BurstReader:
             info.start_packet:info.end_packet
         ]
         if "Swath Number" in df.columns:
-            df = df[df["Swath Number"] == swath]
+            df = df[df["Swath Number"].apply(
+                lambda x: getattr(x, "value", int(x)) == swath
+            )]
 
         return self._decoder.decode_packets(
             packet_df=df,
