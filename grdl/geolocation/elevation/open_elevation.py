@@ -58,6 +58,7 @@ def open_elevation(
     location: Optional[Tuple[float, float]] = None,
     fallback_height: float = 0.0,
     interpolation: int = 3,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> ElevationModel:
     """Auto-detect DEM format and return an appropriate ElevationModel.
 
@@ -138,6 +139,7 @@ def open_elevation(
         # Try tiled GeoTIFF (FABDEM, Copernicus, etc.)
         model = _try_tiled_geotiff(
             dem_path, geoid_path, location, interpolation,
+            bbox=bbox,
         )
         if model is not None:
             return model
@@ -155,26 +157,70 @@ def open_elevation(
     return ConstantElevation(height=fallback_height)
 
 
+def _has_dted_tiles(dem_dir: Path) -> bool:
+    """Cheap probe: any DTED file anywhere under *dem_dir*?
+
+    Returns as soon as the first match is found. Checks both
+    lower- and upper-case extensions so case-sensitive
+    filesystems (ext4, XFS, case-sensitive APFS) don't miss
+    archives distributed with ``.DT2`` / ``.DT1`` naming.
+    """
+    # rglob is case-sensitive on case-sensitive filesystems,
+    # so enumerate both spellings explicitly.
+    patterns = (
+        '*.dt2', '*.dt1', '*.dt0',
+        '*.DT2', '*.DT1', '*.DT0',
+    )
+    for pat in patterns:
+        for _ in dem_dir.rglob(pat):
+            return True
+    return False
+
+
 def _try_dted(
     dem_dir: Path,
     geoid_path: Optional[str],
     location: Optional[Tuple[float, float]],
     interpolation: int = 3,
 ) -> Optional[ElevationModel]:
-    """Try to open a DTED directory and verify coverage at location."""
+    """Try to open a DTED directory and verify coverage at location.
+
+    Short-circuits with ``None`` when the directory contains
+    no DTED files at all — that's the common "user pointed
+    at a GeoTIFF tree" case, and skipping the construction
+    silences the `"No DTED tile for (x, y)"` warning that
+    would otherwise fire during the coverage probe.
+    """
+    if not _has_dted_tiles(dem_dir):
+        logger.debug(
+            "No DTED tiles under %s — skipping DTED backend",
+            dem_dir,
+        )
+        return None
     try:
         from grdl.geolocation.elevation.dted import DTEDElevation
         dted = DTEDElevation(
             str(dem_dir), geoid_path=geoid_path,
             interpolation=interpolation,
         )
+        if dted.tile_count == 0:
+            # Files existed but couldn't be parsed — probably
+            # a non-standard layout. Fall through to GeoTIFF.
+            logger.debug(
+                "DTED files found under %s but none parsed "
+                "as tiles — layout mismatch, skipping.",
+                dem_dir,
+            )
+            return None
 
-        # Verify coverage if location is given
+        # Verify coverage if location is given.
         if location is not None:
             h = dted.get_elevation(location[0], location[1])
             if np.isnan(h):
-                logger.debug("DTED has no coverage at (%.2f, %.2f)",
-                             location[0], location[1])
+                logger.debug(
+                    "DTED has no coverage at (%.2f, %.2f)",
+                    location[0], location[1],
+                )
                 return None
 
         logger.info("Loaded DTED: %s", dem_dir)
@@ -188,6 +234,7 @@ def _try_tiled_geotiff(
     geoid_path: Optional[str],
     location: Optional[Tuple[float, float]],
     interpolation: int = 3,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> Optional[ElevationModel]:
     """Scan a directory for GeoTIFF tiles and load as TiledGeoTIFFDEM.
 
@@ -209,6 +256,7 @@ def _try_tiled_geotiff(
         model = TiledGeoTIFFDEM(
             str(dem_dir), geoid_path=geoid_path,
             interpolation=interpolation,
+            bbox=bbox,
         )
         if model.tile_count == 0:
             return None

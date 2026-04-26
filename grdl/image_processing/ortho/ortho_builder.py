@@ -334,7 +334,8 @@ class OrthoBuilder:
         Parameters
         ----------
         method : str
-            One of ``'nearest'``, ``'bilinear'``, ``'bicubic'``.
+            One of ``'nearest'``, ``'bilinear'``, ``'bicubic'``,
+            ``'lanczos'`` (Lanczos-3, requires numba backend).
 
         Returns
         -------
@@ -843,7 +844,8 @@ def orthorectify(
     resolution : (float, float), optional
         ``(pixel_size_lat, pixel_size_lon)`` in degrees.
     interpolation : str, default='bilinear'
-        Resampling method: ``'nearest'``, ``'bilinear'``, ``'bicubic'``.
+        Resampling method: ``'nearest'``, ``'bilinear'``, ``'bicubic'``,
+        ``'lanczos'`` (Lanczos-3, requires numba backend).
     bands : list of int, optional
         Band indices to orthorectify (reader mode only).
     nodata : float, default=0.0

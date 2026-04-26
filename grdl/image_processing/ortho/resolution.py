@@ -24,7 +24,7 @@ Created
 
 Modified
 --------
-2026-03-08
+2026-04-25  Add SIDD resolution dispatch.
 """
 
 # Standard library
@@ -82,6 +82,14 @@ def compute_output_resolution(
     if isinstance(metadata, SICDMetadata):
         logger.debug("Matched metadata type: SICDMetadata")
         return _resolution_from_sicd(metadata, geolocation, scale_factor)
+
+    try:
+        from grdl.IO.models.sidd import SIDDMetadata
+        if isinstance(metadata, SIDDMetadata):
+            logger.debug("Matched metadata type: SIDDMetadata")
+            return _resolution_from_sidd(metadata, geolocation, scale_factor)
+    except ImportError:
+        pass
 
     # Sentinel-1 SLC (typed dataclass, not dict-like)
     try:
@@ -188,6 +196,84 @@ def _resolution_from_sicd(
     center_lat = _get_center_latitude(metadata, geolocation)
 
     return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+
+def _resolution_from_sidd(
+    metadata: 'ImageMetadata',
+    geolocation: Optional['Geolocation'],
+    scale_factor: float,
+) -> Tuple[float, float]:
+    """Compute resolution from SIDD metadata.
+
+    Priority:
+    1. ``measurement.plane_projection.sample_spacing`` (meters/pixel)
+    2. ``measurement.cylindrical_projection.sample_spacing`` (meters/pixel)
+    3. ``exploitation_features.products[0].resolution`` (meters)
+    4. ``measurement.geographic_projection.sample_spacing`` (arc-seconds,
+       converted to meters at scene-center latitude)
+
+    Parameters
+    ----------
+    metadata : SIDDMetadata
+        Typed SIDD metadata.
+    geolocation : Geolocation, optional
+        For scene-center latitude lookup.
+    scale_factor : float
+        Resolution multiplier.
+
+    Returns
+    -------
+    Tuple[float, float]
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+    """
+    m = getattr(metadata, 'measurement', None)
+
+    # 1. Plane projection sample spacing (meters)
+    if m is not None and getattr(m, 'plane_projection', None) is not None:
+        ss = getattr(m.plane_projection, 'sample_spacing', None)
+        if ss is not None and getattr(ss, 'row', None) and getattr(ss, 'col', None):
+            ground_m = max(float(ss.row), float(ss.col))
+            if ground_m > 0:
+                center_lat = _get_center_latitude(metadata, geolocation)
+                return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    # 2. Cylindrical projection sample spacing (meters)
+    if m is not None and getattr(m, 'cylindrical_projection', None) is not None:
+        ss = getattr(m.cylindrical_projection, 'sample_spacing', None)
+        if ss is not None and getattr(ss, 'row', None) and getattr(ss, 'col', None):
+            ground_m = max(float(ss.row), float(ss.col))
+            if ground_m > 0:
+                center_lat = _get_center_latitude(metadata, geolocation)
+                return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    # 3. Exploitation features product resolution (meters)
+    ef = getattr(metadata, 'exploitation_features', None)
+    products = getattr(ef, 'products', None) or []
+    for prod in products:
+        res = getattr(prod, 'resolution', None)
+        if res is not None:
+            row_m = getattr(res, 'row', None)
+            col_m = getattr(res, 'col', None)
+            if row_m and col_m:
+                ground_m = max(float(row_m), float(col_m))
+                if ground_m > 0:
+                    center_lat = _get_center_latitude(metadata, geolocation)
+                    return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    # 4. Geographic projection sample spacing (arc-seconds → meters)
+    if m is not None and getattr(m, 'geographic_projection', None) is not None:
+        ss = getattr(m.geographic_projection, 'sample_spacing', None)
+        if ss is not None and getattr(ss, 'row', None) and getattr(ss, 'col', None):
+            arcsec = max(float(ss.row), float(ss.col))
+            if arcsec > 0:
+                ground_m = arcsec * (1.0 / 3600.0) * 111_320.0
+                center_lat = _get_center_latitude(metadata, geolocation)
+                return _meters_to_degrees(ground_m * scale_factor, center_lat)
+
+    raise ValueError(
+        "SIDD metadata has no usable sample spacing in measurement or "
+        "exploitation_features. Provide pixel_size explicitly."
+    )
 
 
 def _resolution_from_biomass(

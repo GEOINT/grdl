@@ -1,0 +1,50 @@
+# Point-ROI Orthorectification Configuration
+# Edit this file and run: python point_roi_ortho.py
+
+# ── Image ────────────────────────────────────────────────────────────────────
+filepath: /Volumes/PRO-G40/SAR_DATA/SIDD/hamburg/2025-05-25-21-51-59_UMBRA-10_SIDD.nitf
+
+# ── Center point ─────────────────────────────────────────────────────────────
+# Use lat/lon OR row/col. lat/lon takes precedence when both are set.
+# Leave all four null to use the image center.
+lat: 53.514682
+lon: 9.935331
+row: null
+col: null
+
+# ── ROI extent ───────────────────────────────────────────────────────────────
+width:  500.0   # East-west extent in meters
+height: 500.0   # North-south extent in meters
+
+# ── Output ───────────────────────────────────────────────────────────────────
+pixel_size: 1.0      # Output pixel size in meters (null = auto from native res)
+interp: lanczos       # Resampling: nearest | bilinear | bicubic | lanczos
+band: 0               # 0-based band index to display
+complex_mode: magnitude  # magnitude | complex
+                      #   magnitude: take |z| before interpolation (default)
+                      #   complex:   orthorectify real + imag together
+no_plot: false        # true to suppress the matplotlib window
+save: null            # Path to save orthorectified GeoTIFF, or null
+
+# ── Display contrast ──────────────────────────────────────────────────────────
+# grdl.contrast operator applied to the matplotlib preview.  Stats are pooled
+# across both panels for a consistent look.
+#   auto           — pick from metadata (SAR→brighter, EO NITF→gamma, MSI→percentile)
+#   percentile     — 2/99 percentile clip
+#   linear         — pooled min/max stretch
+#   log            — bounded log2 stretch (sarpy Logarithmic port)
+#   mangis         — Mangis 1994 SAR density (sarpy Density)
+#   brighter       — Mangis preset: dmin=60, mmult=40
+#   darker         — Mangis preset: dmin=0,  mmult=40
+#   high_contrast  — Mangis preset: dmin=30, mmult=4
+#   nrl            — linear→log knee remap (sarpy NRL)
+#   gamma          — percentile-norm + gamma=1.4
+#   histogram      — global histogram equalization
+#   clahe          — local-adaptive CLAHE (skimage)
+display_contrast: brighter
+
+# ── Elevation ─────────────────────────────────────────────────────────────────
+# Terrain height is sampled once at the center point and used as a flat plane
+# for the entire ortho — geographically correct at center, no per-pixel DEM warp.
+dem: /Volumes/PRO-G40/terrain/FABDEM             # DEM path: single GeoTIFF (.tif) or DTED tile directory
+geoid:  /Volumes/PRO-G40/terrain/us_nga_egm08_25.tif           # Geoid model path (.pgm or .tif) for MSL→HAE correction

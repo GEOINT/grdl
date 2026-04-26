@@ -216,12 +216,18 @@ class TestGeoidCorrection:
 class TestBuildElevationModel:
     """Test the _build_elevation_model helper from base.py."""
 
-    def test_directory_creates_dted(self):
-        """Test that a directory path creates DTEDElevation."""
+    def test_empty_directory_falls_back_to_constant(self):
+        """An empty directory should fall back to ConstantElevation.
+
+        ``open_elevation`` no longer claims DTED coverage when no usable
+        tiles exist in the directory — it returns a ``ConstantElevation``
+        fallback so callers don't get a silently-empty DTED model.
+        """
         from grdl.geolocation.base import _build_elevation_model
+        from grdl.geolocation.elevation.constant import ConstantElevation
         with tempfile.TemporaryDirectory() as tmpdir:
             model = _build_elevation_model(tmpdir)
-            assert isinstance(model, DTEDElevation)
+            assert isinstance(model, ConstantElevation)
 
     def test_nonexistent_path_raises(self):
         """Test that non-existent path raises FileNotFoundError."""
@@ -246,9 +252,16 @@ class TestGeolocationElevationIntegration:
         geo = AffineGeolocation(transform, (100, 100), 'EPSG:4326')
         assert geo.elevation is None
 
-    def test_elevation_with_dted_directory(self):
-        """Test that dem_path triggers elevation model creation."""
+    def test_elevation_with_empty_dem_directory_falls_back(self):
+        """An empty ``dem_path`` directory falls back to ``ConstantElevation``.
+
+        Previously this test required ``DTEDElevation`` for any directory
+        path, but that masked empty-data scenarios.  ``open_elevation``
+        now returns ``ConstantElevation`` when the directory contains no
+        usable DEM tiles so callers see correct behavior.
+        """
         from grdl.geolocation.eo.affine import AffineGeolocation
+        from grdl.geolocation.elevation.constant import ConstantElevation
         from rasterio.transform import Affine as RioAffine
 
         transform = RioAffine(0.01, 0.0, 116.0, 0.0, -0.01, -31.0)
@@ -257,4 +270,4 @@ class TestGeolocationElevationIntegration:
                 transform, (100, 100), 'EPSG:4326', dem_path=tmpdir
             )
             assert geo.elevation is not None
-            assert isinstance(geo.elevation, DTEDElevation)
+            assert isinstance(geo.elevation, ConstantElevation)

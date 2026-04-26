@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.4.3"
+version = "0.5.0"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -72,6 +72,9 @@ detection = [
 coregistration = [
     "opencv-python-headless>=4.5.0",
 ]
+contrast = [
+    "scikit-image>=0.19.0",
+]
 examples = [
     "matplotlib>=3.5.0",
     "PySide6>=6.5.0",
@@ -91,6 +94,7 @@ all = [
     "requests>=2.25.0",
     "matplotlib>=3.5.0",
     "PySide6>=6.5.0",
+    "scikit-image>=0.19.0",
 ]
 dev = [
     "pytest>=7.0.0",
