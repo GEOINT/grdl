@@ -1,6 +1,6 @@
 # GRDL — Library Architecture
 
-*Modified: 2026-03-23*
+*Modified: 2026-04-26*
 
 ## Overview
 
@@ -12,8 +12,8 @@ imagery — SAR, EO, MSI, hyperspectral, space-based, or terrestrial.
 usable. Modules compose at the application level — each does its job,
 the application wires them together.
 
-**Scale:** ~60,000 lines of library code across 152 Python files, plus
-~29,000 lines of tests. Seven primary domains.
+**Scale:** ~63,000 lines of library code across 165 Python files, plus
+~29,000 lines of tests. Nine primary domains.
 
 ---
 
@@ -64,6 +64,20 @@ grdl/                            ~60k lines, 152 files
 │
 ├── coregistration/              Image-to-image alignment
 │   └── [Affine, Projective, FeatureMatch]
+│
+├── contrast/                    Display-time dynamic range adjustment
+│   ├── auto.py                    auto_select(metadata) modality dispatcher
+│   ├── density.py                 MangisDensity, Brighter, Darker, HighContrast, GDM, PEDF
+│   ├── nrl.py                     NRLStretch (linear→log knee remap)
+│   ├── linear.py                  LinearStretch
+│   ├── logarithmic.py             LogStretch (bounded log2)
+│   ├── gamma.py                   GammaCorrection
+│   ├── sigmoid.py                 SigmoidStretch
+│   ├── histogram.py               HistogramEqualization, CLAHE (skimage)
+│   └── [percentile.py, decibel.py re-exports]
+│
+├── vector/                      Geo-registered feature data, spatial operators
+│   └── [Feature, FeatureSet, BufferOperator, IntersectionOperator, ...]
 │
 ├── transforms/                  Detection geometry transforms
 │
@@ -144,6 +158,23 @@ CoRegistration (ABC)                           coregistration/
 ├── AffineCoRegistration
 ├── ProjectiveCoRegistration
 └── FeatureMatchCoRegistration (OpenCV)
+
+ImageTransform (ABC, contrast operators)      contrast/
+├── MangisDensity, Brighter, Darker, HighContrast      sarpy Density family
+├── GDM (Generalized Density Mapping)
+├── PEDF (Piecewise Extended Density Format)
+├── NRLStretch                                          sarpy NRL port
+├── LinearStretch, LogStretch                           sarpy Linear/Log ports
+├── GammaCorrection, SigmoidStretch
+├── HistogramEqualization, CLAHE                        global + adaptive HE
+└── PercentileStretch, ToDecibels                       re-exports from intensity.py
+
+VectorProcessor (ABC)                          vector/base.py
+├── BufferOperator, IntersectionOperator
+├── UnionOperator, DissolveOperator
+├── SpatialJoinOperator, ClipOperator
+├── CentroidOperator, ConvexHullOperator
+└── RasterToPoints, Rasterize                  raster ↔ vector conversion
 ```
 
 ---
@@ -312,6 +343,7 @@ Sensor models:
 | `multispectral` | h5py, xarray, spectral | IO/multispectral |
 | `geolocation` | pyproj | geolocation/eo, geolocation/elevation |
 | `coregistration` | opencv-python-headless | coregistration/feature_match |
+| `contrast` | scikit-image | contrast/histogram (CLAHE) |
 | `all` | everything above | full installation |
 
 Core (always required): `numpy>=1.20.0`, `scipy>=1.7.0`
@@ -328,6 +360,7 @@ Each major module has its own detailed architecture document:
 | [geolocation/ARCHITECTURE.md](grdl/geolocation/ARCHITECTURE.md) | Coordinate transforms, R/Rdot engine, DEM integration |
 | [image_processing/ARCHITECTURE.md](grdl/image_processing/ARCHITECTURE.md) | Filters, detection, decomposition, SAR formation, processor metadata |
 | [image_processing/ortho/ARCHITECTURE.md](grdl/image_processing/ortho/ARCHITECTURE.md) | Orthorectifier, output grids, resampling backends, tiled pipeline |
+| [contrast/ARCHITECTURE.md](grdl/contrast/ARCHITECTURE.md) | Display contrast operators, sarpy port, stats threading, modality dispatch |
 
 ---
 
@@ -352,4 +385,4 @@ pytest tests/test_ortho_builder.py -v      # single module
 - **Source of truth:** `pyproject.toml` (version, deps, extras)
 - **PyPI:** published via GitHub Release → `publish.yml` (OIDC trusted publishing)
 - **Package data:** `.md` files included via `[tool.setuptools.package-data]` + `MANIFEST.in`
-- **Current version:** 0.3.0
+- **Current version:** 0.5.0

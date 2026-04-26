@@ -38,6 +38,8 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 | Interpolation / resampling | `grdl.interpolation` (`PolyphaseInterpolator`, `LanczosInterpolator`, ...) | Manual sinc convolution |
 | Align two images | `grdl.coregistration` (`AffineCoRegistration`, ...) | Custom OpenCV `findHomography` wrappers |
 | Transform detection geometries | `grdl.transforms` (`transform_detection_set`) | Manual coordinate mapping |
+| Display contrast / dynamic range | `grdl.contrast` (`MangisDensity`, `NRLStretch`, `LinearStretch`, `LogStretch`, `PercentileStretch`, `ToDecibels`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE`, `auto_select`) | Inline 2/99 percentile clip / `_to_db()` / matplotlib `vmin`/`vmax` math |
+| Point-ROI orthorectification | `grdl.image_processing.ortho.orthorectify_point_roi()` | Hand-rolled chip + ENU grid + flat-plane DEM logic |
 
 This matters because the library modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code typically misses. Compose them at the application level:
 
@@ -150,6 +152,11 @@ result.save_geotiff('savannah_ortho.tif')
 | **Data Preparation** | Chip extraction, tiling, and normalization for ML/AI pipelines | Implemented |
 | **Coregistration** | Affine, projective, and feature-matching image alignment | Implemented |
 | **Transforms** | Detection geometry transforms (apply coregistration to vector detections) | Implemented |
+| **Contrast** | Display-time dynamic range adjustment (sarpy.visualization.remap port + multi-modal stretches) | Implemented |
+| | SAR (sarpy ports): `MangisDensity`, `Brighter`, `Darker`, `HighContrast`, `GDM`, `PEDF`, `NRLStretch`, `LogStretch`, `ToDecibels` | |
+| | Generic: `LinearStretch`, `PercentileStretch`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE` | |
+| | Auto-selection: `auto_select(metadata)` picks per modality (SAR → `Brighter`, EO NITF → `gamma`, MSI → `percentile`) | |
+| **Vector** | Geo-registered feature data, spatial operators, raster ↔ vector conversion | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
 
@@ -290,6 +297,24 @@ GRDL/
 │   │   ├── projective.py            #   Projective transform alignment
 │   │   ├── feature_match.py         #   Feature-based matching (OpenCV)
 │   │   └── utils.py                 #   Coregistration utilities
+│   ├── contrast/                    # Display-time contrast / dynamic range
+│   │   ├── base.py                  #   clip_cast(), linear_map(), nan_safe_stats()
+│   │   ├── auto.py                  #   auto_select(metadata) modality-driven dispatch
+│   │   ├── linear.py                #   LinearStretch (sarpy Linear port)
+│   │   ├── logarithmic.py           #   LogStretch (sarpy Logarithmic port)
+│   │   ├── density.py               #   MangisDensity, Brighter, Darker, HighContrast, GDM, PEDF
+│   │   ├── nrl.py                   #   NRLStretch (sarpy NRL port)
+│   │   ├── gamma.py                 #   GammaCorrection
+│   │   ├── sigmoid.py               #   SigmoidStretch
+│   │   ├── histogram.py             #   HistogramEqualization, CLAHE (skimage)
+│   │   ├── percentile.py            #   re-export of PercentileStretch
+│   │   └── decibel.py               #   re-export of ToDecibels
+│   ├── vector/                      # Geo-registered feature data and operators
+│   │   ├── models.py                #   Feature, FieldSchema, FeatureSet
+│   │   ├── base.py                  #   VectorProcessor ABC
+│   │   ├── spatial.py               #   Buffer, intersection, union, dissolve, ...
+│   │   ├── conversion.py            #   RasterToPoints, Rasterize
+│   │   └── io.py                    #   VectorReader, VectorWriter
 │   └── example/                     # Example scripts
 │       ├── catalog/
 │       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
@@ -313,7 +338,9 @@ GRDL/
 │       │   ├── ortho_biomass.py         #   Orthorectification with Pauli RGB
 │       │   ├── ortho_combined.py        #   Combined SICD/SIDD auto-detect ortho
 │       │   ├── ortho_sicd.py            #   SICD orthorectification
-│       │   └── ortho_sidd.py            #   SIDD orthorectification
+│       │   ├── ortho_sidd.py            #   SIDD orthorectification
+│       │   ├── point_roi_ortho.py       #   Point-ROI ortho with auto contrast
+│       │   └── point_roi_ortho.yaml     #   Config for point_roi_ortho.py
 │       └── image_processing/
 │           ├── filtering/
 │           │   └── phase_gradient.py    #   Phase gradient filter demo
@@ -678,7 +705,7 @@ geo.elevation = dem
 result = orthorectify(
     geolocation=geo,
     reader=reader,
-    interpolation='bilinear',
+    interpolation='lanczos',     # 'nearest' | 'bilinear' | 'bicubic' | 'lanczos'
 )
 ortho = result.data                         # ndarray
 result.save_geotiff('ortho.tif')            # georeferenced output
@@ -699,6 +726,84 @@ ortho = Orthorectifier(geo, grid, interpolation='nearest')
 ortho.compute_mapping()
 result = ortho.apply(image, nodata=np.nan)
 ```
+
+### Point-ROI Orthorectification (Single-Call Helper)
+
+`orthorectify_point_roi()` wraps the full point-ROI workflow — geolocation
+auto-detection, flat-plane DEM sampling at the center point, chip
+extraction, complex-mode preprocessing, and ENU orthorectification — into
+a single call that works across every GRDL modality.
+
+```python
+from grdl.IO.generic import open_any
+from grdl.geolocation.elevation import open_elevation
+from grdl.image_processing.ortho import orthorectify_point_roi
+
+reader = open_any('/data/scene.nitf')
+elev   = open_elevation('/data/FABDEM/', location=(34.05, -118.25))
+
+result = orthorectify_point_roi(
+    reader=reader,
+    lat=34.05, lon=-118.25,
+    width_m=500.0, height_m=500.0,    # ROI extent in meters
+    pixel_size_m=0.25,                # output pixel size; None = auto
+    interpolation='lanczos',
+    complex_mode='magnitude',         # 'magnitude' | 'complex'
+    elevation=elev,                    # optional flat-plane DEM source
+)
+reader.close()
+
+ortho       = result.data              # orthorectified array
+source_chip = result.source_chip       # display-ready source chip
+grid        = result.grid              # ENUGrid (bounds + pixel sizes)
+result.save_geotiff('roi_ortho.tif')
+```
+
+See `grdl/example/ortho/point_roi_ortho.py` for a YAML-configured runnable
+example.
+
+### Display Contrast (`grdl.contrast`)
+
+`grdl.contrast` provides view-time dynamic range adjustment for any
+modality. SAR operators are byte-compatible ports of
+`sarpy.visualization.remap`; multi-modal operators cover percentile,
+gamma, sigmoid, histogram equalization, and CLAHE.
+
+```python
+from grdl.contrast import (
+    auto_select,
+    MangisDensity, NRLStretch, Brighter, Darker, HighContrast,
+    LinearStretch, PercentileStretch, GammaCorrection, CLAHE,
+)
+import numpy as np
+
+# Auto-select an operator from reader metadata (SAR → Brighter,
+# EO NITF → gamma, MSI/unknown → percentile)
+operator_name = auto_select(reader.metadata)
+
+# All operators return float32 in [0, 1] — feed straight to imshow
+sar_disp = NRLStretch().apply(sar_amplitude)         # complex or real OK
+
+# Cross-tile consistency: pre-compute stats once, reuse across chips
+mean = float(np.mean(np.abs(full_image)))
+disp_a = MangisDensity().apply(chip_a, data_mean=mean)
+disp_b = MangisDensity().apply(chip_b, data_mean=mean)   # same brightness
+
+# Compose multiple operators (no Pipeline required — call them directly)
+norm    = PercentileStretch(plow=2, phigh=98).apply(eo_image)
+bright  = GammaCorrection(gamma=1.4).apply(norm)
+```
+
+Operator catalog summary:
+
+| Modality fit | Operators |
+|--------------|-----------|
+| SAR (sarpy ports) | `MangisDensity`, `Brighter`, `Darker`, `HighContrast`, `GDM`, `PEDF`, `NRLStretch`, `LogStretch`, `ToDecibels` |
+| Any modality | `LinearStretch`, `PercentileStretch`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE` |
+
+CLAHE requires `scikit-image`. Install with `pip install grdl[contrast]`.
+See [grdl/contrast/README.md](grdl/contrast/README.md) for the full
+operator reference.
 
 ### Detection Data Models
 
@@ -895,6 +1000,7 @@ pip install -e ".[sar]"         # SAR format readers (sarpy)
 pip install -e ".[eo]"          # EO format readers (rasterio)
 pip install -e ".[biomass]"     # BIOMASS catalog (rasterio + requests)
 pip install -e ".[coregistration]"  # Image alignment (opencv-python-headless)
+pip install -e ".[contrast]"    # CLAHE adaptive histogram equalization (scikit-image)
 pip install -e ".[all]"         # Everything
 pip install -e ".[dev]"         # Development tools (pytest, ruff, mypy, etc.)
 ```
@@ -910,6 +1016,7 @@ Core dependencies (`numpy`, `scipy`) are installed automatically. Optional extra
 - `rasterio` -- GeoTIFF / raster I/O (`[eo]` / `[biomass]` extra)
 - `requests` -- ESA MAAP catalog & download (`[biomass]` extra)
 - `opencv-python-headless` -- Feature-matching coregistration (`[coregistration]` extra)
+- `scikit-image` -- CLAHE adaptive histogram equalization in `grdl.contrast` (`[contrast]` extra)
 
 ## Credentials
 
