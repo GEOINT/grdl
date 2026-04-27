@@ -37,10 +37,13 @@ from grdl.image_processing import Pipeline
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 
 
+from grdl.image_processing.versioning import processor_version
+
 # ---------------------------------------------------------------------------
 # Concrete test doubles
 # ---------------------------------------------------------------------------
 
+@processor_version("1.0.0")
 class DoubleTransform(ImageTransform):
     """Transform that doubles its input."""
 
@@ -48,6 +51,7 @@ class DoubleTransform(ImageTransform):
         return (source * 2).astype(np.float64)
 
 
+@processor_version("1.0.0")
 class CroppingTransform(ImageTransform):
     """Transform that changes spatial dimensions and drops to 2D."""
 
@@ -56,6 +60,7 @@ class CroppingTransform(ImageTransform):
         return source[:5, :8, 0]
 
 
+@processor_version("1.0.0")
 class MetadataInspectingTransform(ImageTransform):
     """Transform that records self.metadata during apply()."""
 
@@ -66,6 +71,7 @@ class MetadataInspectingTransform(ImageTransform):
         return source
 
 
+@processor_version("1.0.0")
 class StubDetector(ImageDetector):
     """Detector that returns a fixed DetectionSet."""
 
@@ -95,6 +101,7 @@ class StubDetector(ImageDetector):
         return ()
 
 
+@processor_version("1.0.0")
 class StubDecomposition(PolarimetricDecomposition):
     """Decomposition returning two named complex components."""
 
@@ -119,6 +126,7 @@ class StubDecomposition(PolarimetricDecomposition):
         return np.zeros((10, 10, 3), dtype=np.float32), None
 
 
+@processor_version("1.0.0")
 class BareProcessor(ImageProcessor):
     """ImageProcessor subclass with only apply() — tests fallback probing."""
 
@@ -126,6 +134,7 @@ class BareProcessor(ImageProcessor):
         return source + 1
 
 
+@processor_version("1.0.0")
 class EmptyProcessor(ImageProcessor):
     """ImageProcessor subclass with no action method — tests error path."""
     pass
