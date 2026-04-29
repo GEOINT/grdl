@@ -386,6 +386,12 @@ class BurstReader:
         if df is None or len(df) == 0:
             return []
 
+        # sentinel1decoder v2.0.0 uses a MultiIndex (Acquisition Chunk,
+        # Packet Number).  Reset to a plain RangeIndex so that group
+        # slices carry integer positional offsets that can be used
+        # directly with .iloc in read_burst / get_burst_swst_values.
+        df = df.reset_index(drop=True)
+
         bursts: List[BurstInfo] = []
 
         # British spelling used by some versions of the decoder.
@@ -637,8 +643,8 @@ class BurstReader:
             )
 
         df = self._decoder._metadata_df
-        burst_df = df.loc[
-            burst.start_packet:burst.end_packet - 1
+        burst_df = df.iloc[
+            burst.start_packet:burst.end_packet
         ]
 
         if "SWST" in burst_df.columns:

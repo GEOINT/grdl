@@ -421,7 +421,7 @@ class Sentinel1L0ToCRSD:
         )
 
         # Step 4: Compute scene geometry
-        iarp_llh, iarp_ecf = self._compute_iarp(meta)
+        iarp_llh, iarp_ecf = self._compute_iarp(meta, orbit, ref_time_gps)
 
         # Step 5: Derive timing/frequency bounds
         timing = self._compute_timing_bounds(
@@ -503,7 +503,18 @@ class Sentinel1L0ToCRSD:
                 "Cannot determine acquisition start time from metadata. "
                 "Cannot resolve orbit."
             )
+        # reader.py strips tzinfo from manifest times; restore UTC so that
+        # EOF validity window comparisons work correctly.
+        if sensing_start.tzinfo is None:
+            sensing_start = sensing_start.replace(tzinfo=timezone.utc)
         reference_time = sensing_start
+
+        # L0 SAFE products have no annotation XML, so meta.orbit_state_vectors
+        # is always empty.  Load ephemeris vectors directly from the decoder's
+        # Level0File object (sentinel1decoder v2.0.0+).
+        annotation_vectors = list(meta.orbit_state_vectors or [])
+        if not annotation_vectors:
+            annotation_vectors = self._load_ephemeris_vectors(reader)
 
         resolver = OrbitResolver(
             orbit_source=self.orbit_source,
@@ -511,7 +522,7 @@ class Sentinel1L0ToCRSD:
             orbit_cache_dir=self.orbit_cache_dir,
         )
         interp = resolver.resolve(
-            annotation_vectors=meta.orbit_state_vectors or [],
+            annotation_vectors=annotation_vectors,
             sensing_start=sensing_start,
             reference_time=reference_time,
             mission=mission_str,
@@ -521,6 +532,65 @@ class Sentinel1L0ToCRSD:
             reference_time.isoformat(),
         )
         return interp
+
+    def _load_ephemeris_vectors(
+        self,
+        reader: Sentinel1L0Reader,
+    ) -> list:
+        """Load orbit state vectors from the decoder's embedded ephemeris.
+
+        sentinel1decoder v2.0.0 exposes ``Level0File.ephemeris`` — a
+        DataFrame of sub-commutated ECEF state vectors broadcast in each
+        ISP.  This is the only orbit source available in raw L0 products
+        (which have no annotation XML).
+
+        Returns an empty list if the decoder or ephemeris is unavailable.
+        """
+        from datetime import timedelta
+        from grdl.IO.models.sentinel1_l0 import S1L0OrbitStateVector
+
+        vectors: list = []
+        # Access the underlying sentinel1decoder Level0File from any
+        # burst reader's Sentinel1Decoder wrapper.
+        for br in reader._burst_readers.values():
+            dec = getattr(br, "_decoder", None)
+            if dec is None:
+                continue
+            # sentinel1decoder v2.0.0: Level0File has .ephemeris;
+            # Level0Decoder (the lower-level object stored in dec._decoder)
+            # does not.  Construct Level0File from the measurement filepath.
+            try:
+                from sentinel1decoder import Level0File as _Level0File
+                l0f = _Level0File(str(dec.measurement_file))
+                eph = l0f.ephemeris
+            except Exception:
+                continue
+            if eph is None or len(eph) == 0:
+                continue
+
+            for _, row in eph.iterrows():
+                try:
+                    gps_ts = float(row["POD Solution Data Timestamp"])
+                    utc_time = _GPS_EPOCH + timedelta(
+                        seconds=gps_ts - GPS_LEAP_SECONDS
+                    )
+                    vectors.append(S1L0OrbitStateVector(
+                        time=utc_time,
+                        x=float(row["X-axis position ECEF"]),
+                        y=float(row["Y-axis position ECEF"]),
+                        z=float(row["Z-axis position ECEF"]),
+                        vx=float(row["X-axis velocity ECEF"]),
+                        vy=float(row["Y-axis velocity ECEF"]),
+                        vz=float(row["Z-axis velocity ECEF"]),
+                    ))
+                except (KeyError, ValueError, TypeError):
+                    continue
+            if vectors:
+                logger.debug(
+                    "Loaded %d ephemeris vectors from decoder", len(vectors),
+                )
+                break  # one file is enough — all are identical sub-comm
+        return vectors
 
     # ---------------------------------------------------------------
     # Step 2: Decode echo metadata per polarization
@@ -745,12 +815,20 @@ class Sentinel1L0ToCRSD:
     def _compute_iarp(
         self,
         meta: Any,
+        orbit: Optional[Any] = None,
+        ref_time_gps: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Compute IARP from manifest footprint centroid.
 
         Parameters
         ----------
         meta : Sentinel1L0Metadata
+        orbit : OrbitInterpolator, optional
+            Used to compute a nadir-point fallback when no footprint
+            is available in the metadata.
+        ref_time_gps : float, optional
+            GPS seconds of the collection reference time, used with
+            *orbit* for the nadir-point fallback.
 
         Returns
         -------
@@ -758,11 +836,28 @@ class Sentinel1L0ToCRSD:
         """
         footprint = getattr(meta, "footprint", None) or []
         if not footprint:
-            logger.warning(
-                "No footprint in metadata; using (0, 0, 0) IARP"
-            )
-            iarp_llh = np.array([0.0, 0.0, 0.0])
-            iarp_ecf = geodetic_to_ecef(iarp_llh)
+            if orbit is not None and ref_time_gps is not None:
+                # Project satellite nadir to ellipsoid as best-effort IARP.
+                # This gives a valid surface point near the actual scene.
+                orbit_ref_gps = _datetime_to_gps(orbit.reference_time)
+                orbit_rel = (ref_time_gps - GPS_LEAP_SECONDS) - orbit_ref_gps
+                sat_pos, _ = orbit.interpolate_single(float(orbit_rel))
+                # Scale sat_pos down to ellipsoid surface (hae=0)
+                from grdl.geolocation.coordinates import ecef_to_geodetic
+                sat_llh = ecef_to_geodetic(sat_pos.reshape(1, 3))[0]
+                iarp_llh = np.array([sat_llh[0], sat_llh[1], 0.0])
+                iarp_ecf = geodetic_to_ecef(iarp_llh)
+                logger.warning(
+                    "No footprint in metadata; using satellite nadir "
+                    "(lat=%.2f, lon=%.2f) as IARP fallback.",
+                    iarp_llh[0], iarp_llh[1],
+                )
+            else:
+                logger.warning(
+                    "No footprint or orbit available; using (0, 0, 0) IARP"
+                )
+                iarp_llh = np.array([0.0, 0.0, 0.0])
+                iarp_ecf = geodetic_to_ecef(iarp_llh)
             return iarp_llh, iarp_ecf
 
         coords = [(c.lat, c.lon) for c in footprint]
@@ -935,9 +1030,13 @@ class Sentinel1L0ToCRSD:
         # downstream processors know the compression scheme used.
         _first_df = next(iter(full_echo_dfs.values()))
         if "BAQ Mode" in _first_df.columns:
-            _baq_vals = np.concatenate([
-                df["BAQ Mode"].values for df in full_echo_dfs.values()
-            ])
+            # sentinel1decoder v2.0.0 returns BaqMode enum objects; extract
+            # integer .value so that np.unique can sort them.
+            _baq_vals = np.array([
+                int(getattr(v, "value", v))
+                for df in full_echo_dfs.values()
+                for v in df["BAQ Mode"].values
+            ], dtype=np.int32)
             _baq_modes, _baq_counts = np.unique(_baq_vals, return_counts=True)
             _baq_summary = "; ".join(
                 f"mode={int(m)} ({int(c)} pulses)"
@@ -947,9 +1046,12 @@ class Sentinel1L0ToCRSD:
             # Primary BAQ mode: mode with the most pulses
             _sub(proc, "PrimaryBaqMode", str(int(_baq_modes[np.argmax(_baq_counts)])))
         if "ECC Number" in _first_df.columns:
-            _ecc_vals = np.concatenate([
-                df["ECC Number"].values for df in full_echo_dfs.values()
-            ])
+            # Same enum issue: ECCNumber enum in v2.0.0.
+            _ecc_vals = np.array([
+                int(getattr(v, "value", v))
+                for df in full_echo_dfs.values()
+                for v in df["ECC Number"].values
+            ], dtype=np.int32)
             _ecc_unique = np.unique(_ecc_vals)
             _sub(proc, "EccNumbers", ";".join(str(int(e)) for e in _ecc_unique))
         if "Data Take ID" in _first_df.columns:
@@ -968,8 +1070,13 @@ class Sentinel1L0ToCRSD:
             cn_elem.set("polarization", _pol)
             _sub(cn_elem, "TotalPackets", str(len(_cn_df)))
             if "Signal Type" in _cn_df.columns and "Coarse Time" in _cn_df.columns:
-                for _stype in sorted(_cn_df["Signal Type"].unique()):
-                    _grp = _cn_df[_cn_df["Signal Type"] == _stype]
+                # sentinel1decoder v2.0.0 returns SignalType enum objects;
+                # normalise to int for sorting and comparison.
+                _stype_ints = _cn_df["Signal Type"].map(
+                    lambda x: int(getattr(x, "value", x))
+                )
+                for _stype_int in sorted(_stype_ints.unique()):
+                    _grp = _cn_df[_stype_ints == _stype_int]
                     _t_coarse = _grp["Coarse Time"].values.astype(np.float64)
                     _t_fine = (
                         _grp["Fine Time"].values.astype(np.float64)
@@ -978,7 +1085,7 @@ class Sentinel1L0ToCRSD:
                     )
                     _t_gps = _t_coarse + _t_fine
                     sg = _sub(cn_elem, "SignalTypeGroup")
-                    sg.set("signalType", str(int(_stype)))
+                    sg.set("signalType", str(_stype_int))
                     sg.set("count", str(len(_grp)))
                     sg.set("tGpsStart", f"{float(_t_gps.min()):.3f}")
                     sg.set("tGpsStop", f"{float(_t_gps.max()):.3f}")

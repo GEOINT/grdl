@@ -73,11 +73,13 @@ logger = logging.getLogger(__name__)
 try:
     import pandas as pd
     from sentinel1decoder import Level0Decoder as _Level0Decoder
+    from sentinel1decoder import Level0File as _Level0File
     _HAS_S1_DECODER = True
 except ImportError:
     _HAS_S1_DECODER = False
     pd = None
     _Level0Decoder = None
+    _Level0File = None
 
 
 def check_decoder_available() -> bool:
