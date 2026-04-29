@@ -126,7 +126,7 @@ __all__ = [
     'wgs84_norm',
 ]
 
-__version__ = '0.2.0'
+__version__ = "0.5.1"
 
 
 def create_geolocation(reader: object, **kwargs) -> Geolocation:

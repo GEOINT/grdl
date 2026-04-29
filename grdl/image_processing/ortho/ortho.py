@@ -67,10 +67,12 @@ if TYPE_CHECKING:
 
 
 # Mapping from interpolation name to scipy order parameter
+# Order 5 maps to Lanczos-3 in the numba accelerated backend.
 _INTERPOLATION_ORDERS = {
     'nearest': 0,
     'bilinear': 1,
     'bicubic': 3,
+    'lanczos': 5,
 }
 
 # Pixel count above which compute_mapping parallelises across threads
@@ -488,7 +490,7 @@ class Orthorectifier(ImageTransform):
     """
 
     # -- Annotated scalar field for GUI introspection (__param_specs__) --
-    interpolation: Annotated[str, Options('nearest', 'bilinear', 'bicubic'), Desc('Resampling interpolation method')] = 'bilinear'
+    interpolation: Annotated[str, Options('nearest', 'bilinear', 'bicubic', 'lanczos'), Desc('Resampling interpolation method')] = 'bilinear'
 
     def __init__(
         self,
@@ -512,7 +514,8 @@ class Orthorectifier(ImageTransform):
             Any object satisfying ``OutputGridProtocol`` (e.g.
             ``GeographicGrid``, ``ENUGrid``).
         interpolation : str, default='bilinear'
-            Resampling method. One of 'nearest', 'bilinear', 'bicubic'.
+            Resampling method. One of 'nearest', 'bilinear', 'bicubic',
+            'lanczos' (Lanczos-3, requires numba backend).
 
         Raises
         ------

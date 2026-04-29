@@ -50,6 +50,7 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Transform detection geometries | `grdl.transforms` | Manual coordinate mapping |
 | Chip geolocation offset | `grdl.geolocation.ChipGeolocation` | Manual row/col offset arithmetic |
 | Auto-detect geolocation from reader | `grdl.geolocation.create_geolocation()` | Manual reader-type inspection |
+| Display contrast / dynamic range | `grdl.contrast` (`MangisDensity`, `NRLStretch`, `LinearStretch`, `LogStretch`, `PercentileStretch`, `ToDecibels`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE`, ...) | Inline percentile clip / `_to_db()` / matplotlib `vmin`/`vmax` math |
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
@@ -451,6 +452,17 @@ GRDL/
       affine.py              # Affine transform alignment
       projective.py          # Projective transform alignment
       feature_match.py       # Feature-based matching (OpenCV)
+    contrast/                # Display contrast / dynamic range adjustment
+      base.py                # clip_cast(), linear_map(), nan_safe_stats()
+      linear.py              # LinearStretch (sarpy Linear port)
+      logarithmic.py         # LogStretch (sarpy Logarithmic port)
+      density.py             # MangisDensity, Brighter, Darker, HighContrast, GDM, PEDF
+      nrl.py                 # NRLStretch (sarpy NRL port)
+      gamma.py               # GammaCorrection
+      sigmoid.py             # SigmoidStretch
+      histogram.py           # HistogramEqualization, CLAHE (skimage)
+      percentile.py          # re-export of PercentileStretch
+      decibel.py             # re-export of ToDecibels
   tests/
     conftest.py              # Shared pytest fixtures (synthetic images)
     test_<domain>_<module>.py
@@ -471,6 +483,7 @@ Domain directories map to the module areas defined in the README:
 | `transforms/` | Detection geometry transforms (apply coregistration to vector detections) |
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
+| `contrast/` | Display-time contrast / dynamic range adjustment (sarpy.visualization.remap ports for SAR + multi-modal stretches for MSI/EO/PAN/HSI) |
 | `IO/catalog/` | Remote query, download & SQLite cataloging (Sentinel-1, BIOMASS, etc.) |
 | `vocabulary.py` | Enum definitions (ImageModality, ProcessorCategory, DetectionType, SegmentationType) |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |

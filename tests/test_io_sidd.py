@@ -726,3 +726,117 @@ class TestPixelDtypeMap:
         """Unknown pixel types default to uint8."""
         from grdl.IO.sar.sidd import _PIXEL_DTYPE_MAP
         assert _PIXEL_DTYPE_MAP.get('UNKNOWN', 'uint8') == 'uint8'
+
+
+# ===================================================================
+# J2K compression support (NGA.STND.0025-2 Appendix B / BPJ2K01.00)
+# ===================================================================
+
+class TestJ2KCompression:
+    """Tests for JPEG 2000 (IC=C8 / M8) SIDD decode path."""
+
+    def test_ic_constants(self):
+        """IC constants match SIDD NITF FFDD Table 2-3."""
+        from grdl.IO.sar.sidd import _IC_UNCOMPRESSED, _IC_J2K
+        assert _IC_UNCOMPRESSED == 'NC'
+        assert _IC_J2K == {'C8', 'M8'}
+
+    def test_decode_j2k_segment_round_trip(self, tmp_path):
+        """_decode_j2k_segment reconstructs a glymur-encoded codestream.
+
+        Encodes a synthetic uint8 image as a raw J2K codestream,
+        embeds it at a non-zero offset in a larger file (mimicking a
+        NITF image segment), and verifies the decoder recovers the
+        original pixels.
+        """
+        glymur = pytest.importorskip('glymur')
+        from grdl.IO.sar.sidd import _decode_j2k_segment
+
+        rng = np.random.default_rng(42)
+        source = rng.integers(0, 255, size=(64, 64), dtype=np.uint8)
+
+        j2k_path = tmp_path / "synthetic.j2k"
+        glymur.Jp2k(str(j2k_path), data=source)
+        codestream = j2k_path.read_bytes()
+
+        # Embed after a dummy prefix so offset != 0
+        prefix = b'\x00' * 128
+        wrapper = tmp_path / "wrapped.bin"
+        wrapper.write_bytes(prefix + codestream)
+
+        with wrapper.open('rb') as fh:
+            decoded = _decode_j2k_segment(fh, len(prefix), len(codestream))
+
+        assert decoded.shape == source.shape
+        assert decoded.dtype == source.dtype
+        np.testing.assert_array_equal(decoded, source)
+
+    def test_decode_j2k_without_glymur_raises(self, monkeypatch, tmp_path):
+        """_decode_j2k_segment raises ImportError when glymur is missing."""
+        from grdl.IO.sar import sidd as sidd_mod
+        from grdl.IO.sar.sidd import _decode_j2k_segment
+
+        monkeypatch.setattr(sidd_mod, '_HAS_GLYMUR', False)
+        fh = (tmp_path / "empty.bin").open('wb')
+        fh.write(b'\x00')
+        fh.close()
+        with (tmp_path / "empty.bin").open('rb') as rh:
+            with pytest.raises(ImportError, match='sarpy or glymur'):
+                _decode_j2k_segment(rh, 0, 1)
+
+    def test_product_image_segment_ic_uncompressed(self):
+        """_product_image_segment_ic reports NC for uncompressed SIDD."""
+        from grdl.IO.sar.sidd import _product_image_segment_ic
+
+        class _Field:
+            def __init__(self, v): self.value = v
+
+        class _Sub(dict):
+            def __getitem__(self, k): return super().__getitem__(k)
+
+        sub = _Sub({'IC': _Field('NC  ')})
+
+        class _Data:
+            def __init__(self, o, s): self._o, self.size = o, s
+            def get_offset(self): return self._o
+
+        seg = {'subheader': sub, 'Data': _Data(1024, 2048)}
+
+        class _Reader:
+            jbp = {'ImageSegments': [seg]}
+
+        with mock.patch(
+            'sarkit.sidd._io.product_image_segment_mapping',
+            return_value={'SIDD001': [0]},
+        ):
+            ic, offset, size = _product_image_segment_ic(_Reader(), 0)
+        assert ic == 'NC'
+        assert offset == 1024
+        assert size == 2048
+
+    def test_product_image_segment_ic_j2k(self):
+        """_product_image_segment_ic reports C8 for compressed SIDD."""
+        from grdl.IO.sar.sidd import _product_image_segment_ic
+
+        class _Field:
+            def __init__(self, v): self.value = v
+
+        sub = {'IC': _Field('C8')}
+
+        class _Data:
+            def __init__(self, o, s): self._o, self.size = o, s
+            def get_offset(self): return self._o
+
+        seg = {'subheader': sub, 'Data': _Data(4096, 131072)}
+
+        class _Reader:
+            jbp = {'ImageSegments': [seg]}
+
+        with mock.patch(
+            'sarkit.sidd._io.product_image_segment_mapping',
+            return_value={'SIDD001': [0]},
+        ):
+            ic, offset, size = _product_image_segment_ic(_Reader(), 0)
+        assert ic == 'C8'
+        assert offset == 4096
+        assert size == 131072

@@ -161,6 +161,7 @@ class TiledGeoTIFFDEM(ElevationModel):
         geoid_path: Optional[str] = None,
         interpolation: int = 3,
         max_open_tiles: int = 8,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> None:
         require_elevation_backend()
 
@@ -186,9 +187,25 @@ class TiledGeoTIFFDEM(ElevationModel):
         # LRU cache of open rasterio datasets
         self._open_tiles: OrderedDict = OrderedDict()
 
+        # Optional bbox filter: only index tiles whose
+        # (lon_floor, lat_floor) cell intersects the
+        # scene footprint. Massive speed-up + memory
+        # saving when the DEM tree has thousands of tiles
+        # but the scene only sits on 1-4 of them.
+        self._bbox = bbox
+
         self._scan_tiles(dem_path)
-        logger.info("TiledGeoTIFFDEM: indexed %d tiles from %s",
-                     len(self._tile_index), dem_path)
+        if bbox is not None:
+            logger.info(
+                "TiledGeoTIFFDEM: indexed %d tile(s) "
+                "intersecting bbox %s from %s",
+                len(self._tile_index), bbox, dem_path,
+            )
+        else:
+            logger.info(
+                "TiledGeoTIFFDEM: indexed %d tiles from %s",
+                len(self._tile_index), dem_path,
+            )
 
     def _scan_tiles(self, root: Path) -> None:
         """Recursively scan directory for GeoTIFF tiles and build index.
@@ -207,11 +224,18 @@ class TiledGeoTIFFDEM(ElevationModel):
         for ext in ('*.tif', '*.tiff'):
             tif_files.extend(root.rglob(ext))
 
-        # Pass 1: parse keys from filenames
+        # Pass 1: parse keys from filenames. The bbox
+        # filter is applied here — when set, tiles whose
+        # (lon_floor, lat_floor) cell doesn't intersect
+        # the scene footprint are dropped without ever
+        # being opened, saving thousands of GDAL handle
+        # opens against a large FABDEM/Copernicus tree.
         unmatched: List[Path] = []
         for fp in tif_files:
             key = _parse_tile_key_from_name(fp)
             if key is not None:
+                if not self._key_intersects_bbox(key):
+                    continue
                 self._index_tile_from_name(key, fp)
             else:
                 unmatched.append(fp)
@@ -228,6 +252,10 @@ class TiledGeoTIFFDEM(ElevationModel):
                     lon_floor = int(np.floor(bounds.left))
                     lat_floor = int(np.floor(bounds.bottom))
                     key = (lon_floor, lat_floor)
+                    # Honour the bbox filter for the
+                    # bounds-discovered branch as well.
+                    if not self._key_intersects_bbox(key):
+                        continue
                     if key not in self._tile_index:
                         meta = _TileMeta(
                             path=fp,
@@ -240,6 +268,32 @@ class TiledGeoTIFFDEM(ElevationModel):
                         self._tile_index[key] = meta
             except Exception as e:
                 logger.debug("Failed to probe %s: %s", fp.name, e)
+
+    def _key_intersects_bbox(
+        self, key: Tuple[int, int],
+    ) -> bool:
+        """True if the 1°×1° cell at *key* intersects bbox.
+
+        Returns ``True`` when no bbox is configured. The
+        bbox layout matches
+        :meth:`grdl.geolocation.base.Geolocation.get_footprint`'s
+        ``bounds`` field — ``(min_lon, min_lat, max_lon,
+        max_lat)``. The cell at *key* occupies
+        ``[lon_floor, lon_floor+1) × [lat_floor, lat_floor+1)``;
+        we keep it whenever the bbox spans any portion of
+        it, with a single-cell halo so cross-tile spline
+        kernels at the scene edge still find a neighbour.
+        """
+        if self._bbox is None:
+            return True
+        min_lon, min_lat, max_lon, max_lat = self._bbox
+        lon_floor, lat_floor = key
+        return (
+            lon_floor + 1 >= min_lon - 1
+            and lon_floor <= max_lon + 1
+            and lat_floor + 1 >= min_lat - 1
+            and lat_floor <= max_lat + 1
+        )
 
     def _index_tile_from_name(
         self, key: Tuple[int, int], filepath: Path

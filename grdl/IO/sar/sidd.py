@@ -6,9 +6,18 @@ NGA standard for derived SAR products in NITF containers.  Uses sarkit
 as the primary backend with sarpy as fallback.  Populates all SIDD
 metadata sections as nested dataclasses via ``SIDDMetadata``.
 
+JPEG 2000 compressed products (NITF image compression ``IC=C8`` or
+``M8``, per NGA.STND.0025-2 Appendix B / BPJ2K01.00 profile) are
+supported.  sarkit's own ``NitfReader.read_image()`` reads image
+segments as uncompressed raw bytes and does **not** decode J2K, so
+the reader automatically switches to sarpy when a compressed segment
+is detected.  If sarpy is unavailable, the reader falls back to a
+``glymur``-based raw-codestream decoder.
+
 Dependencies
 ------------
-sarkit (primary) or sarpy (fallback)
+sarkit (primary) or sarpy (fallback, required for J2K)
+glymur (optional, fallback J2K decoder when sarpy is missing)
 
 Author
 ------
@@ -100,7 +109,20 @@ from grdl.IO.models.sicd import (
 )
 from grdl.IO.sar._backend import _HAS_SARPY, require_sar_backend
 
+try:
+    import glymur
+    _HAS_GLYMUR = True
+except (ImportError, AttributeError):
+    _HAS_GLYMUR = False
+
 logger = logging.getLogger(__name__)
+
+# SIDD NITF Image Compression codes per NGA.STND.0025-2 §2.4.5.2 / Table 2-3.
+# NC  = uncompressed
+# C8  = JPEG 2000 codestream (BPJ2K01.00 profile, Appendix B)
+# M8  = JPEG 2000 of masked image
+_IC_UNCOMPRESSED = 'NC'
+_IC_J2K = {'C8', 'M8'}
 
 
 # Pixel-type → dtype mapping shared by both backends
@@ -1386,6 +1408,58 @@ def _extract_match_info_sarpy(sm: Any) -> Optional[SICDMatchInfo]:
 
 
 # ===================================================================
+# NITF image compression (J2K) helpers
+# ===================================================================
+
+def _product_image_segment_ic(
+    sarkit_reader: Any, image_index: int
+) -> Tuple[str, int, int]:
+    """Return (IC, byte_offset, byte_size) for a SIDD product's image data.
+
+    Per NGA.STND.0025-2 §2.4.5.2 compressed SIDD products are always a
+    single image segment, so this returns one tuple covering the whole
+    product image.  For uncompressed products the offset/size point at
+    the first SAR image segment of the product.
+    """
+    from sarkit.sidd._io import product_image_segment_mapping
+    seg_key = f'SIDD{image_index + 1:03d}'
+    idxs = product_image_segment_mapping(sarkit_reader.jbp)[seg_key]
+    seg = sarkit_reader.jbp['ImageSegments'][idxs[0]]
+    ic = seg['subheader']['IC'].value.strip()
+    return ic, seg['Data'].get_offset(), seg['Data'].size
+
+
+def _decode_j2k_segment(
+    file_handle: Any, offset: int, size: int,
+) -> np.ndarray:
+    """Decode a single raw J2K codestream from a byte range in a file.
+
+    SIDD stores the codestream raw (not JP2-wrapped) inside a single
+    NITF image segment.  glymur auto-detects ``.j2k`` suffix as a raw
+    codestream, so we write the bytes to a temporary file and read
+    them back.  In-memory decode is not exposed by the glymur API.
+    """
+    if not _HAS_GLYMUR:
+        raise ImportError(
+            "J2K-compressed SIDD requires sarpy or glymur; neither "
+            "is installed.  Install with `pip install grdl[eo]` or "
+            "`pip install glymur`."
+        )
+    import tempfile
+    file_handle.seek(offset)
+    codestream = file_handle.read(size)
+    with tempfile.NamedTemporaryFile(
+        suffix='.j2k', delete=False,
+    ) as tmp:
+        tmp.write(codestream)
+        tmp_path = tmp.name
+    try:
+        return np.asarray(glymur.Jp2k(tmp_path)[:])
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+# ===================================================================
 # SIDDReader
 # ===================================================================
 
@@ -1441,6 +1515,9 @@ class SIDDReader(ImageReader):
         logger.info("SIDD backend selected: %s", self.backend)
         self.image_index = image_index
         self._cached_image: Optional[np.ndarray] = None
+        self._ic: str = _IC_UNCOMPRESSED
+        self._j2k_offset: int = 0
+        self._j2k_size: int = 0
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -1522,13 +1599,58 @@ class SIDDReader(ImageReader):
 
             self._xmltree = xml
 
+            # Detect NITF image compression on the product's image
+            # segment.  sarkit's NitfReader.read_image() does not
+            # decode J2K, so route compressed products to sarpy when
+            # available, otherwise flag for the glymur fallback.
+            try:
+                self._ic, self._j2k_offset, self._j2k_size = (
+                    _product_image_segment_ic(
+                        self._reader, self.image_index,
+                    )
+                )
+            except Exception as ic_err:
+                logger.debug(
+                    "Could not probe image segment IC: %s", ic_err,
+                )
+                self._ic = _IC_UNCOMPRESSED
+
+            if self._ic in _IC_J2K:
+                if _HAS_SARPY:
+                    logger.info(
+                        "SIDD %s uses J2K (IC=%s); switching to sarpy "
+                        "backend for pixel decode.",
+                        self.filepath.name, self._ic,
+                    )
+                    self._reader.close() if hasattr(
+                        self._reader, 'close') else None
+                    if getattr(self, '_file_handle', None) is not None:
+                        self._file_handle.close()
+                        self._file_handle = None
+                    self.backend = 'sarpy'
+                    self._load_metadata_sarpy()
+                    return
+                elif not _HAS_GLYMUR:
+                    raise ValueError(
+                        f"SIDD {self.filepath.name} uses J2K "
+                        f"(IC={self._ic}) but neither sarpy nor glymur "
+                        f"is installed to decode it."
+                    )
+                else:
+                    logger.info(
+                        "SIDD %s uses J2K (IC=%s); using glymur "
+                        "fallback decoder.",
+                        self.filepath.name, self._ic,
+                    )
+
             logger.info(
-                "Loaded SIDD %s (%d x %d) via sarkit, image %d of %d",
+                "Loaded SIDD %s (%d x %d) via sarkit, image %d of %d, IC=%s",
                 self.filepath.name,
                 int(num_rows) if num_rows else 0,
                 int(num_cols) if num_cols else 0,
                 self.image_index,
                 num_images,
+                self._ic,
             )
 
         except Exception as e:
@@ -1641,9 +1763,7 @@ class SIDDReader(ImageReader):
 
         if self.backend == 'sarkit':
             if self._cached_image is None:
-                self._cached_image = self._reader.read_image(
-                    self.image_index
-                )
+                self._cached_image = self._read_image_sarkit()
             return self._cached_image[row_start:row_end, col_start:col_end]
         else:
             return self._reader.read_chip(
@@ -1666,14 +1786,30 @@ class SIDDReader(ImageReader):
         """
         if self.backend == 'sarkit':
             if self._cached_image is None:
-                self._cached_image = self._reader.read_image(
-                    self.image_index
-                )
+                self._cached_image = self._read_image_sarkit()
             return self._cached_image
         else:
             return self._reader.read_chip(
                 np.s_[:, :], index=self.image_index,
             )
+
+    def _read_image_sarkit(self) -> np.ndarray:
+        """Read the SIDD pixel array via sarkit, decoding J2K if needed.
+
+        sarkit's own ``read_image()`` treats each image segment as a
+        raw byte buffer and does not decode J2K codestreams.  When the
+        product's image segment uses ``IC=C8`` or ``M8``, we bypass it
+        and decode the codestream with glymur instead.  Uncompressed
+        products go through ``sarkit.sidd.NitfReader.read_image`` as
+        before.
+        """
+        if self._ic in _IC_J2K:
+            return _decode_j2k_segment(
+                self._file_handle,
+                self._j2k_offset,
+                self._j2k_size,
+            )
+        return self._reader.read_image(self.image_index)
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.

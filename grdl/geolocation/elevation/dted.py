@@ -217,6 +217,13 @@ class DTEDElevation(ElevationModel):
     def _scan_tiles(self, root: Path) -> None:
         """Recursively scan directory for DTED tiles and build index.
 
+        Case-insensitive on the extension so archives with
+        uppercase suffixes (``.DT2`` etc.) work on every
+        filesystem. :func:`_parse_dted_tile_key` already
+        lowercases the stem and parent-dir name, so the
+        canonical key is preserved regardless of on-disk
+        case.
+
         Parameters
         ----------
         root : Path
@@ -226,9 +233,20 @@ class DTEDElevation(ElevationModel):
         tiles_by_key: Dict[Tuple[int, int], Dict[str, Path]] = {}
 
         for ext in _DTED_EXTENSIONS:
-            for filepath in root.rglob(f'*{ext}'):
-                key = _parse_dted_tile_key(filepath)
-                if key is not None:
+            patterns = (f'*{ext}', f'*{ext.upper()}')
+            seen: set = set()
+            for pat in patterns:
+                for filepath in root.rglob(pat):
+                    # dedupe so case-insensitive filesystems
+                    # (APFS-default, NTFS) don't add the same
+                    # file twice.
+                    resolved = filepath.resolve()
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    key = _parse_dted_tile_key(filepath)
+                    if key is None:
+                        continue
                     if key not in tiles_by_key:
                         tiles_by_key[key] = {}
                     tiles_by_key[key][ext] = filepath

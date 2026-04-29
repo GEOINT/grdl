@@ -2,19 +2,34 @@
 """
 Geoid Correction - Undulation lookup from geoid model grids.
 
-Loads a geoid model file (EGM96 15-arc-minute grid in PGM format) and
-provides vectorized bilinear interpolation of geoid undulation values.
-Undulation is the height difference between the geoid (MSL) and the
-WGS84 ellipsoid: ``height_HAE = height_MSL + undulation``.
+Loads a geoid model file and provides vectorized bilinear interpolation
+of geoid undulation values.  Undulation is the height difference
+between the geoid (MSL) and the WGS84 ellipsoid:
+``height_HAE = height_MSL + undulation``.
 
-EGM96 Grid Specification
-------------------------
-- Format: PGM (Portable Gray Map), 16-bit unsigned
-- Grid size: 1440 columns x 721 rows
-- Resolution: 15 arc-minutes (0.25 degrees)
-- Latitude range: 90N to 90S (north to south)
-- Longitude range: 0 to 360 (eastward from Greenwich)
-- Values: Geoid undulation in centimeters, offset by 32768
+Supported PGM Grids
+-------------------
+Any post-aligned global EGM-family grid in PGM format (P5 binary or P2
+ASCII) is accepted; dimensions are read from the PGM header and the
+latitude/longitude vectors are derived on load.  Known formats include:
+
+- EGM96 15 arc-minute (721 x 1440)
+- EGM2008 5 arc-minute (2161 x 4320)
+- EGM2008 2.5 arc-minute (4321 x 8640)
+- EGM2008 1 arc-minute (10801 x 21600)
+
+PGM Storage Convention
+----------------------
+- Format: PGM (Portable Gray Map), 16-bit unsigned big-endian (P5) or
+  ASCII (P2)
+- Latitude range: 90N (row 0) to 90S (row ``nrows - 1``)
+- Longitude range: 0 (col 0) to ``360 - lon_step`` (col ``ncols - 1``)
+- Values: undulation in centimeters, offset by 32768 (EGM default);
+  scale and offset may be overridden by PGM comment lines of the form
+  ``# scale <value>`` and ``# offset <value>``
+
+GeoTIFF geoids (single-band, geographic CRS) are also supported with
+grid extent read entirely from the affine transform.
 
 Author
 ------
@@ -33,6 +48,9 @@ Created
 
 Modified
 --------
+2026-04-21  Accept any post-aligned global EGM PGM grid; infer lat/lon
+            vectors from header dimensions instead of enforcing the
+            EGM96 15-arc-minute shape.
 2026-03-27  Read scale/offset from file metadata (GeoTIFF tags, PGM comments)
             instead of always using hardcoded EGM96 defaults.
 2026-03-18  Fix _interpolate_array to use actual grid dimensions instead of
@@ -53,43 +71,41 @@ from grdl.geolocation.base import _is_scalar, _to_array
 
 logger = logging.getLogger(__name__)
 
-# EGM96 15-arc-minute grid constants
-_EGM96_NROWS = 721
-_EGM96_NCOLS = 1440
-_EGM96_LAT_STEP = 0.25  # degrees (15 arc-minutes)
-_EGM96_LON_STEP = 0.25  # degrees (15 arc-minutes)
-_EGM96_LAT_MAX = 90.0   # north
-_EGM96_LON_MIN = 0.0    # Greenwich
-_EGM96_OFFSET = 32768   # PGM offset for signed values
+# EGM-family PGM default encoding (override via '# scale'/'# offset'
+# comment lines in the PGM header).
+_PGM_DEFAULT_OFFSET = 32768  # unsigned → signed centimeter offset
+_PGM_DEFAULT_SCALE = 1.0 / 100.0  # centimeters → meters
 
 
 class GeoidCorrection:
-    """Geoid undulation lookup from an EGM96 grid file.
+    """Geoid undulation lookup from an EGM-family grid file.
 
-    Loads the EGM96 15-arc-minute geoid undulation grid in PGM format
-    and provides vectorized bilinear interpolation. The grid covers the
-    entire globe at 0.25-degree resolution.
+    Loads a post-aligned global geoid undulation grid (PGM or GeoTIFF)
+    and provides vectorized bilinear interpolation. Grid dimensions and
+    resolution are read from the file header — any standard
+    EGM96/EGM2008 PGM grid is accepted, as well as any single-band
+    geographic GeoTIFF.
 
     Parameters
     ----------
     geoid_path : str or Path
-        Path to the EGM96 geoid grid file in PGM format (e.g.,
-        ``WW15MGH.GRD`` converted to PGM, or the standard
-        ``egm96-15.pgm``).
+        Path to the geoid grid file. PGM grids must be post-aligned
+        global (row 0 at 90N, last row at 90S; col 0 at 0° longitude).
 
     Raises
     ------
     FileNotFoundError
         If ``geoid_path`` does not exist.
     ValueError
-        If the file cannot be parsed as a valid EGM96 PGM grid.
+        If the file cannot be parsed as a recognized geoid grid.
 
     Notes
     -----
-    The EGM96 PGM file stores undulation values as unsigned 16-bit
-    integers with an offset of 32768. The actual undulation in
-    centimeters is: ``undulation_cm = raw_value - 32768``. Values are
-    converted to meters on load.
+    EGM-family PGM files store undulation values as unsigned 16-bit
+    integers with a default offset of 32768 (raw centimeters →
+    ``undulation_cm = raw_value - 32768``). Scale and offset may be
+    overridden by ``# scale`` / ``# offset`` comment lines in the PGM
+    header. Values are converted to meters on load.
 
     Examples
     --------
@@ -141,16 +157,17 @@ class GeoidCorrection:
             self._load_geotiff(geoid_path)
         elif suffix in ('.pgm',):
             self._grid = self._load_pgm(geoid_path)
-            # Pre-compute latitude and longitude vectors for interpolation
-            # Latitude: 90 (north) to -90 (south), 721 points
-            self._lats = np.linspace(
-                _EGM96_LAT_MAX, -_EGM96_LAT_MAX, _EGM96_NROWS
-            )
-            # Longitude: 0 to 359.75, 1440 points
-            self._lons = np.linspace(
-                _EGM96_LON_MIN,
-                _EGM96_LON_MIN + (_EGM96_NCOLS - 1) * _EGM96_LON_STEP,
-                _EGM96_NCOLS,
+            nrows, ncols = self._grid.shape
+            # Assume a post-aligned global grid (row 0 = 90N, row
+            # nrows-1 = 90S; col 0 = 0°, col ncols-1 = 360° - lon_step).
+            # This covers every standard EGM96/EGM2008 PGM.
+            lat_step = 180.0 / (nrows - 1)
+            lon_step = 360.0 / ncols
+            self._lats = np.linspace(90.0, -90.0, nrows)
+            self._lons = np.linspace(0.0, 360.0 - lon_step, ncols)
+            logger.debug(
+                "PGM geoid grid %d x %d, lat_step=%.6g°, lon_step=%.6g°",
+                nrows, ncols, lat_step, lon_step,
             )
         else:
             raise ValueError(
@@ -218,11 +235,12 @@ class GeoidCorrection:
 
     @staticmethod
     def _load_pgm(filepath: Path) -> np.ndarray:
-        """Load an EGM96 PGM file and return undulation grid in meters.
+        """Load an EGM-family PGM file and return undulation in meters.
 
         Reads the PGM file format (P5 binary or P2 ASCII), skips comment
         lines, and converts raw unsigned 16-bit values to undulation in
-        meters using the EGM96 offset convention.
+        meters using the default EGM offset convention (or the scale /
+        offset declared in PGM comment lines, when present).
 
         Parameters
         ----------
@@ -232,16 +250,17 @@ class GeoidCorrection:
         Returns
         -------
         np.ndarray
-            Geoid undulation grid in meters. Shape ``(721, 1440)``,
-            dtype float64. Latitude runs from 90N (row 0) to 90S
-            (row 720). Longitude runs from 0 (col 0) to 359.75
-            (col 1439).
+            Geoid undulation grid in meters. Shape ``(nrows, ncols)``
+            as declared in the PGM header, dtype float64. Latitude runs
+            from 90N (row 0) to 90S (row ``nrows - 1``). Longitude runs
+            from 0 (col 0) eastward to ``360 - lon_step``
+            (col ``ncols - 1``).
 
         Raises
         ------
         ValueError
-            If the file format is invalid or grid dimensions do not
-            match the expected EGM96 size.
+            If the PGM magic number is not ``P5`` or ``P2`` or the
+            pixel stream is truncated.
         """
         with open(filepath, 'rb') as f:
             # Read magic number
@@ -303,7 +322,8 @@ class GeoidCorrection:
         Returns
         -------
         np.ndarray
-            Undulation grid in meters. Shape ``(721, 1440)``.
+            Undulation grid in meters. Shape ``(nrows, ncols)`` as
+            declared in the PGM header.
         """
         # Collect comment lines for scale/offset parsing
         comment_lines = []
@@ -322,13 +342,7 @@ class GeoidCorrection:
             nrows = int(f.readline().strip())
 
         # Read max value
-        maxval = int(f.readline().strip())
-
-        if nrows != _EGM96_NROWS or ncols != _EGM96_NCOLS:
-            raise ValueError(
-                f"Expected {_EGM96_NCOLS}x{_EGM96_NROWS} grid, "
-                f"got {ncols}x{nrows}."
-            )
+        _maxval = int(f.readline().strip())
 
         # Read binary data (16-bit big-endian unsigned integers)
         raw = np.frombuffer(
@@ -336,12 +350,14 @@ class GeoidCorrection:
         )
         raw = raw.reshape((nrows, ncols))
 
-        # Use file-embedded scale/offset if available, else EGM96 defaults
+        # Use file-embedded scale/offset if available, else EGM defaults
         file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
             comment_lines
         )
-        scale = file_scale if file_scale is not None else (1.0 / 100.0)
-        offset = file_offset if file_offset is not None else _EGM96_OFFSET
+        scale = file_scale if file_scale is not None else _PGM_DEFAULT_SCALE
+        offset = (
+            file_offset if file_offset is not None else _PGM_DEFAULT_OFFSET
+        )
         if file_scale is not None or file_offset is not None:
             logger.debug(
                 "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset
@@ -362,7 +378,8 @@ class GeoidCorrection:
         Returns
         -------
         np.ndarray
-            Undulation grid in meters. Shape ``(721, 1440)``.
+            Undulation grid in meters. Shape ``(nrows, ncols)`` as
+            declared in the PGM header.
         """
         # Read remaining content as text
         content = f.read().decode('ascii')
@@ -386,12 +403,6 @@ class GeoidCorrection:
         nrows = int(tokens[1])
         _maxval = int(tokens[2])
 
-        if nrows != _EGM96_NROWS or ncols != _EGM96_NCOLS:
-            raise ValueError(
-                f"Expected {_EGM96_NCOLS}x{_EGM96_NROWS} grid, "
-                f"got {ncols}x{nrows}."
-            )
-
         # Parse pixel values
         expected = nrows * ncols
         pixel_tokens = tokens[3:]
@@ -405,12 +416,14 @@ class GeoidCorrection:
         )
         raw = raw.reshape((nrows, ncols))
 
-        # Use file-embedded scale/offset if available, else EGM96 defaults
+        # Use file-embedded scale/offset if available, else EGM defaults
         file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
             comment_lines
         )
-        scale = file_scale if file_scale is not None else (1.0 / 100.0)
-        offset = file_offset if file_offset is not None else _EGM96_OFFSET
+        scale = file_scale if file_scale is not None else _PGM_DEFAULT_SCALE
+        offset = (
+            file_offset if file_offset is not None else _PGM_DEFAULT_OFFSET
+        )
         if file_scale is not None or file_offset is not None:
             logger.debug(
                 "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset

@@ -67,6 +67,15 @@ resample
     fastest available backend (numba, torch, scipy).
 detect_backend
     Return the name of the best available resampling backend.
+orthorectify_point_roi
+    Single-call helper: flat-plane ENU ortho centered on a lat/lon or
+    pixel point, for any GRDL-supported modality.  Handles geolocation
+    auto-detection, chip extraction, complex-mode preprocessing, and
+    coverage validation internally.
+PointRoiResult
+    Result container returned by ``orthorectify_point_roi``.  Carries
+    the ortho array, the source chip, center coordinates, and chip
+    bounds.
 
 Dependencies
 ------------
@@ -109,6 +118,7 @@ from grdl.image_processing.ortho.ortho_builder import (
 )
 from grdl.image_processing.ortho.resolution import compute_output_resolution
 from grdl.image_processing.ortho.accelerated import resample, detect_backend
+from grdl.image_processing.ortho.roi import PointRoiResult, orthorectify_point_roi
 
 try:
     from grdl.image_processing.ortho.utm_grid import UTMGrid
@@ -135,4 +145,6 @@ __all__ = [
     'compute_output_resolution',
     'resample',
     'detect_backend',
+    'PointRoiResult',
+    'orthorectify_point_roi',
 ]
