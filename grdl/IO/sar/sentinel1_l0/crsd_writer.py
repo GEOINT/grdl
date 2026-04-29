@@ -61,7 +61,13 @@ from grdl.IO.sar.sentinel1_l0.constants import (
     SPEED_OF_LIGHT,
 )
 from grdl.IO.sar.sentinel1_l0.decoder import Sentinel1Decoder
-from grdl.IO.sar.sentinel1_l0.orbit import OrbitInterpolator, OrbitLoader
+from grdl.IO.sar.sentinel1_l0.orbit import OrbitInterpolator, OrbitLoader, OrbitResolver
+from grdl.IO.sar.sentinel1_l0.orbit import (
+    ORBIT_SOURCE_AUTO,
+    ORBIT_SOURCE_DOWNLOAD,
+    ORBIT_SOURCE_FILE,
+    ORBIT_SOURCE_ANNOTATION,
+)
 from grdl.IO.sar.sentinel1_l0.reader import Sentinel1L0Reader
 
 logger = logging.getLogger(__name__)
@@ -265,16 +271,41 @@ class Sentinel1L0ToCRSD:
     CRSD receive channel (e.g. ``IW1_VV``, ``IW2_VH``), so that each
     channel has uniform signal dimensions.
 
+    This converter supports three orbit source strategies (``orbit_source``):
+
+    ``"auto"`` *(default)*
+        Try to download POEORB then RESORB from ESA's step.esa.int
+        server.  Falls back to annotation orbit vectors with a precision
+        warning if both downloads fail (e.g. network down, or the
+        acquisition is more than ~21 days old and POEORB is not yet
+        published).
+    ``"download"``
+        Same download priority as ``"auto"`` but raises immediately if
+        both POEORB and RESORB downloads fail.
+    ``"file"``
+        Load the ``.EOF`` file specified by ``orbit_file``.  Raises if
+        the file is missing or ``orbit_file`` is ``None``.
+    ``"annotation"``
+        Use the ~25 sub-commutated state vectors embedded in the ISP
+        annotation XML.  Always available; position accuracy ~10 m.
+
     Parameters
     ----------
     safe_path : str or Path
         Path to the ``.SAFE`` directory.
     output_path : str or Path
         Output path for the ``.crsd`` file.
+    orbit_source : str, optional
+        Orbit resolution strategy — one of ``"auto"``, ``"download"``,
+        ``"file"``, or ``"annotation"``.  Default ``"auto"``.
     orbit_file : str or Path, optional
-        Path to an ESA Precise Orbit Ephemeris ``.EOF`` file.
-        When provided, POE orbit data is used in preference to the
-        sub-commutated ISP annotation orbit vectors.
+        Path to a local ESA Precise Orbit Ephemeris ``.EOF`` file.
+        Required when ``orbit_source='file'``; ignored for other
+        strategies.
+    orbit_cache_dir : str or Path, optional
+        Directory for caching downloaded ``.EOF`` files.  Defaults to
+        ``~/.grdl/orbits``.  Only used when ``orbit_source`` is
+        ``"auto"`` or ``"download"``.
     channel : str, optional
         Polarization to convert (e.g. ``"VV"``).
         If *None* (default), all polarizations are converted.
@@ -295,13 +326,19 @@ class Sentinel1L0ToCRSD:
         self,
         safe_path: Union[str, Path],
         output_path: Union[str, Path],
+        orbit_source: str = ORBIT_SOURCE_AUTO,
         orbit_file: Optional[Union[str, Path]] = None,
+        orbit_cache_dir: Optional[Union[str, Path]] = None,
         channel: Optional[str] = None,
         swath: Optional[int] = None,
     ) -> None:
         self.safe_path = Path(safe_path)
         self.output_path = Path(output_path)
+        self.orbit_source = orbit_source
         self.orbit_file = Path(orbit_file) if orbit_file else None
+        self.orbit_cache_dir = (
+            Path(orbit_cache_dir) if orbit_cache_dir else None
+        )
         self.channel = channel
         self.swath = swath
 
@@ -313,12 +350,15 @@ class Sentinel1L0ToCRSD:
         Path
             Path to the written CRSD file.
         """
-        if self.orbit_file is None:
+        if self.orbit_source not in (
+            ORBIT_SOURCE_AUTO,
+            ORBIT_SOURCE_DOWNLOAD,
+            ORBIT_SOURCE_FILE,
+            ORBIT_SOURCE_ANNOTATION,
+        ):
             raise ValueError(
-                "A precise orbit ephemeris (POE .EOF) file is required. "
-                "Pass orbit_file= to Sentinel1L0ToCRSD. "
-                "Annotation-embedded orbit vectors are insufficient for "
-                "CRSD-quality timing and position accuracy."
+                f"Invalid orbit_source {self.orbit_source!r}. "
+                "Choose from: 'auto', 'download', 'file', 'annotation'."
             )
 
         logger.info(
@@ -427,11 +467,11 @@ class Sentinel1L0ToCRSD:
         reader: Sentinel1L0Reader,
         meta: Any,
     ) -> OrbitInterpolator:
-        """Build orbit interpolator from annotation data or POE file.
+        """Resolve orbit using the configured source strategy.
 
-        Uses :class:`OrbitLoader` to merge annotation and optional POE
-        orbit vectors, then returns an :class:`OrbitInterpolator`
-        referenced to the product start time.
+        Delegates to :class:`~grdl.IO.sar.sentinel1_l0.orbit.OrbitResolver`
+        which implements the three-tier resolution logic:
+        download (POEORB → RESORB) → local file → annotation.
 
         Parameters
         ----------
@@ -442,26 +482,39 @@ class Sentinel1L0ToCRSD:
         -------
         OrbitInterpolator
         """
-        loader = OrbitLoader()
+        # Determine the satellite identifier string for ESA server queries.
+        mission_obj = getattr(meta, "mission", None)
+        if mission_obj is not None:
+            # Sentinel1Mission enum or plain string
+            mission_str = str(mission_obj.name if hasattr(mission_obj, "name") else mission_obj)
+        else:
+            # Infer from the SAFE filename as last resort
+            stem = self.safe_path.name.upper()
+            if stem.startswith("S1C"):
+                mission_str = "S1C"
+            elif stem.startswith("S1B"):
+                mission_str = "S1B"
+            else:
+                mission_str = "S1A"
 
-        # Load annotation orbit vectors (always available)
-        if meta.orbit_state_vectors:
-            loader.load_annotation_vectors(meta.orbit_state_vectors)
-            logger.debug(
-                "Loaded %d annotation orbit vectors",
-                len(meta.orbit_state_vectors),
+        sensing_start = getattr(meta, "start_time", None)
+        if sensing_start is None:
+            raise ValueError(
+                "Cannot determine acquisition start time from metadata. "
+                "Cannot resolve orbit."
             )
+        reference_time = sensing_start
 
-        # Optionally load POE file
-        if self.orbit_file is not None:
-            loader.load_poe_file(self.orbit_file)
-            logger.info(
-                "Loaded POE orbit from %s", self.orbit_file,
-            )
-
-        reference_time = meta.start_time
-        interp = loader.create_interpolator(
-            reference_time=reference_time, prefer_poe=True,
+        resolver = OrbitResolver(
+            orbit_source=self.orbit_source,
+            orbit_file=self.orbit_file,
+            orbit_cache_dir=self.orbit_cache_dir,
+        )
+        interp = resolver.resolve(
+            annotation_vectors=meta.orbit_state_vectors or [],
+            sensing_start=sensing_start,
+            reference_time=reference_time,
+            mission=mission_str,
         )
         logger.info(
             "Orbit interpolator ready, reference_time=%s",

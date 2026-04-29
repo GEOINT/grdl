@@ -623,10 +623,13 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
             ).astype(data.real.dtype)
             data *= xp.asarray(w_rg)[None, :]
 
+        # CPHD FX data is in natural frequency order (sample 0 = lowest
+        # frequency, NOT DC-centred).  Do NOT apply ifftshift before the
+        # IFFT — that would circularly shift the range-compressed peak to
+        # the centre column.  Simply IFFT then fftshift to centre the
+        # output range profile around zero delay offset.
         rc = xp.fft.fftshift(
-            xp.fft.ifft(
-                xp.fft.ifftshift(data, axes=1), axis=1,
-            ),
+            xp.fft.ifft(data, axis=1),
             axes=1,
         )
 
@@ -1347,10 +1350,9 @@ class RangeDopplerAlgorithm(ImageFormationAlgorithm):
                     rc.real.dtype,
                 )
                 rc *= _xp_blk.asarray(w_rg)[None, :]
+            # Same convention as range_compress: no ifftshift before IFFT.
             rc = _xp_blk.fft.fftshift(
-                _xp_blk.fft.ifft(
-                    _xp_blk.fft.ifftshift(rc, axes=1), axis=1,
-                ),
+                _xp_blk.fft.ifft(rc, axis=1),
                 axes=1,
             )
 

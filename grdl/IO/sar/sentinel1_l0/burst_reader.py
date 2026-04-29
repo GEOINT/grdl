@@ -397,7 +397,7 @@ class BurstReader:
 
         if pol_col and "Swath Number" in df.columns:
             for (swath, pol), group_df in df.groupby(
-                ["Swath Number", pol_col]
+                ["Swath Number", pol_col], group_keys=False,
             ):
                 # SwathNumber is np.int64 (int() works);
                 # Polarisation is an enum-like with .value (int() raises).
@@ -409,7 +409,7 @@ class BurstReader:
                     )
                 )
         elif "Swath Number" in df.columns:
-            for swath, group_df in df.groupby("Swath Number"):
+            for swath, group_df in df.groupby("Swath Number", group_keys=False):
                 bursts.extend(
                     self._detect_burst_boundaries(
                         group_df, int(swath), 0
