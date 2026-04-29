@@ -1225,7 +1225,26 @@ class EONITFReader(ImageReader):
         self,
         filepath: Union[str, Path],
         read_config: Optional[ReadConfig] = None,
+        use_xml_tre: bool = True,
     ) -> None:
+        """Open an EO NITF file.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the EO NITF file.
+        read_config : ReadConfig, optional
+            Pixel-read configuration.
+        use_xml_tre : bool, default True
+            When ``True`` (default), TRE metadata is parsed from
+            GDAL's ``xml:TRE`` namespace via
+            :mod:`grdl.IO.eo._tre_xml` (field-by-name parsing --
+            order-independent, no byte-offset guessing).  If GDAL
+            recognizes no TREs in this namespace (vendor-specific
+            files), the reader transparently falls back to the
+            legacy byte-offset parser.  Set to ``False`` to force
+            the legacy path -- useful for A/B comparison.
+        """
         if not _HAS_RASTERIO:
             raise ImportError(
                 "rasterio is required for EO NITF reading. "
@@ -1233,6 +1252,7 @@ class EONITFReader(ImageReader):
                 "or: conda install -c conda-forge rasterio"
             )
         self.read_config = read_config or ReadConfig(parallel=True)
+        self.use_xml_tre = bool(use_xml_tre)
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
@@ -1252,55 +1272,24 @@ class EONITFReader(ImageReader):
         except (AttributeError, TypeError):
             pass
 
-        # Extract all TREs from tag namespaces
-        rsm_segments_list: List[RSMCoefficients] = []
-        rsm_id = None
-        csexra = None
-        use00a = None
-        ichipb = None
-        blocka = None
-        csepha = None
-        rsmgga_list: List[RSMGGAMetadata] = []
-        aimidb = None
-        stdidc = None
-        piaimc = None
-
-        try:
-            namespaces = self.dataset.tag_namespaces()
-            for ns in namespaces:
-                tags = self.dataset.tags(ns=ns)
-                if not tags:
-                    continue
-                for key, val in tags.items():
-                    key_upper = key.upper()
-                    if 'RSMPCA' in key_upper:
-                        seg = _parse_rsmpca_tre(val)
-                        if seg is not None:
-                            rsm_segments_list.append(seg)
-                    elif 'RSMIDA' in key_upper and rsm_id is None:
-                        rsm_id = _parse_rsmida_tre(val)
-                    elif 'CSEXRA' in key_upper and csexra is None:
-                        csexra = _parse_csexra_tre(val)
-                    elif 'USE00A' in key_upper and use00a is None:
-                        use00a = _parse_use00a_tre(val)
-                    elif 'ICHIPB' in key_upper and ichipb is None:
-                        ichipb = _parse_ichipb_tre(val)
-                    elif 'BLOCKA' in key_upper and blocka is None:
-                        blocka = _parse_blocka_tre(val)
-                    elif 'CSEPHA' in key_upper and csepha is None:
-                        csepha = _parse_csepha_tre(val)
-                    elif 'RSMGGA' in key_upper:
-                        gga = _parse_rsmgga_tre(val)
-                        if gga is not None:
-                            rsmgga_list.append(gga)
-                    elif 'AIMIDB' in key_upper and aimidb is None:
-                        aimidb = _parse_aimidb_tre(val)
-                    elif 'STDIDC' in key_upper and stdidc is None:
-                        stdidc = _parse_stdidc_tre(val)
-                    elif 'PIAIMC' in key_upper and piaimc is None:
-                        piaimc = _parse_piaimc_tre(val)
-        except (AttributeError, TypeError):
-            pass
+        # Extract TREs.  Default path is GDAL's xml:TRE (parses fields
+        # by name).  Fall back to the legacy byte-offset parser when
+        # GDAL recognized no TREs in the xml:TRE namespace (rare --
+        # happens for vendor-specific TREs not in GDAL's spec table).
+        # ``use_xml_tre=False`` forces the legacy path for comparison.
+        tre_bundle = None
+        self.tre_source = 'manual'
+        if self.use_xml_tre:
+            tre_bundle = self._load_tres_xml()
+            if any(x for x in tre_bundle):
+                self.tre_source = 'xml:TRE'
+            else:
+                tre_bundle = None  # nothing recognized -- try manual
+        if tre_bundle is None:
+            tre_bundle = self._load_tres_manual()
+        (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
+         blocka, csepha, rsmgga_list,
+         aimidb, stdidc, piaimc) = tre_bundle
 
         # Build RSM segment grid and backward-compatible single RSM
         rsm = None
@@ -1366,6 +1355,123 @@ class EONITFReader(ImageReader):
             isource=isource,
             igeolo=igeolo,
         )
+
+    def _load_tres_manual(
+        self,
+    ) -> Tuple[
+        List[RSMCoefficients],
+        Optional[RSMIdentification],
+        Optional[CSEXRAMetadata],
+        Optional[USE00AMetadata],
+        Optional[ICHIPBMetadata],
+        Optional[BLOCKAMetadata],
+        Optional[CSEPHAMetadata],
+        List[RSMGGAMetadata],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+    ]:
+        """Legacy path: parse TREs from the raw 'TRE' namespace.
+
+        Walks every metadata namespace and dispatches CEDATA strings
+        to the byte-offset parsers in this module.  Retained for
+        backward compatibility and as a fallback comparison target
+        for the xml:TRE path.
+        """
+        rsm_segments_list: List[RSMCoefficients] = []
+        rsm_id = None
+        csexra = None
+        use00a = None
+        ichipb = None
+        blocka = None
+        csepha = None
+        rsmgga_list: List[RSMGGAMetadata] = []
+        aimidb = None
+        stdidc = None
+        piaimc = None
+
+        try:
+            namespaces = self.dataset.tag_namespaces()
+            for ns in namespaces:
+                tags = self.dataset.tags(ns=ns)
+                if not tags:
+                    continue
+                for key, val in tags.items():
+                    key_upper = key.upper()
+                    if 'RSMPCA' in key_upper:
+                        seg = _parse_rsmpca_tre(val)
+                        if seg is not None:
+                            rsm_segments_list.append(seg)
+                    elif 'RSMIDA' in key_upper and rsm_id is None:
+                        rsm_id = _parse_rsmida_tre(val)
+                    elif 'CSEXRA' in key_upper and csexra is None:
+                        csexra = _parse_csexra_tre(val)
+                    elif 'USE00A' in key_upper and use00a is None:
+                        use00a = _parse_use00a_tre(val)
+                    elif 'ICHIPB' in key_upper and ichipb is None:
+                        ichipb = _parse_ichipb_tre(val)
+                    elif 'BLOCKA' in key_upper and blocka is None:
+                        blocka = _parse_blocka_tre(val)
+                    elif 'CSEPHA' in key_upper and csepha is None:
+                        csepha = _parse_csepha_tre(val)
+                    elif 'RSMGGA' in key_upper:
+                        gga = _parse_rsmgga_tre(val)
+                        if gga is not None:
+                            rsmgga_list.append(gga)
+                    elif 'AIMIDB' in key_upper and aimidb is None:
+                        aimidb = _parse_aimidb_tre(val)
+                    elif 'STDIDC' in key_upper and stdidc is None:
+                        stdidc = _parse_stdidc_tre(val)
+                    elif 'PIAIMC' in key_upper and piaimc is None:
+                        piaimc = _parse_piaimc_tre(val)
+        except (AttributeError, TypeError):
+            pass
+
+        return (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
+                blocka, csepha, rsmgga_list, aimidb, stdidc, piaimc)
+
+    def _load_tres_xml(
+        self,
+    ) -> Tuple[
+        List[RSMCoefficients],
+        Optional[RSMIdentification],
+        Optional[CSEXRAMetadata],
+        Optional[USE00AMetadata],
+        Optional[ICHIPBMetadata],
+        Optional[BLOCKAMetadata],
+        Optional[CSEPHAMetadata],
+        List[RSMGGAMetadata],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+    ]:
+        """New path: parse TREs from GDAL's xml:TRE namespace.
+
+        Delegates to :func:`grdl.IO.eo._tre_xml.parse_all_tres`, which
+        walks the parsed-XML tree GDAL emits.  Field access by name
+        rather than byte offset eliminates the off-by-N bugs in the
+        legacy parser, especially for chipped and multi-segment files.
+        """
+        # Imported lazily so the legacy byte-offset path keeps working
+        # when this module's xml dependency tree changes.
+        from grdl.IO.eo._tre_xml import parse_all_tres
+
+        parsed = parse_all_tres(self.dataset)
+
+        rsm_segments_list = list(parsed.get('RSMPCA', []))
+        rsm_id = parsed.get('RSMIDA')
+        csexra = parsed.get('CSEXRA')
+        use00a = parsed.get('USE00A')
+        ichipb = parsed.get('ICHIPB')
+        blocka = parsed.get('BLOCKA')
+        csepha = parsed.get('CSEPHA')
+        rsmgga_list = list(parsed.get('RSMGGA', []))
+        aimidb = parsed.get('AIMIDB')
+        stdidc = parsed.get('STDIDC')
+        piaimc = parsed.get('PIAIMC')
+
+        return (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
+                blocka, csepha, rsmgga_list, aimidb, stdidc, piaimc)
 
     @property
     def has_rpc(self) -> bool:
