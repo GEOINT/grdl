@@ -35,6 +35,7 @@ Modified
 """
 
 # Standard library
+import warnings
 from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 # Third-party
@@ -121,6 +122,36 @@ def _rsm_monomials(
         if ek > 0:
             result[:, idx] *= z ** ek
     return result
+
+
+def _assert_term_counts(
+    rsm: 'RSMCoefficients',
+    n_num_terms: int,
+    n_den_terms: int,
+    kind: str,
+) -> None:
+    """Verify polynomial coefficient arrays match the declared powers.
+
+    Per STDI-0002 App U, RNTRMS/CNTRMS/RDTRMS/CDTRMS declare the number
+    of coefficients for each polynomial.  Mismatches between the
+    declared powers and the coefficient-array length silently turn into
+    truncated polynomials when ``coefs[:n_terms]`` is taken — preferable
+    to fail loudly so callers can investigate the source file rather
+    than receive a numerically wrong projection.
+    """
+    if kind == 'row':
+        num_arr = rsm.row_num_coefs
+        den_arr = rsm.row_den_coefs
+    else:
+        num_arr = rsm.col_num_coefs
+        den_arr = rsm.col_den_coefs
+    if num_arr.size != n_num_terms or den_arr.size != n_den_terms:
+        raise ValueError(
+            f"RSM {kind} polynomial term-count mismatch: "
+            f"declared powers expect num={n_num_terms}, den={n_den_terms} "
+            f"terms but coefficient arrays have num={num_arr.size}, "
+            f"den={den_arr.size}.  Source TRE is likely malformed."
+        )
 
 
 def _rsm_monomials_with_partials(
@@ -216,9 +247,11 @@ def _rsm_evaluate(
     row_num_mono = _rsm_monomials(x, y, z, row_num_exp)
     row_den_mono = _rsm_monomials(x, y, z, row_den_exp)
 
-    # Trim coefficients to match number of terms
-    rn_coefs = rsm.row_num_coefs[:row_num_mono.shape[1]]
-    rd_coefs = rsm.row_den_coefs[:row_den_mono.shape[1]]
+    _assert_term_counts(rsm, row_num_mono.shape[1], row_den_mono.shape[1],
+                        kind='row')
+
+    rn_coefs = rsm.row_num_coefs
+    rd_coefs = rsm.row_den_coefs
 
     row_num = row_num_mono @ rn_coefs
     row_den = row_den_mono @ rd_coefs
@@ -229,8 +262,11 @@ def _rsm_evaluate(
     col_num_mono = _rsm_monomials(x, y, z, col_num_exp)
     col_den_mono = _rsm_monomials(x, y, z, col_den_exp)
 
-    cn_coefs = rsm.col_num_coefs[:col_num_mono.shape[1]]
-    cd_coefs = rsm.col_den_coefs[:col_den_mono.shape[1]]
+    _assert_term_counts(rsm, col_num_mono.shape[1], col_den_mono.shape[1],
+                        kind='col')
+
+    cn_coefs = rsm.col_num_coefs
+    cd_coefs = rsm.col_den_coefs
 
     col_num = col_num_mono @ cn_coefs
     col_den = col_den_mono @ cd_coefs
@@ -283,10 +319,13 @@ def _rsm_evaluate_with_jacobian(
     cn_m, cn_dx, cn_dy = _rsm_monomials_with_partials(x, y, z, col_num_exp)
     cd_m, cd_dx, cd_dy = _rsm_monomials_with_partials(x, y, z, col_den_exp)
 
-    rn_coefs = rsm.row_num_coefs[:rn_m.shape[1]]
-    rd_coefs = rsm.row_den_coefs[:rd_m.shape[1]]
-    cn_coefs = rsm.col_num_coefs[:cn_m.shape[1]]
-    cd_coefs = rsm.col_den_coefs[:cd_m.shape[1]]
+    _assert_term_counts(rsm, rn_m.shape[1], rd_m.shape[1], kind='row')
+    _assert_term_counts(rsm, cn_m.shape[1], cd_m.shape[1], kind='col')
+
+    rn_coefs = rsm.row_num_coefs
+    rd_coefs = rsm.row_den_coefs
+    cn_coefs = rsm.col_num_coefs
+    cd_coefs = rsm.col_den_coefs
 
     row_num = rn_m @ rn_coefs
     row_den = rd_m @ rd_coefs
@@ -490,11 +529,14 @@ class RSMGeolocation(Geolocation):
         self,
         rows: np.ndarray,
         cols: np.ndarray,
-    ) -> np.ndarray:
+    ) -> List[Tuple[int, int]]:
         """Select the best RSM segment for each pixel location.
 
-        Returns an integer index array mapping each point to a segment.
-        Points outside all segments fall back to the nearest segment.
+        Used by the inverse path (image → ground) where the input image
+        pixel directly determines which section's polynomial is valid.
+        For each pixel, prefers segments whose image-side normalization
+        window contains the pixel; falls back to the nearest segment
+        center when no segment matches.
 
         Parameters
         ----------
@@ -503,28 +545,103 @@ class RSMGeolocation(Geolocation):
 
         Returns
         -------
-        np.ndarray
-            Segment keys as list, length N.
+        list of (int, int)
+            Segment keys ``(rsn, csn)``, length N.
         """
         keys = list(self._segment_bounds.keys())
         n = len(rows)
-        assignments = [keys[0]] * n
+        assignments: List[Tuple[int, int]] = [keys[0]] * n
 
         for i in range(n):
             r, c = rows[i], cols[i]
-            best_key = keys[0]
-            best_dist = float('inf')
+            best_inside_key: Optional[Tuple[int, int]] = None
+            best_inside_dist = float('inf')
+            best_fallback_key = keys[0]
+            best_fallback_dist = float('inf')
             for key in keys:
                 rmin, rmax, cmin, cmax = self._segment_bounds[key]
+                seg = self._segments.segments[key]
+                dist = ((r - seg.row_off) ** 2
+                        + (c - seg.col_off) ** 2)
                 if rmin <= r <= rmax and cmin <= c <= cmax:
-                    # Inside this segment — compute distance to center
-                    seg = self._segments.segments[key]
-                    dist = ((r - seg.row_off) ** 2
-                            + (c - seg.col_off) ** 2)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_key = key
-            assignments[i] = best_key
+                    if dist < best_inside_dist:
+                        best_inside_dist = dist
+                        best_inside_key = key
+                if dist < best_fallback_dist:
+                    best_fallback_dist = dist
+                    best_fallback_key = key
+            assignments[i] = (best_inside_key
+                              if best_inside_key is not None
+                              else best_fallback_key)
+
+        return assignments
+
+    def _select_segments_for_ground(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        heights: np.ndarray,
+    ) -> List[Tuple[int, int]]:
+        """Select the best RSM segment for each ground point.
+
+        Used by the forward path (ground → image).  Per STDI-0002 App U,
+        each segment's polynomial is fitted within its declared ground
+        normalization window ``[x_off ± x_norm_sf, y_off ± y_norm_sf]``.
+        The principled selector picks whichever segment's ground window
+        contains the input lat/lon (or x/y/z under domain ``'R'``).
+        Ties are broken by smallest normalized-coordinate magnitude.
+        Points outside every window fall back to the nearest segment
+        center in normalized coordinates.
+
+        Parameters
+        ----------
+        lats, lons : np.ndarray
+            Latitude/longitude in degrees, shape ``(N,)``.
+        heights : np.ndarray
+            Heights HAE in meters, shape ``(N,)``.
+
+        Returns
+        -------
+        list of (int, int)
+            Segment keys ``(rsn, csn)``, length N.
+        """
+        keys = list(self._segments.segments.keys())
+        n = len(lats)
+        assignments: List[Tuple[int, int]] = [keys[0]] * n
+
+        # Per-segment normalized coordinates of every input point.
+        norm_xy: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
+        for key in keys:
+            seg = self._segments.segments[key]
+            if self._ground_domain == 'R':
+                ecef = geodetic_to_ecef(np.column_stack([lats, lons, heights]))
+                x_raw = ecef[:, 0]
+                y_raw = ecef[:, 1]
+            else:
+                x_raw = np.deg2rad(lons)
+                y_raw = np.deg2rad(lats)
+            xn = (x_raw - seg.x_off) / seg.x_norm_sf
+            yn = (y_raw - seg.y_off) / seg.y_norm_sf
+            norm_xy[key] = (xn, yn)
+
+        for i in range(n):
+            best_inside_key: Optional[Tuple[int, int]] = None
+            best_inside_d2 = float('inf')
+            best_fallback_key = keys[0]
+            best_fallback_d2 = float('inf')
+            for key in keys:
+                xn, yn = norm_xy[key]
+                d2 = xn[i] * xn[i] + yn[i] * yn[i]
+                if abs(xn[i]) <= 1.0 and abs(yn[i]) <= 1.0:
+                    if d2 < best_inside_d2:
+                        best_inside_d2 = d2
+                        best_inside_key = key
+                if d2 < best_fallback_d2:
+                    best_fallback_d2 = d2
+                    best_fallback_key = key
+            assignments[i] = (best_inside_key
+                              if best_inside_key is not None
+                              else best_fallback_key)
 
         return assignments
 
@@ -564,37 +681,26 @@ class RSMGeolocation(Geolocation):
             rows, cols = _rsm_evaluate(
                 lats, lons, h, self.rsm, self._ground_domain)
         else:
-            # Multi-segment: evaluate all, pick best per point
+            # Multi-segment: pick segment by ground-domain normalization
+            # window, then evaluate that segment per group.  Ground-side
+            # selection matches STDI-0002 App U §U.7 — each section is
+            # the polynomial fit for a specific ground sub-region, so
+            # the input lat/lon directly determines which polynomial is
+            # the right one to evaluate.
             n = len(lats)
             rows = np.empty(n, dtype=np.float64)
             cols = np.empty(n, dtype=np.float64)
-            keys = list(self._segments.segments.keys())
-
-            # Evaluate all segments
-            seg_results = {}
-            for key in keys:
+            assignments = self._select_segments_for_ground(lats, lons, h)
+            groups: Dict[Tuple[int, int], List[int]] = {}
+            for i, key in enumerate(assignments):
+                groups.setdefault(key, []).append(i)
+            for key, indices in groups.items():
+                idx = np.array(indices)
                 seg = self._segments.segments[key]
                 r, c = _rsm_evaluate(
-                    lats, lons, h, seg, self._ground_domain)
-                seg_results[key] = (r, c)
-
-            # Per-point: pick segment whose output is in-bounds
-            for i in range(n):
-                best_key = keys[0]
-                best_dist = float('inf')
-                for key in keys:
-                    r, c = seg_results[key]
-                    rmin, rmax, cmin, cmax = self._segment_bounds[key]
-                    if rmin <= r[i] <= rmax and cmin <= c[i] <= cmax:
-                        seg = self._segments.segments[key]
-                        dist = ((r[i] - seg.row_off) ** 2
-                                + (c[i] - seg.col_off) ** 2)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_key = key
-                r_best, c_best = seg_results[best_key]
-                rows[i] = r_best[i]
-                cols[i] = c_best[i]
+                    lats[idx], lons[idx], h[idx], seg, self._ground_domain)
+                rows[idx] = r
+                cols[idx] = c
 
         # Apply inverse ICHIPB: full-image → chip coordinates
         if self.ichipb is not None:
@@ -707,7 +813,8 @@ class RSMGeolocation(Geolocation):
         # This is both faster and numerically cleaner than finite
         # differences — no step-size tuning, no cancellation.
         max_iter = 20
-        tol = 1e-8  # pixels
+        tol = 1e-3  # pixels — converged when max residual < this
+        err_max = float('inf')
 
         for _ in range(max_iter):
             r0, c0, dr_dlat, dr_dlon, dc_dlat, dc_dlon = \
@@ -718,7 +825,8 @@ class RSMGeolocation(Geolocation):
             dc = cols - c0
 
             err = np.sqrt(dr ** 2 + dc ** 2)
-            if np.max(err) < tol:
+            err_max = float(np.max(err))
+            if err_max < tol:
                 break
 
             det = dr_dlat * dc_dlon - dr_dlon * dc_dlat
@@ -729,6 +837,14 @@ class RSMGeolocation(Geolocation):
 
             lats += d_lat
             lons += d_lon
+
+        if err_max >= tol:
+            warnings.warn(
+                f"RSM Newton-Raphson did not converge after {max_iter} "
+                f"iterations: max residual {err_max:.3g} pixels (tol "
+                f"{tol:g}).  Result may be inaccurate; check that the "
+                f"input pixel is within the polynomial validity window.",
+                RuntimeWarning, stacklevel=3)
 
         return lats, lons, h_arr.copy()
 

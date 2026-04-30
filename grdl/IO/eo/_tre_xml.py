@@ -615,25 +615,28 @@ def parse_use00a(node: ET.Element) -> Optional[USE00AMetadata]:
 def parse_ichipb(node: ET.Element) -> Optional[ICHIPBMetadata]:
     """Parse a ``<tre name="ICHIPB">`` element.
 
-    The chip→full-image affine is reconstructed from the OP/FI corner
-    points: ``OP_ROW_11/OP_COL_11`` is the original-product pixel that
-    corresponds to the chip pixel ``FI_ROW_11/FI_COL_11``.  Following
-    GDAL's convention we expose the implied affine as
-    ``(fi_row_off, fi_col_off, fi_row_scale, fi_col_scale)`` for
-    backward compatibility with the legacy parser.
+    Per STDI-0002 Vol 1 App G, ``OP_ROW_n``/``OP_COL_n`` are the
+    *output product* (chip) pixel coordinates of corner *n*, and
+    ``FI_ROW_n``/``FI_COL_n`` are the *full image* pixel coordinates
+    of that same corner.  The chip→full affine in the model's
+    ``full = fi_off + fi_scale * chip`` form is therefore::
+
+        fi_scale = (FI_22 - FI_11) / (OP_22 - OP_11)
+        fi_off   = FI_11 - fi_scale * OP_11
+
+    When ``XFRM_FLAG=0`` the file declares no transform applies; the
+    chip is the original and the affine collapses to identity.  When
+    ``ANAMRPH_CORR=1`` an anamorphic correction has been applied and
+    a simple affine is no longer the correct mapping — we still
+    populate the affine for callers that want to fall back to it,
+    but the field is preserved so callers can detect the case.
     """
     if node.get('name') != 'ICHIPB':
         return None
 
     try:
         xfrm_flag = _optional_int(node, 'XFRM_FLAG')
-        scale_factor_r = _optional_float(node, 'SCALE_FACTOR')
-        # Some files emit one scale factor; others split row/col.
-        if scale_factor_r is None:
-            scale_factor_r = _optional_float(node, 'SCALE_FACTOR_1')
-        scale_factor_c = _optional_float(node, 'SCALE_FACTOR_2')
-        if scale_factor_c is None:
-            scale_factor_c = scale_factor_r
+        scale_factor = _optional_float(node, 'SCALE_FACTOR')
         anamorphic_corr = _optional_float(
             node, 'ANAMRPH_CORR', 'ANAMORPH_CORR')
 
@@ -646,24 +649,31 @@ def parse_ichipb(node: ET.Element) -> Optional[ICHIPBMetadata]:
         fi_row_22 = _optional_float(node, 'FI_ROW_22')
         fi_col_22 = _optional_float(node, 'FI_COL_22')
 
-        # Affine: full = off + scale * chip.  Use 11/22 corners.
-        fi_row_off = op_row_11
-        fi_col_off = op_col_11
+        # Default to identity when XFRM_FLAG=0 or corner values are absent.
         fi_row_scale = 1.0
         fi_col_scale = 1.0
-        if (op_row_11 is not None and op_row_22 is not None and
-                fi_row_11 is not None and fi_row_22 is not None and
-                fi_row_22 != fi_row_11):
-            fi_row_scale = (op_row_22 - op_row_11) / (fi_row_22 - fi_row_11)
-        if (op_col_11 is not None and op_col_22 is not None and
-                fi_col_11 is not None and fi_col_22 is not None and
-                fi_col_22 != fi_col_11):
-            fi_col_scale = (op_col_22 - op_col_11) / (fi_col_22 - fi_col_11)
+        fi_row_off = 0.0
+        fi_col_off = 0.0
+
+        have_corners = (op_row_11 is not None and op_row_22 is not None
+                        and fi_row_11 is not None and fi_row_22 is not None
+                        and op_col_11 is not None and op_col_22 is not None
+                        and fi_col_11 is not None and fi_col_22 is not None)
+
+        if xfrm_flag != 0 and have_corners:
+            d_op_r = op_row_22 - op_row_11
+            d_op_c = op_col_22 - op_col_11
+            if d_op_r != 0:
+                fi_row_scale = (fi_row_22 - fi_row_11) / d_op_r
+                fi_row_off = fi_row_11 - fi_row_scale * op_row_11
+            if d_op_c != 0:
+                fi_col_scale = (fi_col_22 - fi_col_11) / d_op_c
+                fi_col_off = fi_col_11 - fi_col_scale * op_col_11
 
         return ICHIPBMetadata(
             xfrm_flag=xfrm_flag,
-            scale_factor_r=scale_factor_r,
-            scale_factor_c=scale_factor_c,
+            scale_factor_r=scale_factor,
+            scale_factor_c=scale_factor,
             anamorphic_corr=anamorphic_corr,
             fi_row_off=fi_row_off,
             fi_col_off=fi_col_off,

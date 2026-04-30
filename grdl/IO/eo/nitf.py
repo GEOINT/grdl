@@ -314,27 +314,33 @@ def _parse_rsmida_tre(tre_value: str) -> Optional[RSMIdentification]:
         # --- Ground coordinate system ---
         grndd = read_str(1)         # GRNDD
 
-        # --- Rectangular coordinate origin (3 × 21) ---
-        xuor_s = read_str(21)       # XUOR
-        yuor_s = read_str(21)       # YUOR
-        zuor_s = read_str(21)       # ZUOR
+        # --- Rectangular coordinate origin and unit vectors ---
+        # Per STDI-0002 App U Table 2, XUOR/YUOR/ZUOR (3 × 21) and the
+        # XUXR..ZUZR unit-vector matrix (9 × 21) are present only when
+        # GRNDD='R' (rectangular).  For GRNDD='G' (geodetic) these
+        # fields are absent and the parser must skip them.
         coord_origin = None
-        try:
-            if xuor_s and yuor_s and zuor_s:
-                coord_origin = XYZ(
-                    x=float(xuor_s), y=float(yuor_s), z=float(zuor_s))
-        except ValueError:
-            pass
-
-        # --- Rectangular unit vectors (9 × 21) ---
-        uv_vals = []
-        for _ in range(9):
-            uv_s = read_str(21)
+        coord_unit_vectors = np.zeros((3, 3), dtype=np.float64)
+        if grndd == 'R':
+            xuor_s = read_str(21)       # XUOR
+            yuor_s = read_str(21)       # YUOR
+            zuor_s = read_str(21)       # ZUOR
             try:
-                uv_vals.append(float(uv_s) if uv_s else 0.0)
+                if xuor_s and yuor_s and zuor_s:
+                    coord_origin = XYZ(
+                        x=float(xuor_s), y=float(yuor_s), z=float(zuor_s))
             except ValueError:
-                uv_vals.append(0.0)
-        coord_unit_vectors = np.array(uv_vals, dtype=np.float64).reshape(3, 3)
+                pass
+
+            uv_vals = []
+            for _ in range(9):
+                uv_s = read_str(21)
+                try:
+                    uv_vals.append(float(uv_s) if uv_s else 0.0)
+                except ValueError:
+                    uv_vals.append(0.0)
+            coord_unit_vectors = np.array(
+                uv_vals, dtype=np.float64).reshape(3, 3)
 
         # --- Ground domain vertices (24 × 21 = 504 bytes) ---
         vert_vals = []
@@ -542,33 +548,28 @@ def _parse_use00a_tre(tre_value: str) -> Optional[USE00AMetadata]:
 def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
     """Parse an ICHIPB TRE CEDATA string.
 
-    Image Chip Block defines the affine transform from chip pixel
-    coordinates to original full-image coordinates.
+    Field layout per STDI-0002 Vol 1 Appendix G (224 bytes total)::
 
-    Parameters
-    ----------
-    tre_value : str
-        Raw CEDATA string from GDAL TRE metadata.
+        XFRM_FLAG(2) SCALE_FACTOR(10) ANAMRPH_CORR(2) SCANBLK_NUM(2)
+        OP_ROW_11(12) OP_COL_11(12) OP_ROW_12(12) OP_COL_12(12)
+        OP_ROW_21(12) OP_COL_21(12) OP_ROW_22(12) OP_COL_22(12)
+        FI_ROW_11(12) FI_COL_11(12) FI_ROW_12(12) FI_COL_12(12)
+        FI_ROW_21(12) FI_COL_21(12) FI_ROW_22(12) FI_COL_22(12)
+        FI_ROW(8) FI_COL(8)
 
-    Returns
-    -------
-    ICHIPBMetadata or None
-        Parsed metadata, or None if parsing fails.
+    OP fields are output-product (chip) corner coordinates; FI fields
+    are the full-image coordinates of the same corners.  The chip→full
+    affine (in the model's ``full = fi_off + fi_scale * chip`` form) is
+    derived from the 11/22 corners.
     """
     try:
         v = tre_value.strip()
-        if len(v) < 216:
+        if len(v) < 208:
             return None
 
         pos = 0
 
-        def read_str(n: int) -> str:
-            nonlocal pos
-            s = v[pos:pos + n].strip()
-            pos += n
-            return s
-
-        def read_float(n: int = 12) -> float:
+        def read_float(n: int) -> float:
             nonlocal pos
             raw = v[pos:pos + n].strip()
             pos += n
@@ -581,30 +582,29 @@ def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
             return int(raw)
 
         xfrm_flag = read_int(2)              # XFRM_FLAG
-        scale_factor_r = read_float(10)      # SCALE_FACTOR_1 (row)
-        scale_factor_c = read_float(10)      # SCALE_FACTOR_2 (col)
-        anamorphic_corr = read_float(10)     # ANAMORPHIC_CORR
+        scale_factor = read_float(10)        # SCALE_FACTOR (single field)
+        anamorphic_corr = read_float(2)      # ANAMRPH_CORR
+        read_int(2)                          # SCANBLK_NUM (unused)
 
-        # Chip-to-full-image mapping (12 bytes each)
-        read_float(12)                       # SCANBLK_NUM
-        fi_col_off = read_float(12)          # OP_COL_11
-        fi_row_off = read_float(12)          # OP_ROW_11
-        read_float(12)                       # OP_COL_12
-        read_float(12)                       # OP_ROW_12
-        read_float(12)                       # OP_COL_21
-        read_float(12)                       # OP_ROW_21
-        op_col = read_float(12)              # OP_COL_22
-        op_row = read_float(12)              # OP_ROW_22
+        # OP corners (12 bytes each, row then col, four corners)
+        op_row_11 = read_float(12)
+        op_col_11 = read_float(12)
+        read_float(12)                        # OP_ROW_12
+        read_float(12)                        # OP_COL_12
+        read_float(12)                        # OP_ROW_21
+        read_float(12)                        # OP_COL_21
+        op_row_22 = read_float(12)
+        op_col_22 = read_float(12)
 
-        # Full-image row/col at (0,0) and (1,1)
-        fi_row_scale = read_float(12)        # FI_ROW_11
-        fi_col_scale = read_float(12)        # FI_COL_11
-        read_float(12)                       # FI_ROW_12
-        read_float(12)                       # FI_COL_12
-        read_float(12)                       # FI_ROW_21
-        read_float(12)                       # FI_COL_21
-        read_float(12)                       # FI_ROW_22
-        read_float(12)                       # FI_COL_22
+        # FI corners
+        fi_row_11 = read_float(12)
+        fi_col_11 = read_float(12)
+        read_float(12)                        # FI_ROW_12
+        read_float(12)                        # FI_COL_12
+        read_float(12)                        # FI_ROW_21
+        read_float(12)                        # FI_COL_21
+        fi_row_22 = read_float(12)
+        fi_col_22 = read_float(12)
 
         full_image_rows = None
         full_image_cols = None
@@ -615,17 +615,35 @@ def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
         except (ValueError, IndexError):
             pass
 
+        # Affine: full = fi_off + fi_scale * chip
+        # fi_scale = ΔFI / ΔOP; fi_off = FI_11 - fi_scale * OP_11.
+        # When XFRM_FLAG=0 the file declares no transform applies.
+        if xfrm_flag == 0:
+            fi_row_scale = 1.0
+            fi_col_scale = 1.0
+            fi_row_off = 0.0
+            fi_col_off = 0.0
+        else:
+            d_op_r = op_row_22 - op_row_11
+            d_op_c = op_col_22 - op_col_11
+            fi_row_scale = ((fi_row_22 - fi_row_11) / d_op_r
+                            if d_op_r != 0 else 1.0)
+            fi_col_scale = ((fi_col_22 - fi_col_11) / d_op_c
+                            if d_op_c != 0 else 1.0)
+            fi_row_off = fi_row_11 - fi_row_scale * op_row_11
+            fi_col_off = fi_col_11 - fi_col_scale * op_col_11
+
         return ICHIPBMetadata(
             xfrm_flag=xfrm_flag,
-            scale_factor_r=scale_factor_r,
-            scale_factor_c=scale_factor_c,
+            scale_factor_r=scale_factor,
+            scale_factor_c=scale_factor,
             anamorphic_corr=anamorphic_corr,
             fi_row_off=fi_row_off,
             fi_col_off=fi_col_off,
             fi_row_scale=fi_row_scale,
             fi_col_scale=fi_col_scale,
-            op_row=op_row,
-            op_col=op_col,
+            op_row=op_row_22,
+            op_col=op_col_22,
             full_image_rows=full_image_rows,
             full_image_cols=full_image_cols,
         )
@@ -650,7 +668,13 @@ def _parse_blocka_tre(tre_value: str) -> Optional[BLOCKAMetadata]:
     """
     try:
         v = tre_value.strip()
-        if len(v) < 117:
+        # BLOCKA layout per STDI-0002 Vol 1 App F:
+        #   BLOCK_INSTANCE(2) N_GRAY(5) L_LINES(5)
+        #   LAYOVER_ANGLE(3) SHADOW_ANGLE(3)
+        #   FRFC_LOC(21) FRLC_LOC(21) LRFC_LOC(21) LRLC_LOC(21)
+        #   reserved(5)
+        # Total: 107 bytes
+        if len(v) < 102:
             return None
 
         pos = 0
@@ -670,13 +694,13 @@ def _parse_blocka_tre(tre_value: str) -> Optional[BLOCKAMetadata]:
         block_number = read_int(2)           # BLOCK_INSTANCE
         read_str(5)                          # N_GRAY
         read_str(5)                          # L_LINES
-        read_str(2)                          # LAYOVER_ANGLE
-        read_str(2)                          # SHADOW_ANGLE
-        read_str(16)                         # reserved
-        frfc_loc = read_str(21)              # FRLC_LOC
-        frlc_loc = read_str(21)              # FRFC_LOC
-        lrfc_loc = read_str(21)              # LRLC_LOC
-        lrlc_loc = read_str(21)              # LRFC_LOC
+        read_str(3)                          # LAYOVER_ANGLE
+        read_str(3)                          # SHADOW_ANGLE
+        # Spec field order: FRFC, FRLC, LRFC, LRLC
+        frfc_loc = read_str(21)
+        frlc_loc = read_str(21)
+        lrfc_loc = read_str(21)
+        lrlc_loc = read_str(21)
 
         return BLOCKAMetadata(
             block_number=block_number,
@@ -1220,6 +1244,11 @@ class EONITFReader(ImageReader):
     ...         geo = RPCGeolocation.from_reader(reader)
     ...         lat, lon, h = geo.image_to_latlon(256, 256)
     """
+
+    #: Which TRE parser produced the metadata: ``'xml:TRE'``,
+    #: ``'manual'`` (legacy fallback), or ``'none'`` if no TREs were
+    #: recognized.  Useful for diagnostics when geolocation looks off.
+    tre_source: str = 'none'
 
     def __init__(
         self,

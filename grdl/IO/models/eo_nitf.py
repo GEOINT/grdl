@@ -188,11 +188,16 @@ class RSMIdentification:
     collection_datetime : datetime, optional
         Image collection date/time from YEAR/MONTH/DAY/HOUR/MINUTE/SECOND.
     ground_domain_type : str, optional
-        Ground domain coordinate system: ``'G'`` (geodetic),
-        ``'C'`` (cartographic), ``'R'`` (relative).
+        Ground domain coordinate system per STDI-0002 App U §5.3:
+        ``'G'`` (geodetic; x=lon-rad, y=lat-rad, z=hae-m),
+        ``'H'`` (geocentric; same as G with WGS-84 specifics),
+        ``'R'`` (rectangular; local Cartesian xyz in meters).
     ground_ref_point : XYZ, optional
-        Ground reference point (interpretation depends on
-        ``ground_domain_type``).
+        Ground reference point (GRPX, GRPY, GRPZ).  Units depend on
+        ``ground_domain_type``: for ``'G'``/``'H'`` x=lon (radians),
+        y=lat (radians), z=height-above-ellipsoid (meters); for
+        ``'R'`` xyz are local rectangular coordinates (meters)
+        relative to ``coord_origin``.
     num_row_sections : int, optional
         Number of row sections (NRG).
     num_col_sections : int, optional
@@ -202,10 +207,16 @@ class RSMIdentification:
     time_ref_col : float, optional
         Time reference column (TCG).
     coord_origin : XYZ, optional
-        Rectangular coordinate system origin (XUOR, YUOR, ZUOR).
+        Rectangular coordinate system origin (XUOR, YUOR, ZUOR),
+        WGS-84 ECEF meters.  Present only when
+        ``ground_domain_type='R'``; ``None`` otherwise.
     coord_unit_vectors : np.ndarray, optional
-        Rectangular coordinate unit vectors, shape ``(3, 3)``.
-        Rows are x, y, z unit vectors; columns are XR, YR, ZR.
+        Rectangular coordinate unit-vector matrix, shape ``(3, 3)``.
+        Each row is a local axis expressed in WGS-84 ECEF
+        components: row 0 = local-X axis ``[XUXR, YUXR, ZUXR]``,
+        row 1 = local-Y axis ``[XUYR, YUYR, ZUYR]``,
+        row 2 = local-Z axis ``[XUZR, YUZR, ZUZR]``.
+        All zeros when ``ground_domain_type != 'R'``.
     ground_domain_vertices : np.ndarray, optional
         Ground domain boundary vertices, shape ``(8, 3)``.
         Eight corner points defining the RSM validity region.
@@ -262,8 +273,11 @@ class RSMCoefficients:
         row = row_off + row_norm_sf · row_n
         col = col_off + col_norm_sf · col_n
 
-    Parameters
-    ----------
+    Image-coordinate convention follows STDI-0002 Vol 1 App U: the
+    upper-left pixel center is at ``(0.5, 0.5)`` (pixel-corner origin).
+    GRDL uses the same 0-based pixel-corner convention as GDAL/rasterio,
+    so the values returned by RSM evaluation can be passed directly to
+    pixel-array indexers without an extra offset.
     row_off : float
         Row offset for de-normalization.
     col_off : float
@@ -418,6 +432,9 @@ class RSMSegmentGrid:
 
         if best_key is None:
             # No segment contains the point; pick the nearest by centre.
+            # Reset the running minimum so the fallback search is
+            # independent of the inside-test pass.
+            best_dist = float('inf')
             for key, seg in self.segments.items():
                 d_row = row - seg.row_off
                 d_col = col - seg.col_off

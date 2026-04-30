@@ -200,13 +200,14 @@ class TestParseRSMIDA:
         # Time reference
         parts.append(_fpad(1024.5))                      # TRG
         parts.append(_fpad(2048.5))                      # TCG
-        # Ground domain
-        parts.append("G")                                # GRNDD
-        # Coordinate origin
+        # Ground domain — rectangular so XUOR/YUOR/ZUOR and unit
+        # vectors are present per STDI-0002 App U Table 2.
+        parts.append("R")                                # GRNDD
+        # Coordinate origin (only present when GRNDD='R')
         parts.append(_fpad(100.0))                       # XUOR
         parts.append(_fpad(200.0))                       # YUOR
         parts.append(_fpad(300.0))                       # ZUOR
-        # Unit vectors (9 × 21)
+        # Unit vectors (9 × 21, only when GRNDD='R')
         for i in range(9):
             parts.append(_fpad(float(i + 1)))
         # Ground domain vertices (24 × 21)
@@ -231,7 +232,7 @@ class TestParseRSMIDA:
         result = _parse_rsmida_tre(cedata)
         assert result is not None
         assert result.sensor_id == "MY_SENSOR"
-        assert result.ground_domain_type == "G"
+        assert result.ground_domain_type == "R"
         assert result.num_row_sections == 2
         assert result.num_col_sections == 3
 
@@ -300,6 +301,67 @@ class TestParseRSMIDA:
         """Verify short strings return None."""
         assert _parse_rsmida_tre("too short") is None
 
+    def _build_rsmida_geodetic(self):
+        """Build a GRNDD='G' RSMIDA where rectangular fields are absent.
+
+        Per STDI-0002 App U Table 2, when GRNDD='G' the XUOR/YUOR/ZUOR
+        and 9 unit-vector fields are not present in the CEDATA.
+        """
+        parts = []
+        parts.append(_pad("TEST_GEODETIC", 80))         # IID
+        parts.append(_pad("V1.0", 40))                  # EDITION
+        parts.append(_pad("S_ID", 40))                   # ISID
+        parts.append(_pad("SID", 40))                    # SID
+        parts.append(_pad("STID", 40))                   # STID
+        parts.append("2026")                             # YEAR
+        parts.append("04")                               # MONTH
+        parts.append("29")                               # DAY
+        parts.append("12")                               # HOUR
+        parts.append("00")                               # MINUTE
+        parts.append(_pad("00.0", 9))                    # SECOND
+        parts.append(f"{1:8d}")                          # NRG
+        parts.append(f"{1:8d}")                          # NCG
+        parts.append(_fpad(0.0))                         # TRG
+        parts.append(_fpad(0.0))                         # TCG
+        parts.append("G")                                # GRNDD
+        # Rectangular fields OMITTED for GRNDD='G'
+        # Ground domain vertices (24 × 21)
+        for i in range(24):
+            parts.append(_fpad(float(i)))
+        # Ground reference point (lon-rad, lat-rad, hae-m for 'G')
+        parts.append(_fpad(np.deg2rad(-77.0)))           # GRPX
+        parts.append(_fpad(np.deg2rad(38.0)))            # GRPY
+        parts.append(_fpad(150.0))                       # GRPZ
+        # Image extent
+        parts.append(f"{4096:8d}")                       # FULLR
+        parts.append(f"{4096:8d}")                       # FULLC
+        parts.append(f"{0:8d}")                          # MINR
+        parts.append(f"{4095:8d}")                       # MAXR
+        parts.append(f"{0:8d}")                          # MINC
+        parts.append(f"{4095:8d}")                       # MAXC
+        return ''.join(parts)
+
+    def test_geodetic_skips_rectangular_fields(self):
+        """GRNDD='G' RSMIDA: XUOR/unit vectors absent, downstream fields
+        still parse correctly.
+
+        Regression for legacy parser bug where rectangular fields were
+        read unconditionally, shifting every subsequent field by 252
+        bytes for the GRNDD='G' case (the most common commercial form).
+        """
+        cedata = self._build_rsmida_geodetic()
+        result = _parse_rsmida_tre(cedata)
+        assert result is not None
+        assert result.ground_domain_type == "G"
+        # Rectangular fields are absent → parser leaves them at defaults
+        assert result.coord_origin is None
+        # Image extent must still parse correctly (regression: legacy
+        # parser would read garbage here when GRNDD='G').
+        assert result.full_image_rows == 4096
+        assert result.full_image_cols == 4096
+        assert result.min_row == 0
+        assert result.max_row == 4095
+
 
 # ===================================================================
 # New TRE Parser Tests
@@ -328,6 +390,111 @@ class TestParseICHIPB:
 
     def test_returns_none_for_short(self):
         assert _parse_ichipb_tre("short") is None
+
+    @staticmethod
+    def _build_ichipb(
+        op_row_11=0.5, op_col_11=0.5,
+        op_row_22=1023.5, op_col_22=1023.5,
+        fi_row_11=10000.5, fi_col_11=20000.5,
+        fi_row_22=11023.5, fi_col_22=21023.5,
+        scale_factor=1.0, anamorph=0.0,
+        full_rows=30000, full_cols=30000,
+        xfrm_flag=2,
+    ):
+        """Build an ICHIPB CEDATA string per STDI-0002 App G layout.
+
+        Defaults model a 1024×1024 chip pulled out of a 30000×30000
+        source starting at (10000, 20000) with no decimation.
+        """
+        def f(v):
+            # 12-byte field: "+1.12345E+04" packs 5 decimal digits.
+            return f"{v:+.5E}"[:12]
+
+        parts = []
+        parts.append(f"{xfrm_flag:02d}")                       # XFRM_FLAG (2)
+        parts.append(f"{scale_factor:+.3E}"[:10])              # SCALE_FACTOR (10)
+        parts.append(f"{int(anamorph):02d}")                   # ANAMRPH_CORR (2)
+        parts.append(" 0")                                     # SCANBLK_NUM (2)
+        # OP corners (row, col, row, col, ...)
+        parts.append(f(op_row_11))
+        parts.append(f(op_col_11))
+        parts.append(f(op_row_11))                             # OP_ROW_12 = OP_ROW_11
+        parts.append(f(op_col_22))                             # OP_COL_12 = OP_COL_22
+        parts.append(f(op_row_22))                             # OP_ROW_21
+        parts.append(f(op_col_11))                             # OP_COL_21
+        parts.append(f(op_row_22))
+        parts.append(f(op_col_22))
+        # FI corners (axis-aligned chip)
+        parts.append(f(fi_row_11))
+        parts.append(f(fi_col_11))
+        parts.append(f(fi_row_11))
+        parts.append(f(fi_col_22))
+        parts.append(f(fi_row_22))
+        parts.append(f(fi_col_11))
+        parts.append(f(fi_row_22))
+        parts.append(f(fi_col_22))
+        # Optional FI_ROW / FI_COL (8 bytes each)
+        parts.append(f"{full_rows:8d}")
+        parts.append(f"{full_cols:8d}")
+        return ''.join(parts)
+
+    def test_axis_aligned_chip_no_decimation(self):
+        """1024×1024 chip from (10000, 20000): full = chip + offset."""
+        cedata = self._build_ichipb(
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_22=1023.5, op_col_22=1023.5,
+            fi_row_11=10000.5, fi_col_11=20000.5,
+            fi_row_22=11023.5, fi_col_22=21023.5,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        # Affine: full = off + scale * chip
+        assert result.fi_row_scale == pytest.approx(1.0, abs=1e-6)
+        assert result.fi_col_scale == pytest.approx(1.0, abs=1e-6)
+        assert result.fi_row_off == pytest.approx(10000.0, abs=1e-3)
+        assert result.fi_col_off == pytest.approx(20000.0, abs=1e-3)
+        # Round-trip check at chip center
+        chip_r, chip_c = 511.5, 511.5
+        full_r = result.fi_row_off + result.fi_row_scale * chip_r
+        full_c = result.fi_col_off + result.fi_col_scale * chip_c
+        assert full_r == pytest.approx(10511.5, abs=1e-3)
+        assert full_c == pytest.approx(20511.5, abs=1e-3)
+
+    def test_decimated_chip(self):
+        """4× decimated chip: 256×256 chip from a 1024×1024 source area."""
+        cedata = self._build_ichipb(
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_22=255.5, op_col_22=255.5,
+            fi_row_11=5000.0, fi_col_11=5000.0,
+            fi_row_22=6020.0, fi_col_22=6020.0,
+            scale_factor=4.0,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        # Each chip pixel covers 4 source pixels: scale ≈ 4.0
+        assert result.fi_row_scale == pytest.approx(4.0, abs=1e-3)
+        assert result.fi_col_scale == pytest.approx(4.0, abs=1e-3)
+        # off = FI_11 - scale * OP_11 = 5000 - 4*0.5 = 4998
+        assert result.fi_row_off == pytest.approx(4998.0, abs=1e-2)
+        assert result.fi_col_off == pytest.approx(4998.0, abs=1e-2)
+
+    def test_xfrm_flag_zero_is_identity(self):
+        """XFRM_FLAG=0 declares no transform; affine collapses to identity."""
+        cedata = self._build_ichipb(xfrm_flag=0)
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        assert result.xfrm_flag == 0
+        assert result.fi_row_scale == 1.0
+        assert result.fi_col_scale == 1.0
+        assert result.fi_row_off == 0.0
+        assert result.fi_col_off == 0.0
+
+    def test_full_image_dims_parsed(self):
+        cedata = self._build_ichipb(full_rows=30000, full_cols=25000)
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        assert result.full_image_rows == 30000
+        assert result.full_image_cols == 25000
 
 
 class TestParseBLOCKA:
