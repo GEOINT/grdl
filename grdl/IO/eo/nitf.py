@@ -35,6 +35,8 @@ Modified
 """
 
 # Standard library
+import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -59,6 +61,7 @@ from grdl.IO.models.eo_nitf import (
     CollectionInfo,
     EONITFMetadata,
     ICHIPBMetadata,
+    ImageSegmentInfo,
     RPCCoefficients,
     RSMCoefficients,
     RSMGGAGridPlane,
@@ -548,7 +551,8 @@ def _parse_use00a_tre(tre_value: str) -> Optional[USE00AMetadata]:
 def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
     """Parse an ICHIPB TRE CEDATA string.
 
-    Field layout per STDI-0002 Vol 1 Appendix G (224 bytes total)::
+    Field layout per STDI-0002 Vol 1 Appendix B (ICHIPB v1.0/CN2,
+    224 bytes total — see Tables B-2 and B-3)::
 
         XFRM_FLAG(2) SCALE_FACTOR(10) ANAMRPH_CORR(2) SCANBLK_NUM(2)
         OP_ROW_11(12) OP_COL_11(12) OP_ROW_12(12) OP_COL_12(12)
@@ -557,14 +561,21 @@ def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
         FI_ROW_21(12) FI_COL_21(12) FI_ROW_22(12) FI_COL_22(12)
         FI_ROW(8) FI_COL(8)
 
-    OP fields are output-product (chip) corner coordinates; FI fields
-    are the full-image coordinates of the same corners.  The chip→full
-    affine (in the model's ``full = fi_off + fi_scale * chip`` form) is
-    derived from the 11/22 corners.
+    All 22 fields are required; this parser stores every spec field
+    verbatim on :class:`ICHIPBMetadata` and additionally derives the
+    separable axial affine ``full = fi_off + fi_scale * chip`` for
+    consumers that don't need the rotated case.
+
+    When ``XFRM_FLAG=01`` the spec mandates the OP/FI corner and
+    extent fields are zero-fill; the derived affine fields are left
+    ``None`` to flag the no-data case.  ``FI_ROW``/``FI_COL`` of
+    ``00000000`` (per B.8.2 — chipping app didn't know the
+    full-image size) are surfaced as ``None`` so consumers can
+    distinguish "unknown" from "explicitly zero".
     """
     try:
         v = tre_value.strip()
-        if len(v) < 208:
+        if len(v) < 224:
             return None
 
         pos = 0
@@ -582,48 +593,41 @@ def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
             return int(raw)
 
         xfrm_flag = read_int(2)              # XFRM_FLAG
-        scale_factor = read_float(10)        # SCALE_FACTOR (single field)
-        anamorphic_corr = read_float(2)      # ANAMRPH_CORR
-        read_int(2)                          # SCANBLK_NUM (unused)
+        scale_factor = read_float(10)        # SCALE_FACTOR
+        anamorphic_corr = read_int(2)        # ANAMRPH_CORR
+        scanblk_num = read_int(2)            # SCANBLK_NUM
 
-        # OP corners (12 bytes each, row then col, four corners)
         op_row_11 = read_float(12)
         op_col_11 = read_float(12)
-        read_float(12)                        # OP_ROW_12
-        read_float(12)                        # OP_COL_12
-        read_float(12)                        # OP_ROW_21
-        read_float(12)                        # OP_COL_21
+        op_row_12 = read_float(12)
+        op_col_12 = read_float(12)
+        op_row_21 = read_float(12)
+        op_col_21 = read_float(12)
         op_row_22 = read_float(12)
         op_col_22 = read_float(12)
 
-        # FI corners
         fi_row_11 = read_float(12)
         fi_col_11 = read_float(12)
-        read_float(12)                        # FI_ROW_12
-        read_float(12)                        # FI_COL_12
-        read_float(12)                        # FI_ROW_21
-        read_float(12)                        # FI_COL_21
+        fi_row_12 = read_float(12)
+        fi_col_12 = read_float(12)
+        fi_row_21 = read_float(12)
+        fi_col_21 = read_float(12)
         fi_row_22 = read_float(12)
         fi_col_22 = read_float(12)
 
-        full_image_rows = None
-        full_image_cols = None
-        try:
-            if pos + 16 <= len(v):
-                full_image_rows = read_int(8)  # FI_ROW
-                full_image_cols = read_int(8)  # FI_COL
-        except (ValueError, IndexError):
-            pass
+        full_image_rows = read_int(8)
+        full_image_cols = read_int(8)
+        # 00000000 is the spec's "unknown" sentinel (B.8.2).
+        if full_image_rows == 0:
+            full_image_rows = None
+        if full_image_cols == 0:
+            full_image_cols = None
 
-        # Affine: full = fi_off + fi_scale * chip
-        # fi_scale = ΔFI / ΔOP; fi_off = FI_11 - fi_scale * OP_11.
-        # When XFRM_FLAG=0 the file declares no transform applies.
-        if xfrm_flag == 0:
-            fi_row_scale = 1.0
-            fi_col_scale = 1.0
-            fi_row_off = 0.0
-            fi_col_off = 0.0
-        else:
+        # Axial-affine derivation; suppressed when XFRM_FLAG=01 since
+        # the corners are zero-fill in that case.
+        fi_row_off = fi_col_off = None
+        fi_row_scale = fi_col_scale = None
+        if xfrm_flag != 1:
             d_op_r = op_row_22 - op_row_11
             d_op_c = op_col_22 - op_col_11
             fi_row_scale = ((fi_row_22 - fi_row_11) / d_op_r
@@ -635,17 +639,27 @@ def _parse_ichipb_tre(tre_value: str) -> Optional[ICHIPBMetadata]:
 
         return ICHIPBMetadata(
             xfrm_flag=xfrm_flag,
-            scale_factor_r=scale_factor,
-            scale_factor_c=scale_factor,
+            scale_factor=scale_factor,
             anamorphic_corr=anamorphic_corr,
+            scanblk_num=scanblk_num,
+            op_row_11=op_row_11, op_col_11=op_col_11,
+            op_row_12=op_row_12, op_col_12=op_col_12,
+            op_row_21=op_row_21, op_col_21=op_col_21,
+            op_row_22=op_row_22, op_col_22=op_col_22,
+            fi_row_11=fi_row_11, fi_col_11=fi_col_11,
+            fi_row_12=fi_row_12, fi_col_12=fi_col_12,
+            fi_row_21=fi_row_21, fi_col_21=fi_col_21,
+            fi_row_22=fi_row_22, fi_col_22=fi_col_22,
+            full_image_rows=full_image_rows,
+            full_image_cols=full_image_cols,
             fi_row_off=fi_row_off,
             fi_col_off=fi_col_off,
             fi_row_scale=fi_row_scale,
             fi_col_scale=fi_col_scale,
+            scale_factor_r=scale_factor,
+            scale_factor_c=scale_factor,
             op_row=op_row_22,
             op_col=op_col_22,
-            full_image_rows=full_image_rows,
-            full_image_cols=full_image_cols,
         )
     except (ValueError, IndexError):
         return None
@@ -1200,6 +1214,92 @@ def _build_collection_info(
     )
 
 
+# ===================================================================
+# Multi-image NITF segment plumbing
+# ===================================================================
+
+
+@dataclass
+class _OpenSegment:
+    """Internal: one opened NITF image segment with its dataset handle.
+
+    Owned by ``EONITFReader`` in unified mode; closed in
+    ``EONITFReader.close()``.  ``info`` is the public diagnostic record
+    surfaced via ``metadata.image_segments``.
+    """
+
+    info: ImageSegmentInfo
+    dataset: Any   # rasterio.DatasetReader; typed Any to avoid hard dep
+
+
+def _segment_bbox_from_ichipb(
+    ichipb: Optional[ICHIPBMetadata],
+    rows: int,
+    cols: int,
+    fallback_row_off: int,
+    fallback_col_off: int,
+) -> Tuple[int, int, int, int]:
+    """Return ``(fi_row_lo, fi_row_hi, fi_col_lo, fi_col_hi)`` for one segment.
+
+    Uses the ICHIPB chip→full affine on the four chip corners when
+    ICHIPB is present (per STDI-0002 Vol 1 App G the chip-corner
+    indices are 11/12/21/22 for the rectangle corners).  Falls back
+    to ``(fallback_row_off, fallback_row_off + rows)`` and
+    ``(fallback_col_off, fallback_col_off + cols)`` when ICHIPB is
+    absent — used to stack segments sequentially in row-major order
+    when the file omits ICHIPB.
+
+    Parameters
+    ----------
+    ichipb : ICHIPBMetadata, optional
+        Per-segment ICHIPB.  When ``None`` triggers the fallback path.
+    rows, cols : int
+        Segment-local pixel dimensions.
+    fallback_row_off, fallback_col_off : int
+        Origin to use when ``ichipb`` is ``None``.
+
+    Returns
+    -------
+    Tuple[int, int, int, int]
+        Half-open full-image bbox.
+    """
+    if ichipb is None or ichipb.fi_row_scale is None:
+        warnings.warn(
+            "Segment without ICHIPB; assuming sequential row stacking "
+            f"at row offset {fallback_row_off}.  Provide ICHIPB on the "
+            "image segment for accurate full-image placement.",
+            RuntimeWarning, stacklevel=3,
+        )
+        return (
+            int(fallback_row_off),
+            int(fallback_row_off + rows),
+            int(fallback_col_off),
+            int(fallback_col_off + cols),
+        )
+
+    # full = fi_off + fi_scale * chip; sample the four chip corners.
+    fi_row_off = float(ichipb.fi_row_off or 0.0)
+    fi_col_off = float(ichipb.fi_col_off or 0.0)
+    fi_row_scale = float(ichipb.fi_row_scale or 1.0)
+    fi_col_scale = float(ichipb.fi_col_scale or 1.0)
+
+    chip_corners = [
+        (0.5, 0.5),
+        (rows - 0.5, 0.5),
+        (0.5, cols - 0.5),
+        (rows - 0.5, cols - 0.5),
+    ]
+    full_rows_corners = [fi_row_off + fi_row_scale * r for r, _ in chip_corners]
+    full_cols_corners = [fi_col_off + fi_col_scale * c for _, c in chip_corners]
+
+    return (
+        int(np.floor(min(full_rows_corners))),
+        int(np.ceil(max(full_rows_corners))),
+        int(np.floor(min(full_cols_corners))),
+        int(np.ceil(max(full_cols_corners))),
+    )
+
+
 class EONITFReader(ImageReader):
     """Read electro-optical NITF imagery with RPC/RSM geolocation.
 
@@ -1255,6 +1355,7 @@ class EONITFReader(ImageReader):
         filepath: Union[str, Path],
         read_config: Optional[ReadConfig] = None,
         use_xml_tre: bool = True,
+        image_index: Optional[int] = None,
     ) -> None:
         """Open an EO NITF file.
 
@@ -1273,6 +1374,16 @@ class EONITFReader(ImageReader):
             files), the reader transparently falls back to the
             legacy byte-offset parser.  Set to ``False`` to force
             the legacy path -- useful for A/B comparison.
+        image_index : int, optional
+            When ``None`` (default), multi-image NITF files are
+            transparently unified into a single full-image grid:
+            ``read_chip`` is routed across segments by ICHIPB,
+            ``metadata.rows``/``cols`` are full-image dims, and
+            ``metadata.ichipb`` is set to ``None`` (the unified
+            reader has absorbed the chip-to-full transform).  When
+            an integer, opens only the segment at that subdataset
+            index (``NITF_IM:N:``) and behaves as today's
+            single-segment reader.  Useful for diagnostics.
         """
         if not _HAS_RASTERIO:
             raise ImportError(
@@ -1282,17 +1393,183 @@ class EONITFReader(ImageReader):
             )
         self.read_config = read_config or ReadConfig(parallel=True)
         self.use_xml_tre = bool(use_xml_tre)
+        self._image_index = image_index
+        self._segments: List[_OpenSegment] = []
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
-        """Load EO NITF metadata including RPC, RSM, and context TREs."""
+        """Open the file, dispatch single/pinned/unified, build metadata.
+
+        Discovery order:
+
+        1. ``image_index`` is set: pin to that one subdataset.
+        2. The file has no GDAL subdatasets: single-image NITF — use
+           the existing path.
+        3. The file has subdatasets: open each, validate uniformity,
+           build a unified full-image view.
+        """
         try:
-            self.dataset = rasterio.open(str(self.filepath))
+            parent = rasterio.open(str(self.filepath))
         except Exception as e:
             raise ValueError(
                 f"Failed to open EO NITF file: {e}") from e
 
-        # Extract RPC coefficients
+        try:
+            if self._image_index is not None:
+                self._open_pinned(parent, self._image_index)
+                self._build_metadata_single()
+                return
+
+            subs = list(getattr(parent, 'subdatasets', None) or [])
+            if not subs:
+                # Single-image NITF — existing behavior verbatim.
+                self.dataset = parent
+                self._build_metadata_single()
+                return
+
+            # Multi-image NITF: discover, open, validate, unify.
+            parent.close()
+            self._open_all_segments(subs)
+            self._validate_segments_uniform()
+            self._build_metadata_unified()
+        except Exception:
+            try:
+                parent.close()
+            except Exception:
+                pass
+            raise
+
+    def _open_pinned(self, parent, idx: int) -> None:
+        """Open a single subdataset pinned by ``image_index``.
+
+        Closes the parent dataset and opens ``NITF_IM:idx:filepath``.
+        Raises ``ValueError`` when the file has no subdatasets and
+        ``idx != 0``, or when ``idx`` is out of range.
+        """
+        subs = list(getattr(parent, 'subdatasets', None) or [])
+        if not subs:
+            if idx != 0:
+                parent.close()
+                raise ValueError(
+                    f"image_index={idx} requested but file has no "
+                    f"NITF subdatasets (single-image NITF)."
+                )
+            self.dataset = parent
+            return
+        if idx < 0 or idx >= len(subs):
+            parent.close()
+            raise ValueError(
+                f"image_index={idx} out of range for file with "
+                f"{len(subs)} image segments (valid: 0..{len(subs)-1})."
+            )
+        uri = subs[idx]
+        parent.close()
+        self.dataset = rasterio.open(uri)
+
+    def _open_all_segments(self, subs: List[str]) -> None:
+        """Open every subdataset, parse its ICHIPB, compute fi_bbox.
+
+        Populates ``self._segments`` sorted by ``(fi_row_lo, fi_col_lo)``
+        so neighbor lookup in ``_read_chip_unified`` is deterministic.
+        ``self.dataset`` aliases segment 0 for back-compat attribute
+        access; pixel I/O in unified mode goes through ``_segments``.
+        """
+        running_row_off = 0
+        for idx, uri in enumerate(subs):
+            ds = rasterio.open(uri)
+            ichipb = self._parse_segment_ichipb(ds)
+            bbox = _segment_bbox_from_ichipb(
+                ichipb, ds.height, ds.width,
+                running_row_off, 0,
+            )
+            scale = (ichipb.scale_factor_r
+                     if ichipb is not None and ichipb.scale_factor_r
+                     else 1.0)
+            info = ImageSegmentInfo(
+                segment_index=idx,
+                uri=uri,
+                fi_row_lo=bbox[0],
+                fi_row_hi=bbox[1],
+                fi_col_lo=bbox[2],
+                fi_col_hi=bbox[3],
+                rows=ds.height,
+                cols=ds.width,
+                ichipb=ichipb,
+                scale_factor=float(scale),
+            )
+            self._segments.append(_OpenSegment(info=info, dataset=ds))
+            running_row_off = bbox[1]
+
+        self._segments.sort(
+            key=lambda s: (s.info.fi_row_lo, s.info.fi_col_lo))
+        self.dataset = self._segments[0].dataset
+
+    def _parse_segment_ichipb(self, ds) -> Optional[ICHIPBMetadata]:
+        """Extract ICHIPB for one segment via xml:TRE or legacy fallback."""
+        if self.use_xml_tre:
+            try:
+                from grdl.IO.eo._tre_xml import parse_all_tres
+                parsed = parse_all_tres(ds)
+                ichipb = parsed.get('ICHIPB')
+                if ichipb is not None:
+                    return ichipb
+            except Exception:
+                pass
+        # Fallback: walk raw 'TRE' namespaces and dispatch.
+        try:
+            for ns in ds.tag_namespaces():
+                tags = ds.tags(ns=ns)
+                if not tags:
+                    continue
+                for key, val in tags.items():
+                    if 'ICHIPB' in key.upper():
+                        parsed = _parse_ichipb_tre(val)
+                        if parsed is not None:
+                            return parsed
+        except (AttributeError, TypeError):
+            pass
+        return None
+
+    def _validate_segments_uniform(self) -> None:
+        """Refuse mixed-resolution / mismatched-band / mismatched-dtype mosaics.
+
+        v1 unified mode supports only uniform segments: same band count,
+        same dtype, same SCALE_FACTOR.  Multi-resolution mosaics need
+        resampling decisions outside the reader's scope (per the design
+        plan); refusing is safer than silently producing wrong pixels.
+        """
+        s0 = self._segments[0]
+        bands0 = s0.dataset.count
+        dtype0 = s0.dataset.dtypes[0]
+        scale0 = s0.info.scale_factor
+        for s in self._segments[1:]:
+            if s.dataset.count != bands0:
+                raise ValueError(
+                    f"Segment {s.info.segment_index} has "
+                    f"{s.dataset.count} bands; segment 0 has {bands0}. "
+                    "Mixed-band multi-image NITFs are not supported."
+                )
+            if s.dataset.dtypes[0] != dtype0:
+                raise ValueError(
+                    f"Segment {s.info.segment_index} has dtype "
+                    f"{s.dataset.dtypes[0]!r}; segment 0 has "
+                    f"{dtype0!r}.  Mixed-dtype mosaics are not supported."
+                )
+            if abs(s.info.scale_factor - scale0) > 1e-6:
+                raise ValueError(
+                    "Multi-resolution mosaics are not supported: "
+                    f"segment {s.info.segment_index} declares "
+                    f"SCALE_FACTOR={s.info.scale_factor} but segment 0 "
+                    f"has SCALE_FACTOR={scale0}."
+                )
+
+    def _build_metadata_single(self) -> None:
+        """Build ``EONITFMetadata`` from a single open ``self.dataset``.
+
+        This is the original ``_load_metadata`` body, factored out so
+        the multi-image dispatcher can reuse it for the single-segment
+        and pinned paths verbatim.
+        """
         rpc = None
         try:
             rpcs_obj = self.dataset.rpcs
@@ -1301,11 +1578,6 @@ class EONITFReader(ImageReader):
         except (AttributeError, TypeError):
             pass
 
-        # Extract TREs.  Default path is GDAL's xml:TRE (parses fields
-        # by name).  Fall back to the legacy byte-offset parser when
-        # GDAL recognized no TREs in the xml:TRE namespace (rare --
-        # happens for vendor-specific TREs not in GDAL's spec table).
-        # ``use_xml_tre=False`` forces the legacy path for comparison.
         tre_bundle = None
         self.tre_source = 'manual'
         if self.use_xml_tre:
@@ -1313,14 +1585,13 @@ class EONITFReader(ImageReader):
             if any(x for x in tre_bundle):
                 self.tre_source = 'xml:TRE'
             else:
-                tre_bundle = None  # nothing recognized -- try manual
+                tre_bundle = None
         if tre_bundle is None:
             tre_bundle = self._load_tres_manual()
         (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
          blocka, csepha, rsmgga_list,
          aimidb, stdidc, piaimc) = tre_bundle
 
-        # Build RSM segment grid and backward-compatible single RSM
         rsm = None
         rsm_segments = None
         if rsm_segments_list:
@@ -1329,30 +1600,16 @@ class EONITFReader(ImageReader):
             ncg = rsm_id.num_col_sections if rsm_id else 1
             seg_dict: Dict[Tuple[int, int], RSMCoefficients] = {}
             for seg in rsm_segments_list:
-                seg_key = (seg.rsn or 1, seg.csn or 1)
-                seg_dict[seg_key] = seg
+                seg_dict[(seg.rsn or 1, seg.csn or 1)] = seg
             rsm_segments = RSMSegmentGrid(
                 num_row_sections=nrg or 1,
                 num_col_sections=ncg or 1,
                 segments=seg_dict,
             )
 
-        # Build aggregated metadata
         accuracy = _build_accuracy_info(csexra, use00a, rpc)
         collection_info = _build_collection_info(aimidb, stdidc, piaimc)
-
-        # Extract NITF header fields from tags
-        tags = self.dataset.tags() or {}
-        iid1 = tags.get('NITF_IID1', tags.get('IID1'))
-        iid2 = tags.get('NITF_IID2', tags.get('IID2'))
-        icords = tags.get('NITF_ICORDS', tags.get('ICORDS'))
-        icat = tags.get('NITF_ICAT', tags.get('ICAT'))
-        abpp_str = tags.get('NITF_ABPP', tags.get('ABPP'))
-        abpp = int(abpp_str) if abpp_str else None
-        idatim = tags.get('NITF_IDATIM', tags.get('IDATIM'))
-        tgtid = tags.get('NITF_TGTID', tags.get('TGTID'))
-        isource = tags.get('NITF_ISOURCE', tags.get('ISOURCE'))
-        igeolo = tags.get('NITF_IGEOLO', tags.get('IGEOLO'))
+        header = self._extract_header_tags(self.dataset)
 
         self.metadata = EONITFMetadata(
             format='NITF',
@@ -1374,16 +1631,266 @@ class EONITFReader(ImageReader):
             rsmgga=rsmgga_list[0] if rsmgga_list else None,
             collection_info=collection_info,
             accuracy=accuracy,
-            iid1=iid1,
-            iid2=iid2,
-            icords=icords,
-            icat=icat,
-            abpp=abpp,
-            idatim=idatim,
-            tgtid=tgtid,
-            isource=isource,
-            igeolo=igeolo,
+            **header,
         )
+
+    @staticmethod
+    def _extract_header_tags(dataset) -> Dict[str, Any]:
+        """Pull NITF header fields (IID1, ICORDS, IDATIM, ...) from tags."""
+        tags = dataset.tags() or {}
+        abpp_str = tags.get('NITF_ABPP', tags.get('ABPP'))
+        return {
+            'iid1': tags.get('NITF_IID1', tags.get('IID1')),
+            'iid2': tags.get('NITF_IID2', tags.get('IID2')),
+            'icords': tags.get('NITF_ICORDS', tags.get('ICORDS')),
+            'icat': tags.get('NITF_ICAT', tags.get('ICAT')),
+            'abpp': int(abpp_str) if abpp_str else None,
+            'idatim': tags.get('NITF_IDATIM', tags.get('IDATIM')),
+            'tgtid': tags.get('NITF_TGTID', tags.get('TGTID')),
+            'isource': tags.get('NITF_ISOURCE', tags.get('ISOURCE')),
+            'igeolo': tags.get('NITF_IGEOLO', tags.get('IGEOLO')),
+        }
+
+    def _build_metadata_unified(self) -> None:
+        """Build full-image ``EONITFMetadata`` aggregated across segments.
+
+        - Aggregates RSMPCA/RSMGGA across all segments, deduplicated by
+          ``(rsn, csn)`` / ``(ggrsn, ggcsn)``.
+        - Single-instance TREs (RSMIDA, CSEXRA, USE00A, BLOCKA, CSEPHA,
+          AIMIDB, STDIDC, PIAIMC) take the first non-``None`` across
+          segments.
+        - Resolves full-image dimensions in priority RSMIDA.FULLR/FULLC
+          → max ICHIPB.FI_ROW/FI_COL → union of segment fi_row_hi/col_hi.
+        - Sets ``metadata.ichipb=None`` so geolocators don't double-apply
+          the chip-to-full transform — the unified reader is the full
+          image.
+        """
+        agg = self._aggregate_tres()
+        rsm_segments_list = agg['rsm_segments_list']
+        rsm_id = agg['rsm_id']
+        csexra = agg['csexra']
+        use00a = agg['use00a']
+        blocka = agg['blocka']
+        csepha = agg['csepha']
+        rsmgga_list = agg['rsmgga_list']
+        aimidb = agg['aimidb']
+        stdidc = agg['stdidc']
+        piaimc = agg['piaimc']
+
+        rsm = rsm_segments_list[0] if rsm_segments_list else None
+        rsm_segments = None
+        if rsm_segments_list:
+            nrg = rsm_id.num_row_sections if rsm_id else 1
+            ncg = rsm_id.num_col_sections if rsm_id else 1
+            seg_dict: Dict[Tuple[int, int], RSMCoefficients] = {}
+            for seg in rsm_segments_list:
+                seg_dict[(seg.rsn or 1, seg.csn or 1)] = seg
+            rsm_segments = RSMSegmentGrid(
+                num_row_sections=nrg or 1,
+                num_col_sections=ncg or 1,
+                segments=seg_dict,
+            )
+
+        full_rows, full_cols = self._resolve_full_dims(
+            rsm_id, [s.info for s in self._segments])
+
+        # RPC from segment 0 (typically present once at file level).
+        rpc = None
+        try:
+            rpcs_obj = self._segments[0].dataset.rpcs
+            if rpcs_obj is not None:
+                rpc = RPCCoefficients.from_rasterio(rpcs_obj)
+        except (AttributeError, TypeError):
+            pass
+
+        accuracy = _build_accuracy_info(csexra, use00a, rpc)
+        collection_info = _build_collection_info(aimidb, stdidc, piaimc)
+        header = self._extract_header_tags(self._segments[0].dataset)
+
+        ds0 = self._segments[0].dataset
+        self.metadata = EONITFMetadata(
+            format='NITF',
+            rows=full_rows,
+            cols=full_cols,
+            bands=ds0.count,
+            dtype=str(ds0.dtypes[0]),
+            crs=str(ds0.crs) if ds0.crs else None,
+            nodata=ds0.nodata,
+            rpc=rpc,
+            rsm=rsm,
+            rsm_id=rsm_id,
+            rsm_segments=rsm_segments,
+            csexra=csexra,
+            use00a=use00a,
+            ichipb=None,
+            blocka=blocka,
+            csepha=csepha,
+            rsmgga=rsmgga_list[0] if rsmgga_list else None,
+            collection_info=collection_info,
+            accuracy=accuracy,
+            image_segments=[s.info for s in self._segments],
+            **header,
+        )
+
+    def _aggregate_tres(self) -> Dict[str, Any]:
+        """Walk every segment's TREs and merge into one bundle.
+
+        Multi-instance TREs (RSMPCA, RSMGGA) are deduplicated by their
+        section keys.  Single-instance TREs take the first non-``None``
+        seen.  Sets ``self.tre_source`` to the parser used.
+        """
+        from grdl.IO.eo._tre_xml import parse_all_tres
+
+        rsm_segments_list: List[RSMCoefficients] = []
+        rsmgga_list: List[RSMGGAMetadata] = []
+        seen_rsmpca: set = set()
+        seen_rsmgga: set = set()
+        rsm_id = csexra = use00a = blocka = csepha = None
+        aimidb = stdidc = piaimc = None
+        any_xml = False
+        any_manual = False
+
+        for s in self._segments:
+            ds = s.dataset
+            parsed: Dict[str, Any] = {}
+            if self.use_xml_tre:
+                try:
+                    parsed = parse_all_tres(ds) or {}
+                except Exception:
+                    parsed = {}
+            if parsed:
+                any_xml = True
+            else:
+                # Per-segment legacy fallback — same shape as
+                # _load_tres_manual but scoped to one dataset.
+                parsed = self._tres_manual_for_dataset(ds)
+                if any(parsed.values()):
+                    any_manual = True
+
+            for r in parsed.get('RSMPCA', []) or []:
+                key = (r.rsn or 1, r.csn or 1)
+                if key not in seen_rsmpca:
+                    seen_rsmpca.add(key)
+                    rsm_segments_list.append(r)
+            for g in parsed.get('RSMGGA', []) or []:
+                key = (g.ggrsn or 1, g.ggcsn or 1)
+                if key not in seen_rsmgga:
+                    seen_rsmgga.add(key)
+                    rsmgga_list.append(g)
+            rsm_id = rsm_id or parsed.get('RSMIDA')
+            csexra = csexra or parsed.get('CSEXRA')
+            use00a = use00a or parsed.get('USE00A')
+            blocka = blocka or parsed.get('BLOCKA')
+            csepha = csepha or parsed.get('CSEPHA')
+            aimidb = aimidb or parsed.get('AIMIDB')
+            stdidc = stdidc or parsed.get('STDIDC')
+            piaimc = piaimc or parsed.get('PIAIMC')
+
+        if any_xml:
+            self.tre_source = 'xml:TRE'
+        elif any_manual:
+            self.tre_source = 'manual'
+        else:
+            self.tre_source = 'none'
+
+        return {
+            'rsm_segments_list': rsm_segments_list,
+            'rsm_id': rsm_id,
+            'csexra': csexra,
+            'use00a': use00a,
+            'blocka': blocka,
+            'csepha': csepha,
+            'rsmgga_list': rsmgga_list,
+            'aimidb': aimidb,
+            'stdidc': stdidc,
+            'piaimc': piaimc,
+        }
+
+    def _tres_manual_for_dataset(self, ds) -> Dict[str, Any]:
+        """Legacy byte-offset parsing for one dataset's TRE namespaces."""
+        out: Dict[str, Any] = {
+            'RSMPCA': [], 'RSMGGA': [],
+            'RSMIDA': None, 'CSEXRA': None, 'USE00A': None,
+            'ICHIPB': None, 'BLOCKA': None, 'CSEPHA': None,
+            'AIMIDB': None, 'STDIDC': None, 'PIAIMC': None,
+        }
+        try:
+            for ns in ds.tag_namespaces():
+                tags = ds.tags(ns=ns)
+                if not tags:
+                    continue
+                for key, val in tags.items():
+                    ku = key.upper()
+                    if 'RSMPCA' in ku:
+                        seg = _parse_rsmpca_tre(val)
+                        if seg is not None:
+                            out['RSMPCA'].append(seg)
+                    elif 'RSMIDA' in ku and out['RSMIDA'] is None:
+                        out['RSMIDA'] = _parse_rsmida_tre(val)
+                    elif 'CSEXRA' in ku and out['CSEXRA'] is None:
+                        out['CSEXRA'] = _parse_csexra_tre(val)
+                    elif 'USE00A' in ku and out['USE00A'] is None:
+                        out['USE00A'] = _parse_use00a_tre(val)
+                    elif 'ICHIPB' in ku and out['ICHIPB'] is None:
+                        out['ICHIPB'] = _parse_ichipb_tre(val)
+                    elif 'BLOCKA' in ku and out['BLOCKA'] is None:
+                        out['BLOCKA'] = _parse_blocka_tre(val)
+                    elif 'CSEPHA' in ku and out['CSEPHA'] is None:
+                        out['CSEPHA'] = _parse_csepha_tre(val)
+                    elif 'RSMGGA' in ku:
+                        gga = _parse_rsmgga_tre(val)
+                        if gga is not None:
+                            out['RSMGGA'].append(gga)
+                    elif 'AIMIDB' in ku and out['AIMIDB'] is None:
+                        out['AIMIDB'] = _parse_aimidb_tre(val)
+                    elif 'STDIDC' in ku and out['STDIDC'] is None:
+                        out['STDIDC'] = _parse_stdidc_tre(val)
+                    elif 'PIAIMC' in ku and out['PIAIMC'] is None:
+                        out['PIAIMC'] = _parse_piaimc_tre(val)
+        except (AttributeError, TypeError):
+            pass
+        return out
+
+    @staticmethod
+    def _resolve_full_dims(
+        rsm_id: Optional[RSMIdentification],
+        infos: List[ImageSegmentInfo],
+    ) -> Tuple[int, int]:
+        """Pick full-image dims from RSMIDA → ICHIPB.FI_ROW/COL → bbox union.
+
+        Warns when authorities disagree by more than 1 pixel.
+        """
+        candidates: List[Tuple[str, int, int]] = []
+        if rsm_id is not None and rsm_id.full_image_rows and rsm_id.full_image_cols:
+            candidates.append(
+                ('RSMIDA', int(rsm_id.full_image_rows),
+                 int(rsm_id.full_image_cols)))
+        ichipb_rows = max(
+            (i.ichipb.full_image_rows for i in infos
+             if i.ichipb is not None and i.ichipb.full_image_rows),
+            default=0,
+        )
+        ichipb_cols = max(
+            (i.ichipb.full_image_cols for i in infos
+             if i.ichipb is not None and i.ichipb.full_image_cols),
+            default=0,
+        )
+        if ichipb_rows and ichipb_cols:
+            candidates.append(('ICHIPB', int(ichipb_rows), int(ichipb_cols)))
+        union_rows = max((i.fi_row_hi for i in infos), default=0)
+        union_cols = max((i.fi_col_hi for i in infos), default=0)
+        candidates.append(('union', int(union_rows), int(union_cols)))
+
+        chosen = candidates[0]
+        for src, r, c in candidates[1:]:
+            if abs(r - chosen[1]) > 1 or abs(c - chosen[2]) > 1:
+                warnings.warn(
+                    f"Full-image dimension disagreement: {chosen[0]} "
+                    f"reports ({chosen[1]}, {chosen[2]}); {src} reports "
+                    f"({r}, {c}).  Using {chosen[0]}.",
+                    RuntimeWarning, stacklevel=4,
+                )
+        return chosen[1], chosen[2]
 
     def _load_tres_manual(
         self,
@@ -1522,6 +2029,13 @@ class EONITFReader(ImageReader):
     ) -> np.ndarray:
         """Read a spatial chip from the EO NITF file.
 
+        Coordinates are full-image pixel indices.  For multi-image NITFs
+        opened in unified mode (default), the request is routed across
+        whichever image segments overlap the bbox; pixels falling in
+        gaps between segments are filled with ``dataset.nodata`` (else
+        ``0``).  For single-image and pinned (``image_index``) modes
+        the request goes directly to the underlying dataset.
+
         Parameters
         ----------
         row_start : int
@@ -1546,42 +2060,128 @@ class EONITFReader(ImageReader):
         if row_end > self.metadata.rows or col_end > self.metadata.cols:
             raise ValueError("End indices exceed image dimensions")
 
+        if self._image_index is not None or len(self._segments) <= 1:
+            return self._read_chip_single(
+                row_start, row_end, col_start, col_end, bands)
+        return self._read_chip_unified(
+            row_start, row_end, col_start, col_end, bands)
+
+    def _read_chip_single(
+        self,
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+        bands: Optional[List[int]],
+    ) -> np.ndarray:
+        """Single-dataset read path (original behavior)."""
         window = Window(
             col_start, row_start,
             col_end - col_start, row_end - row_start,
         )
-
-        cfg = self.read_config
-        if cfg.parallel:
-            _ensure_gdal_threads(cfg)
-            workers = _resolve_workers(cfg)
-            n_pixels = (row_end - row_start) * (col_end - col_start)
-
-            if bands is None:
-                band_indices = list(range(1, self.dataset.count + 1))
-            else:
-                band_indices = [b + 1 for b in bands]
-
-            # Chunked parallel for large windows
-            if n_pixels >= cfg.chunk_threshold:
-                data = chunked_parallel_read(
-                    self.dataset, window, band_indices, workers)
-            elif len(band_indices) > 1:
-                # Parallel band read for multi-band
-                data = parallel_band_read(
-                    self.dataset, window, band_indices, workers)
-            else:
-                data = self.dataset.read(band_indices, window=window)
-        else:
-            if bands is None:
-                data = self.dataset.read(window=window)
-            else:
-                data = self.dataset.read(
-                    [b + 1 for b in bands], window=window)
-
+        data = self._read_window(self.dataset, window, bands)
         if data.shape[0] == 1:
             return data[0]
         return data
+
+    def _read_window(self, ds, window: 'Window',
+                     bands: Optional[List[int]]) -> np.ndarray:
+        """Read a window from one rasterio dataset honouring read_config.
+
+        Returns ``(bands, rows, cols)`` regardless of band count;
+        callers squeeze the band axis when appropriate.
+        """
+        cfg = self.read_config
+        if bands is None:
+            band_indices = list(range(1, ds.count + 1))
+        else:
+            band_indices = [b + 1 for b in bands]
+
+        if cfg.parallel:
+            _ensure_gdal_threads(cfg)
+            workers = _resolve_workers(cfg)
+            n_pixels = int(window.width) * int(window.height)
+            if n_pixels >= cfg.chunk_threshold:
+                return chunked_parallel_read(ds, window, band_indices, workers)
+            if len(band_indices) > 1:
+                return parallel_band_read(ds, window, band_indices, workers)
+            return ds.read(band_indices, window=window)
+        return ds.read(band_indices, window=window)
+
+    def _read_chip_unified(
+        self,
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+        bands: Optional[List[int]],
+    ) -> np.ndarray:
+        """Stitch a chip from segments overlapping the request bbox.
+
+        For ``SCALE_FACTOR=1`` (the v1 supported case) the inverse
+        ICHIPB collapses to integer translation, so each per-segment
+        read is a plain ``Window`` in that segment's local pixels.
+        """
+        n_rows = row_end - row_start
+        n_cols = col_end - col_start
+        n_bands = (self.dataset.count if bands is None else len(bands))
+
+        # Allocate output filled with nodata (else 0).
+        nodata = self.metadata.nodata
+        fill = nodata if nodata is not None else 0
+        dtype = np.dtype(self.metadata.dtype)
+        out = np.full((n_bands, n_rows, n_cols), fill, dtype=dtype)
+
+        for seg in self._segments:
+            info = seg.info
+            ov_r0 = max(row_start, info.fi_row_lo)
+            ov_r1 = min(row_end, info.fi_row_hi)
+            ov_c0 = max(col_start, info.fi_col_lo)
+            ov_c1 = min(col_end, info.fi_col_hi)
+            if ov_r0 >= ov_r1 or ov_c0 >= ov_c1:
+                continue
+
+            # Map full-image overlap into segment-local pixels via the
+            # inverse of full = fi_off + fi_scale * chip.
+            ichipb = info.ichipb
+            if ichipb is not None and ichipb.fi_row_scale:
+                fi_row_off = float(ichipb.fi_row_off or 0.0)
+                fi_col_off = float(ichipb.fi_col_off or 0.0)
+                fi_row_scale = float(ichipb.fi_row_scale or 1.0)
+                fi_col_scale = float(ichipb.fi_col_scale or 1.0)
+                seg_r0 = int(round((ov_r0 - fi_row_off) / fi_row_scale))
+                seg_r1 = int(round((ov_r1 - fi_row_off) / fi_row_scale))
+                seg_c0 = int(round((ov_c0 - fi_col_off) / fi_col_scale))
+                seg_c1 = int(round((ov_c1 - fi_col_off) / fi_col_scale))
+            else:
+                seg_r0 = ov_r0 - info.fi_row_lo
+                seg_r1 = ov_r1 - info.fi_row_lo
+                seg_c0 = ov_c0 - info.fi_col_lo
+                seg_c1 = ov_c1 - info.fi_col_lo
+
+            # Clamp to segment dims (defensive against off-by-one rounding).
+            seg_r0 = max(0, min(info.rows, seg_r0))
+            seg_r1 = max(0, min(info.rows, seg_r1))
+            seg_c0 = max(0, min(info.cols, seg_c0))
+            seg_c1 = max(0, min(info.cols, seg_c1))
+            if seg_r0 >= seg_r1 or seg_c0 >= seg_c1:
+                continue
+
+            window = Window(
+                seg_c0, seg_r0,
+                seg_c1 - seg_c0, seg_r1 - seg_r0,
+            )
+            data = self._read_window(seg.dataset, window, bands)
+
+            out_r0 = ov_r0 - row_start
+            out_r1 = out_r0 + (seg_r1 - seg_r0)
+            out_c0 = ov_c0 - col_start
+            out_c1 = out_c0 + (seg_c1 - seg_c0)
+            out[:, out_r0:out_r1, out_c0:out_c1] = data
+
+        if n_bands == 1:
+            return out[0]
+        return out
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
@@ -1604,7 +2204,26 @@ class EONITFReader(ImageReader):
         return np.dtype(self.metadata.dtype)
 
     def close(self) -> None:
-        """Close the rasterio dataset."""
+        """Close every owned rasterio dataset (single or per-segment)."""
         if hasattr(self, 'dataset') and self.dataset is not None:
-            self.dataset.close()
+            try:
+                self.dataset.close()
+            except Exception:
+                pass
             self.dataset = None
+        for seg in getattr(self, '_segments', []):
+            try:
+                seg.dataset.close()
+            except Exception:
+                pass
+        self._segments = []
+
+    @property
+    def image_segments(self) -> Optional[List[ImageSegmentInfo]]:
+        """Per-segment summaries when this reader is unifying a multi-image NITF.
+
+        ``None`` for single-image files and pinned (``image_index``)
+        readers.  Same data as ``self.metadata.image_segments``;
+        provided as a property for ergonomic introspection.
+        """
+        return getattr(self.metadata, 'image_segments', None)

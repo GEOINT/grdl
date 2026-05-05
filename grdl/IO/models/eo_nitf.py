@@ -511,55 +511,239 @@ class USE00AMetadata:
 class ICHIPBMetadata:
     """Image Chip Block metadata (ICHIPB TRE).
 
-    Defines the affine relationship between chipped image pixel
-    coordinates and the full (original) image pixel coordinates.
-    Critical for evaluating RPC/RSM polynomials on chipped imagery.
+    Per STDI-0002 Vol 1 Appendix B (ICHIPB v1.0/CN2 — 224 bytes), the
+    ICHIPB SDE ties an output-product (chip) image back to its source
+    full-image (FI) coordinate system.  All 22 spec fields are required;
+    each is stored verbatim below.  Convenience accessors expose the
+    common axis-aligned chip→full affine and a full 2D-affine fit for
+    rotated chips (Annex A.3 / A.4).
 
-    The transform from chip to full-image coordinates is::
+    Coordinate system
+    -----------------
+    The chip-to-full-image affine in ``full = off + scale * chip`` form
+    is exposed via :attr:`fi_row_off`, :attr:`fi_col_off`,
+    :attr:`fi_row_scale`, :attr:`fi_col_scale` for the simple separable
+    (axis-aligned) case used by RSM/RPC geolocators in this library.
+    For rotated chips use :meth:`chip_to_full_affine` /
+    :meth:`full_to_chip_affine` which solve the over-determined
+    four-corner system.
 
-        full_row = fi_row_off + fi_row_scale * chip_row
-        full_col = fi_col_off + fi_col_scale * chip_col
+    Required spec fields (stored verbatim)
+    --------------------------------------
+    xfrm_flag : int
+        Non-linear transformation flag (Table B-2): ``0`` = the chip
+        contains non-dewarped data (the OP/FI corner fields are valid),
+        ``1`` = no transformation data provided (the remaining fields
+        are zero-fill per spec; consumers must skip them).
+    scale_factor : float
+        Scale factor relative to R0 (original full-image resolution).
+        Allowed values are the discrete RRDS codes ``1, 2, 4, 8, 16,
+        32, 64, 128`` (R0 through R7) or the reciprocal of the image
+        magnification when not scaled by powers of 2.  Per the spec
+        the value must directly correlate with the IMAG field of the
+        image segment subheader.
+    anamorphic_corr : int
+        Anamorphic correction indicator (binary): ``0`` = no
+        anamorphic correction has been applied to the chip, ``1`` =
+        correction applied.  When ``1``, the simple separable affine
+        is no longer the correct mapping and callers should use the
+        4-corner fit.
+    scanblk_num : int
+        Scan-block index ``0..99``; ``0`` if not applicable.  When
+        chipping from imagery with multiple scan blocks, identifies
+        which scan block the chip was extracted from so the correct
+        per-scan-block SDEs can be selected.
+    op_row_11, op_col_11 : float
+        Output product row/col of the chip's upper-left corner
+        (intelligent-pixel index ``(1,1)``).  Typically ``0.5``
+        following pixel-corner-origin convention.
+    op_row_12, op_col_12 : float
+        Upper-right corner ``(1,2)``.
+    op_row_21, op_col_21 : float
+        Lower-left corner ``(2,1)``.
+    op_row_22, op_col_22 : float
+        Lower-right corner ``(2,2)``.
+    fi_row_11, fi_col_11 : float
+        Full-image row/col index for chip corner ``(1,1)``.
+    fi_row_12, fi_col_12 : float
+        Full-image index for chip corner ``(1,2)``.
+    fi_row_21, fi_col_21 : float
+        Full-image index for chip corner ``(2,1)``.
+    fi_row_22, fi_col_22 : float
+        Full-image index for chip corner ``(2,2)``.
+    full_image_rows, full_image_cols : int
+        Row / column count of the original full image.  ``0`` (or
+        ``None``) carries the spec's "unknown" semantic — the
+        chipping application did not have access to the full-image
+        size; consumers must not presume zero area.
 
-    Parameters
-    ----------
-    xfrm_flag : int, optional
-        Transform type: 0 = no transform, 1 = identity, 2 = affine.
-    scale_factor_r : float, optional
-        Row scale factor (chip-to-original).
-    scale_factor_c : float, optional
-        Column scale factor (chip-to-original).
-    anamorphic_corr : float, optional
-        Anamorphic correction factor.
-    fi_row_off : float, optional
-        Full image row offset for chip origin.
-    fi_col_off : float, optional
-        Full image column offset for chip origin.
-    fi_row_scale : float, optional
-        Full image row scale (typically 1.0 unless resampled).
-    fi_col_scale : float, optional
-        Full image column scale (typically 1.0 unless resampled).
-    op_row : float, optional
-        Original product row at chip center.
-    op_col : float, optional
-        Original product column at chip center.
-    full_image_rows : int, optional
-        Row count of the original full image.
-    full_image_cols : int, optional
-        Column count of the original full image.
+    Derived axial affine (convenience)
+    ----------------------------------
+    fi_row_off, fi_col_off : float
+        Offset terms of the separable ``full = off + scale * chip``
+        affine derived from the 11 / 22 corners.  ``None`` when
+        ``xfrm_flag == 1`` (no data provided).
+    fi_row_scale, fi_col_scale : float
+        Scale terms of the separable affine.  ``None`` when
+        ``xfrm_flag == 1``.
+
+    Back-compat aliases
+    -------------------
+    scale_factor_r, scale_factor_c : float
+        Both alias :attr:`scale_factor`.  ICHIPB declares one
+        SCALE_FACTOR; pre-existing call sites that read row/col
+        variants continue to work.
+    op_row, op_col : float
+        Alias :attr:`op_row_22` / :attr:`op_col_22` (the chip's
+        lower-right corner — historical, retained for
+        backward compatibility).
     """
 
+    # Required spec fields ------------------------------------------------
     xfrm_flag: Optional[int] = None
-    scale_factor_r: Optional[float] = None
-    scale_factor_c: Optional[float] = None
-    anamorphic_corr: Optional[float] = None
+    scale_factor: Optional[float] = None
+    anamorphic_corr: Optional[int] = None
+    scanblk_num: Optional[int] = None
+
+    op_row_11: Optional[float] = None
+    op_col_11: Optional[float] = None
+    op_row_12: Optional[float] = None
+    op_col_12: Optional[float] = None
+    op_row_21: Optional[float] = None
+    op_col_21: Optional[float] = None
+    op_row_22: Optional[float] = None
+    op_col_22: Optional[float] = None
+
+    fi_row_11: Optional[float] = None
+    fi_col_11: Optional[float] = None
+    fi_row_12: Optional[float] = None
+    fi_col_12: Optional[float] = None
+    fi_row_21: Optional[float] = None
+    fi_col_21: Optional[float] = None
+    fi_row_22: Optional[float] = None
+    fi_col_22: Optional[float] = None
+
+    full_image_rows: Optional[int] = None
+    full_image_cols: Optional[int] = None
+
+    # Derived axial affine (set by the parsers) ---------------------------
     fi_row_off: Optional[float] = None
     fi_col_off: Optional[float] = None
     fi_row_scale: Optional[float] = None
     fi_col_scale: Optional[float] = None
+
+    # Back-compat aliases (set by the parsers) ----------------------------
+    scale_factor_r: Optional[float] = None
+    scale_factor_c: Optional[float] = None
     op_row: Optional[float] = None
     op_col: Optional[float] = None
-    full_image_rows: Optional[int] = None
-    full_image_cols: Optional[int] = None
+
+    @property
+    def is_no_transform_provided(self) -> bool:
+        """True when ``xfrm_flag == 1`` (spec: zero-fill remainder).
+
+        Per STDI-0002 Vol 1 App B Table B-2 / B.7, ``XFRM_FLAG=01``
+        means the chip carries data other than non-dewarped imagery
+        and the OP/FI corner fields are populated with the designated
+        zero-fill defaults.  Callers must not compute an affine in
+        that case.
+        """
+        return self.xfrm_flag == 1
+
+    @property
+    def has_full_image_size(self) -> bool:
+        """True when full-image dimensions are known.
+
+        Per Table B-3 / B.8.2, the spec's default ``00000000`` for
+        FI_ROW / FI_COL means the chipping application did not know
+        the full-image extent.  Returns ``False`` in that case.
+        """
+        return bool(self.full_image_rows) and bool(self.full_image_cols)
+
+    @property
+    def has_anamorphic_correction(self) -> bool:
+        """True iff ``anamorphic_corr == 1``."""
+        return self.anamorphic_corr == 1
+
+    def chip_to_full_affine(
+        self,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Solve a 2D affine ``(M, b)`` mapping chip → full-image pixels.
+
+        For non-rotated (axis-aligned) chips this reduces to a
+        diagonal ``M`` and matches the separable
+        ``fi_*_off``/``fi_*_scale`` fields.  For rotated chips
+        (Annex A.3) or chips with anamorphic correction
+        (``anamorphic_corr == 1``), the matrix carries the off-axis
+        terms that the separable form cannot represent.
+
+        Returns
+        -------
+        (M, b) : Tuple[np.ndarray, np.ndarray] or None
+            ``M`` is shape ``(2, 2)``, ``b`` is shape ``(2,)``;
+            ``[fi_row, fi_col] = M @ [op_row, op_col] + b``.
+            Returns ``None`` when ``xfrm_flag == 1`` (no data
+            provided) or any required corner is missing.
+        """
+        if self.is_no_transform_provided:
+            return None
+        op = self._stack_corners('op')
+        fi = self._stack_corners('fi')
+        if op is None or fi is None:
+            return None
+        # Least-squares solve of fi_x = M @ op + b for each output
+        # axis: ``A @ params = fi_axis`` where A is [[op_r, op_c, 1]]
+        # rows and params is (m_r, m_c, b).  Four corners over-
+        # determine the 3-parameter affine; lstsq is robust.
+        a = np.column_stack([op, np.ones(4)])
+        m = np.zeros((2, 2), dtype=np.float64)
+        b = np.zeros(2, dtype=np.float64)
+        for axis in (0, 1):
+            sol, *_ = np.linalg.lstsq(a, fi[:, axis], rcond=None)
+            m[axis, :] = sol[:2]
+            b[axis] = sol[2]
+        return m, b
+
+    def full_to_chip_affine(
+        self,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Inverse of :meth:`chip_to_full_affine`.
+
+        Returns ``(M_inv, b_inv)`` such that
+        ``[op_row, op_col] = M_inv @ [fi_row, fi_col] + b_inv``.
+        Returns ``None`` when no transform data is provided or the
+        forward matrix is singular.
+        """
+        forward = self.chip_to_full_affine()
+        if forward is None:
+            return None
+        m, b = forward
+        det = m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]
+        if abs(det) < 1e-15:
+            return None
+        m_inv = np.linalg.inv(m)
+        b_inv = -m_inv @ b
+        return m_inv, b_inv
+
+    def _stack_corners(
+        self, kind: str,
+    ) -> Optional[np.ndarray]:
+        """Return shape ``(4, 2)`` corner array for ``'op'`` or ``'fi'``.
+
+        Order: 11, 12, 21, 22.  ``None`` when any corner is missing.
+        """
+        prefix_r = f'{kind}_row'
+        prefix_c = f'{kind}_col'
+        rows = []
+        cols = []
+        for corner in ('11', '12', '21', '22'):
+            r = getattr(self, f'{prefix_r}_{corner}')
+            c = getattr(self, f'{prefix_c}_{corner}')
+            if r is None or c is None:
+                return None
+            rows.append(r)
+            cols.append(c)
+        return np.column_stack([rows, cols]).astype(np.float64)
 
 
 @dataclass
@@ -729,6 +913,54 @@ class RSMGGAMetadata:
 
 
 @dataclass
+class ImageSegmentInfo:
+    """Per-segment summary for unified multi-image NITF readers.
+
+    Populated by :class:`grdl.IO.eo.nitf.EONITFReader` when a NITF file
+    contains multiple physical image segments (GDAL subdatasets accessed
+    via ``NITF_IM:N:/path/file.ntf``).  Each segment occupies a
+    rectangular region of the unified full-image grid; the bbox here is
+    in full-image pixel coordinates derived from that segment's ICHIPB
+    TRE (per STDI-0002 Vol 1 App G).
+
+    Parameters
+    ----------
+    segment_index : int
+        0-based subdataset order as reported by GDAL.
+    uri : str
+        Subdataset URI (e.g. ``"NITF_IM:1:/path/file.ntf"``).
+    fi_row_lo, fi_row_hi : int
+        Full-image row bbox covered by this segment, half-open
+        ``[fi_row_lo, fi_row_hi)``.
+    fi_col_lo, fi_col_hi : int
+        Full-image column bbox, half-open.
+    rows, cols : int
+        Segment-local pixel dimensions (i.e. the dimensions GDAL
+        reports for this subdataset).
+    ichipb : ICHIPBMetadata, optional
+        The segment's original ICHIPB TRE.  ``None`` when the segment
+        carries no ICHIPB and the bbox was assigned by sequential
+        stacking.
+    scale_factor : float
+        ICHIPB ``SCALE_FACTOR`` for this segment, or ``1.0`` when
+        absent.  All segments in a unified mosaic must share the same
+        scale factor; mismatched values are refused at reader
+        construction time.
+    """
+
+    segment_index: int
+    uri: str
+    fi_row_lo: int
+    fi_row_hi: int
+    fi_col_lo: int
+    fi_col_hi: int
+    rows: int
+    cols: int
+    ichipb: Optional[ICHIPBMetadata] = None
+    scale_factor: float = 1.0
+
+
+@dataclass
 class CollectionInfo:
     """Aggregated collection context from AIMIDB, STDIDC, and PIAIMC TREs.
 
@@ -848,6 +1080,15 @@ class EONITFMetadata(ImageMetadata):
         Band names (e.g., ``['R', 'G', 'B', 'NIR']``).
     wavelengths : List[float], optional
         Center wavelengths per band (micrometers).
+    image_segments : List[ImageSegmentInfo], optional
+        Per-segment summary populated by readers that unify a
+        multi-image NITF into a single full-image grid.  ``None`` for
+        single-segment files and for readers pinned to one segment via
+        ``image_index=N``.  When non-``None``, ``rows`` and ``cols``
+        are the full-image dimensions, ``ichipb`` is ``None`` (the
+        unified reader has already absorbed the chip-to-full
+        transform), and each entry locates one segment in the unified
+        grid for diagnostics.
 
     Examples
     --------
@@ -883,3 +1124,4 @@ class EONITFMetadata(ImageMetadata):
     igeolo: Optional[str] = None
     band_names: Optional[List[str]] = None
     wavelengths: Optional[List[float]] = None
+    image_segments: Optional[List[ImageSegmentInfo]] = None

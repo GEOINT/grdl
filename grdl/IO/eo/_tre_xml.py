@@ -615,21 +615,27 @@ def parse_use00a(node: ET.Element) -> Optional[USE00AMetadata]:
 def parse_ichipb(node: ET.Element) -> Optional[ICHIPBMetadata]:
     """Parse a ``<tre name="ICHIPB">`` element.
 
-    Per STDI-0002 Vol 1 App G, ``OP_ROW_n``/``OP_COL_n`` are the
-    *output product* (chip) pixel coordinates of corner *n*, and
-    ``FI_ROW_n``/``FI_COL_n`` are the *full image* pixel coordinates
-    of that same corner.  The chip→full affine in the model's
-    ``full = fi_off + fi_scale * chip`` form is therefore::
+    Reads every field defined in STDI-0002 Vol 1 App B Tables B-2 and
+    B-3 (ICHIPB v1.0/CN2): ``XFRM_FLAG``, ``SCALE_FACTOR``,
+    ``ANAMRPH_CORR``, ``SCANBLK_NUM``, the eight OP corners, the
+    eight FI corners, and ``FI_ROW``/``FI_COL``.  Per spec all are
+    required; we tolerate missing fields gracefully (parser returns
+    ``None`` when ICHIPB itself is malformed, but absent individual
+    fields stay ``None`` on the model).
+
+    The chip→full axial affine in the model's
+    ``full = fi_off + fi_scale * chip`` form is derived from the
+    11 / 22 corners::
 
         fi_scale = (FI_22 - FI_11) / (OP_22 - OP_11)
         fi_off   = FI_11 - fi_scale * OP_11
 
-    When ``XFRM_FLAG=0`` the file declares no transform applies; the
-    chip is the original and the affine collapses to identity.  When
-    ``ANAMRPH_CORR=1`` an anamorphic correction has been applied and
-    a simple affine is no longer the correct mapping — we still
-    populate the affine for callers that want to fall back to it,
-    but the field is preserved so callers can detect the case.
+    When ``XFRM_FLAG=1`` the spec mandates that the OP/FI corner and
+    extent fields are zero-fill; we leave the derived affine
+    ``None`` so geolocators don't try to compose meaningless data.
+    The four-corner system (Annex A.3 / A.4) is exposed via
+    :meth:`ICHIPBMetadata.chip_to_full_affine` for callers that need
+    the rotated case.
     """
     if node.get('name') != 'ICHIPB':
         return None
@@ -637,52 +643,78 @@ def parse_ichipb(node: ET.Element) -> Optional[ICHIPBMetadata]:
     try:
         xfrm_flag = _optional_int(node, 'XFRM_FLAG')
         scale_factor = _optional_float(node, 'SCALE_FACTOR')
-        anamorphic_corr = _optional_float(
+        anamorphic_corr = _optional_int(
             node, 'ANAMRPH_CORR', 'ANAMORPH_CORR')
+        scanblk_num = _optional_int(node, 'SCANBLK_NUM')
 
         op_row_11 = _optional_float(node, 'OP_ROW_11')
         op_col_11 = _optional_float(node, 'OP_COL_11')
+        op_row_12 = _optional_float(node, 'OP_ROW_12')
+        op_col_12 = _optional_float(node, 'OP_COL_12')
+        op_row_21 = _optional_float(node, 'OP_ROW_21')
+        op_col_21 = _optional_float(node, 'OP_COL_21')
         op_row_22 = _optional_float(node, 'OP_ROW_22')
         op_col_22 = _optional_float(node, 'OP_COL_22')
+
         fi_row_11 = _optional_float(node, 'FI_ROW_11')
         fi_col_11 = _optional_float(node, 'FI_COL_11')
+        fi_row_12 = _optional_float(node, 'FI_ROW_12')
+        fi_col_12 = _optional_float(node, 'FI_COL_12')
+        fi_row_21 = _optional_float(node, 'FI_ROW_21')
+        fi_col_21 = _optional_float(node, 'FI_COL_21')
         fi_row_22 = _optional_float(node, 'FI_ROW_22')
         fi_col_22 = _optional_float(node, 'FI_COL_22')
 
-        # Default to identity when XFRM_FLAG=0 or corner values are absent.
-        fi_row_scale = 1.0
-        fi_col_scale = 1.0
-        fi_row_off = 0.0
-        fi_col_off = 0.0
+        # FI_ROW=0 / FI_COL=0 carry the spec's "unknown" semantic per
+        # B.8.2; surface them as None.
+        full_rows = _optional_int(node, 'FI_ROW')
+        full_cols = _optional_int(node, 'FI_COL')
+        if full_rows == 0:
+            full_rows = None
+        if full_cols == 0:
+            full_cols = None
 
-        have_corners = (op_row_11 is not None and op_row_22 is not None
-                        and fi_row_11 is not None and fi_row_22 is not None
-                        and op_col_11 is not None and op_col_22 is not None
-                        and fi_col_11 is not None and fi_col_22 is not None)
-
-        if xfrm_flag != 0 and have_corners:
-            d_op_r = op_row_22 - op_row_11
-            d_op_c = op_col_22 - op_col_11
-            if d_op_r != 0:
-                fi_row_scale = (fi_row_22 - fi_row_11) / d_op_r
+        # Derived axial affine (None when XFRM_FLAG=01 per spec).
+        fi_row_off = fi_col_off = None
+        fi_row_scale = fi_col_scale = None
+        if xfrm_flag != 1:
+            have_corners = (op_row_11 is not None and op_row_22 is not None
+                            and fi_row_11 is not None and fi_row_22 is not None
+                            and op_col_11 is not None and op_col_22 is not None
+                            and fi_col_11 is not None and fi_col_22 is not None)
+            if have_corners:
+                d_op_r = op_row_22 - op_row_11
+                d_op_c = op_col_22 - op_col_11
+                fi_row_scale = ((fi_row_22 - fi_row_11) / d_op_r
+                                if d_op_r != 0 else 1.0)
+                fi_col_scale = ((fi_col_22 - fi_col_11) / d_op_c
+                                if d_op_c != 0 else 1.0)
                 fi_row_off = fi_row_11 - fi_row_scale * op_row_11
-            if d_op_c != 0:
-                fi_col_scale = (fi_col_22 - fi_col_11) / d_op_c
                 fi_col_off = fi_col_11 - fi_col_scale * op_col_11
 
         return ICHIPBMetadata(
             xfrm_flag=xfrm_flag,
-            scale_factor_r=scale_factor,
-            scale_factor_c=scale_factor,
+            scale_factor=scale_factor,
             anamorphic_corr=anamorphic_corr,
+            scanblk_num=scanblk_num,
+            op_row_11=op_row_11, op_col_11=op_col_11,
+            op_row_12=op_row_12, op_col_12=op_col_12,
+            op_row_21=op_row_21, op_col_21=op_col_21,
+            op_row_22=op_row_22, op_col_22=op_col_22,
+            fi_row_11=fi_row_11, fi_col_11=fi_col_11,
+            fi_row_12=fi_row_12, fi_col_12=fi_col_12,
+            fi_row_21=fi_row_21, fi_col_21=fi_col_21,
+            fi_row_22=fi_row_22, fi_col_22=fi_col_22,
+            full_image_rows=full_rows,
+            full_image_cols=full_cols,
             fi_row_off=fi_row_off,
             fi_col_off=fi_col_off,
             fi_row_scale=fi_row_scale,
             fi_col_scale=fi_col_scale,
+            scale_factor_r=scale_factor,
+            scale_factor_c=scale_factor,
             op_row=op_row_22,
             op_col=op_col_22,
-            full_image_rows=_optional_int(node, 'FI_ROW'),
-            full_image_cols=_optional_int(node, 'FI_COL'),
         )
     except (ValueError, TypeError):
         return None

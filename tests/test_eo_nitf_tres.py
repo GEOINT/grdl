@@ -397,24 +397,26 @@ class TestParseICHIPB:
         op_row_22=1023.5, op_col_22=1023.5,
         fi_row_11=10000.5, fi_col_11=20000.5,
         fi_row_22=11023.5, fi_col_22=21023.5,
-        scale_factor=1.0, anamorph=0.0,
+        scale_factor=1.0, anamorph=0,
         full_rows=30000, full_cols=30000,
-        xfrm_flag=2,
+        xfrm_flag=0, scanblk_num=0,
     ):
-        """Build an ICHIPB CEDATA string per STDI-0002 App G layout.
+        """Build a 224-byte ICHIPB CEDATA string per STDI-0002 App B.
 
         Defaults model a 1024×1024 chip pulled out of a 30000×30000
-        source starting at (10000, 20000) with no decimation.
+        source starting at (10000, 20000) with no decimation, no
+        anamorphic correction, and ``XFRM_FLAG=00`` (non-dewarped
+        data provided per Table B-2).
         """
         def f(v):
             # 12-byte field: "+1.12345E+04" packs 5 decimal digits.
             return f"{v:+.5E}"[:12]
 
         parts = []
-        parts.append(f"{xfrm_flag:02d}")                       # XFRM_FLAG (2)
+        parts.append(f"{int(xfrm_flag):02d}")                  # XFRM_FLAG (2)
         parts.append(f"{scale_factor:+.3E}"[:10])              # SCALE_FACTOR (10)
         parts.append(f"{int(anamorph):02d}")                   # ANAMRPH_CORR (2)
-        parts.append(" 0")                                     # SCANBLK_NUM (2)
+        parts.append(f"{int(scanblk_num):02d}")                # SCANBLK_NUM (2)
         # OP corners (row, col, row, col, ...)
         parts.append(f(op_row_11))
         parts.append(f(op_col_11))
@@ -478,16 +480,47 @@ class TestParseICHIPB:
         assert result.fi_row_off == pytest.approx(4998.0, abs=1e-2)
         assert result.fi_col_off == pytest.approx(4998.0, abs=1e-2)
 
-    def test_xfrm_flag_zero_is_identity(self):
-        """XFRM_FLAG=0 declares no transform; affine collapses to identity."""
+    def test_xfrm_flag_zero_uses_corner_data(self):
+        """XFRM_FLAG=00 declares the OP/FI corners are valid (per Table B-2).
+
+        Per STDI-0002 Vol 1 App B Table B-2, ``XFRM_FLAG=00`` means
+        the chip carries non-dewarped data and the corner fields are
+        populated.  The derived affine should reflect the corners.
+        """
         cedata = self._build_ichipb(xfrm_flag=0)
         result = _parse_ichipb_tre(cedata)
         assert result is not None
         assert result.xfrm_flag == 0
-        assert result.fi_row_scale == 1.0
-        assert result.fi_col_scale == 1.0
-        assert result.fi_row_off == 0.0
-        assert result.fi_col_off == 0.0
+        assert result.is_no_transform_provided is False
+        # Default fixture has FI_11=(10000.5, 20000.5), corners 1024 wide
+        assert result.fi_row_scale == pytest.approx(1.0, abs=1e-3)
+        assert result.fi_col_scale == pytest.approx(1.0, abs=1e-3)
+        assert result.fi_row_off == pytest.approx(10000.0, abs=1e-2)
+        assert result.fi_col_off == pytest.approx(20000.0, abs=1e-2)
+
+    def test_xfrm_flag_one_suppresses_affine(self):
+        """XFRM_FLAG=01 means zero-fill; derived affine left None.
+
+        Per Table B-2 / B.7, when ``XFRM_FLAG=01`` the OP/FI corner
+        fields are populated with the designated zero-fill defaults
+        and consumers must not derive a transform from them.
+        """
+        cedata = self._build_ichipb(
+            xfrm_flag=1,
+            op_row_11=0.0, op_col_11=0.0,
+            op_row_22=0.0, op_col_22=0.0,
+            fi_row_11=0.0, fi_col_11=0.0,
+            fi_row_22=0.0, fi_col_22=0.0,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        assert result.xfrm_flag == 1
+        assert result.is_no_transform_provided is True
+        assert result.fi_row_off is None
+        assert result.fi_col_off is None
+        assert result.fi_row_scale is None
+        assert result.fi_col_scale is None
+        assert result.chip_to_full_affine() is None
 
     def test_full_image_dims_parsed(self):
         cedata = self._build_ichipb(full_rows=30000, full_cols=25000)
@@ -495,6 +528,207 @@ class TestParseICHIPB:
         assert result is not None
         assert result.full_image_rows == 30000
         assert result.full_image_cols == 25000
+
+    def test_full_image_unknown_when_zero(self):
+        """FI_ROW=0 / FI_COL=0 carry the spec's 'unknown' sentinel."""
+        cedata = self._build_ichipb(full_rows=0, full_cols=0)
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        # Per B.8.2 the spec value 00000000 means the chipping app
+        # didn't have access to full-image dimensions.
+        assert result.full_image_rows is None
+        assert result.full_image_cols is None
+        assert result.has_full_image_size is False
+
+    def test_all_eight_op_corners_stored(self):
+        """All four OP corners are stored verbatim (Table B-2)."""
+        cedata = self._build_ichipb(
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_22=255.5, op_col_22=255.5,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        # 11 = upper-left, 12 = upper-right, 21 = lower-left, 22 = lower-right
+        assert result.op_row_11 == pytest.approx(0.5, abs=1e-3)
+        assert result.op_col_11 == pytest.approx(0.5, abs=1e-3)
+        assert result.op_row_12 == pytest.approx(0.5, abs=1e-3)
+        assert result.op_col_12 == pytest.approx(255.5, abs=1e-3)
+        assert result.op_row_21 == pytest.approx(255.5, abs=1e-3)
+        assert result.op_col_21 == pytest.approx(0.5, abs=1e-3)
+        assert result.op_row_22 == pytest.approx(255.5, abs=1e-3)
+        assert result.op_col_22 == pytest.approx(255.5, abs=1e-3)
+
+    def test_all_eight_fi_corners_stored(self):
+        """All four FI corners are stored verbatim (Table B-2)."""
+        cedata = self._build_ichipb(
+            fi_row_11=10000.5, fi_col_11=20000.5,
+            fi_row_22=11023.5, fi_col_22=21023.5,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        assert result.fi_row_11 == pytest.approx(10000.5, abs=1e-2)
+        assert result.fi_col_11 == pytest.approx(20000.5, abs=1e-2)
+        assert result.fi_row_12 == pytest.approx(10000.5, abs=1e-2)
+        assert result.fi_col_12 == pytest.approx(21023.5, abs=1e-2)
+        assert result.fi_row_21 == pytest.approx(11023.5, abs=1e-2)
+        assert result.fi_col_21 == pytest.approx(20000.5, abs=1e-2)
+        assert result.fi_row_22 == pytest.approx(11023.5, abs=1e-2)
+        assert result.fi_col_22 == pytest.approx(21023.5, abs=1e-2)
+
+    def test_scanblk_num_stored(self):
+        """SCANBLK_NUM (0..99) is required and stored.
+
+        Per Table B-2 / B-3, identifies the source scan block when
+        chipping from imagery with multiple scan blocks.
+        """
+        cedata = self._build_ichipb(scanblk_num=7)
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        assert result.scanblk_num == 7
+
+    def test_anamorphic_corr_flag(self):
+        """ANAMRPH_CORR is a binary flag (00 or 01) per spec."""
+        cedata_off = self._build_ichipb(anamorph=0)
+        result_off = _parse_ichipb_tre(cedata_off)
+        assert result_off is not None
+        assert result_off.anamorphic_corr == 0
+        assert result_off.has_anamorphic_correction is False
+
+        cedata_on = self._build_ichipb(anamorph=1)
+        result_on = _parse_ichipb_tre(cedata_on)
+        assert result_on is not None
+        assert result_on.anamorphic_corr == 1
+        assert result_on.has_anamorphic_correction is True
+
+    def test_chip_to_full_affine_axis_aligned(self):
+        """4-corner affine recovers the same separable transform.
+
+        For axis-aligned chips, the 2D-affine fit must match the
+        derived axial fields.
+        """
+        cedata = self._build_ichipb(
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_22=1023.5, op_col_22=1023.5,
+            fi_row_11=10000.5, fi_col_11=20000.5,
+            fi_row_22=11023.5, fi_col_22=21023.5,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        m, b = result.chip_to_full_affine()
+        # Diagonal matrix (axis-aligned): off-diagonals ~ 0
+        assert abs(m[0, 1]) < 1e-3
+        assert abs(m[1, 0]) < 1e-3
+        # Diagonal entries match the axial scale
+        assert m[0, 0] == pytest.approx(result.fi_row_scale, rel=1e-3)
+        assert m[1, 1] == pytest.approx(result.fi_col_scale, rel=1e-3)
+        # Offsets match
+        assert b[0] == pytest.approx(result.fi_row_off, abs=1e-2)
+        assert b[1] == pytest.approx(result.fi_col_off, abs=1e-2)
+
+    def test_chip_to_full_affine_rotated(self):
+        """Rotated chip case (Annex A.3): 2D-affine recovers rotation.
+
+        Non-axis-aligned corners produce a non-diagonal M; the
+        separable axial fields no longer fully describe the mapping
+        but ``chip_to_full_affine`` does.
+        """
+        # Build corners where chip is rotated 90° clockwise inside FI.
+        # Chip OP corners: 11=upper-left, 12=upper-right, 21=lower-left,
+        # 22=lower-right.  After 90° CW rotation in the FI frame,
+        # those map to: 11→top-right of FI rect, 12→bottom-right,
+        # 21→top-left, 22→bottom-left.
+        cedata = self._build_ichipb_full(
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_12=0.5, op_col_12=99.5,
+            op_row_21=99.5, op_col_21=0.5,
+            op_row_22=99.5, op_col_22=99.5,
+            fi_row_11=1000.0, fi_col_11=2099.0,
+            fi_row_12=1099.0, fi_col_12=2099.0,
+            fi_row_21=1000.0, fi_col_21=2000.0,
+            fi_row_22=1099.0, fi_col_22=2000.0,
+        )
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        m, b = result.chip_to_full_affine()
+        # 90° CW rotation: M ≈ [[0, 1], [-1, 0]] (after sign normalisation)
+        # off-diagonals should be ~±1, diagonals ~0
+        assert abs(m[0, 0]) < 0.05
+        assert abs(m[1, 1]) < 0.05
+        assert abs(abs(m[0, 1]) - 1.0) < 0.05
+        assert abs(abs(m[1, 0]) - 1.0) < 0.05
+
+        # Verify round-trip on a known corner: chip OP_11 → FI corner.
+        m_inv, b_inv = result.full_to_chip_affine()
+        assert m_inv is not None
+        op11_round = m_inv @ np.array([1000.0, 2099.0]) + b_inv
+        assert op11_round[0] == pytest.approx(0.5, abs=0.5)
+        assert op11_round[1] == pytest.approx(0.5, abs=0.5)
+
+    def test_legacy_parser_reads_all_22_fields(self):
+        """The legacy byte-offset parser populates all 22 spec fields."""
+        cedata = self._build_ichipb(
+            scanblk_num=3, anamorph=1,
+            op_row_11=0.5, op_col_11=0.5,
+            op_row_22=255.5, op_col_22=255.5,
+            fi_row_11=5000.0, fi_col_11=5000.0,
+            fi_row_22=5255.0, fi_col_22=5255.0,
+            full_rows=10000, full_cols=10000,
+        )
+        # Legacy parser must accept the 224-byte fixture (same width as XML
+        # parser sees, since GDAL's CEDATA round-trips byte-exact).
+        result = _parse_ichipb_tre(cedata)
+        assert result is not None
+        # Every spec field is non-None.
+        for fname in (
+            'xfrm_flag', 'scale_factor', 'anamorphic_corr', 'scanblk_num',
+            'op_row_11', 'op_col_11', 'op_row_12', 'op_col_12',
+            'op_row_21', 'op_col_21', 'op_row_22', 'op_col_22',
+            'fi_row_11', 'fi_col_11', 'fi_row_12', 'fi_col_12',
+            'fi_row_21', 'fi_col_21', 'fi_row_22', 'fi_col_22',
+            'full_image_rows', 'full_image_cols',
+        ):
+            assert getattr(result, fname) is not None, (
+                f"spec field {fname} not populated by legacy parser")
+        assert result.scanblk_num == 3
+        assert result.anamorphic_corr == 1
+
+    @staticmethod
+    def _build_ichipb_full(
+        op_row_11, op_col_11, op_row_12, op_col_12,
+        op_row_21, op_col_21, op_row_22, op_col_22,
+        fi_row_11, fi_col_11, fi_row_12, fi_col_12,
+        fi_row_21, fi_col_21, fi_row_22, fi_col_22,
+        scale_factor=1.0, anamorph=0, scanblk_num=0,
+        full_rows=10000, full_cols=10000, xfrm_flag=0,
+    ):
+        """Build a 224-byte ICHIPB CEDATA with all four corners free."""
+        def f(v):
+            return f"{v:+.5E}"[:12]
+
+        parts = []
+        parts.append(f"{xfrm_flag:02d}")
+        parts.append(f"{scale_factor:+.3E}"[:10])
+        parts.append(f"{int(anamorph):02d}")
+        parts.append(f"{int(scanblk_num):02d}")
+        parts.append(f(op_row_11))
+        parts.append(f(op_col_11))
+        parts.append(f(op_row_12))
+        parts.append(f(op_col_12))
+        parts.append(f(op_row_21))
+        parts.append(f(op_col_21))
+        parts.append(f(op_row_22))
+        parts.append(f(op_col_22))
+        parts.append(f(fi_row_11))
+        parts.append(f(fi_col_11))
+        parts.append(f(fi_row_12))
+        parts.append(f(fi_col_12))
+        parts.append(f(fi_row_21))
+        parts.append(f(fi_col_21))
+        parts.append(f(fi_row_22))
+        parts.append(f(fi_col_22))
+        parts.append(f"{full_rows:8d}")
+        parts.append(f"{full_cols:8d}")
+        return ''.join(parts)
 
 
 class TestParseBLOCKA:
