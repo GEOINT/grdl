@@ -75,6 +75,9 @@ coregistration = [
 contrast = [
     "scikit-image>=0.19.0",
 ]
+gmti = [
+    "shapely>=2.0.0",
+]
 examples = [
     "matplotlib>=3.5.0",
     "PySide6>=6.5.0",

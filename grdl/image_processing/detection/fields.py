@@ -18,6 +18,8 @@ physical
     Measurable physical quantities (length, area, RCS, speed, heading).
 sar
     SAR phenomenological attributes (backscatter, coherence, polarimetric).
+gmti
+    GMTI / STANAG 4607 attributes (radial velocity, dwell context, SNR).
 spectral
     Spectral phenomenological attributes (NDVI, reflectance, radiance).
 volume
@@ -134,6 +136,36 @@ def _build_dictionary() -> Dict[str, FieldDefinition]:
         _f('sar.pol_pedestal_height', 'float', 'Polarimetric pedestal height'),
         _f('sar.scattering_type', 'str', 'Dominant scattering mechanism'),
         _f('sar.phase_difference', 'float', 'Interferometric phase difference', 'rad'),
+
+        # ---------------------------------------------------------------
+        # gmti -- GMTI / STANAG 4607 moving-target attributes
+        # ---------------------------------------------------------------
+        _f('gmti.report_index', 'int', 'MTI report index within a dwell'),
+        _f('gmti.dwell_index', 'int', 'Dwell index within the revisit'),
+        _f('gmti.snr_db', 'float', 'Target signal-to-noise ratio', 'dB'),
+        _f('gmti.target_classification', 'int',
+           'STANAG 4607 target classification code'),
+        _f('gmti.target_class_probability', 'int',
+           'Probability of correct classification', '%'),
+        _f('gmti.target_height_m', 'int', 'Target height above ellipsoid', 'm'),
+        _f('gmti.wrap_velocity_cmps', 'int',
+           'Target wrap (unambiguous) velocity', 'cm/s'),
+        _f('gmti.slant_range_std_cm', 'int',
+           'Target slant-range standard deviation', 'cm'),
+        _f('gmti.cross_range_std', 'int',
+           'Target cross-range standard deviation (deg / 65536)'),
+        _f('gmti.height_std_m', 'int', 'Target height standard deviation', 'm'),
+        _f('gmti.velocity_los_std_cmps', 'int',
+           'Line-of-sight velocity standard deviation', 'cm/s'),
+        _f('gmti.target_rcs_db', 'int', 'Target radar cross section', 'dB'),
+        _f('gmti.dwell_time_ms', 'int',
+           'Dwell time relative to mission reference', 'ms'),
+        _f('gmti.platform_lat', 'float', 'Sensor platform latitude', 'deg'),
+        _f('gmti.platform_lon', 'float', 'Sensor platform longitude', 'deg'),
+        _f('gmti.platform_alt_cm', 'int',
+           'Sensor platform altitude above WGS84 ellipsoid', 'cm'),
+        _f('gmti.mdv_dmps', 'int',
+           'Sensor minimum detectable velocity', 'dm/s'),
 
         # ---------------------------------------------------------------
         # spectral -- Spectral phenomenological attributes
@@ -310,6 +342,7 @@ class Fields:
 
     physical = _Domain()
     sar = _Domain()
+    gmti = _Domain()
     spectral = _Domain()
     volume = _Domain()
     identity = _Domain()

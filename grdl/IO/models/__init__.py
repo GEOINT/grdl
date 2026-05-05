@@ -247,6 +247,19 @@ from grdl.IO.models.eo_nitf import (
     RSMGGAGridPlane,
 )
 
+# STANAG 4607 (GMTI)
+from grdl.IO.models.stanag4607 import (
+    STANAG4607Metadata,
+    Packet,
+    PacketHeader,
+    MissionSegment,
+    DwellSegment,
+    JobDefinitionSegment,
+    TargetReport,
+    FreeTextSegment,
+    PlatformLocationSegment,
+)
+
 __all__ = [
     # Base
     'ImageMetadata',
@@ -432,4 +445,14 @@ __all__ = [
     'CSEPHAMetadata',
     'RSMGGAMetadata',
     'RSMGGAGridPlane',
+    # STANAG 4607 (GMTI)
+    'STANAG4607Metadata',
+    'Packet',
+    'PacketHeader',
+    'MissionSegment',
+    'DwellSegment',
+    'JobDefinitionSegment',
+    'TargetReport',
+    'FreeTextSegment',
+    'PlatformLocationSegment',
 ]

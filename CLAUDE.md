@@ -51,6 +51,9 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Chip geolocation offset | `grdl.geolocation.ChipGeolocation` | Manual row/col offset arithmetic |
 | Auto-detect geolocation from reader | `grdl.geolocation.create_geolocation()` | Manual reader-type inspection |
 | Display contrast / dynamic range | `grdl.contrast` (`MangisDensity`, `NRLStretch`, `LinearStretch`, `LogStretch`, `PercentileStretch`, `ToDecibels`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE`, ...) | Inline percentile clip / `_to_db()` / matplotlib `vmin`/`vmax` math |
+| Read / write STANAG 4607 (GMTI) | `grdl.IO.gmti` (`STANAG4607Reader`, `STANAG4607Writer`, `open_gmti`) | Manual `struct.unpack` of packet headers and target reports |
+| GMTI dwell footprint / velocity / filtering / summary | `grdl.IO.gmti` helpers (`dwell_footprint_polygon`, `ground_relative_velocity`, `filter_target_reports`, `summarize`) | Ad-hoc polygon math and per-target filter loops |
+| GMTI target reports → GRDL Detections | `STANAG4607Reader.to_detection_set()` | Manual mapping of dwell+target into shapely geometries |
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
