@@ -103,7 +103,7 @@ class TestDataDictionary:
     def test_domains_present(self):
         domains = {f.domain for f in DATA_DICTIONARY.values()}
         expected = {
-            'physical', 'sar', 'spectral', 'volume',
+            'physical', 'sar', 'gmti', 'spectral', 'volume',
             'identity', 'trait', 'temporal', 'context',
         }
         assert expected == domains

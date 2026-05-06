@@ -377,7 +377,8 @@ def run_ifp(
     if output is not None:
         print(f"\nWriting SICD to: {output}")
         from grdl.IO.sar import SICDWriter
-        writer = SICDWriter(output)
+        sicd_meta = pfa.to_sicd_metadata(meta, geo, image.shape)
+        writer = SICDWriter(output, metadata=sicd_meta)
         writer.write(image)
         print("  Done.")
 

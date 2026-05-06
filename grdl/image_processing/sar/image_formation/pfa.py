@@ -467,3 +467,32 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         grid['pad_factor'] = pf
 
         return grid
+
+    def to_sicd_metadata(
+        self,
+        cphd_meta: Any,
+        geometry: CollectionGeometry,
+        image_shape: tuple,
+    ) -> Any:
+        """Build a complete ``SICDMetadata`` for the formed image.
+
+        Parameters
+        ----------
+        cphd_meta : CPHDMetadata
+            Source CPHD metadata.
+        geometry : CollectionGeometry
+            Geometry built from the same CPHD.
+        image_shape : tuple of int
+            ``(rows, cols)`` of the formed image.
+
+        Returns
+        -------
+        SICDMetadata
+            Ready to pass to ``grdl.IO.sar.SICDWriter``.
+        """
+        from grdl.IO.sar.cphd_to_sicd import build_sicd_metadata
+        return build_sicd_metadata(
+            cphd_meta, geometry, image_shape,
+            image_form_algo='PFA',
+            grid_params=self.get_output_grid(),
+        )

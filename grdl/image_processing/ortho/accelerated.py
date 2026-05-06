@@ -56,16 +56,12 @@ logger = logging.getLogger(__name__)
 
 # ── Backend availability ───────────────────────────────────────────
 
-_TORCH_AVAILABLE = False
-_NUMBA_AVAILABLE = False
+from grdl._torch_optional import torch, HAS_TORCH as _TORCH_AVAILABLE
 
-try:
-    import torch
+if _TORCH_AVAILABLE:
     import torch.nn.functional as F
-    _TORCH_AVAILABLE = True
-except ImportError:
-    pass
 
+_NUMBA_AVAILABLE = False
 try:
     import numba
     _NUMBA_AVAILABLE = True

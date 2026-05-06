@@ -8,6 +8,12 @@ multiple image formation algorithms with auto-detection from CPHD
 metadata: spotlight collections default to PFA, stripmap/TOPSAR
 collections default to RDA.
 
+SICD metadata is derived via
+:func:`grdl.IO.sar.cphd_metadata.build_sicd_metadata`, which produces
+a fully populated :class:`grdl.IO.models.SICDMetadata` from the CPHD
+metadata and the IFP's ``CollectionGeometry`` output -- ensuring rich
+SCPCOA, accurate ARP polynomial fits, and waveform provenance.
+
 Dependencies
 ------------
 sarpy, numpy, scipy
@@ -16,6 +22,9 @@ Author
 ------
 Jason Fritz, PhD
 fritz-jason@zai.com
+
+Ava Courtney
+courtney-ava@zai.com
 
 License
 -------
@@ -29,29 +38,25 @@ Created
 
 Modified
 --------
-2026-03-03
+2026-05-06
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from numpy.linalg import norm
-from numpy.polynomial import polynomial as nppoly
 
 from grdl.IO.sar.cphd import CPHDReader
+from grdl.IO.sar.cphd_metadata import build_sicd_metadata
 from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.models.cphd import CPHDMetadata
 
 logger = logging.getLogger(__name__)
-
-# Speed of light (m/s)
-_C = 299792458.0
 
 # Valid algorithm names
 _ALGORITHMS = {"auto", "rda", "pfa", "stripmap_pfa", "ffbp"}
@@ -88,30 +93,6 @@ def _detect_bursts(tx_time: np.ndarray) -> List[Tuple[int, int]]:
 
 
 # ===================================================================
-# Polarization helper
-# ===================================================================
-
-def _extract_polarization(meta: CPHDMetadata) -> Tuple[str, str]:
-    """Extract polarization from CPHD metadata.
-
-    Returns ``(pol_str, tx_pol)`` — e.g. ``("V:V", "V")``.
-    Tries the channel identifier first (e.g. ``"IW1_VV"`` → ``"VV"``),
-    then falls back to ``"V:V"``.
-    """
-    if meta.channels:
-        ch_id = meta.channels[0].identifier
-        # Channel IDs may contain polarization as last 2 chars or
-        # after underscore, e.g. "IW1_VV", "CH1_HH", or just "VV"
-        for token in reversed(ch_id.split("_")):
-            if len(token) == 2 and all(c in "VH" for c in token):
-                return f"{token[0]}:{token[1]}", token[0]
-        # Try the full identifier if it's 2 chars
-        if len(ch_id) == 2 and all(c in "VH" for c in ch_id):
-            return f"{ch_id[0]}:{ch_id[1]}", ch_id[0]
-    return "V:V", "V"
-
-
-# ===================================================================
 # CPHDToSICD converter
 # ===================================================================
 
@@ -120,7 +101,9 @@ class CPHDToSICD:
 
     Reads a CPHD file, optionally selects a burst, runs an image
     formation algorithm, constructs SICD metadata from the CPHD
-    metadata, and writes the complex image as SICD NITF.
+    metadata and the IFP\'s CollectionGeometry via
+    :func:`~grdl.IO.sar.cphd_metadata.build_sicd_metadata`, and writes
+    the complex image as SICD NITF.
 
     Parameters
     ----------
@@ -129,13 +112,13 @@ class CPHDToSICD:
     output_path : str or Path
         Output SICD NITF file.
     algorithm : str
-        Image formation algorithm.  ``'auto'`` (default) selects
+        Image formation algorithm.  ``\'auto\'`` (default) selects
         PFA for spotlight and RDA for stripmap/TOPSAR.  Explicit
-        choices: ``'rda'``, ``'pfa'``, ``'stripmap_pfa'``,
-        ``'ffbp'``.
+        choices: ``\'rda\'``, ``\'pfa\'``, ``\'stripmap_pfa\'``,
+        ``\'ffbp\'``.
     block_size : int, str, or None
         Subaperture block size for RDA/StripmapPFA:
-        ``'auto'``, integer, ``0`` or ``None`` for full aperture.
+        ``\'auto\'``, integer, ``0`` or ``None`` for full aperture.
     burst : int, optional
         1-based burst index for TOPSAR/burst-mode data.  Burst
         boundaries are detected from PVP timing gaps.  Default
@@ -156,7 +139,7 @@ class CPHDToSICD:
     Examples
     --------
     >>> from grdl.IO.sar import CPHDToSICD
-    >>> converter = CPHDToSICD('input.cphd', 'output.sicd', burst=2)
+    >>> converter = CPHDToSICD(\'input.cphd\', \'output.sicd\', burst=2)
     >>> converter.convert()
     >>> print(converter.image.shape)
     """
@@ -193,7 +176,7 @@ class CPHDToSICD:
     # ---------------------------------------------------------------
 
     def convert(self) -> Path:
-        """Run the CPHD → image → SICD conversion.
+        """Run the CPHD -> image -> SICD conversion.
 
         Returns
         -------
@@ -210,7 +193,7 @@ class CPHDToSICD:
             signal = self._select_burst(signal, meta)
 
         # Create processor and form image
-        processor = self._create_processor(meta)
+        processor, geometry = self._create_processor(meta)
         grid_info = processor.get_output_grid()
         logger.info(
             "Output grid: range_res=%.3f m, az_res=%.3f m",
@@ -228,11 +211,20 @@ class CPHDToSICD:
 
         del signal  # free memory
 
-        # Build SICD metadata and write
-        sicd_type = self._build_sicd_type(meta, image, grid_info)
+        # Build SICD metadata using the dedicated metadata builder
+        algo = self._resolve_algorithm(meta)
+        sicd_algo = "PFA" if algo == "pfa" else "RGAZCOMP"
+        sicd_meta = build_sicd_metadata(
+            cphd_meta=meta,
+            geometry=geometry,
+            image_shape=image.shape,
+            image_form_algo=sicd_algo,
+            grid_params=grid_info,
+        )
 
         logger.info("Writing SICD: %s", self.output_path.name)
-        self._write_sicd(image, sicd_type)
+        writer = SICDWriter(self.output_path, metadata=sicd_meta)
+        writer.write(image.astype(np.complex64))
 
         size_mb = self.output_path.stat().st_size / (1024**2)
         logger.info("SICD written: %.1f MB", size_mb)
@@ -343,7 +335,7 @@ class CPHDToSICD:
     # ---------------------------------------------------------------
 
     def _resolve_algorithm(self, meta: CPHDMetadata) -> str:
-        """Resolve 'auto' to a concrete algorithm name."""
+        """Resolve \'auto\' to a concrete algorithm name."""
         if self.algorithm != "auto":
             return self.algorithm
 
@@ -360,8 +352,16 @@ class CPHDToSICD:
         )
         return "rda"
 
-    def _create_processor(self, meta: CPHDMetadata) -> Any:
-        """Create the image formation processor."""
+    def _create_processor(self, meta: CPHDMetadata) -> Tuple[Any, Any]:
+        """Create the image formation processor and CollectionGeometry.
+
+        Returns
+        -------
+        tuple of (processor, geometry)
+            ``processor`` is the IFP instance (RDA, PFA, etc.).
+            ``geometry`` is the ``CollectionGeometry`` used to build it,
+            which is later passed to ``build_sicd_metadata``.
+        """
         algo = self._resolve_algorithm(meta)
 
         from grdl.interpolation import PolyphaseInterpolator
@@ -381,8 +381,12 @@ class CPHDToSICD:
 
         if algo == "rda":
             from grdl.image_processing.sar import RangeDopplerAlgorithm
+            from grdl.image_processing.sar.image_formation import (
+                CollectionGeometry,
+            )
             logger.info("Creating RangeDopplerAlgorithm")
-            return RangeDopplerAlgorithm(
+            geometry = CollectionGeometry(meta)
+            processor = RangeDopplerAlgorithm(
                 metadata=meta,
                 interpolator=interpolator,
                 range_weighting="taylor",
@@ -392,6 +396,7 @@ class CPHDToSICD:
                 trim_invalid=True,
                 verbose=self.verbose,
             )
+            return processor, geometry
 
         if algo == "pfa":
             from grdl.image_processing.sar import (
@@ -405,28 +410,38 @@ class CPHDToSICD:
                 phase_sgn = int(meta.global_params.phase_sgn)
             geometry = CollectionGeometry(meta)
             grid = PolarGrid(geometry)
-            return PolarFormatAlgorithm(
+            processor = PolarFormatAlgorithm(
                 grid=grid,
                 interpolator=interpolator,
                 weighting="taylor",
                 phase_sgn=phase_sgn,
             )
+            return processor, geometry
 
         if algo == "stripmap_pfa":
             from grdl.image_processing.sar import StripmapPFA
+            from grdl.image_processing.sar.image_formation import (
+                CollectionGeometry,
+            )
             logger.info("Creating StripmapPFA")
-            return StripmapPFA(
+            geometry = CollectionGeometry(meta)
+            processor = StripmapPFA(
                 metadata=meta,
                 interpolator=interpolator,
                 weighting="taylor",
                 overlap_fraction=0.5,
                 verbose=self.verbose,
             )
+            return processor, geometry
 
         if algo == "ffbp":
             from grdl.image_processing.sar import FastBackProjection
+            from grdl.image_processing.sar.image_formation import (
+                CollectionGeometry,
+            )
             logger.info("Creating FastBackProjection")
-            return FastBackProjection(
+            geometry = CollectionGeometry(meta)
+            processor = FastBackProjection(
                 metadata=meta,
                 interpolator=interpolator,
                 range_weighting="taylor",
@@ -434,297 +449,9 @@ class CPHDToSICD:
                 trim_invalid=True,
                 verbose=self.verbose,
             )
+            return processor, geometry
 
         raise ValueError(f"Unknown algorithm: {algo!r}")
-
-    # ---------------------------------------------------------------
-    # Private: SICD metadata
-    # ---------------------------------------------------------------
-
-    def _build_sicd_type(
-        self,
-        meta: CPHDMetadata,
-        image: np.ndarray,
-        grid_info: Dict[str, Any],
-    ) -> Any:
-        """Build a sarpy SICDType from CPHD metadata and formed image."""
-        from sarpy.io.complex.sicd_elements.SICD import SICDType
-        from sarpy.io.complex.sicd_elements.ImageData import (
-            ImageDataType, FullImageType,
-        )
-        from sarpy.io.complex.sicd_elements.CollectionInfo import (
-            CollectionInfoType, RadarModeType,
-        )
-        from sarpy.io.complex.sicd_elements.ImageFormation import (
-            ImageFormationType, RcvChanProcType, TxFrequencyProcType,
-        )
-        from sarpy.io.complex.sicd_elements.Timeline import TimelineType
-        from sarpy.io.complex.sicd_elements.GeoData import (
-            GeoDataType, SCPType,
-        )
-        from sarpy.io.complex.sicd_elements.Position import (
-            PositionType, XYZPolyType,
-        )
-        from sarpy.io.complex.sicd_elements.Grid import (
-            GridType, DirParamType,
-        )
-        from sarpy.io.complex.sicd_elements.RadarCollection import (
-            RadarCollectionType, TxFrequencyType, ChanParametersType,
-        )
-        from sarpy.io.complex.sicd_elements.blocks import (
-            LatLonCornerStringType, XYZType, Poly2DType,
-        )
-        from sarpy.geometry.geocoords import ecf_to_geodetic
-
-        nr, nc = image.shape
-        sicd = SICDType()
-
-        # ── ImageData ──
-        sicd.ImageData = ImageDataType(
-            PixelType="RE32F_IM32F",
-            NumRows=nr,
-            NumCols=nc,
-            FirstRow=0,
-            FirstCol=0,
-            FullImage=FullImageType(NumRows=nr, NumCols=nc),
-            SCPPixel=[nr // 2, nc // 2],
-            ValidData=[
-                [0, 0], [0, nc - 1], [nr - 1, nc - 1], [nr - 1, 0],
-            ],
-        )
-
-        # ── CollectionInfo ──
-        ci = meta.collection_info
-        radar_mode = None
-        if ci and ci.radar_mode:
-            radar_mode = RadarModeType(
-                ModeType=ci.radar_mode,
-                ModeID=ci.radar_mode_id,
-            )
-        core_name = self.cphd_path.stem
-        if ci and ci.core_name:
-            core_name = ci.core_name
-        classification = "UNCLASSIFIED"
-        if ci and ci.classification:
-            classification = ci.classification
-        sicd.CollectionInfo = CollectionInfoType(
-            Classification=classification,
-            CoreName=core_name,
-            RadarMode=radar_mode,
-        )
-
-        # ── Timeline ──
-        collect_start = datetime.now(timezone.utc)
-        collect_duration = 1.0
-        if meta.pvp and meta.pvp.tx_time is not None:
-            collect_duration = float(
-                meta.pvp.tx_time[-1] - meta.pvp.tx_time[0]
-            )
-        sicd.Timeline = TimelineType(
-            CollectStart=collect_start,
-            CollectDuration=max(collect_duration, 0.001),
-        )
-
-        # ── GeoData ──
-        scp_ecf = None
-        if (meta.scene_coordinates
-                and meta.scene_coordinates.iarp_ecf is not None):
-            scp_ecf = meta.scene_coordinates.iarp_ecf
-        elif (meta.reference_geometry
-                and meta.reference_geometry.srp_ecf is not None):
-            scp_ecf = meta.reference_geometry.srp_ecf
-        elif meta.pvp and meta.pvp.srp_pos is not None:
-            scp_ecf = np.mean(meta.pvp.srp_pos, axis=0)
-
-        if scp_ecf is not None:
-            scp = SCPType(ECF=scp_ecf)
-            corner_labels = [
-                "1:FRFC", "2:FRLC", "3:LRLC", "4:LRFC",
-            ]
-            corners = None
-            sc = meta.scene_coordinates
-            if (sc and sc.corner_points is not None
-                    and len(sc.corner_points) >= 4):
-                corners = [
-                    LatLonCornerStringType(
-                        Lat=float(sc.corner_points[i, 0]),
-                        Lon=float(sc.corner_points[i, 1]),
-                        index=corner_labels[i],
-                    )
-                    for i in range(4)
-                ]
-            else:
-                llh = ecf_to_geodetic(scp_ecf)
-                lat, lon = float(llh[0]), float(llh[1])
-                dlat, dlon = 0.5, 0.5
-                corners = [
-                    LatLonCornerStringType(
-                        Lat=lat + dlat, Lon=lon - dlon, index="1:FRFC",
-                    ),
-                    LatLonCornerStringType(
-                        Lat=lat + dlat, Lon=lon + dlon, index="2:FRLC",
-                    ),
-                    LatLonCornerStringType(
-                        Lat=lat - dlat, Lon=lon + dlon, index="3:LRLC",
-                    ),
-                    LatLonCornerStringType(
-                        Lat=lat - dlat, Lon=lon - dlon, index="4:LRFC",
-                    ),
-                ]
-            sicd.GeoData = GeoDataType(
-                EarthModel="WGS_84", SCP=scp, ImageCorners=corners,
-            )
-
-        # ── Position (ARP polynomial from PVP) ──
-        if (meta.pvp and meta.pvp.tx_pos is not None
-                and meta.pvp.tx_time is not None):
-            arp_pos = meta.pvp.tx_pos
-            if meta.pvp.rcv_pos is not None:
-                arp_pos = 0.5 * (meta.pvp.tx_pos + meta.pvp.rcv_pos)
-
-            t = meta.pvp.tx_time
-            t_ref = 0.5 * (t[0] + t[-1])
-            t_rel = t - t_ref
-            poly_order = min(5, len(t_rel) - 1)
-            px = nppoly.polyfit(t_rel, arp_pos[:, 0], poly_order)
-            py = nppoly.polyfit(t_rel, arp_pos[:, 1], poly_order)
-            pz = nppoly.polyfit(t_rel, arp_pos[:, 2], poly_order)
-            sicd.Position = PositionType(
-                ARPPoly=XYZPolyType(X=px, Y=py, Z=pz),
-            )
-
-        # ── Grid ──
-        if (meta.pvp and meta.pvp.tx_pos is not None
-                and meta.global_params):
-            gp = meta.global_params
-            pvp = meta.pvp
-            c = _C
-
-            mid = len(pvp.tx_time) // 2
-            arp_mid = pvp.tx_pos[mid]
-            if pvp.rcv_pos is not None:
-                arp_mid = 0.5 * (pvp.tx_pos[mid] + pvp.rcv_pos[mid])
-            srp_mid = (
-                pvp.srp_pos[mid]
-                if pvp.srp_pos is not None
-                else scp_ecf
-            )
-            row_uvec = srp_mid - arp_mid
-            row_uvec = row_uvec / norm(row_uvec)
-
-            if pvp.tx_vel is not None:
-                vel_mid = pvp.tx_vel[mid]
-            else:
-                vel_mid = (
-                    (pvp.tx_pos[mid + 1] - pvp.tx_pos[mid - 1])
-                    / (pvp.tx_time[mid + 1] - pvp.tx_time[mid - 1])
-                )
-            col_uvec = vel_mid / norm(vel_mid)
-
-            bw = float(gp.bandwidth)
-            fc = float(gp.center_frequency)
-            row_ss = c / (2.0 * bw)
-            row_imp_bw = 1.0 / row_ss
-            row_imp_wid = grid_info.get("range_resolution", row_ss)
-            row_kctr = 2.0 * fc / c
-
-            dt_median = float(np.median(np.diff(pvp.tx_time)))
-            v_platform = float(norm(vel_mid))
-            col_ss = v_platform * dt_median
-            col_imp_wid = grid_info.get("azimuth_resolution", col_ss)
-            col_imp_bw = 1.0 / col_ss if col_ss > 0 else 1.0
-            col_kctr = 0.0
-
-            phase_sgn = int(gp.phase_sgn) if gp.phase_sgn else -1
-
-            row_dir = DirParamType(
-                UVectECF=XYZType(
-                    X=float(row_uvec[0]),
-                    Y=float(row_uvec[1]),
-                    Z=float(row_uvec[2]),
-                ),
-                SS=row_ss,
-                ImpRespWid=row_imp_wid,
-                Sgn=phase_sgn,
-                ImpRespBW=row_imp_bw,
-                KCtr=row_kctr,
-                DeltaK1=-0.5 / row_ss,
-                DeltaK2=0.5 / row_ss,
-            )
-            col_dir = DirParamType(
-                UVectECF=XYZType(
-                    X=float(col_uvec[0]),
-                    Y=float(col_uvec[1]),
-                    Z=float(col_uvec[2]),
-                ),
-                SS=col_ss,
-                ImpRespWid=col_imp_wid,
-                Sgn=phase_sgn,
-                ImpRespBW=col_imp_bw,
-                KCtr=col_kctr,
-                DeltaK1=-0.5 / col_ss,
-                DeltaK2=0.5 / col_ss,
-            )
-            sicd.Grid = GridType(
-                ImagePlane="SLANT",
-                Type="RGAZIM",
-                TimeCOAPoly=Poly2DType(Coefs=np.array([[0.0]])),
-                Row=row_dir,
-                Col=col_dir,
-            )
-
-            # ── RadarCollection + ImageFormation ──
-            f_min = fc - bw / 2.0
-            f_max = fc + bw / 2.0
-            pol_str, tx_pol = _extract_polarization(meta)
-
-            sicd.RadarCollection = RadarCollectionType(
-                TxFrequency=TxFrequencyType(Min=f_min, Max=f_max),
-                TxPolarization=tx_pol,
-                RcvChannels=[
-                    ChanParametersType(
-                        TxRcvPolarization=pol_str, index=1,
-                    ),
-                ],
-            )
-
-            algo = self._resolve_algorithm(meta)
-            if algo == "pfa":
-                sicd_algo = "PFA"
-            else:
-                sicd_algo = "RGAZCOMP"
-
-            sicd.ImageFormation = ImageFormationType(
-                RcvChanProc=RcvChanProcType(
-                    NumChanProc=1, ChanIndices=[1],
-                ),
-                TxRcvPolarizationProc=pol_str,
-                TStartProc=0.0,
-                TEndProc=max(collect_duration, 0.001),
-                TxFrequencyProc=TxFrequencyProcType(
-                    MinProc=f_min, MaxProc=f_max,
-                ),
-                ImageFormAlgo=sicd_algo,
-                STBeamComp="NO",
-                ImageBeamComp="NO",
-                AzAutofocus="NO",
-                RgAutofocus="NO",
-            )
-
-        # Auto-derive SCPCOA, RgAzComp, and other dependent fields
-        sicd.derive()
-
-        return sicd
-
-    # ---------------------------------------------------------------
-    # Private: write
-    # ---------------------------------------------------------------
-
-    def _write_sicd(self, image: np.ndarray, sicd_type: Any) -> None:
-        """Write the formed image as SICD NITF."""
-        writer = SICDWriter(self.output_path)
-        writer.set_sarpy_metadata(sicd_type)
-        writer.write(image.astype(np.complex64))
 
 
 # ===================================================================
@@ -757,13 +484,13 @@ def _parse_args():
         default="auto",
         choices=sorted(_ALGORITHMS),
         help="Image formation algorithm (default: auto). "
-             "'auto' selects PFA for spotlight and RDA for stripmap.",
+             "\'auto\' selects PFA for spotlight and RDA for stripmap.",
     )
     parser.add_argument(
         "--block-size",
         type=str,
         default="auto",
-        help="RDA subaperture block size: 'auto', integer, or '0' "
+        help="RDA subaperture block size: \'auto\', integer, or \'0\' "
              "for full aperture.",
     )
     parser.add_argument(
@@ -802,20 +529,23 @@ def _parse_args():
 
 def _setup_logging(loglevel: str, logfile: Optional[Path] = None) -> None:
     """Configure the root logger with console and optional file handlers."""
-    level = getattr(logging, loglevel.upper(), logging.WARNING)
+    import logging as _logging
+    level = getattr(_logging, loglevel.upper(), _logging.WARNING)
     fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
     datefmt = "%Y-%m-%dT%H:%M:%S"
 
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    handlers: list[_logging.Handler] = [_logging.StreamHandler()]
     if logfile is not None:
         logfile.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(str(logfile)))
+        handlers.append(_logging.FileHandler(str(logfile)))
 
-    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, handlers=handlers)
+    _logging.basicConfig(
+        level=level, format=fmt, datefmt=datefmt, handlers=handlers,
+    )
 
 
 def main() -> None:
-    """CLI entry point for CPHD → SICD conversion."""
+    """CLI entry point for CPHD -> SICD conversion."""
     args = _parse_args()
     _setup_logging(args.loglevel, args.logfile)
 

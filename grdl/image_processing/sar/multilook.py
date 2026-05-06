@@ -47,11 +47,7 @@ from typing import Annotated, Any, Optional, Tuple, TYPE_CHECKING, Union
 # Third-party
 import numpy as np
 
-try:
-    import torch
-    _HAS_TORCH = True
-except ImportError:
-    _HAS_TORCH = False
+from grdl._torch_optional import torch, HAS_TORCH as _HAS_TORCH
 
 try:
     import cupy as cp

@@ -48,6 +48,10 @@ except ImportError:
     _HAS_RASTERIO = False
 
 # Try glymur as fallback (better JP2 support, especially for Sentinel-2)
+# Ensure OpenJPEG DLLs are discoverable on Windows
+from grdl.IO._dll_discovery import ensure_openjp2_loaded
+ensure_openjp2_loaded()
+
 # Capture stderr during import: glymur can trigger a GDAL/NumPy ABI
 # mismatch traceback when the system GDAL was compiled against NumPy 1.x
 # but NumPy 2.x is installed.  The exception is caught below, but NumPy

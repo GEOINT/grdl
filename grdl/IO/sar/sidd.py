@@ -109,6 +109,13 @@ from grdl.IO.models.sicd import (
 )
 from grdl.IO.sar._backend import _HAS_SARPY, require_sar_backend
 
+# Ensure OpenJPEG DLLs are discoverable on Windows
+try:
+    from grdl.IO._dll_discovery import ensure_openjp2_loaded
+    ensure_openjp2_loaded()
+except ImportError:
+    pass
+
 try:
     import glymur
     _HAS_GLYMUR = True

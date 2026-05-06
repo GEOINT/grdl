@@ -109,6 +109,18 @@ from grdl.IO.ir import ASTERReader, open_ir
 # Multispectral submodule
 from grdl.IO.multispectral import VIIRSReader, open_multispectral
 
+# GMTI submodule (STANAG 4607)
+from grdl.IO.gmti import (
+    STANAG4607Reader,
+    STANAG4607Writer,
+    open_gmti,
+    dwell_footprint_polygon,
+    ground_relative_velocity,
+    filter_target_reports,
+    summarize as gmti_summarize,
+)
+from grdl.IO.models.stanag4607 import STANAG4607Metadata
+
 
 # Writer registry: maps format strings to (module_path, class_name)
 _WRITER_REGISTRY: Dict[str, tuple] = {
@@ -117,6 +129,10 @@ _WRITER_REGISTRY: Dict[str, tuple] = {
     'png': ('grdl.IO.png', 'PngWriter'),
     'hdf5': ('grdl.IO.hdf5', 'HDF5Writer'),
     'nitf': ('grdl.IO.nitf', 'NITFWriter'),
+    # Note: STANAG4607Writer is not registered here — it operates on a
+    # typed metadata container, not an ndarray, so it does not fit the
+    # ``get_writer(path, metadata=ImageMetadata).write(data)`` contract.
+    # Use ``grdl.IO.STANAG4607Writer`` directly instead.
 }
 
 
@@ -357,6 +373,15 @@ __all__ = [
     'ASTERReader',
     # Multispectral readers
     'VIIRSReader',
+    # GMTI (STANAG 4607)
+    'STANAG4607Reader',
+    'STANAG4607Writer',
+    'STANAG4607Metadata',
+    'open_gmti',
+    'dwell_footprint_polygon',
+    'ground_relative_velocity',
+    'filter_target_reports',
+    'gmti_summarize',
     # Generic / GDAL fallback / invasive probe
     'GDALFallbackReader',
     'InvasiveProbeReader',
