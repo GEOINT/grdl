@@ -486,6 +486,7 @@ class SICDGeolocation(Geolocation):
         from grdl.geolocation.projection import (
             image_to_ground_plane, wgs84_norm,
         )
+        from grdl.geolocation.coordinates import geodetic_to_ecef
 
         # Height resolution — same as _latlon_to_image_native.
         # Explicit per-point heights (array input) take precedence over DEM

@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-05-05
 """
 
 # Standard library
@@ -221,13 +221,23 @@ class PolarGrid:
         ku_span = float(abs(self.ku_bounds[1] - self.ku_bounds[0]))
         self.azimuth_resolution = 0.886 / ku_span
 
-        # Range sampling: target Hz/sample for the output grid is the
-        # natural frequency-bin spacing implied by the receive window,
-        # ``1/T``. The maximum unaliased range swath of a window of
-        # duration T is ``c*T/2``; the corresponding k-space sample
-        # spacing is ``2/(c*T)``, i.e. ``1/T`` in Hz/sample units.
-        # Falls back to the per-pulse frequency step from the CPHD
-        # geometry when the receive-window length is unavailable.
+        # Range sampling: Nyquist from receive window length.
+        #
+        # For an alias-free output that covers the full unambiguous
+        # receive-window swath D = c * T / 2 (where T is the receive
+        # window length), we need at least N samples such that the
+        # output spatial extent N / kv_span >= D, i.e.
+        #   N >= D * kv_span = (c * T / 2) * (2 * proc_bw / c)
+        #      = T * proc_bw.
+        # Equivalently, the Nyquist frequency-sample spacing is
+        # 1 / T (one freq bin per receive-window time).
+        #
+        # The 0.886 factor is the IPR width constant for an unweighted
+        # sinc and belongs in resolution formulas, not sampling. The
+        # range_oversample factor scales density above this Nyquist
+        # baseline. Falls back to the per-pulse frequency step from
+        # the CPHD geometry when the receive-window length is
+        # unavailable.
         rcv_params = self._get_rcv_window()
         if rcv_params is not None:
             nyquist_freq_sampling = 1.0 / rcv_params
@@ -236,8 +246,8 @@ class PolarGrid:
 
         self.rec_n_samples = max(
             1,
-            int(self.proc_bw / nyquist_freq_sampling
-                * self.range_oversample),
+            int(np.ceil(self.proc_bw / nyquist_freq_sampling
+                        * self.range_oversample)),
         )
 
         # Azimuth sampling: minimum ku step between adjacent pulses,

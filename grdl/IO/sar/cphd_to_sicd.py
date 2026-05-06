@@ -33,7 +33,17 @@ Created
 
 Modified
 --------
-2026-05-05
+2026-05-06  Populate Grid.TimeCOAPoly (constant Poly2D at
+            geometry.coa_time) so SICDGeolocation's native R/Rdot
+            backend can build COAProjection from IFP-derived
+            SICDMetadata. Stripmap / sliding-spotlight should override
+            with a higher-order fit.
+2026-05-06  Populate the PFA section (PolarAngPoly, SpatialFreqSFPoly,
+            IPN, FPN, k-space corners) when image_form_algo='PFA'.
+            Without this the COAProjection silently falls back to a
+            PLANE projector, which makes latlon_to_image and
+            image_to_latlon disagree by thousands of microdeg and
+            collapses every pixel projection toward SCP.
 """
 
 from __future__ import annotations
@@ -57,6 +67,7 @@ from grdl.IO.models import (
     SICDImageData,
     SICDImageFormation,
     SICDMetadata,
+    SICDPFA,
     SICDPosition,
     SICDRadarCollection,
     SICDRadarMode,
@@ -69,7 +80,9 @@ from grdl.IO.models import (
     SICDTxFrequencyProc,
     SICDWaveformParams,
 )
-from grdl.IO.models.common import LatLon, LatLonHAE, Poly1D, RowCol, XYZ, XYZPoly
+from grdl.IO.models.common import (
+    LatLon, LatLonHAE, Poly1D, Poly2D, RowCol, XYZ, XYZPoly,
+)
 
 
 # Algorithms accepted by the SICD spec (ImageFormation/ImageFormAlgo enum)
@@ -125,6 +138,26 @@ def build_sicd_metadata(
     rows, cols = int(image_shape[0]), int(image_shape[1])
     grid_params = dict(grid_params) if grid_params else {}
 
+    # Reconcile Nyquist sample spacing (Grid.rg_ss / Grid.az_ss go with
+    # rec_n_samples / rec_n_pulses) with the actual formed-image pixel
+    # count, which can be larger when the IFP zero-pads the FFT for
+    # convenience. SICDGeolocation's R/Rdot inverse divides scene-meter
+    # offsets by Grid.Row.SS / Grid.Col.SS to get pixel coordinates --
+    # so SS must be the per-pixel spacing of the image we wrote, not
+    # the recovered grid's Nyquist spacing.
+    rec_n_samples = grid_params.get('rec_n_samples')
+    rec_n_pulses = grid_params.get('rec_n_pulses')
+    rg_ss_nyq = grid_params.get('rg_ss')
+    az_ss_nyq = grid_params.get('az_ss')
+    if rec_n_samples and rg_ss_nyq is not None and rows > 0:
+        grid_params['rg_ss'] = (
+            float(rg_ss_nyq) * float(rec_n_samples) / rows
+        )
+    if rec_n_pulses and az_ss_nyq is not None and cols > 0:
+        grid_params['az_ss'] = (
+            float(az_ss_nyq) * float(rec_n_pulses) / cols
+        )
+
     return SICDMetadata(
         format='SICD',
         rows=rows,
@@ -141,6 +174,8 @@ def build_sicd_metadata(
             cphd_meta, geometry, image_form_algo, grid_params,
         ),
         scpcoa=_build_scpcoa(geometry),
+        pfa=(_build_pfa(geometry, grid_params)
+             if image_form_algo == 'PFA' else None),
     )
 
 
@@ -247,11 +282,21 @@ def _build_grid(
         delta_k2=_as_float(az_dk2),
     )
 
+    # SICD Grid.TimeCOAPoly: P(row_offset, col_offset) -> COA time (s).
+    # For a spotlight CPI every pixel resolves to the SCP COA time, so a
+    # constant degree-(0, 0) polynomial is exact. For stripmap / sliding
+    # spotlight a higher-order fit would be needed but ``geometry``
+    # exposes only the single ``coa_time``; keep it constant here and
+    # let stripmap-specific builders override.
+    coa_time = float(getattr(geometry, 'coa_time', 0.0))
+    time_coa_poly = Poly2D(coefs=np.array([[coa_time]], dtype=np.float64))
+
     return SICDGrid(
         image_plane=image_plane,
         type=grid_type,
         row=row_dp,
         col=col_dp,
+        time_coa_poly=time_coa_poly,
     )
 
 
@@ -281,6 +326,113 @@ def _build_position(geometry: Any) -> SICDPosition:
         getattr(geometry, 'arp_poly_z', None),
     )
     return SICDPosition(arp_poly=arp_poly)
+
+
+def _build_pfa(
+    geometry: Any,
+    grid_params: Dict[str, Any],
+) -> SICDPFA:
+    """Build the SICD ``PFA`` block from the IFP collection geometry.
+
+    The native ``COAProjection.from_sicd`` path requires
+    ``PolarAngPoly`` (phi vs time) and ``SpatialFreqSFPoly``
+    (k_sf vs phi) to evaluate R/Rdot at each pixel. Without these the
+    projector silently falls back to a plane projector that disagrees
+    with the IFP's actual image grid; the SICDGeolocation forward and
+    inverse round-trip then accumulates large errors.
+
+    Polynomials are fit to the per-pulse arrays the IFP already
+    computed in ``CollectionGeometry``:
+
+    - ``polar_ang_poly``: degree-5 fit of ``geometry.phi`` vs
+      ``geometry.time`` (absolute time; the projector evaluates the
+      polynomial at the COA time of each pixel directly).
+    - ``spatial_freq_sf_poly``: degree-3 fit of ``geometry.k_sf`` vs
+      ``geometry.phi`` (the projector evaluates this polynomial at
+      ``theta`` returned by ``polar_ang_poly``).
+
+    ``ipn`` and ``fpn`` are the image plane normal and focus plane
+    normal at SCP, both unit vectors. They are populated for SICD
+    completeness but the native PFA projector does not consume them
+    directly.
+    """
+    t = np.asarray(geometry.time, dtype=np.float64)
+    phi = np.asarray(geometry.phi, dtype=np.float64)
+    k_sf = np.asarray(geometry.k_sf, dtype=np.float64)
+
+    # Use np.polynomial.Polynomial.fit with .convert() to get
+    # numerically stable coefficients in the natural domain. The
+    # alternative numpy.polynomial.polynomial.polyfit fits in raw
+    # natural basis directly which is ill-conditioned for any
+    # non-zero-centered time domain (e.g., absolute UTC seconds).
+    # ``Polynomial.fit`` auto-scales the domain internally; ``.convert()``
+    # then expresses the polynomial against the original time variable
+    # so it can be evaluated at e.g. ``time_coa`` directly.
+    poly_phi = np.polynomial.Polynomial.fit(t, phi, deg=5).convert()
+    poly_sf = np.polynomial.Polynomial.fit(phi, k_sf, deg=3).convert()
+    phi_coefs = np.asarray(poly_phi.coef, dtype=np.float64)
+    sf_coefs = np.asarray(poly_sf.coef, dtype=np.float64)
+
+    # Sanity check the fits. Residuals on the data points themselves
+    # should be at numerical noise level for a degree-5 fit of 512
+    # smoothly-varying samples. Anything larger indicates a mismatch
+    # between the polynomial domain and the evaluation domain.
+    phi_resid = float(np.max(np.abs(np.polyval(phi_coefs[::-1], t) - phi)))
+    sf_resid = float(np.max(np.abs(
+        np.polyval(sf_coefs[::-1], phi) - k_sf
+    )))
+    coa_t = float(getattr(geometry, 'coa_time', 0.0))
+    theta_at_coa = float(np.polyval(phi_coefs[::-1], coa_t))
+    k_sf_at_coa = float(np.polyval(sf_coefs[::-1], theta_at_coa))
+    print(
+        f"  PFA poly fit: phi residual={phi_resid:.3e} rad  "
+        f"k_sf residual={sf_resid:.3e}  "
+        f"theta(coa)={theta_at_coa:+.4e} rad  "
+        f"k_sf(coa)={k_sf_at_coa:.6f}"
+    )
+
+    # IPN: image plane normal at COA. Stored on geometry by
+    # ``_build_coordinates`` as a unit vector.
+    ipn_arr = np.asarray(getattr(geometry, 'ipn', None), dtype=np.float64)
+    ipn_xyz = (XYZ(x=float(ipn_arr[0]), y=float(ipn_arr[1]),
+                   z=float(ipn_arr[2]))
+               if ipn_arr is not None and ipn_arr.size == 3 else None)
+
+    # FPN: focus plane normal = WGS84 up vector at SRP at COA. Geometry
+    # computes it locally via wgs_84_norm; recompute here from the
+    # stored SRP. Falls back to the geocentric normalize when the WGS84
+    # helper is unavailable.
+    fpn_xyz = None
+    srp = getattr(geometry, 'srp', None)
+    if srp is not None:
+        srp_arr = np.asarray(srp, dtype=np.float64)
+        coa_idx = int(getattr(geometry, 'npulses', srp_arr.shape[0])) // 2
+        if 0 <= coa_idx < srp_arr.shape[0]:
+            srp_coa = srp_arr[coa_idx]
+            try:  # WGS84-accurate normal if sarpy is available
+                from sarpy.geometry.geocoords import wgs_84_norm
+                fpn_arr = np.asarray(
+                    wgs_84_norm(srp_coa.reshape(1, 3))[0],
+                    dtype=np.float64,
+                )
+            except (ImportError, Exception):
+                # Geocentric fallback (sub-degree error at typical
+                # surface latitudes; adequate for SICD bookkeeping).
+                fpn_arr = srp_coa / float(np.linalg.norm(srp_coa))
+            fpn_xyz = XYZ(x=float(fpn_arr[0]), y=float(fpn_arr[1]),
+                          z=float(fpn_arr[2]))
+
+    return SICDPFA(
+        fpn=fpn_xyz,
+        ipn=ipn_xyz,
+        polar_ang_ref_time=float(getattr(geometry, 'coa_time', 0.0)),
+        polar_ang_poly=Poly1D(coefs=phi_coefs),
+        spatial_freq_sf_poly=Poly1D(coefs=sf_coefs),
+        krg1=_as_float(grid_params.get('rg_delta_k1')),
+        krg2=_as_float(grid_params.get('rg_delta_k2')),
+        kaz1=_as_float(grid_params.get('az_delta_k1')),
+        kaz2=_as_float(grid_params.get('az_delta_k2')),
+    )
 
 
 def _build_scpcoa(geometry: Any) -> SICDSCPCOA:
