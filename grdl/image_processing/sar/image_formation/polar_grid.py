@@ -221,11 +221,16 @@ class PolarGrid:
         ku_span = float(abs(self.ku_bounds[1] - self.ku_bounds[0]))
         self.azimuth_resolution = 0.886 / ku_span
 
-        # Range sampling: Nyquist from receive window length, then
-        # scale by oversampling factor
+        # Range sampling: target Hz/sample for the output grid is the
+        # natural frequency-bin spacing implied by the receive window,
+        # ``1/T``. The maximum unaliased range swath of a window of
+        # duration T is ``c*T/2``; the corresponding k-space sample
+        # spacing is ``2/(c*T)``, i.e. ``1/T`` in Hz/sample units.
+        # Falls back to the per-pulse frequency step from the CPHD
+        # geometry when the receive-window length is unavailable.
         rcv_params = self._get_rcv_window()
         if rcv_params is not None:
-            nyquist_freq_sampling = 2.0 / rcv_params / 0.886
+            nyquist_freq_sampling = 1.0 / rcv_params
         else:
             nyquist_freq_sampling = float(geo.fxss[0])
 
