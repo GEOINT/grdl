@@ -412,9 +412,21 @@ class TestCollectionGeometry:
     def test_unit_vectors(self, geo):
         assert geo.rg_uvect_ecf.shape == (3,)
         assert geo.az_uvect_ecf.shape == (3,)
-        # Vectors should be non-zero
-        assert norm(geo.rg_uvect_ecf) > 0
-        assert norm(geo.az_uvect_ecf) > 0
+        # Per SICD spec (NGA.STND.0024-1, sec. 5.3 Grid.Row/Col.UVectECF):
+        # both vectors must be unit norm in ECF.
+        np.testing.assert_allclose(
+            norm(geo.rg_uvect_ecf), 1.0, atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            norm(geo.az_uvect_ecf), 1.0, atol=1e-12,
+        )
+        # And they must lie in the image plane (orthogonal to ipn).
+        np.testing.assert_allclose(
+            geo.rg_uvect_ecf @ geo.ipn, 0.0, atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            geo.az_uvect_ecf @ geo.ipn, 0.0, atol=1e-12,
+        )
 
     def test_arp_polynomials(self, geo):
         # ARP polys should reconstruct ARP position at COA time
