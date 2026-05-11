@@ -38,7 +38,17 @@ Created
 
 Modified
 --------
-2026-05-06
+2026-05-06  Populate Grid.TimeCOAPoly (constant Poly2D at
+            geometry.coa_time) so SICDGeolocation's native R/Rdot
+            backend can build COAProjection from IFP-derived
+            SICDMetadata. Stripmap / sliding-spotlight should override
+            with a higher-order fit.
+2026-05-06  Populate the PFA section (PolarAngPoly, SpatialFreqSFPoly,
+            IPN, FPN, k-space corners) when image_form_algo='PFA'.
+            Without this the COAProjection silently falls back to a
+            PLANE projector, which makes latlon_to_image and
+            image_to_latlon disagree by thousands of microdeg and
+            collapses every pixel projection toward SCP.
 """
 
 from __future__ import annotations
@@ -51,6 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from numpy.linalg import norm
 
+# GRDL internal
 from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.cphd_metadata import build_sicd_metadata
 from grdl.IO.sar.sicd_writer import SICDWriter

@@ -7,17 +7,18 @@ supported by this module. Backed by ``struct`` from the standard
 library; no third-party binary parsing dependency.
 
 The codec is field-table driven: each segment type has a list of
-``(attribute_name, type_code)`` tuples defining the byte layout. The
-generic ``pack_field``/``unpack_field`` helpers consume that table and
-the corresponding dataclass attributes.
+``(attribute_name, type_code, mask_bit)`` tuples defining the byte
+layout. The generic ``pack_field``/``unpack_field`` helpers consume
+that table and the corresponding dataclass attributes.
 
-Every field listed in a table is always written (no existence-mask
-conditional). The ``existence_mask`` attribute of a ``DwellSegment``
-is stored as-is; the writer fills it with all-1s for fields that are
-present, and the reader returns it without interpretation. Real-world
-files with selective masks may not round-trip with this v1 codec — the
-plan documents this as a deferred concern until a sample file is
-available for validation.
+Dwell-segment fields and target-report fields are gated by the
+64-bit ``existence_mask`` (D1) per AEDP-7 / STANAG 4607 Edition 3.
+``mask_bit`` gives the bit position within the mask (0..63) where bit
+63 is the MSB of the high-order byte (byte 7) — i.e. D2 → 63, D3 → 62,
+... D31 → 34, D32.1 → 33, D32.18 → 16. ``mask_bit=None`` is reserved
+for fields not gated by an existence mask (the mask itself, and fields
+in non-masked segments such as packet-header / mission / job-definition
+/ free-text / platform-location).
 
 Type codes
 ----------
@@ -77,10 +78,8 @@ SEG_PLATFORM_LOCATION = 13
 PACKET_HEADER_SIZE = 32
 SEGMENT_HEADER_SIZE = 5
 
-# Existence-mask bit pattern used by the writer when all dwell optional
-# fields are populated. Real-world files may use selective masks; the
-# v1 codec writes everything and reads everything.
-_DWELL_MASK_ALL = 0xFFFFFFFFFFFFFFFF
+# (Existence-mask handling is now driven by per-field bit positions in
+# _DWELL_FIELDS_GATED and _TARGET_REPORT_FIELDS — see those tables.)
 
 
 # ---------------------------------------------------------------------------
@@ -111,25 +110,28 @@ def _unpack_ba16(buf: bytes) -> float:
 
 
 def _pack_sa32(deg: float) -> bytes:
-    raw = int(round(float(deg) * (1 << 32) / 360.0))
+    # STANAG 4607: SA32 spans +/-90 degrees, LSB = 90 / 2**31.
+    # Used for latitudes and bounded orientation angles (pitch/roll).
+    raw = int(round(float(deg) * (1 << 31) / 90.0))
     raw = max(-(1 << 31), min((1 << 31) - 1, raw))
     return struct.pack('>i', raw)
 
 
 def _unpack_sa32(buf: bytes) -> float:
     raw = struct.unpack('>i', buf)[0]
-    return raw * (360.0 / (1 << 32))
+    return raw * (90.0 / (1 << 31))
 
 
 def _pack_sa16(deg: float) -> bytes:
-    raw = int(round(float(deg) * (1 << 16) / 360.0))
+    # STANAG 4607: SA16 spans +/-90 degrees, LSB = 90 / 2**15.
+    raw = int(round(float(deg) * (1 << 15) / 90.0))
     raw = max(-(1 << 15), min((1 << 15) - 1, raw))
     return struct.pack('>h', raw)
 
 
 def _unpack_sa16(buf: bytes) -> float:
     raw = struct.unpack('>h', buf)[0]
-    return raw * (360.0 / (1 << 16))
+    return raw * (90.0 / (1 << 15))
 
 
 # ---------------------------------------------------------------------------
@@ -299,55 +301,71 @@ _JOB_DEFINITION_FIELDS: List[Tuple[str, str]] = [
 ]
 
 
-# Dwell-segment field table — required and optional fields concatenated.
-# The codec writes all fields and sets the existence mask to all-1s; the
-# reader consumes all fields. See module docstring on the v1 limitation.
-_DWELL_FIELDS: List[Tuple[str, str]] = [
-    ('existence_mask', 'B64'),
-    ('revisit_index', 'I16'),
-    ('dwell_index', 'I16'),
-    ('last_dwell_of_revisit', 'B8'),
-    ('target_report_count', 'I16'),
-    ('dwell_time_ms', 'I32'),
-    ('sensor_pos_lat', 'SA32'),
-    ('sensor_pos_lon', 'BA32'),
-    ('sensor_pos_alt', 'S32'),
-    ('scale_factor_lat', 'SA32'),
-    ('scale_factor_lon', 'BA32'),
-    ('sensor_track', 'BA16'),
-    ('sensor_speed', 'B32'),
-    ('sensor_vertical_velocity', 'S8'),
-    ('platform_orientation_heading', 'BA16'),
-    ('platform_orientation_pitch', 'SA16'),
-    ('platform_orientation_roll', 'SA16'),
-    ('dwell_center_lat', 'SA32'),
-    ('dwell_center_lon', 'BA32'),
-    ('dwell_range_half_extent', 'B16'),
-    ('dwell_angle_half_extent', 'BA16'),
-    ('sensor_orientation_heading', 'BA16'),
-    ('sensor_orientation_pitch', 'SA16'),
-    ('sensor_orientation_roll', 'SA16'),
-    ('mdv', 'B8'),
+# Dwell-segment fields after the existence_mask, with their existence-mask
+# bit positions per AEDP-7 Figure 2-1. Bit 63 = MSB of byte 7 (transmitted
+# first); D2 → 63, D3 → 62, ..., D31 → 34.
+_DWELL_FIELDS_GATED: List[Tuple[str, str, int]] = [
+    ('revisit_index',                         'I16',  63),  # D2  (M)
+    ('dwell_index',                           'I16',  62),  # D3  (M)
+    ('last_dwell_of_revisit',                 'B8',   61),  # D4  (M)
+    ('target_report_count',                   'I16',  60),  # D5  (M)
+    ('dwell_time_ms',                         'I32',  59),  # D6  (M)
+    ('sensor_pos_lat',                        'SA32', 58),  # D7  (M)
+    ('sensor_pos_lon',                        'BA32', 57),  # D8  (M)
+    ('sensor_pos_alt',                        'S32',  56),  # D9  (M)
+    ('scale_factor_lat',                      'SA32', 55),  # D10 (C)
+    ('scale_factor_lon',                      'BA32', 54),  # D11 (C)
+    ('sensor_pos_unc_along_track',            'I32',  53),  # D12 (O)
+    ('sensor_pos_unc_cross_track',            'I32',  52),  # D13 (O)
+    ('sensor_pos_unc_altitude',               'B16',  51),  # D14 (O)
+    ('sensor_track',                          'BA16', 50),  # D15 (C)
+    ('sensor_speed',                          'B32',  49),  # D16 (C)
+    ('sensor_vertical_velocity',              'S8',   48),  # D17 (C)
+    ('sensor_track_uncertainty',              'I8',   47),  # D18 (O)
+    ('sensor_speed_uncertainty',              'B16',  46),  # D19 (O)
+    ('sensor_vertical_velocity_uncertainty',  'B16',  45),  # D20 (O)
+    ('platform_orientation_heading',          'BA16', 44),  # D21 (C)
+    ('platform_orientation_pitch',            'SA16', 43),  # D22 (C)
+    ('platform_orientation_roll',             'SA16', 42),  # D23 (C)
+    ('dwell_center_lat',                      'SA32', 41),  # D24 (M)
+    ('dwell_center_lon',                      'BA32', 40),  # D25 (M)
+    ('dwell_range_half_extent',               'B16',  39),  # D26 (M)
+    ('dwell_angle_half_extent',               'BA16', 38),  # D27 (M)
+    ('sensor_orientation_heading',            'BA16', 37),  # D28 (O)
+    ('sensor_orientation_pitch',              'SA16', 36),  # D29 (O)
+    ('sensor_orientation_roll',               'SA16', 35),  # D30 (O)
+    ('mdv',                                   'B8',   34),  # D31 (O)
 ]
 
 
-_TARGET_REPORT_FIELDS: List[Tuple[str, str]] = [
-    ('report_index', 'I16'),
-    ('target_lat', 'SA32'),
-    ('target_lon', 'BA32'),
-    ('target_height', 'S16'),
-    ('target_velocity_los', 'S16'),
-    ('target_wrap_velocity', 'B16'),
-    ('target_snr', 'I8'),
-    ('target_classification', 'B8'),
-    ('target_class_probability', 'B8'),
-    ('slant_range_std', 'B16'),
-    ('cross_range_std', 'B16'),
-    ('height_std', 'B8'),
-    ('velocity_los_std', 'B16'),
-    ('truth_tag_application', 'B8'),
-    ('truth_tag_entity', 'B32'),
-    ('target_rcs', 'I8'),
+# Mandatory dwell-segment bits — always set on write, regardless of value.
+_DWELL_MANDATORY_BITS = frozenset({
+    63, 62, 61, 60, 59, 58, 57, 56,  # D2-D9
+    41, 40, 39, 38,                  # D24-D27
+})
+
+
+# Target-report fields, gated by the parent dwell's existence mask.
+# D32.x → bit 34 - x (so D32.1 → 33, D32.2 → 32, ..., D32.18 → 16).
+_TARGET_REPORT_FIELDS: List[Tuple[str, str, int]] = [
+    ('report_index',             'I16',  33),  # D32.1  (C)
+    ('target_lat',               'SA32', 32),  # D32.2  (C, hi-res lat)
+    ('target_lon',               'BA32', 31),  # D32.3  (C, hi-res lon)
+    ('target_delta_lat',         'S16',  30),  # D32.4  (C, low-res lat alt)
+    ('target_delta_lon',         'S16',  29),  # D32.5  (C, low-res lon alt)
+    ('target_height',            'S16',  28),  # D32.6  (O)
+    ('target_velocity_los',      'S16',  27),  # D32.7  (O)
+    ('target_wrap_velocity',     'B16',  26),  # D32.8  (O)
+    ('target_snr',               'I8',   25),  # D32.9  (O)
+    ('target_classification',    'B8',   24),  # D32.10 (O)
+    ('target_class_probability', 'B8',   23),  # D32.11 (O)
+    ('slant_range_std',          'B16',  22),  # D32.12 (C)
+    ('cross_range_std',          'B16',  21),  # D32.13 (C)
+    ('height_std',               'B8',   20),  # D32.14 (C)
+    ('velocity_los_std',         'B16',  19),  # D32.15 (C)
+    ('truth_tag_application',    'B8',   18),  # D32.16 (C)
+    ('truth_tag_entity',         'B32',  17),  # D32.17 (C)
+    ('target_rcs',               'I8',   16),  # D32.18 (O)
 ]
 
 
@@ -375,7 +393,12 @@ _PLATFORM_LOCATION_FIELDS: List[Tuple[str, str]] = [
 
 
 def _serialize_table(obj: Any, fields: List[Tuple[str, str]]) -> bytes:
-    """Serialize ``obj`` according to ``fields``, ``None`` → defaults."""
+    """Serialize ``obj`` according to ``fields``, ``None`` → defaults.
+
+    Used for non-masked segments (packet header, mission, job
+    definition, free-text fixed prefix, platform location). Every
+    field listed in the table is always written.
+    """
     parts: List[bytes] = []
     for name, type_code in fields:
         value = getattr(obj, name, None)
@@ -386,11 +409,70 @@ def _serialize_table(obj: Any, fields: List[Tuple[str, str]]) -> bytes:
 def _parse_table(
     buf: bytes, offset: int, fields: List[Tuple[str, str]],
 ) -> Tuple[Dict[str, Any], int]:
-    """Parse fields from ``buf`` at ``offset`` per the field table."""
+    """Parse fields from ``buf`` at ``offset`` per the field table.
+
+    Used for non-masked segments. Always reads every field.
+    """
     out: Dict[str, Any] = {}
     for name, type_code in fields:
         out[name], offset = unpack_field(buf, offset, type_code)
     return out, offset
+
+
+def _parse_table_masked(
+    buf: bytes,
+    offset: int,
+    fields: List[Tuple[str, str, int]],
+    mask: int,
+) -> Tuple[Dict[str, Any], int]:
+    """Parse only the fields whose existence-mask bit is set in ``mask``.
+
+    Fields whose bit is clear are not present in the byte stream and
+    are simply omitted from the returned dict (so dataclass defaults
+    apply when the values are passed via ``**kwargs``).
+    """
+    out: Dict[str, Any] = {}
+    for name, type_code, bit in fields:
+        if (mask >> bit) & 1:
+            out[name], offset = unpack_field(buf, offset, type_code)
+    return out, offset
+
+
+def _build_dwell_mask(seg: Any, target_reports: List[Any]) -> int:
+    """Derive the dwell existence mask from a populated DwellSegment.
+
+    Mandatory dwell bits are always set. Conditional/optional dwell
+    bits are set when the corresponding attribute is non-None on
+    ``seg``. Target-report bits are set if **any** target report in
+    the dwell carries a non-None value for that field, since a single
+    mask gates every target report inside the dwell.
+    """
+    mask = 0
+    for bit in _DWELL_MANDATORY_BITS:
+        mask |= 1 << bit
+    for name, _type_code, bit in _DWELL_FIELDS_GATED:
+        if bit in _DWELL_MANDATORY_BITS:
+            continue
+        if getattr(seg, name, None) is not None:
+            mask |= 1 << bit
+    for tr in target_reports:
+        for name, _type_code, bit in _TARGET_REPORT_FIELDS:
+            if getattr(tr, name, None) is not None:
+                mask |= 1 << bit
+    return mask
+
+
+def _serialize_table_masked(
+    obj: Any,
+    fields: List[Tuple[str, str, int]],
+    mask: int,
+) -> bytes:
+    """Serialize only the fields whose mask bit is set in ``mask``."""
+    parts: List[bytes] = []
+    for name, type_code, bit in fields:
+        if (mask >> bit) & 1:
+            parts.append(pack_field(getattr(obj, name, None), type_code))
+    return b''.join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -487,41 +569,66 @@ def parse_job_definition(buf: bytes, offset: int, end: int) -> JobDefinitionSegm
     return JobDefinitionSegment(**values)
 
 
-def serialize_target_report(target: TargetReport) -> bytes:
-    return _serialize_table(target, _TARGET_REPORT_FIELDS)
+def serialize_target_report(target: TargetReport, mask: int) -> bytes:
+    """Serialize one target report under a known dwell ``mask``.
+
+    Only fields whose mask bit is set are written, matching the layout
+    inside the parent dwell segment.
+    """
+    return _serialize_table_masked(target, _TARGET_REPORT_FIELDS, mask)
 
 
-def parse_target_report(buf: bytes, offset: int) -> Tuple[TargetReport, int]:
-    values, new_offset = _parse_table(buf, offset, _TARGET_REPORT_FIELDS)
+def parse_target_report(
+    buf: bytes, offset: int, mask: int,
+) -> Tuple[TargetReport, int]:
+    """Parse one target report governed by the parent dwell ``mask``."""
+    values, new_offset = _parse_table_masked(
+        buf, offset, _TARGET_REPORT_FIELDS, mask,
+    )
     return TargetReport(**values), new_offset
 
 
 def serialize_dwell(seg: DwellSegment) -> bytes:
-    """Serialize a dwell segment (header fields + target reports).
+    """Serialize a dwell segment (mask + present fields + target reports).
 
-    The existence mask is forced to all-1s and the dwell-level
-    ``target_report_count`` is set from ``len(seg.target_reports)`` to
-    keep the wire format internally consistent regardless of how the
-    user populated the dataclass.
+    The existence mask is derived from which optional fields are
+    populated on ``seg`` (and on its target reports) — see
+    ``_build_dwell_mask``. Mandatory bits per AEDP-7 Figure 2-1 are
+    always set. ``target_report_count`` is overwritten from the
+    actual ``len(seg.target_reports)``.
     """
-    seg.existence_mask = _DWELL_MASK_ALL
     seg.target_report_count = len(seg.target_reports)
+    mask = _build_dwell_mask(seg, seg.target_reports)
+    seg.existence_mask = mask
 
-    parts: List[bytes] = [_serialize_table(seg, _DWELL_FIELDS)]
+    parts: List[bytes] = [pack_field(mask, 'B64')]
+    parts.append(_serialize_table_masked(seg, _DWELL_FIELDS_GATED, mask))
     for target in seg.target_reports:
-        parts.append(serialize_target_report(target))
+        parts.append(serialize_target_report(target, mask))
     return b''.join(parts)
 
 
 def parse_dwell(buf: bytes, offset: int, end: int) -> DwellSegment:
-    """Parse a dwell segment including all embedded target reports."""
-    values, offset = _parse_table(buf, offset, _DWELL_FIELDS)
-    target_count = int(values.get('target_report_count', 0))
+    """Parse a dwell segment including all embedded target reports.
+
+    Reads the 8-byte existence mask first, then walks the dwell-segment
+    fields and per-target fields only for bits that are set.
+    """
+    mask, offset = unpack_field(buf, offset, 'B64')
+    values: Dict[str, Any] = {'existence_mask': mask}
+
+    gated_values, offset = _parse_table_masked(
+        buf, offset, _DWELL_FIELDS_GATED, mask,
+    )
+    values.update(gated_values)
+
+    target_count = int(values.get('target_report_count') or 0)
     target_reports: List[TargetReport] = []
     for _ in range(target_count):
-        target, offset = parse_target_report(buf, offset)
+        target, offset = parse_target_report(buf, offset, mask)
         target_reports.append(target)
     values['target_reports'] = target_reports
+
     return DwellSegment(**values)
 
 

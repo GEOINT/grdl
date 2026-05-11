@@ -144,3 +144,6 @@ checkpoints/
 
 # Local workflow notes
 .git-workflow
+
+# Claude Code working directory (per-session transcripts, plans, memory).
+.claude/

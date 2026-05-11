@@ -284,33 +284,64 @@ class STANAG4607Reader:
             Detection, DetectionSet,
         )
 
+        # Helpers that tolerate the field being None (mask bit clear).
+        def _opt_int(v):  # type: ignore[no-untyped-def]
+            return None if v is None else int(v)
+
+        def _opt_float(v):  # type: ignore[no-untyped-def]
+            return None if v is None else float(v)
+
         detections: List[Detection] = []
         for dwell, target in self.iter_target_reports():
-            lat = float(target.target_lat)
-            lon = _normalize_longitude(target.target_lon)
+            # Prefer hi-res lat/lon (D32.2/D32.3); fall back to delta form
+            # (D32.4/D32.5 + D24/D25 + D10/D11) if those are absent.
+            if target.target_lat is not None and target.target_lon is not None:
+                lat = float(target.target_lat)
+                lon = _normalize_longitude(target.target_lon)
+            elif (target.target_delta_lat is not None
+                  and target.target_delta_lon is not None
+                  and dwell.dwell_center_lat is not None
+                  and dwell.dwell_center_lon is not None
+                  and dwell.scale_factor_lat is not None
+                  and dwell.scale_factor_lon is not None):
+                lat = (float(target.target_delta_lat)
+                       * float(dwell.scale_factor_lat)
+                       + float(dwell.dwell_center_lat))
+                lon = _normalize_longitude(
+                    float(target.target_delta_lon)
+                    * float(dwell.scale_factor_lon)
+                    + float(dwell.dwell_center_lon)
+                )
+            else:
+                # No usable position — skip this report rather than guess.
+                continue
             point = _ShapelyPoint(lon, lat)
 
+            v_los = _opt_float(target.target_velocity_los)
             properties = {
-                'gmti.report_index': int(target.report_index),
+                'gmti.report_index': _opt_int(target.report_index),
                 'gmti.dwell_index': int(dwell.dwell_index),
-                'gmti.snr_db': float(target.target_snr),
-                'gmti.target_classification': int(target.target_classification),
-                'gmti.target_class_probability': int(
-                    target.target_class_probability
-                ),
-                'gmti.target_height_m': int(target.target_height),
-                'gmti.wrap_velocity_cmps': int(target.target_wrap_velocity),
-                'gmti.slant_range_std_cm': int(target.slant_range_std),
-                'gmti.cross_range_std': int(target.cross_range_std),
-                'gmti.height_std_m': int(target.height_std),
-                'gmti.velocity_los_std_cmps': int(target.velocity_los_std),
-                'gmti.target_rcs_db': int(target.target_rcs),
+                'gmti.snr_db': _opt_float(target.target_snr),
+                'gmti.target_classification':
+                    _opt_int(target.target_classification),
+                'gmti.target_class_probability':
+                    _opt_int(target.target_class_probability),
+                'gmti.target_height_m': _opt_int(target.target_height),
+                'gmti.wrap_velocity_cmps':
+                    _opt_int(target.target_wrap_velocity),
+                'gmti.slant_range_std_cm': _opt_int(target.slant_range_std),
+                'gmti.cross_range_std': _opt_int(target.cross_range_std),
+                'gmti.height_std_m': _opt_int(target.height_std),
+                'gmti.velocity_los_std_cmps':
+                    _opt_int(target.velocity_los_std),
+                'gmti.target_rcs_db': _opt_int(target.target_rcs),
                 'gmti.dwell_time_ms': int(dwell.dwell_time_ms),
                 'gmti.platform_lat': float(dwell.sensor_pos_lat),
                 'gmti.platform_lon': _normalize_longitude(dwell.sensor_pos_lon),
                 'gmti.platform_alt_cm': int(dwell.sensor_pos_alt),
                 # Reuse existing physical.* domain for velocity.
-                'physical.velocity_radial': float(target.target_velocity_los) / 100.0,
+                'physical.velocity_radial':
+                    None if v_los is None else v_los / 100.0,
             }
             if dwell.mdv is not None:
                 properties['gmti.mdv_dmps'] = int(dwell.mdv)
@@ -318,7 +349,10 @@ class STANAG4607Reader:
             confidence: Optional[float] = None
             if confidence_field in properties and snr_normalization > 0:
                 value = properties[confidence_field]
-                confidence = max(0.0, min(1.0, float(value) / snr_normalization))
+                if value is not None:
+                    confidence = max(
+                        0.0, min(1.0, float(value) / snr_normalization),
+                    )
 
             detections.append(Detection(
                 pixel_geometry=None,

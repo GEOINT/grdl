@@ -350,8 +350,13 @@ class CollectionGeometry:
         ip_pos = self._project(pv, fpn, scp, ipn)
         ip_coa_pos = self._project(pv_coa, fpn, scp, ipn)
 
-        # Image plane axes
-        ipx = ip_coa_pos - scp
+        # Image plane axes. ``ip_coa_pos`` may come back 2-D (N, 3) when
+        # ``fpn`` is per-pulse: all rows are identical because SRP is
+        # fixed across the CPI, so we collapse to a single 1-D row
+        # before normalizing. Using ``norm(...)`` on the 2-D array
+        # would compute the Frobenius norm and leave rows with
+        # magnitude 1/sqrt(N) instead of unit length.
+        ipx = np.atleast_2d(ip_coa_pos - scp)[0]
         ipx = ipx / norm(ipx)
         ipy = np.cross(ipx, ipn)
 
@@ -370,8 +375,8 @@ class CollectionGeometry:
         self.k_sf = np.sqrt(1 - sin_graze**2) / np.sqrt(1 - sin_graze_ip**2)
 
         self.theta = float(abs(self.phi[-1] - self.phi[0]))
-        self.az_uvect_ecf = ipy[0].copy()
-        self.rg_uvect_ecf = ipx[0].copy()
+        self.az_uvect_ecf = ipy.copy()
+        self.rg_uvect_ecf = ipx.copy()
 
         # ARP polynomials (5th order)
         self.arp_poly_x = np.polynomial.Polynomial.fit(

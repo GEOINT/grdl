@@ -282,22 +282,24 @@ class TargetReport:
         Target radar cross section (T16, dB).
     """
 
-    report_index: int = 0
-    target_lat: float = 0.0
-    target_lon: float = 0.0
-    target_height: int = 0
-    target_velocity_los: int = 0
-    target_wrap_velocity: int = 0
-    target_snr: int = 0
-    target_classification: int = 0
-    target_class_probability: int = 0
-    slant_range_std: int = 0
-    cross_range_std: int = 0
-    height_std: int = 0
-    velocity_los_std: int = 0
-    truth_tag_application: int = 0
-    truth_tag_entity: int = 0
-    target_rcs: int = 0
+    report_index: Optional[int] = None
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_delta_lat: Optional[int] = None
+    target_delta_lon: Optional[int] = None
+    target_height: Optional[int] = None
+    target_velocity_los: Optional[int] = None
+    target_wrap_velocity: Optional[int] = None
+    target_snr: Optional[int] = None
+    target_classification: Optional[int] = None
+    target_class_probability: Optional[int] = None
+    slant_range_std: Optional[int] = None
+    cross_range_std: Optional[int] = None
+    height_std: Optional[int] = None
+    velocity_los_std: Optional[int] = None
+    truth_tag_application: Optional[int] = None
+    truth_tag_entity: Optional[int] = None
+    target_rcs: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -382,9 +384,15 @@ class DwellSegment:
     sensor_pos_alt: int = 0
     scale_factor_lat: Optional[float] = None
     scale_factor_lon: Optional[float] = None
+    sensor_pos_unc_along_track: Optional[int] = None
+    sensor_pos_unc_cross_track: Optional[int] = None
+    sensor_pos_unc_altitude: Optional[int] = None
     sensor_track: Optional[float] = None
     sensor_speed: Optional[int] = None
     sensor_vertical_velocity: Optional[int] = None
+    sensor_track_uncertainty: Optional[int] = None
+    sensor_speed_uncertainty: Optional[int] = None
+    sensor_vertical_velocity_uncertainty: Optional[int] = None
     platform_orientation_heading: Optional[float] = None
     platform_orientation_pitch: Optional[float] = None
     platform_orientation_roll: Optional[float] = None

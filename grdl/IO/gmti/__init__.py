@@ -10,6 +10,13 @@ Reader, writer, and helpers for STANAG 4607 GMTI data. Provides:
   ``open_eo``, etc.
 - Helpers for dwell footprint geometry, ground-relative velocity,
   target-report filtering, and quick-look summary statistics.
+- ``build_steering_matrix_from_cphd_metadata`` — derive a ground-
+  projected per-channel steering matrix from the CPHD ``Antenna``
+  section, by ray-tracing each ``DCx`` scan sample around the antenna's
+  electrical boresight to the planar reference surface and evaluating
+  the per-channel ``Array``/``Element`` gain/phase polynomials at the
+  resulting direction cosines. Use this as the column dictionary for
+  STAP detectors driven by metadata rather than data.
 
 Author
 ------
@@ -31,6 +38,10 @@ Modified
 2026-04-29
 """
 
+from grdl.IO.gmti.cphd_steering import (
+    CPHDMetadataSteering,
+    build_steering_matrix_from_cphd_metadata,
+)
 from grdl.IO.gmti.helpers import (
     dwell_footprint_polygon,
     filter_target_reports,
@@ -48,4 +59,6 @@ __all__ = [
     'ground_relative_velocity',
     'filter_target_reports',
     'summarize',
+    'CPHDMetadataSteering',
+    'build_steering_matrix_from_cphd_metadata',
 ]
