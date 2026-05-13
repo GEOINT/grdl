@@ -57,8 +57,16 @@ from typing import Optional
 
 # GRDL
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from grdl.IO.sar import Sentinel1L0ToCRSD, CRSDToCPHD, CPHDToSICD
+from grdl.IO.sar import (
+    Sentinel1L0ToCRSD,
+    CRSDReader,
+    CPHDReader,
+    CPHDWriter,
+    SICDWriter,
+    build_sicd_metadata,
+)
 from grdl.IO.sar.sentinel1_l0 import Sentinel1L0Reader
+from grdl.image_processing.sar import RangeDopplerAlgorithm, CollectionGeometry
 
 logger = logging.getLogger(__name__)
 
@@ -101,21 +109,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Limit processing to this many pulses (for memory/speed).",
-    )
-    parser.add_argument(
-        "--burst",
-        type=int,
-        default=None,
-        help="1-based burst index for TOPSAR/IW mode. "
-             "Selects a single contiguous burst for image formation "
-             "(avoids inter-burst gaps that corrupt the RDA). "
-             "If not set, all vectors are processed.",
-    )
-    parser.add_argument(
-        "--block-size",
-        type=str,
-        default="auto",
-        help="RDA subaperture block size: 'auto', integer, or '0'.",
     )
     parser.add_argument(
         "--no-display",
@@ -259,8 +252,6 @@ def run_pipeline(
     channel: Optional[str] = None,
     swath: Optional[int] = None,
     max_pulses: Optional[int] = None,
-    burst: Optional[int] = None,
-    block_size: str = "auto",
     no_display: bool = False,
 ) -> None:
     """Run the full L0 SAFE → CRSD → CPHD → SICD pipeline.
@@ -321,20 +312,32 @@ def run_pipeline(
     logger.info("Stage 1 complete: %.2f GB in %.1fs", size_gb, t1 - t0)
     print(f"  CRSD written: {size_gb:.2f} GB in {t1 - t0:.1f}s")
 
-    # ── Stage 2: CRSD → CPHD ──
+    # ── Stage 2: CRSD → CPHD (range FFT) ──
     print(f"\n{'='*60}")
-    print("Stage 2: CRSD → CPHD")
+    print("Stage 2: CRSD → CPHD (range FFT)")
     print(f"{'='*60}")
 
     logger.info("Stage 2: CRSD → CPHD  input=%s  output=%s", crsd_path, cphd_path)
     t0 = time.perf_counter()
-    crsd_to_cphd = CRSDToCPHD(
-        crsd_path=crsd_path,
-        output_path=cphd_path,
-        channel=crsd_channel_id,
-        max_pulses=max_pulses,
-    )
-    crsd_to_cphd.convert()
+    with CRSDReader(crsd_path) as crsd_reader:
+        crsd_meta = crsd_reader.metadata
+        # Resolve channel
+        channel_ids = list(crsd_meta.data.channels.keys())
+        ch_id = (channel or channel_ids[0])
+        # Read raw time-domain signal — shape (num_vectors, num_samples)
+        signal_td, pvp = crsd_reader.read_signal(channel_id=ch_id)
+        if max_pulses is not None and signal_td.shape[0] > max_pulses:
+            mid = signal_td.shape[0] // 2
+            half = max_pulses // 2
+            signal_td = signal_td[mid - half: mid + half]
+            pvp = pvp[mid - half: mid + half]
+        # Range FFT: TD → FX domain
+        from scipy.fft import fft, fftshift
+        signal_fx = fftshift(fft(signal_td, axis=1), axes=1)
+        # Write CPHD
+        cphd_writer = CPHDWriter(cphd_path)
+        cphd_writer.write(signal_fx, pvp=pvp, metadata=crsd_meta.as_cphd())
+        cphd_writer.close()
     t1 = time.perf_counter()
     size_gb = cphd_path.stat().st_size / (1024**3)
     logger.info("Stage 2 complete: %.2f GB in %.1fs", size_gb, t1 - t0)
@@ -347,14 +350,25 @@ def run_pipeline(
 
     logger.info("Stage 3-4: CPHD → Image → SICD  input=%s  output=%s", cphd_path, sicd_path)
     t0 = time.perf_counter()
-    cphd_to_sicd = CPHDToSICD(
-        cphd_path=cphd_path,
-        output_path=sicd_path,
-        block_size=block_size,
-        burst=burst,
-        max_pulses=max_pulses,
-    )
-    cphd_to_sicd.convert()
+    with CPHDReader(cphd_path) as cphd_reader:
+        cphd_meta = cphd_reader.metadata
+        channel_ids = list(cphd_meta.data.channels.keys())
+        ch_id = channel_ids[0]
+        signal_fx, pvp = cphd_reader.read_signal(channel_id=ch_id)
+        if max_pulses is not None and signal_fx.shape[0] > max_pulses:
+            mid = signal_fx.shape[0] // 2
+            half = max_pulses // 2
+            signal_fx = signal_fx[mid - half: mid + half]
+            pvp = pvp[mid - half: mid + half]
+        geometry = CollectionGeometry.from_cphd(cphd_meta, pvp)
+        rda = RangeDopplerAlgorithm()
+        image = rda.form_image(signal_fx, geometry=geometry, pvp=pvp)
+        sicd_meta = build_sicd_metadata(
+            cphd_meta, geometry, image.shape, image_form_algo='RDA',
+        )
+    writer = SICDWriter(sicd_path, metadata=sicd_meta)
+    writer.write(image)
+    writer.close()
     t1 = time.perf_counter()
     size_mb = sicd_path.stat().st_size / (1024**2)
     logger.info("Stage 3-4 complete: %.1f MB in %.1fs", size_mb, t1 - t0)
@@ -369,7 +383,7 @@ def run_pipeline(
     print(f"  CRSD: {crsd_path}")
     print(f"  CPHD: {cphd_path}")
     print(f"  SICD: {sicd_path}")
-    print(f"  Image: {cphd_to_sicd.image.shape if cphd_to_sicd.image is not None else 'N/A'}")
+    print(f"  Image: {image.shape}")
     print(f"  Total time: {t_total:.1f}s")
 
     # ── Display ──
@@ -391,7 +405,5 @@ if __name__ == "__main__":
         channel=args.channel,
         swath=args.swath,
         max_pulses=args.max_pulses,
-        burst=args.burst,
-        block_size=args.block_size,
         no_display=args.no_display,
     )

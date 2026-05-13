@@ -65,7 +65,7 @@ from numpy.linalg import norm
 # GRDL
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from grdl.IO.sar import CPHDReader
-from grdl.image_processing.sar import RangeDopplerAlgorithm
+from grdl.image_processing.sar import RangeDopplerAlgorithm, CollectionGeometry
 
 
 # -- CLI ------------------------------------------------------------
@@ -381,7 +381,8 @@ def run_rda(
     # Form image
     print("\nForming image...")
     t_form = time.perf_counter()
-    image = rda.form_image(signal, geometry=None)
+    geometry = CollectionGeometry.from_cphd(meta, pvp)
+    image = rda.form_image(signal, geometry=geometry, pvp=pvp)
     t_done = time.perf_counter()
 
     print(f"\nImage formed: {image.shape}, dtype: {image.dtype}")
@@ -391,8 +392,11 @@ def run_rda(
     # -- Optional: Save SICD --
     if output is not None:
         print(f"\nWriting SICD to: {output}")
-        from grdl.IO.sar import SICDWriter
-        writer = SICDWriter(output)
+        from grdl.IO.sar import SICDWriter, build_sicd_metadata
+        sicd_meta = build_sicd_metadata(
+            meta, geometry, image.shape, image_form_algo='RDA',
+        )
+        writer = SICDWriter(output, metadata=sicd_meta)
         writer.write(image)
         print("  Done.")
 
