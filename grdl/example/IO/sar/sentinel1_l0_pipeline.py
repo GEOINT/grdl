@@ -59,9 +59,9 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from grdl.IO.sar import (
     Sentinel1L0ToCRSD,
+    Sentinel1CRSDtoCPHD,
     CRSDReader,
     CPHDReader,
-    CPHDWriter,
     SICDWriter,
     build_sicd_metadata,
 )
@@ -312,32 +312,20 @@ def run_pipeline(
     logger.info("Stage 1 complete: %.2f GB in %.1fs", size_gb, t1 - t0)
     print(f"  CRSD written: {size_gb:.2f} GB in {t1 - t0:.1f}s")
 
-    # ── Stage 2: CRSD → CPHD (range FFT) ──
+    # ── Stage 2: CRSD → CPHD (TOPS deramp + range FFT) ──
     print(f"\n{'='*60}")
-    print("Stage 2: CRSD → CPHD (range FFT)")
+    print("Stage 2: CRSD → CPHD (TOPS deramp + range FFT)")
     print(f"{'='*60}")
 
     logger.info("Stage 2: CRSD → CPHD  input=%s  output=%s", crsd_path, cphd_path)
     t0 = time.perf_counter()
-    with CRSDReader(crsd_path) as crsd_reader:
-        crsd_meta = crsd_reader.metadata
-        # Resolve channel
-        channel_ids = list(crsd_meta.data.channels.keys())
-        ch_id = (channel or channel_ids[0])
-        # Read raw time-domain signal — shape (num_vectors, num_samples)
-        signal_td, pvp = crsd_reader.read_signal(channel_id=ch_id)
-        if max_pulses is not None and signal_td.shape[0] > max_pulses:
-            mid = signal_td.shape[0] // 2
-            half = max_pulses // 2
-            signal_td = signal_td[mid - half: mid + half]
-            pvp = pvp[mid - half: mid + half]
-        # Range FFT: TD → FX domain
-        from scipy.fft import fft, fftshift
-        signal_fx = fftshift(fft(signal_td, axis=1), axes=1)
-        # Write CPHD
-        cphd_writer = CPHDWriter(cphd_path)
-        cphd_writer.write(signal_fx, pvp=pvp, metadata=crsd_meta.as_cphd())
-        cphd_writer.close()
+    Sentinel1CRSDtoCPHD(
+        crsd_path=crsd_path,
+        output_path=cphd_path,
+        safe_path=safe_path,
+        orbit_source='annotation',
+        channel_id=crsd_channel_id,
+    ).convert()
     t1 = time.perf_counter()
     size_gb = cphd_path.stat().st_size / (1024**3)
     logger.info("Stage 2 complete: %.2f GB in %.1fs", size_gb, t1 - t0)
