@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-05-08
 """
 
 # Standard library
@@ -64,6 +64,12 @@ from grdl.image_processing.sar.image_formation.geometry import (
     CollectionGeometry,
 )
 from grdl.image_processing.sar.image_formation.polar_grid import PolarGrid
+from grdl.interpolation.windowed_sinc import KaiserSincInterpolator
+
+
+_DEFAULT_INTERPOLATOR = KaiserSincInterpolator(
+    kernel_length=8, beta=5.0, oversample=1.0,
+)
 
 
 def _scipy_interp1d(
@@ -71,21 +77,11 @@ def _scipy_interp1d(
     y_old: np.ndarray,
     x_new: np.ndarray,
 ) -> np.ndarray:
-    """Default interpolation using scipy interp1d (linear).
+    """Linear interpolation via ``scipy.interpolate.interp1d``.
 
-    Parameters
-    ----------
-    x_old : np.ndarray
-        Original sample coordinates.
-    y_old : np.ndarray
-        Original sample values (complex).
-    x_new : np.ndarray
-        Target sample coordinates.
-
-    Returns
-    -------
-    np.ndarray
-        Interpolated values at ``x_new``.
+    Retained for callers that explicitly want linear interp; the PFA
+    default is now ``KaiserSincInterpolator`` (numba-parallel kernel
+    when numba is installed).
     """
     func = interp1d(
         x_old, y_old,
@@ -117,8 +113,10 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         Computed polar grid with k-space bounds and grid dimensions.
     interpolator : callable, optional
         Interpolation function with signature
-        ``(x_old, y_old, x_new) -> y_new``.
-        Defaults to ``scipy.interpolate.interp1d`` (linear).
+        ``(x_old, y_old, x_new) -> y_new``. Defaults to
+        ``KaiserSincInterpolator(kernel_length=8, beta=5.0)`` from
+        ``grdl.interpolation`` -- numba-parallel sinc kernel when
+        numba is installed, with a vectorized numpy fallback.
     weighting : str or callable, optional
         Window function applied to k-space data before the transform.
         Tapers the edges to reduce sidelobe artifacts (Gibbs
@@ -171,7 +169,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         phase_sgn: int = -1,
     ) -> None:
         self.grid = grid
-        self._interp = interpolator or _scipy_interp1d
+        self._interp = interpolator or _DEFAULT_INTERPOLATOR
         self._weight_func = self._resolve_weighting(weighting)
         self._pad_factor = 1.0
         self._phase_sgn = phase_sgn
@@ -244,26 +242,22 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             (npulses, pg.rec_n_samples), dtype=signal.dtype,
         )
 
-        # Precompute all kv polar coordinates as a 2D array (npulses x
-        # nsamples) to avoid repeated per-pulse overhead in
-        # get_kv_for_pulse (arange, multiply, index lookups).
+        # Per-pulse 1D kv polar coordinates. The earlier 2D precompute
+        # (freq_all, kv_all of shape npulses x nsamples in float64) is
+        # an O(npulses * nsamples) memory allocation that doubles the
+        # phase-history footprint -- catastrophic for multi-GB CPHDs.
+        # The interpolation loop is per-pulse anyway, so the inner
+        # cost is unchanged while peak memory drops by ~2x signal.
         geo = pg.geometry
         sample_indices = np.arange(geo.nsamples)
-        freq_all = (
-            sample_indices[np.newaxis, :]
-            * geo.fxss[:npulses, np.newaxis]
-            + geo.fx0[:npulses, np.newaxis]
-        )
-        cos_phi = np.cos(geo.phi[:npulses])
-        kv_all = (
-            pg.sf_conv
-            * freq_all
-            * cos_phi[:, np.newaxis]
-            * geo.k_sf[:npulses, np.newaxis]
+        pulse_scale = (
+            pg.sf_conv * np.cos(geo.phi[:npulses]) * geo.k_sf[:npulses]
         )
 
         for i in range(npulses):
-            result[i, :] = self._interp(kv_all[i], signal[i, :], kv_uniform)
+            freq_i = sample_indices * geo.fxss[i] + geo.fx0[i]
+            kv_i = pulse_scale[i] * freq_i
+            result[i, :] = self._interp(kv_i, signal[i, :], kv_uniform)
 
         return result
 
@@ -307,17 +301,11 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
 
         # Ground-plane projection can reverse the phi ordering
         # (phi decreasing → ku_ks descending). Interpolators require
-        # monotonically increasing x, so detect and flip once.
+        # monotonically increasing x, so flip proj+data once.
         ascending = proj[-1] >= proj[0]
-
-        # Precompute all ku_ks coordinates: each column i has
-        # ku_ks = kv_ks[i] * proj, giving shape (npulses, n_samples).
-        # Apply the ascending flip once to the entire 2D array and
-        # the data matrix, avoiding per-iteration conditional logic.
-        ku_ks_all = kv_ks[np.newaxis, :] * proj[:, np.newaxis]
         data = range_interpolated
         if not ascending:
-            ku_ks_all = ku_ks_all[::-1, :]
+            proj = proj[::-1]
             data = data[::-1, :]
 
         result = np.zeros(
@@ -325,10 +313,13 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             dtype=range_interpolated.dtype,
         )
 
+        # Per-column 1D ku coordinates. The earlier 2D precompute
+        # (ku_ks_all of shape npulses x rec_n_samples in float64) was
+        # the same magnitude as the phase-history -- removing it cuts
+        # peak memory by another ~signal-size on large CPHDs.
         for i in range(pg.rec_n_samples):
-            result[:, i] = self._interp(
-                ku_ks_all[:, i], data[:, i], ku_uniform,
-            )
+            ku_ks_i = kv_ks[i] * proj
+            result[:, i] = self._interp(ku_ks_i, data[:, i], ku_uniform)
 
         return result
 
@@ -340,6 +331,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         self,
         interpolated: np.ndarray,
         pad_factor: float = 1.25,
+        overwrite_x: bool = False,
     ) -> np.ndarray:
         """Transform from spatial frequency to image domain.
 
@@ -366,6 +358,11 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             is ``ceil(dim * pad_factor)``.  Values > 1.0 oversample the
             output image (finer pixel spacing, same scene extent).
             Set to 1.0 to disable padding.
+        overwrite_x : bool
+            If True, ``interpolated`` may be modified in place
+            (weighting is applied destructively) and should not be
+            used by the caller after this call. Saves an N-byte copy
+            of the rectangular k-space when weighting is enabled.
 
         Returns
         -------
@@ -380,33 +377,83 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         _is_gpu = _HAS_CUPY and isinstance(interpolated, cp.ndarray)
         xp = cp if _is_gpu else np
 
-        data = interpolated
-        naz, nrg = data.shape
+        naz, nrg = interpolated.shape
 
+        # 1) Apply k-space taper. With overwrite_x we mutate the
+        #    caller's array; otherwise we make one weighted copy
+        #    (same memory cost as the original code path).
         if self._weight_func is not None:
-            w_az = self._weight_func(naz).astype(data.real.dtype)
-            w_rg = self._weight_func(nrg).astype(data.real.dtype)
-            data = data * xp.asarray(w_az)[:, None] * xp.asarray(w_rg)[None, :]
+            w_az = self._weight_func(naz).astype(interpolated.real.dtype)
+            w_rg = self._weight_func(nrg).astype(interpolated.real.dtype)
+            w_az_b = xp.asarray(w_az)[:, None]
+            w_rg_b = xp.asarray(w_rg)[None, :]
+            if overwrite_x:
+                interpolated *= w_az_b
+                interpolated *= w_rg_b
+                data = interpolated
+            else:
+                data = interpolated * w_az_b * w_rg_b
+        else:
+            data = interpolated
 
-        # Zero-pad to suppress circular aliasing (fold-over)
+        # 2) Combined zero-pad + ifftshift in a single allocation.
+        #    Place the four input quadrants directly into the corners
+        #    of the padded buffer so the DC pixel ends up at (0, 0)
+        #    -- the form FFT2 expects. This eliminates the separate
+        #    ``ifftshift`` copy that the old code did, saving one
+        #    full N*pad_factor**2 array on multi-GB k-spaces.
         if pad_factor > 1.0:
             naz_pad = int(np.ceil(naz * pad_factor))
             nrg_pad = int(np.ceil(nrg * pad_factor))
-            padded = xp.zeros((naz_pad, nrg_pad), dtype=data.dtype)
-            # Center the k-space data in the padded array
-            az_start = (naz_pad - naz) // 2
-            rg_start = (nrg_pad - nrg) // 2
-            padded[az_start:az_start + naz, rg_start:rg_start + nrg] = data
-            data = padded
-
-        shifted = xp.fft.ifftshift(data)
-        if self._phase_sgn >= 0:
-            image = xp.fft.fftshift(xp.fft.fft2(shifted))
         else:
-            image = xp.fft.fftshift(xp.fft.ifft2(shifted))
+            naz_pad, nrg_pad = naz, nrg
+        h_naz = naz // 2
+        h_nrg = nrg // 2
+        o_naz = naz - h_naz
+        o_nrg = nrg - h_nrg
+        shifted = xp.zeros((naz_pad, nrg_pad), dtype=data.dtype)
+        shifted[:o_naz, :o_nrg] = data[h_naz:, h_nrg:]
+        shifted[:o_naz, nrg_pad - h_nrg:] = data[h_naz:, :h_nrg]
+        shifted[naz_pad - h_naz:, :o_nrg] = data[:h_naz, h_nrg:]
+        shifted[naz_pad - h_naz:, nrg_pad - h_nrg:] = data[:h_naz, :h_nrg]
 
-        # Output: rows = azimuth, cols = range
-        # Transpose to SICD (rows = range, cols = azimuth) at write time
+        # The caller's ``interpolated`` (and our alias ``data``) have
+        # been fully consumed; drop our local refs so the input
+        # k-space buffer can be reclaimed before the FFT allocates.
+        del data
+        if overwrite_x:
+            del interpolated
+
+        # 3) FFT. On CPU use scipy's pocketfft with workers=-1
+        #    (multi-threaded) and ``overwrite_x=True`` so the FFT
+        #    can use ``shifted`` as scratch instead of allocating a
+        #    second N-byte workspace.
+        if _is_gpu:
+            if self._phase_sgn >= 0:
+                image = xp.fft.fftshift(xp.fft.fft2(shifted))
+            else:
+                image = xp.fft.fftshift(xp.fft.ifft2(shifted))
+        else:
+            if self._phase_sgn >= 0:
+                image = _scipy_fft.fft2(
+                    shifted, workers=-1, overwrite_x=True,
+                )
+            else:
+                image = _scipy_fft.ifft2(
+                    shifted, workers=-1, overwrite_x=True,
+                )
+            del shifted
+            image = _scipy_fft.fftshift(image)
+
+        # Reverse the range axis (cols of (az, rg)) so that after the
+        # downstream (az, rg) → (rg, az) transpose, row 0 = near range
+        # and increasing row = increasing slant range, per SICD Vol 1
+        # §4.4. Without this flip the PFA's natural output places far
+        # range at row 0, which is non-spec.
+        image = image[:, ::-1]
+
+        # Output: rows = azimuth, cols = range (col 0 = near range).
+        # Transpose to SICD (rows = range, cols = azimuth) at write time.
         return image
 
     # ------------------------------------------------------------------
@@ -434,7 +481,8 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         """
         range_interp = self.interpolate_range(signal, geometry)
         az_interp = self.interpolate_azimuth(range_interp, geometry)
-        return self.compress(az_interp)
+        del range_interp
+        return self.compress(az_interp, overwrite_x=True)
 
     def get_output_grid(self) -> Dict[str, Any]:
         """Return output grid parameters for SICD metadata.

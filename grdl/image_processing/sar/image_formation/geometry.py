@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-05-07
 """
 
 # Standard library
@@ -375,8 +375,14 @@ class CollectionGeometry:
         self.k_sf = np.sqrt(1 - sin_graze**2) / np.sqrt(1 - sin_graze_ip**2)
 
         self.theta = float(abs(self.phi[-1] - self.phi[0]))
+        # SICD Vol 1 spec: uRG = -uIPX, uAZ = -uIPY. With ipx = +uIPX
+        # (toward platform) and ipy = ipx × ipn = -uIPY (since the spec's
+        # uIPY = uIPZ × uIPX), we have uAZ = -uIPY = +ipy and
+        # uRG = -uIPX = -ipx. PFA.compress() reverses the range axis so
+        # row 0 = near range; -ipx then correctly points in the direction
+        # of increasing row index = increasing slant range.
         self.az_uvect_ecf = ipy.copy()
-        self.rg_uvect_ecf = ipx.copy()
+        self.rg_uvect_ecf = -ipx.copy()
 
         # ARP polynomials (5th order)
         self.arp_poly_x = np.polynomial.Polynomial.fit(
