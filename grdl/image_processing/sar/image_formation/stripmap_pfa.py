@@ -45,6 +45,8 @@ from grdl.IO.models.cphd import CPHDMetadata, create_subaperture_metadata
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
 )
+from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 from grdl.image_processing.sar.image_formation.geometry import (
     CollectionGeometry,
 )
@@ -63,6 +65,12 @@ logger = logging.getLogger(__name__)
 _C = 299792458.0
 
 
+@processor_version('1.0.0')
+@processor_tags(
+    modalities=[IM.SAR],
+    category=PC.IMAGE_FORMATION,
+    description='Subaperture PFA mosaic for stripmap CPHD',
+)
 class StripmapPFA(ImageFormationAlgorithm):
     """Subaperture PFA for stripmap SAR image formation.
 

@@ -74,7 +74,9 @@ except ImportError:
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
 )
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.IO.models.cphd import CPHDMetadata
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 logger = logging.getLogger(__name__)
@@ -339,6 +341,12 @@ class _SubapertureNode:
     """Last pulse index (exclusive)."""
 
 
+@processor_version('1.0.0')
+@processor_tags(
+    modalities=[IM.SAR],
+    category=PC.IMAGE_FORMATION,
+    description='Fast Back-Projection for arbitrary CPHD collection geometry',
+)
 class FastBackProjection(ImageFormationAlgorithm):
     """Fast Factorized Back-Projection for strip map SAR.
 

@@ -64,7 +64,9 @@ from grdl.image_processing.sar.image_formation.geometry import (
     CollectionGeometry,
 )
 from grdl.image_processing.sar.image_formation.polar_grid import PolarGrid
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.interpolation.windowed_sinc import KaiserSincInterpolator
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 _DEFAULT_INTERPOLATOR = KaiserSincInterpolator(
@@ -100,6 +102,12 @@ _WINDOW_FUNCTIONS = {
 }
 
 
+@processor_version('1.0.0')
+@processor_tags(
+    modalities=[IM.SAR],
+    category=PC.IMAGE_FORMATION,
+    description='Polar Format Algorithm for spotlight CPHD',
+)
 class PolarFormatAlgorithm(ImageFormationAlgorithm):
     """Polar Format Algorithm for spotlight SAR image formation.
 

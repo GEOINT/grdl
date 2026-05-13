@@ -90,7 +90,9 @@ except ImportError:
 from grdl.image_processing.sar.image_formation.base import (
     ImageFormationAlgorithm,
 )
+from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.IO.models.cphd import CPHDMetadata, CPHDPVP
+from grdl.vocabulary import ImageModality as IM, ProcessorCategory as PC
 
 
 logger = logging.getLogger(__name__)
@@ -136,6 +138,12 @@ def _scipy_interp1d(
     return func(x_new)
 
 
+@processor_version('1.0.0')
+@processor_tags(
+    modalities=[IM.SAR],
+    category=PC.IMAGE_FORMATION,
+    description='Range-Doppler Algorithm for FX-domain CPHD (stripmap / sliding spotlight)',
+)
 class RangeDopplerAlgorithm(ImageFormationAlgorithm):
     """Range-Doppler Algorithm for stripmap SAR image formation.
 
