@@ -464,6 +464,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         self,
         signal: np.ndarray,
         geometry: Any,
+        pvp: Any = None,
     ) -> np.ndarray:
         """Run the full PFA pipeline: range → azimuth → compress.
 
@@ -471,14 +472,32 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         ----------
         signal : np.ndarray
             Phase history data, shape ``(npulses, nsamples)``.
+            Structured int16 dtype ``[('real','>i2'),('imag','>i2')]``
+            is automatically cast to complex64.
         geometry : CollectionGeometry
             Collection geometry.
+        pvp : CPHDPVP, optional
+            Per-vector parameters.  If provided and ``pvp.amp_sf`` is
+            not None, the per-pulse amplitude scale factor is applied
+            before interpolation.
 
         Returns
         -------
         np.ndarray
             Complex SAR image.
         """
+        # Cast structured int16 (Capella-style) to complex64
+        if signal.dtype.names is not None and set(signal.dtype.names) >= {"real", "imag"}:
+            signal = (
+                signal["real"].astype(np.float32)
+                + 1j * signal["imag"].astype(np.float32)
+            )
+
+        # Apply per-pulse AmpSF if provided
+        if pvp is not None and getattr(pvp, "amp_sf", None) is not None:
+            amp_sf = pvp.amp_sf.astype(np.float32)
+            signal = signal * amp_sf[:, np.newaxis]
+
         range_interp = self.interpolate_range(signal, geometry)
         az_interp = self.interpolate_azimuth(range_interp, geometry)
         del range_interp
@@ -538,7 +557,7 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
         SICDMetadata
             Ready to pass to ``grdl.IO.sar.SICDWriter``.
         """
-        from grdl.IO.sar.cphd_to_sicd import build_sicd_metadata
+        from grdl.IO.models.cphd_metadata import build_sicd_metadata
         return build_sicd_metadata(
             cphd_meta, geometry, image_shape,
             image_form_algo='PFA',
