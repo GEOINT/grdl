@@ -10,7 +10,8 @@ with fully corrected PVP fields including:
 * ``SRPPos`` set to the burst-center nadir point (not the global IARP)
 * ``SC0`` / ``SCSS`` consistent with the hardware ADC window (Fs)
 * ``FX1`` / ``FX2`` from the per-pulse chirp start frequency (TXPSF)
-* ``aFRR1`` / ``aFRR2`` from two-way range–Doppler rate
+* ``aFRR1`` / ``aFRR2`` from range chirp FM rate: ``2*f0/(c*LFMRate)`` /
+  ``2/(c*LFMRate)`` where ``LFMRate = BWInst / TXmtMin``
 
 Pipeline stage responsibilities
 --------------------------------
@@ -778,9 +779,20 @@ class CRSDtoCPHD:
         sc0  = f0 - fs / 2.0                   # = FrcvMin = ADC window start
         scss = fs / (n_cphd - 1)               # Hz/sample over n_cphd samples
 
-        # Per-pulse FX1/FX2 from CRSD FRCV1/FRCV2
-        frcv1 = crsd_pvp["FRCV1"].astype(np.float64)
-        frcv2 = crsd_pvp["FRCV2"].astype(np.float64)
+        # FX1/FX2: chirp bandwidth window centred on F0Ref, per NGA convention.
+        # NGA uses FX1 = f0 - BWInst/2, FX2 = f0 + BWInst/2 (not the full ADC
+        # window FrcvMin/FrcvMax).  BWInst is in crsd_params["bw"].
+        bw = crsd_params["bw"]
+        fx1_chirp = f0 - bw / 2.0
+        fx2_chirp = f0 + bw / 2.0
+
+        # aFRR1/aFRR2: encode the range chirp FM rate per the CPHD 1.0 spec.
+        # sarkit consistency check: aFRR1 = 2*fx_c / (c * LFMRate)
+        #                           aFRR2 = 2       / (c * LFMRate)
+        # where LFMRate = BWInst / TXmtMin (from CRSD TxSequence/Parameters).
+        chirp_rate = crsd_params["chirp_rate"]   # Hz/s = BWInst / TXmtMin
+        afrr1 = 2.0 * f0 / (_C * chirp_rate)
+        afrr2 = 2.0       / (_C * chirp_rate)
 
         # TOA window: half the receive window duration
         toa_half = float(n_cphd / (2.0 * fs))
@@ -847,16 +859,11 @@ class CRSDtoCPHD:
             # aFDOP ≈ 0 after deramp (residual = f_dc0)
             pvp_out["aFDOP"][sl]   = f_dc0
 
-            # aFRR: two-way range–Doppler rate ≈ 2*v^2/(c*R)
-            # Use platform speed and slant range at burst centre
-            v_mag = float(np.linalg.norm(vel_c[0]))
-            srp_range = float(np.linalg.norm(pos_c[0] - srp))
-            afrr = 2.0 * v_mag ** 2 / (_C * srp_range * (f0 / _C))
-            pvp_out["aFRR1"][sl]   = afrr
-            pvp_out["aFRR2"][sl]   = afrr
+            pvp_out["aFRR1"][sl]   = afrr1
+            pvp_out["aFRR2"][sl]   = afrr2
 
-            pvp_out["FX1"][sl]     = frcv1[b_start:b_end]
-            pvp_out["FX2"][sl]     = frcv2[b_start:b_end]
+            pvp_out["FX1"][sl]     = fx1_chirp
+            pvp_out["FX2"][sl]     = fx2_chirp
             pvp_out["TOA1"][sl]    = -toa_half
             pvp_out["TOA2"][sl]    =  toa_half
             pvp_out["TDTropoSRP"][sl] = 0.0
