@@ -33,12 +33,8 @@ Created
 
 Modified
 --------
-2026-05-06  Populate Grid.TimeCOAPoly so SICDGeolocation’s native
-            R/Rdot backend can build COAProjection from IFP-derived
-            SICDMetadata.
-2026-05-11  Add _build_pfa: PolarAngPoly, SpatialFreqSFPoly, IPN, FPN,
-            k-space corners; set pfa= in build_sicd_metadata when
-            image_form_algo='PFA'.
+2026-05-13  Relocated from grdl/IO/sar/cphd_metadata.py to
+            grdl/IO/models/cphd_metadata.py.
 """
 
 from __future__ import annotations

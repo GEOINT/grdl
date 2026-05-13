@@ -323,6 +323,7 @@ from grdl.IO.models.stanag4607 import (
     FreeTextSegment,
     PlatformLocationSegment,
 )
+from grdl.IO.models.cphd_metadata import build_sicd_metadata
 
 __all__ = [
     # Base
@@ -590,4 +591,6 @@ __all__ = [
     'TargetReport',
     'FreeTextSegment',
     'PlatformLocationSegment',
+    # CPHD → SICD metadata builder
+    'build_sicd_metadata',
 ]
