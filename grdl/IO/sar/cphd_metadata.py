@@ -33,7 +33,12 @@ Created
 
 Modified
 --------
-2026-05-06
+2026-05-06  Populate Grid.TimeCOAPoly so SICDGeolocation’s native
+            R/Rdot backend can build COAProjection from IFP-derived
+            SICDMetadata.
+2026-05-11  Add _build_pfa: PolarAngPoly, SpatialFreqSFPoly, IPN, FPN,
+            k-space corners; set pfa= in build_sicd_metadata when
+            image_form_algo='PFA'.
 """
 
 from __future__ import annotations
@@ -57,6 +62,7 @@ from grdl.IO.models import (
     SICDImageData,
     SICDImageFormation,
     SICDMetadata,
+    SICDPFA,
     SICDPosition,
     SICDRadarCollection,
     SICDRadarMode,
@@ -69,7 +75,7 @@ from grdl.IO.models import (
     SICDTxFrequencyProc,
     SICDWaveformParams,
 )
-from grdl.IO.models.common import LatLon, LatLonHAE, Poly1D, RowCol, XYZ, XYZPoly
+from grdl.IO.models.common import LatLon, LatLonHAE, Poly1D, Poly2D, RowCol, XYZ, XYZPoly
 
 
 # Algorithms accepted by the SICD spec (ImageFormation/ImageFormAlgo enum)
@@ -141,6 +147,8 @@ def build_sicd_metadata(
             cphd_meta, geometry, image_form_algo, grid_params,
         ),
         scpcoa=_build_scpcoa(geometry),
+        pfa=(_build_pfa(geometry, grid_params)
+             if image_form_algo == 'PFA' else None),
     )
 
 
@@ -247,11 +255,19 @@ def _build_grid(
         delta_k2=_as_float(az_dk2),
     )
 
+    # TimeCOAPoly: P(row_offset, col_offset) → COA time (s).
+    # For spotlight/short-CPI, a constant polynomial at the single
+    # COA time is exact. Stripmap or sliding-spotlight callers should
+    # override by passing a higher-order fit via grid_params.
+    coa_time = float(getattr(geometry, 'coa_time', 0.0))
+    time_coa_poly = Poly2D(coefs=np.array([[coa_time]], dtype=np.float64))
+
     return SICDGrid(
         image_plane=image_plane,
         type=grid_type,
         row=row_dp,
         col=col_dp,
+        time_coa_poly=time_coa_poly,
     )
 
 
@@ -281,6 +297,88 @@ def _build_position(geometry: Any) -> SICDPosition:
         getattr(geometry, 'arp_poly_z', None),
     )
     return SICDPosition(arp_poly=arp_poly)
+
+
+# ---------------------------------------------------------------------------
+# PFA-specific block builder
+# ---------------------------------------------------------------------------
+
+def _build_pfa(geometry: Any, grid_params: Dict[str, Any]) -> SICDPFA:
+    """Build the SICD ``PFA`` block from IFP collection geometry.
+
+    Fits ``PolarAngPoly`` (phi vs time) and ``SpatialFreqSFPoly``
+    (k_sf vs phi) to the per-pulse arrays in ``geometry``, then
+    populates IPN, FPN, and k-space corners.
+
+    Parameters
+    ----------
+    geometry : CollectionGeometry
+        Output of the image formation processor's geometry computation.
+    grid_params : dict
+        Grid parameters returned by ``processor.get_output_grid()``.
+
+    Returns
+    -------
+    SICDPFA
+        Populated PFA metadata block.
+    """
+    t = np.asarray(geometry.time, dtype=np.float64)
+    phi = np.asarray(geometry.phi, dtype=np.float64)
+    k_sf = np.asarray(geometry.k_sf, dtype=np.float64)
+
+    # Numerically stable polynomial fits via domain-scaled Polynomial.fit.
+    # .convert() expresses the result in natural (un-scaled) basis so the
+    # polynomial can be evaluated directly at absolute time / phi values.
+    poly_phi = np.polynomial.Polynomial.fit(t, phi, deg=5).convert()
+    poly_sf = np.polynomial.Polynomial.fit(phi, k_sf, deg=3).convert()
+    phi_coefs = np.asarray(poly_phi.coef, dtype=np.float64)
+    sf_coefs = np.asarray(poly_sf.coef, dtype=np.float64)
+
+    # IPN: image plane normal at COA (unit vector stored by the IFP).
+    ipn_arr = getattr(geometry, 'ipn', None)
+    ipn_xyz = None
+    if ipn_arr is not None:
+        ipn_arr = np.asarray(ipn_arr, dtype=np.float64)
+        if ipn_arr.size == 3:
+            ipn_xyz = XYZ(
+                x=float(ipn_arr[0]),
+                y=float(ipn_arr[1]),
+                z=float(ipn_arr[2]),
+            )
+
+    # FPN: WGS84 up vector at SRP at COA.
+    fpn_xyz = None
+    srp = getattr(geometry, 'srp', None)
+    if srp is not None:
+        srp_arr = np.asarray(srp, dtype=np.float64)
+        coa_idx = int(getattr(geometry, 'npulses', srp_arr.shape[0])) // 2
+        if 0 <= coa_idx < srp_arr.shape[0]:
+            srp_coa = srp_arr[coa_idx]
+            try:
+                from sarpy.geometry.geocoords import wgs_84_norm
+                fpn_arr = np.asarray(
+                    wgs_84_norm(srp_coa.reshape(1, 3))[0],
+                    dtype=np.float64,
+                )
+            except (ImportError, Exception):
+                fpn_arr = srp_coa / float(np.linalg.norm(srp_coa))
+            fpn_xyz = XYZ(
+                x=float(fpn_arr[0]),
+                y=float(fpn_arr[1]),
+                z=float(fpn_arr[2]),
+            )
+
+    return SICDPFA(
+        fpn=fpn_xyz,
+        ipn=ipn_xyz,
+        polar_ang_ref_time=float(getattr(geometry, 'coa_time', 0.0)),
+        polar_ang_poly=Poly1D(coefs=phi_coefs),
+        spatial_freq_sf_poly=Poly1D(coefs=sf_coefs),
+        krg1=_as_float(grid_params.get('rg_delta_k1')),
+        krg2=_as_float(grid_params.get('rg_delta_k2')),
+        kaz1=_as_float(grid_params.get('az_delta_k1')),
+        kaz2=_as_float(grid_params.get('az_delta_k2')),
+    )
 
 
 def _build_scpcoa(geometry: Any) -> SICDSCPCOA:

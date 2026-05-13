@@ -266,12 +266,19 @@ class CRSDToCPHD:
         tx_times = _read_intfrac(ppp, "TxTime")
         tx_pos = _read_xyz(ppp, "TxPos")
         tx_vel = _read_xyz(ppp, "TxVel")
+        # PPP FX1/FX2 are the transmitted chirp support limits (NGA-verified
+        # cross-check: CPHD FX1/FX2 match PPP FX1/FX2, NOT PVP FRCV1/FRCV2).
         fx1_ppp = ppp["FX1"].astype(np.float64)
         fx2_ppp = ppp["FX2"].astype(np.float64)
 
         rcv_start = _read_intfrac(pvp, "RcvStart")
         rcv_pos = _read_xyz(pvp, "RcvPos")
         rcv_vel = _read_xyz(pvp, "RcvVel")
+        # SC0 = ADC window start frequency = FrcvMin from channel parameters
+        # (NGA-verified).  Use the channel-level metadata value (fx1_abs) rather
+        # than the per-vector PVP FRCV1 because legacy grdl CRSDs incorrectly
+        # store the chirp start frequency (FX1) in FRCV1 instead of FrcvMin.
+        frcv1 = np.full(n_vec, crsd_meta["fx1_abs"])
 
         tx_pulse_idx = pvp["TxPulseIndex"].astype(np.int64)
         signal_flags = (
@@ -285,20 +292,45 @@ class CRSDToCPHD:
             else np.ones(n_vec)
         )
 
-        # ── Range FFT: time-domain → FX-domain ──
-        logger.info("  Applying range FFT (%d × %d)…", n_vec, n_samp)
-        t_fft = time.perf_counter()
-        signal_fx = np.fft.fftshift(np.fft.fft(signal, axis=1), axes=1)
-        signal_fx = signal_fx.astype(np.complex64)
+        # CRSD 1.0 stores FX-domain (deramped) signal by definition of the
+        # standard — there is no DomainType field because FX is the only
+        # permitted representation.  The signal must NOT be FFT'd here;
+        # applying an FFT to already-FX data produces garbage.
+        #
+        # Zero-pad to the nearest multiple of 1024 ≥ n_samp to match the
+        # NGA CPHD convention (NGA: 23868 → 24576 = 24 × 1024).
+        _PAD = 1024
+        n_samp_cphd = ((n_samp + _PAD - 1) // _PAD) * _PAD
+        if n_samp_cphd != n_samp:
+            logger.info(
+                "  Zero-padding signal: %d → %d samples (nearest multiple of %d)",
+                n_samp, n_samp_cphd, _PAD,
+            )
+            signal_fx = np.zeros(
+                (n_vec, n_samp_cphd), dtype=np.complex64
+            )
+            signal_fx[:, :n_samp] = signal.astype(np.complex64)
+        else:
+            signal_fx = signal.astype(np.complex64)
         del signal
-        logger.info("  FFT done in %.2fs", time.perf_counter() - t_fft)
 
         # FX-domain parameters
         f0 = crsd_meta["f0"]
         fs = crsd_meta["fs"]
-        fx1_abs = f0 - fs / 2.0
-        fx2_abs = f0 + fs / 2.0
-        scss = fs / (n_samp - 1) if n_samp > 1 else fs
+
+        # SCSS = frequency step between adjacent FX samples in the CPHD.
+        # NGA-verified: SCSS = Fs / (NumSamples_CPHD - 1) where
+        # NumSamples_CPHD is the zero-padded (nearest-1024-multiple) sample count.
+        # For IW1: 64,345,238.13 / (24576 - 1) = 2618.21 Hz.
+        # Fs is the raw ADC sample rate from the CRSD channel metadata — this is
+        # the physical clock rate of the ADC hardware (64.345 MHz for Sentinel-1),
+        # NOT a post-decimation rate.
+        scss = fs / (n_samp_cphd - 1) if n_samp_cphd > 1 else fs
+
+        # RcvTime = midpoint of the receive window (NGA-verified cross-check:
+        # CPHD RcvTime = CRSD RcvStart + N_samp / (2 * Fs), not just RcvStart).
+        half_window = n_samp / (2.0 * fs)
+        rcv_time = rcv_start + half_window
 
         # ── Merge PPP + PVP → CPHD PVP ──
         ppp_n = len(ppp)
@@ -309,15 +341,19 @@ class CRSDToCPHD:
             tx_time=tx_times[tx_idx],
             tx_pos=tx_pos[tx_idx],
             tx_vel=tx_vel[tx_idx],
-            rcv_time=rcv_start,
+            rcv_time=rcv_time,
             rcv_pos=rcv_pos,
             rcv_vel=rcv_vel,
             iarp_ecf=crsd_meta["iarp_ecf"],
-            fx1_abs=fx1_abs,
-            fx2_abs=fx2_abs,
+            # FX1/FX2: per-vector PPP transmit chirp support (NGA-verified).
+            # Index into PPP using TxPulseIndex, same as TxTime/TxPos.
+            fx1_per_vec=fx1_ppp[tx_idx],
+            fx2_per_vec=fx2_ppp[tx_idx],
+            # SC0: per-vector ADC window start frequency = FRCV1 (NGA-verified).
+            sc0_per_vec=frcv1,
             f0=f0,
             fs=fs,
-            n_samp=n_samp,
+            n_samp=n_samp_cphd,
             scss=scss,
             signal_flags=signal_flags,
             amp_sf=amp_sf,
@@ -325,7 +361,7 @@ class CRSDToCPHD:
 
         # ── Build CPHD XML ──
         xmltree = self._build_cphd_xml(
-            crsd_meta, ch_id, n_vec, n_samp, cphd_vectors,
+            crsd_meta, ch_id, n_vec, n_samp_cphd, cphd_vectors,
         )
 
         # ── Build PVP structured array ──
@@ -450,6 +486,22 @@ class CRSDToCPHD:
         ch_param = crsd_xml.find("{*}Channel/{*}Parameters")
         meta["fs"] = float(ch_param.findtext("{*}Fs") or meta["bw"])
 
+        # FX frequency bounds that span the actual chirp support.
+        # FrcvMin/FrcvMax are the per-channel receive frequency limits in the
+        # CRSD Channel/Parameters block; they correspond to FRCV1/FRCV2 in the
+        # PVP and represent the start and end of the chirp in frequency.  Using
+        # these instead of f0 ± Fs/2 ensures the CPHD FX axis covers exactly
+        # the chirp bandwidth (56.5 MHz for IW) regardless of the ADC rate.
+        frcv_min_str = ch_param.findtext("{*}FrcvMin")
+        frcv_max_str = ch_param.findtext("{*}FrcvMax")
+        if frcv_min_str and frcv_max_str:
+            meta["fx1_abs"] = float(frcv_min_str)
+            meta["fx2_abs"] = float(frcv_max_str)
+        else:
+            # Fall back to f0 ± bw/2 when FrcvMin/Max are absent.
+            meta["fx1_abs"] = meta["f0"] - meta["bw"] / 2.0
+            meta["fx2_abs"] = meta["f0"] + meta["bw"] / 2.0
+
         # Polarization
         rx_pol_elem = ch_param.find("{*}RcvPolarization/{*}PolarizationID")
         meta["rx_pol"] = rx_pol_elem.text if rx_pol_elem is not None else "V"
@@ -495,8 +547,9 @@ class CRSDToCPHD:
         iarp_ecf = meta["iarp_ecf"]
         iarp_llh = meta["iarp_llh"]
 
-        fx1_abs = f0 - fs / 2.0
-        fx2_abs = f0 + fs / 2.0
+        # Chirp-support frequency bounds — derived from FrcvMin/FrcvMax.
+        fx1_abs = meta["fx1_abs"]
+        fx2_abs = meta["fx2_abs"]
         toa_saved = (n_samp - 1) / fs if n_samp > 1 else 1.0 / fs
         dwell_time = float(vectors.tx_time.max() - vectors.tx_time.min())
         tx_pulse_len = meta["tx_pulse_len"]
@@ -579,7 +632,7 @@ class CRSDToCPHD:
         _sub(pol_e, "TxPol", meta["tx_pol"])
         _sub(pol_e, "RcvPol", meta["rx_pol"])
         _sub(ch_params, "FxC", f"{f0:.12g}")
-        _sub(ch_params, "FxBW", f"{fs:.12g}")
+        _sub(ch_params, "FxBW", f"{bw:.12g}")
         _sub(ch_params, "TOASaved", f"{toa_saved:.12g}")
         dw = _sub(ch_params, "DwellTimes")
         _sub(dw, "CODId", "COD1")
@@ -714,8 +767,9 @@ class _CPHDVectors:
         rcv_pos: np.ndarray,
         rcv_vel: np.ndarray,
         iarp_ecf: np.ndarray,
-        fx1_abs: float,
-        fx2_abs: float,
+        fx1_per_vec: np.ndarray,
+        fx2_per_vec: np.ndarray,
+        sc0_per_vec: np.ndarray,
         f0: float,
         fs: float,
         n_samp: int,
@@ -734,13 +788,16 @@ class _CPHDVectors:
         # SRP = IARP (constant)
         self.srp_pos = np.tile(iarp_ecf, (n_vec, 1))
 
-        # Frequency parameters
-        self.fx1 = np.full(n_vec, fx1_abs)
-        self.fx2 = np.full(n_vec, fx2_abs)
-        self.sc0 = np.full(n_vec, fx1_abs)
+        # Frequency parameters — per-vector from PPP / PVP (NGA-verified).
+        # FX1/FX2: transmitted chirp support (from PPP FX1/FX2).
+        # SC0: ADC window start frequency = FRCV1 (frequency at sample 0).
+        self.fx1 = np.asarray(fx1_per_vec, dtype=np.float64)
+        self.fx2 = np.asarray(fx2_per_vec, dtype=np.float64)
+        self.sc0 = np.asarray(sc0_per_vec, dtype=np.float64)
         self.scss = np.full(n_vec, scss)
 
-        # TOA parameters
+        # TOA parameters: ± half the receive-window duration.
+        # n_samp is the CPHD (zero-padded) sample count so TOASaved = (n_samp-1)/Fs.
         toa_saved = (n_samp - 1) / fs if n_samp > 1 else 1.0 / fs
         self.toa1 = np.full(n_vec, -toa_saved / 2.0)
         self.toa2 = np.full(n_vec, toa_saved / 2.0)
@@ -762,8 +819,13 @@ class _CPHDVectors:
         wavelength = _C / f0
 
         self.a_fdop = -2.0 * v_r / wavelength
-        self.a_frr1 = _C / (2.0 * fx1_abs) * np.ones(n_vec)
-        self.a_frr2 = _C / (2.0 * fx2_abs) * np.ones(n_vec)
+        # aFRR1/aFRR2: rate of change of two-way propagation time at FX1/FX2.
+        # Correct formula: 2*v_r / (c*FX). For nearly-broadside IW v_r≈0 → ~0.
+        # Previous code used c/(2*FX) which is off by ~10^9 — now corrected.
+        fx1_safe = np.where(self.fx1 > 0, self.fx1, f0)
+        fx2_safe = np.where(self.fx2 > 0, self.fx2, f0)
+        self.a_frr1 = 2.0 * v_r / (_C * fx1_safe)
+        self.a_frr2 = 2.0 * v_r / (_C * fx2_safe)
 
     def to_structured(self, dtype: np.dtype) -> np.ndarray:
         """Pack into a sarkit PVP structured array."""

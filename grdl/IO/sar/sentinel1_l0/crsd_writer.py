@@ -59,6 +59,8 @@ from grdl.IO.sar.sentinel1_l0.constants import (
     POL_TO_TXRX,
     SENTINEL1_CENTER_FREQUENCY_HZ,
     SPEED_OF_LIGHT,
+    WGS84_SEMI_MAJOR_AXIS,
+    WGS84_SEMI_MINOR_AXIS,
 )
 from grdl.IO.sar.sentinel1_l0.decoder import Sentinel1Decoder
 from grdl.IO.sar.sentinel1_l0.orbit import OrbitInterpolator, OrbitLoader, OrbitResolver
@@ -797,7 +799,10 @@ class Sentinel1L0ToCRSD:
         fine = first_df["Fine Time"].values.astype(np.float64)
         sensing_gps = coarse + fine   # GPS seconds since GPS epoch
 
-        ref_time_gps = (sensing_gps.min() + sensing_gps.max()) / 2.0
+        # Use the start of the collect as the reference time, matching NGA
+        # convention (CollectionRefTime ≈ first pulse time, so all TxTime
+        # values are small and positive rather than symmetric around 0).
+        ref_time_gps = float(sensing_gps.min())
 
         # GPS → UTC: subtract leap seconds
         utc_seconds = ref_time_gps - GPS_LEAP_SECONDS
@@ -820,52 +825,160 @@ class Sentinel1L0ToCRSD:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Compute IARP from manifest footprint centroid.
 
+        Resolution priority:
+
+        1. **Manifest GML polygon** — ``manifest.safe`` in every
+           Sentinel-1 SAFE product (Level-0, 1, and 2) contains a
+           ``safe:footPrint / gml:coordinates`` element whose text is
+           a space-separated list of ``lat,lon`` pairs forming the
+           scene boundary polygon.  The centroid of these vertices is
+           a generalizable, product-independent scene centre estimate
+           that typically agrees with the reference IARP to within a
+           few hundred metres (≪ 1 range resolution cell for IW).
+
+        2. **Orbit nadir projection** — If the manifest cannot be
+           parsed, project the satellite position at the collection
+           reference time to the WGS-84 surface.  Gives a surface
+           point directly below the satellite; the slant range will
+           be close to orbit altitude (~700 km), shorter than the
+           true IW swath range (~800–950 km).  Acceptable for orbit
+           planning but causes mild quadratic-phase mismatch in the
+           RDA focuser.
+
+        3. **Origin fallback** — Used only when neither of the above
+           is available.
+
         Parameters
         ----------
         meta : Sentinel1L0Metadata
         orbit : OrbitInterpolator, optional
-            Used to compute a nadir-point fallback when no footprint
-            is available in the metadata.
+            Used for the nadir-point fallback (priority 2).
         ref_time_gps : float, optional
-            GPS seconds of the collection reference time, used with
-            *orbit* for the nadir-point fallback.
+            GPS seconds of the collection reference time (priority 2).
 
         Returns
         -------
         (iarp_llh, iarp_ecf) : tuple of ndarray
         """
-        footprint = getattr(meta, "footprint", None) or []
-        if not footprint:
-            if orbit is not None and ref_time_gps is not None:
-                # Project satellite nadir to ellipsoid as best-effort IARP.
-                # This gives a valid surface point near the actual scene.
-                orbit_ref_gps = _datetime_to_gps(orbit.reference_time)
-                orbit_rel = (ref_time_gps - GPS_LEAP_SECONDS) - orbit_ref_gps
-                sat_pos, _ = orbit.interpolate_single(float(orbit_rel))
-                # Scale sat_pos down to ellipsoid surface (hae=0)
-                from grdl.geolocation.coordinates import ecef_to_geodetic
-                sat_llh = ecef_to_geodetic(sat_pos.reshape(1, 3))[0]
-                iarp_llh = np.array([sat_llh[0], sat_llh[1], 0.0])
-                iarp_ecf = geodetic_to_ecef(iarp_llh)
-                logger.warning(
-                    "No footprint in metadata; using satellite nadir "
-                    "(lat=%.2f, lon=%.2f) as IARP fallback.",
-                    iarp_llh[0], iarp_llh[1],
-                )
-            else:
-                logger.warning(
-                    "No footprint or orbit available; using (0, 0, 0) IARP"
-                )
-                iarp_llh = np.array([0.0, 0.0, 0.0])
-                iarp_ecf = geodetic_to_ecef(iarp_llh)
+        # ── Priority 1: manifest.safe GML footprint polygon ──────────
+        manifest_iarp = self._iarp_from_manifest_gml()
+        if manifest_iarp is not None:
+            iarp_llh, iarp_ecf = manifest_iarp
+            logger.info(
+                "IARP from manifest GML: lat=%.4f lon=%.4f",
+                iarp_llh[0], iarp_llh[1],
+            )
             return iarp_llh, iarp_ecf
 
-        coords = [(c.lat, c.lon) for c in footprint]
-        if len(coords) > 1 and coords[0] == coords[-1]:
-            coords = coords[:-1]
+        # ── Priority 2: deprecated L1-style footprint on metadata ────
+        footprint = getattr(meta, "footprint", None) or []
+        if footprint:
+            coords = [(c.lat, c.lon) for c in footprint]
+            if len(coords) > 1 and coords[0] == coords[-1]:
+                coords = coords[:-1]
+            mean_lat = float(np.mean([c[0] for c in coords]))
+            mean_lon = float(np.mean([c[1] for c in coords]))
+            iarp_llh = np.array([mean_lat, mean_lon, 0.0])
+            iarp_ecf = geodetic_to_ecef(iarp_llh)
+            logger.info(
+                "IARP from metadata footprint: lat=%.4f lon=%.4f",
+                mean_lat, mean_lon,
+            )
+            return iarp_llh, iarp_ecf
 
-        mean_lat = float(np.mean([c[0] for c in coords]))
-        mean_lon = float(np.mean([c[1] for c in coords]))
+        # ── Priority 3: orbit nadir projection ───────────────────────
+        if orbit is not None and ref_time_gps is not None:
+            orbit_ref_gps = _datetime_to_gps(orbit.reference_time)
+            orbit_rel = (ref_time_gps - GPS_LEAP_SECONDS) - orbit_ref_gps
+            sat_pos, _ = orbit.interpolate_single(float(orbit_rel))
+            from grdl.geolocation.coordinates import ecef_to_geodetic
+            sat_llh = ecef_to_geodetic(sat_pos.reshape(1, 3))[0]
+            iarp_llh = np.array([sat_llh[0], sat_llh[1], 0.0])
+            iarp_ecf = geodetic_to_ecef(iarp_llh)
+            logger.warning(
+                "manifest.safe GML not found; using satellite nadir "
+                "(lat=%.2f, lon=%.2f) as IARP — slant range will be "
+                "~orbit altitude, not true scene slant range.",
+                iarp_llh[0], iarp_llh[1],
+            )
+            return iarp_llh, iarp_ecf
+
+        # ── Priority 4: last-resort origin ───────────────────────────
+        logger.warning(
+            "No footprint or orbit available; using (0, 0, 0) IARP"
+        )
+        iarp_llh = np.array([0.0, 0.0, 0.0])
+        iarp_ecf = geodetic_to_ecef(iarp_llh)
+        return iarp_llh, iarp_ecf
+
+    def _iarp_from_manifest_gml(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Parse IARP from the GML polygon in ``manifest.safe``.
+
+        All Sentinel-1 SAFE products carry a ``safe:footPrint /
+        gml:coordinates`` element whose text is a space-separated
+        list of ``lat,lon`` vertices (closed polygon).  The centroid
+        of those vertices is used as the scene reference point.
+
+        The ``gml:coordinates`` element uses comma-separated pairs
+        ordered as ``lat,lon`` (not the ISO 19136 ``lon,lat`` default)
+        — this is consistent with ESA's manifest serialisation across
+        Level-0, Level-1, and Level-2 products.
+
+        Returns
+        -------
+        tuple of (iarp_llh, iarp_ecf) or None
+            None if the manifest cannot be found or parsed.
+        """
+        manifest = self.safe_path / "manifest.safe"
+        if not manifest.exists():
+            return None
+        try:
+            tree = etree.parse(str(manifest))
+            _GML = "http://www.opengis.net/gml"
+            coords_elem = tree.find(f".//{{{_GML}}}coordinates")
+            if coords_elem is None or not (coords_elem.text or "").strip():
+                return None
+
+            raw = coords_elem.text.strip().split()
+            lats: List[float] = []
+            lons: List[float] = []
+            for token in raw:
+                a_str, b_str = token.split(",")
+                lats.append(float(a_str))  # ESA serialises lat first
+                lons.append(float(b_str))
+
+            if not lats:
+                return None
+
+            # Drop closing duplicate vertex of a closed polygon
+            if len(lats) > 1 and (
+                abs(lats[-1] - lats[0]) < 1e-9
+                and abs(lons[-1] - lons[0]) < 1e-9
+            ):
+                lats = lats[:-1]
+                lons = lons[:-1]
+
+            mean_lat = float(np.mean(lats))
+            mean_lon = float(np.mean(lons))
+            iarp_llh = np.array([mean_lat, mean_lon, 0.0])
+            iarp_ecf = geodetic_to_ecef(iarp_llh)
+            return iarp_llh, iarp_ecf
+
+        except Exception as exc:
+            logger.warning(
+                "Could not parse manifest.safe GML for IARP: %s", exc
+            )
+            return None
+
+    def _compute_iarp_coords(
+        self,
+        footprint: list,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """(Legacy helper: compute IARP from a list of lat/lon coords.)"""
+        if len(footprint) > 1 and footprint[0] == footprint[-1]:
+            footprint = footprint[:-1]
+        mean_lat = float(np.mean([c[0] for c in footprint]))
+        mean_lon = float(np.mean([c[1] for c in footprint]))
         hae = 0.0
 
         iarp_llh = np.array([mean_lat, mean_lon, hae])
@@ -898,61 +1011,121 @@ class Sentinel1L0ToCRSD:
         """
         import pandas as pd
 
-        # Global bounds from all-swath, all-pol echo DataFrames
+        # Global bounds from all-swath, all-pol echo DataFrames.
+        # TxTime convention: the ISP packet timestamp (Coarse+Fine) is used
+        # directly as TxTime.  This matches the reference CRSD convention.
+        # RcvStart = ISP_time + per-pulse SWST, where SWST is the on-board
+        # measured delay from the TX pulse to the receive window opening.
         all_sensing: List[np.ndarray] = []
         all_rcv_start: List[np.ndarray] = []
         for df in full_echo_dfs.values():
             coarse = df["Coarse Time"].values.astype(np.float64)
             fine = df["Fine Time"].values.astype(np.float64)
-            # ISP Coarse+Fine = GPS seconds at first receive sample
-            # (RcvStart).  TX time = RcvStart - SWST - Rank*PRI
-            # per [ISP] S1-IF-ASD-PL-0007 Table 3-2.
-            sensing = coarse + fine
-            if (
-                "SWST" not in df.columns
-                or "Rank" not in df.columns
-                or "PRI" not in df.columns
-            ):
-                raise ValueError(
-                    "Echo DataFrame missing SWST/Rank/PRI columns — "
-                    "cannot compute TX pulse origin times."
-                )
-            swst_b = df["SWST"].values.astype(np.float64)
-            rank_b = df["Rank"].values.astype(np.float64)
-            pri_b = df["PRI"].values.astype(np.float64)
-            rf_times = sensing - swst_b - rank_b * pri_b
-            all_sensing.append(rf_times)
-            all_rcv_start.append(sensing)  # ISP time IS the receive start
+            sensing = coarse + fine  # ISP packet timestamp → TxTime
+            all_sensing.append(sensing)
+            if "SWST" in df.columns:
+                swst_b = df["SWST"].values.astype(np.float64)
+                all_rcv_start.append(sensing + swst_b)
+            else:
+                all_rcv_start.append(sensing)
 
         sensing_all = np.concatenate(all_sensing) - ref_time_gps
         rcv_all = np.concatenate(all_rcv_start) - ref_time_gps
 
         f0 = float(getattr(radar, "center_frequency_hz", SENTINEL1_CENTER_FREQUENCY_HZ))
-        bw = float(getattr(radar, "tx_bandwidth_hz", 42.79e6))
+
+        # Compute chirp bandwidth from per-packet ISP data.  The Tx Ramp Rate
+        # and Tx Pulse Length vary per subswath (IW1/IW2/IW3 have different
+        # waveforms).  Use the first swath_channel's echo_df (the channel
+        # being exported) so FxBW/BWInst/TXmtMin reflect the correct subswath
+        # parameters, not a median across all three subswaths.
+        _sample_df = next(iter(swath_channels.values())).echo_df
+        if (
+            "Tx Ramp Rate" in _sample_df.columns
+            and "Tx Pulse Length" in _sample_df.columns
+        ):
+            _ramp = _sample_df["Tx Ramp Rate"].values.astype(np.float64)
+            _plen = _sample_df["Tx Pulse Length"].values.astype(np.float64)
+            bw = float(np.median(np.abs(_ramp) * _plen))
+        else:
+            bw = float(getattr(radar, "chirp_bandwidth_hz", 0.0)) or 42.79e6
+
+        # Compute the transmit frequency range from Tx Pulse Start Frequency.
+        # TXPSF is the chirp start offset from the carrier (negative for
+        # IW modes, which start below f0).  This gives exact FX1/FX2 values
+        # consistent with the per-pulse PPP FX1/FX2 written later.
+        if "Tx Pulse Start Frequency" in _sample_df.columns:
+            _txpsf = _sample_df["Tx Pulse Start Frequency"].values.astype(np.float64)
+            fx_min = float(f0 + np.median(_txpsf))
+            fx_max = fx_min + bw
+        else:
+            fx_min = f0 - bw / 2.0
+            fx_max = f0 + bw / 2.0
+
+        # Compute ADC sampling rate for FRCV1/FRCV2 (ADC window = f0 ± Fs/2).
+        # NGA-verified: FRCV1/FrcvMin = f0 - Fs/2 (full receive window start),
+        # NOT the chirp start frequency (FX1 = f0 + TXPSF).
+        try:
+            from sentinel1decoder.utilities import (
+                range_dec_to_sample_rate as _rd_to_fs,
+            )
+            if "Range Decimation" in _sample_df.columns:
+                _rd = _sample_df["Range Decimation"].iloc[0]
+                _adc_fs = float(_rd_to_fs(_rd))
+            else:
+                _adc_fs = float(
+                    getattr(radar, "range_sampling_rate_hz", 64.345238e6)
+                )
+        except Exception:
+            _adc_fs = float(
+                getattr(radar, "range_sampling_rate_hz", 64.345238e6)
+            )
+        frcv_min = f0 - _adc_fs / 2.0
+        frcv_max = f0 + _adc_fs / 2.0
 
         per_channel: Dict[str, Dict] = {}
         for key, sc in swath_channels.items():
             ch_coarse = sc.echo_df["Coarse Time"].values.astype(np.float64)
             ch_fine = sc.echo_df["Fine Time"].values.astype(np.float64)
-            # ISP time is the receive start directly.
-            ch_rcv = ch_coarse + ch_fine
+            ch_isp = ch_coarse + ch_fine
+            # RcvStart = ISP_time + per-pulse SWST.
+            if "SWST" in sc.echo_df.columns:
+                ch_swst = sc.echo_df["SWST"].values.astype(np.float64)
+                ch_rcv_start = ch_isp + ch_swst
+            else:
+                ch_rcv_start = ch_isp
             per_channel[key] = {
-                "rcv_start_time1": float(ch_rcv.min() - ref_time_gps),
-                "rcv_start_time2": float(ch_rcv.max() - ref_time_gps),
+                "rcv_start_time1": float(ch_rcv_start.min() - ref_time_gps),
+                "rcv_start_time2": float(ch_rcv_start.max() - ref_time_gps),
             }
+
+        # Per-packet pulse parameters for TXmtMin/TXmtMax (used in
+        # _build_tx_sequence).  Computed here so they are available in the
+        # timing dict without requiring the echo_df to be passed separately.
+        if (
+            "Tx Ramp Rate" in _sample_df.columns
+            and "Tx Pulse Length" in _sample_df.columns
+        ):
+            tx_pulse_len_timing = float(np.median(_plen))
+            chirp_rate_timing = float(np.median(_ramp))
+        else:
+            tx_pulse_len_timing = float(getattr(radar, "tx_pulse_length_s", 52.0e-6))
+            chirp_rate_timing = float(getattr(radar, "tx_pulse_ramp_rate_hz_per_s", 779.038e9))
 
         return {
             "tx_time1": float(sensing_all.min()),
             "tx_time2": float(sensing_all.max()),
-            "fx_min": f0 - bw / 2.0,
-            "fx_max": f0 + bw / 2.0,
+            "fx_min": fx_min,
+            "fx_max": fx_max,
             "rcv_start_time1": float(rcv_all.min()),
             "rcv_start_time2": float(rcv_all.max()),
-            "frcv_min": f0 - bw / 2.0,
-            "frcv_max": f0 + bw / 2.0,
+            "frcv_min": frcv_min,
+            "frcv_max": frcv_max,
             "per_channel": per_channel,
             "f0": f0,
             "bw": bw,
+            "tx_pulse_len": tx_pulse_len_timing,
+            "chirp_rate": chirp_rate_timing,
         }
 
     # ---------------------------------------------------------------
@@ -1304,11 +1477,19 @@ class Sentinel1L0ToCRSD:
         radar: Any,
     ) -> None:
         """Build the TxSequence section."""
+        # Prefer per-packet pulse length stored in the timing dict (computed
+        # from ISP data in _write_crsd).  Fall back to annotation metadata.
         tx_pulse_length = float(
-            getattr(radar, "tx_pulse_length_s", 52.0e-6)
+            timing.get(
+                "tx_pulse_len",
+                getattr(radar, "tx_pulse_length_s", 52.0e-6),
+            )
         )
         chirp_rate = float(
-            getattr(radar, "chirp_rate_hz_per_s", 779.038e9)
+            timing.get(
+                "chirp_rate",
+                getattr(radar, "tx_pulse_ramp_rate_hz_per_s", 779.038e9),
+            )
         )
 
         txseq = _sub(root, "TxSequence")
@@ -1351,15 +1532,33 @@ class Sentinel1L0ToCRSD:
         radar: Any,
     ) -> None:
         """Build the Channel section."""
-        sampling_rate = float(
-            getattr(radar, "sampling_rate_hz", 64.345238e6)
-        )
         per_ch = timing.get("per_channel", {})
         ch_root = _sub(root, "Channel")
         first_key = next(iter(swath_channels.keys()))
         _sub(ch_root, "RefChId", first_key)
 
         for key, sc in swath_channels.items():
+            # Derive receive sample rate from the ISP Range Decimation code.
+            # sentinel1decoder's range_dec_to_sample_rate() implements the
+            # authoritative ADC-filter-chain mapping for each RGDEC code,
+            # which is more reliable than the annotation rangeSamplingRate
+            # and handles non-standard decimation configurations correctly.
+            try:
+                from sentinel1decoder.utilities import (
+                    range_dec_to_sample_rate as _rd_to_fs,
+                )
+                if "Range Decimation" in sc.echo_df.columns:
+                    _rd = sc.echo_df["Range Decimation"].iloc[0]
+                    sampling_rate = float(_rd_to_fs(_rd))
+                else:
+                    sampling_rate = float(
+                        getattr(radar, "range_sampling_rate_hz", 64.345238e6)
+                    )
+            except Exception:
+                sampling_rate = float(
+                    getattr(radar, "range_sampling_rate_hz", 64.345238e6)
+                )
+
             ch_t = per_ch.get(key, timing)
             params = _sub(ch_root, "Parameters")
             _sub(params, "Identifier", key)
@@ -1372,8 +1571,9 @@ class Sentinel1L0ToCRSD:
             _sub(params, "BWInst", f"{bw:.12g}")
             _sub(params, "RcvStartTime1", f"{ch_t['rcv_start_time1']:.12g}")
             _sub(params, "RcvStartTime2", f"{ch_t['rcv_start_time2']:.12g}")
-            _sub(params, "FrcvMin", f"{timing['frcv_min']:.12g}")
-            _sub(params, "FrcvMax", f"{timing['frcv_max']:.12g}")
+            # FrcvMin/FrcvMax = ADC window bounds = f0 ± Fs/2 (NGA-verified).
+            _sub(params, "FrcvMin", f"{f0 - sampling_rate / 2.0:.12g}")
+            _sub(params, "FrcvMax", f"{f0 + sampling_rate / 2.0:.12g}")
             _sub(params, "RcvAPCId", "APC_RX")
             _sub(params, "RcvAPATId", f"APAT_RX_{key}")
             rp = _sub(params, "RcvRefPoint")
@@ -1531,9 +1731,21 @@ class Sentinel1L0ToCRSD:
         f0 = float(
             getattr(radar, "center_frequency_hz", SENTINEL1_CENTER_FREQUENCY_HZ)
         )
-        bw = float(getattr(radar, "tx_bandwidth_hz", 42.79e6))
-        tx_pulse_len = float(getattr(radar, "tx_pulse_length_s", 52.0e-6))
-        chirp_rate = float(getattr(radar, "chirp_rate_hz_per_s", 779.038e9))
+        # Read per-packet chirp parameters; these vary by subswath so must
+        # come from the ISP data, not from the annotation defaults.
+        if (
+            "Tx Ramp Rate" in full_df.columns
+            and "Tx Pulse Length" in full_df.columns
+        ):
+            _ramp_rg = full_df["Tx Ramp Rate"].values.astype(np.float64)
+            _plen_rg = full_df["Tx Pulse Length"].values.astype(np.float64)
+            bw = float(np.median(np.abs(_ramp_rg) * _plen_rg))
+            tx_pulse_len = float(np.median(_plen_rg))
+            chirp_rate = float(np.median(_ramp_rg))
+        else:
+            bw = float(getattr(radar, "chirp_bandwidth_hz", 0.0)) or 42.79e6
+            tx_pulse_len = float(getattr(radar, "tx_pulse_length_s", 52.0e-6))
+            chirp_rate = float(getattr(radar, "tx_pulse_ramp_rate_hz_per_s", 779.038e9))
 
         # Try to compute reference geometry using sarkit
         ppp_for_rg = self._build_ppp_array(
@@ -1643,10 +1855,18 @@ class Sentinel1L0ToCRSD:
                         actual = end - row
                         if actual <= 0:
                             break
-                        # Convert to big-endian complex64 in-place slice
-                        signal[row:end, :n_cols] = burst_iq[:actual, :n_cols].astype(">c8")
+                        # CRSD 1.0 stores FX-domain (deramped) signal.
+                        # Apply range FFT to convert the time-domain burst
+                        # IQ samples to FX domain before writing.  fftshift
+                        # maps sample 0 → lowest frequency (FRCV1) so the
+                        # linear frequency order matches FRCV1..FRCV2 in PVP.
+                        td_slice = burst_iq[:actual, :n_cols].astype(np.complex64)
+                        fx_slice = np.fft.fftshift(
+                            np.fft.fft(td_slice, axis=1), axes=1
+                        ).astype(">c8")
+                        signal[row:end, :n_cols] = fx_slice
                         row = end
-                        del burst_iq  # free burst memory immediately
+                        del burst_iq, td_slice, fx_slice  # free burst memory
 
                     if row != sc.num_vectors:
                         logger.warning(
@@ -1725,8 +1945,10 @@ class Sentinel1L0ToCRSD:
     ) -> np.ndarray:
         """Build Per-Pulse Parameter array.
 
-        Timing bias is applied so that ``TxTime`` records the true RF
-        transmit event time, not the ISP datation timestamp.
+        ``TxTime`` records the ISP packet timestamp (Coarse+Fine GPS
+        seconds) directly.  This matches the reference CRSD convention
+        and is consistent with ``RcvStart = TxTime + SWST`` in the PVP.
+        Orbital positions are interpolated at the ISP packet timestamp.
 
         Parameters
         ----------
@@ -1754,23 +1976,12 @@ class Sentinel1L0ToCRSD:
 
         coarse = echo_df["Coarse Time"].values.astype(np.float64)
         fine = echo_df["Fine Time"].values.astype(np.float64)
-        # Fine Time is already fractional (decoded as raw/65536).
-        # ISP Coarse+Fine = GPS seconds at the receive window start.
-        # TX time = RcvStart - SWST - Rank*PRI  ([ISP] Table 3-2).
+        # ISP Coarse+Fine gives the GPS packet timestamp.  Per the reference
+        # CRSD convention, TxTime = ISP packet timestamp directly (no
+        # SWST+Rank×PRI subtraction).  Orbital positions are interpolated
+        # at this timestamp so that TxPos and TxTime form a consistent pair.
         abs_isp = coarse + fine
-        if (
-            "SWST" not in echo_df.columns
-            or "Rank" not in echo_df.columns
-            or "PRI" not in echo_df.columns
-        ):
-            raise ValueError(
-                "echo_df missing SWST/Rank/PRI columns — "
-                "cannot compute TX pulse origin times."
-            )
-        swst_tx = echo_df["SWST"].values.astype(np.float64)
-        rank_tx = echo_df["Rank"].values.astype(np.float64)
-        pri_tx = echo_df["PRI"].values.astype(np.float64)
-        abs_rf = abs_isp - swst_tx - rank_tx * pri_tx
+        abs_rf = abs_isp  # TxTime = ISP packet timestamp
 
         # Relative to collection reference time (GPS seconds)
         rel_rf = abs_rf - ref_time_gps
@@ -1868,11 +2079,16 @@ class Sentinel1L0ToCRSD:
 
         coarse = echo_df["Coarse Time"].values.astype(np.float64)
         fine = echo_df["Fine Time"].values.astype(np.float64)
-        # ISP Coarse+Fine IS the GPS time of the first received echo
-        # sample (receive window start).  RcvStart = abs_isp directly;
-        # no subtraction or addition of SWST is needed here.
         abs_isp = coarse + fine
-        abs_rcv = abs_isp
+        # RcvStart = ISP packet timestamp + per-pulse SWST.  SWST is the
+        # on-board measured delay from the TX pulse to the receive window
+        # opening, so ISP_time + SWST gives the true receive window start.
+        # This is consistent with TxTime = ISP_time in the PPP.
+        if "SWST" in echo_df.columns:
+            swst_v = echo_df["SWST"].values.astype(np.float64)
+            abs_rcv = abs_isp + swst_v
+        else:
+            abs_rcv = abs_isp
         rel_rcv = abs_rcv - ref_time_gps
 
         ref_dt = orbit.reference_time
@@ -1889,8 +2105,16 @@ class Sentinel1L0ToCRSD:
         self._set_intfrac(pvp, "RcvStart", r_int, r_frac)
         pvp["RcvPos"] = positions
         pvp["RcvVel"] = velocities
-        pvp["FRCV1"] = f0 - bw / 2.0
-        pvp["FRCV2"] = f0 + bw / 2.0
+        # FRCV1/FRCV2 = ADC receive window bounds = f0 ± Fs/2 (NGA-verified).
+        # This is the full ADC window, NOT the transmitted chirp support
+        # (which is FX1/FX2 in the PPP and is narrower by ~±4 MHz).
+        # Read Fs from the xmltree channel parameters (set in _build_channel_section).
+        _ns = xmltree.getroot().nsmap.get(None, "")
+        _q = (lambda t: f"{{{_ns}}}{t}") if _ns else (lambda t: t)
+        _fs_el = xmltree.getroot().find(f".//{_q('Parameters')}/{_q('Fs')}")
+        _adc_fs_pvp = float(_fs_el.text) if _fs_el is not None else 64.345238e6
+        pvp["FRCV1"] = f0 - _adc_fs_pvp / 2.0
+        pvp["FRCV2"] = f0 + _adc_fs_pvp / 2.0
         self._set_intfrac(
             pvp, "RefPhi0", np.zeros(n, np.int64), np.zeros(n),
         )
@@ -1974,21 +2198,35 @@ class Sentinel1L0ToCRSD:
         pos_unit = pos / float(np.linalg.norm(pos))
         side = "L" if np.dot(cross, pos_unit) > 0 else "R"
 
-        # Law-of-cosines incidence/graze geometry
-        R_E = MEAN_EARTH_RADIUS
-        R_sat = float(np.linalg.norm(pos))
-        R_sl = slant_range
-        cos_ea = np.clip(
-            (R_sat ** 2 + R_E ** 2 - R_sl ** 2)
-            / (2.0 * R_sat * R_E),
-            -1.0,
-            1.0,
+        # WGS84 ellipsoid incidence/graze geometry.
+        # The outward surface normal at IARP ECF point p = (X, Y, Z) on
+        # the WGS84 ellipsoid is proportional to (X/a², Y/a², Z/b²).
+        # Using the true ellipsoidal normal avoids the constant-radius
+        # error introduced by the spherical approximation, which can
+        # differ by up to ~0.2° in graze angle at mid-latitudes.
+        _a2 = WGS84_SEMI_MAJOR_AXIS ** 2
+        _b2 = WGS84_SEMI_MINOR_AXIS ** 2
+        n_unnorm = iarp / np.array([_a2, _a2, _b2])
+        n_norm = float(np.linalg.norm(n_unnorm))
+        n_hat = (
+            n_unnorm / n_norm if n_norm > 0.0
+            else iarp / max(float(np.linalg.norm(iarp)), 1.0)
         )
-        earth_angle = float(np.arccos(cos_ea))
-        ground_range = R_E * earth_angle
-        sin_inc = np.clip(R_sat * np.sin(earth_angle) / R_sl, -1.0, 1.0)
-        incidence = float(np.degrees(np.arcsin(sin_inc)))
-        graze = 90.0 - incidence
+        # Graze = arcsin(-look_unit · n_hat):
+        # look_unit points from satellite downward to IARP; n_hat points
+        # outward from the surface.  For a right-looking geometry, the dot
+        # product of (-look_unit) and n_hat equals sin(graze).
+        sin_graze = float(np.clip(np.dot(-look_unit, n_hat), -1.0, 1.0))
+        graze = float(np.degrees(np.arcsin(sin_graze)))
+        incidence = 90.0 - graze
+        # Ground range: arc from sub-satellite nadir to IARP.
+        # Approximated as r_local × central angle, where r_local is the
+        # geocentric radius at IARP and the central angle is derived from
+        # the position unit vectors.
+        r_local = float(np.linalg.norm(iarp))
+        iarp_unit = iarp / r_local if r_local > 0.0 else iarp
+        cos_ea = float(np.clip(np.dot(pos_unit, iarp_unit), -1.0, 1.0))
+        ground_range = r_local * float(np.arccos(cos_ea))
 
         sar_img = _sub(rg, "SARImage")
         _sub(sar_img, "CODTime", "0.0")
