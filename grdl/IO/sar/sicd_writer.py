@@ -26,7 +26,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-05-15
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def _sicd_metadata_to_sarpy(meta: SICDMetadata) -> 'SICDType':
             )
         sicd.CollectionInfo = CollectionInfoType(
             CollectorName=ci.collector_name,
-            CoreName=ci.core_name,
+            CoreName=(ci.core_name[:74] if ci.core_name else ci.core_name),
             RadarMode=radar_mode,
             Classification=ci.classification,
         )

@@ -32,7 +32,7 @@ Created
 
 Modified
 --------
-2026-05-07
+2026-05-15
 """
 
 # Standard library
@@ -155,6 +155,10 @@ class CollectionGeometry:
         self.fx2 = pvp.fx2
         self.fxss = pvp.scss if pvp.scss is not None else np.zeros(self.npulses)
         self.fx0 = pvp.sc0 if pvp.sc0 is not None else pvp.fx1
+
+        # Receive window (TOA) parameters — used by PolarGrid for scene extent
+        self.toa1 = pvp.toa1
+        self.toa2 = pvp.toa2
 
         # Build geometry
         self._build_reference_vectors(pvp)

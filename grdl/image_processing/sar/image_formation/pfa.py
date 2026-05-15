@@ -37,7 +37,9 @@ Created
 
 Modified
 --------
-2026-05-08
+2026-05-14  Cast CI2/CI4 structured int signal to complex64 in
+            interpolate_range so numba kernels receive a standard
+            floating-point complex dtype (fixes Capella CPHD).
 """
 
 # Standard library
@@ -238,6 +240,16 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             Range-interpolated data, shape
             ``(npulses, rec_n_samples)``.
         """
+        # CPHD CI2/CI4 signals arrive as structured numpy arrays with
+        # 'real' and 'imag' integer fields (e.g. Capella spotlight).
+        # Cast to complex64 so all downstream arithmetic and numba
+        # kernels receive a standard floating-point complex dtype.
+        if signal.dtype.names is not None:
+            signal = (signal['real'].astype(np.float32)
+                      + 1j * signal['imag'].astype(np.float32))
+        elif not np.issubdtype(signal.dtype, np.complexfloating):
+            signal = signal.astype(np.complex64)
+
         pg = self.grid
         npulses = signal.shape[0]
 
