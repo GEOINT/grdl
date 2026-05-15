@@ -28,11 +28,14 @@ Created
 
 Modified
 --------
-2026-05-05
+2026-05-15  Fix rec_n_samples / rec_n_pulses: size the output grid to the
+            scene illumination footprint (TOA receive window × graze angle)
+            instead of the CPHD unambiguous range, which inflated output by
+            4–10× for CPHDs with long unambiguous-range windows.
 """
 
 # Standard library
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 # Third-party
 import numpy as np
@@ -200,9 +203,14 @@ class PolarGrid:
         """Compute resolution, sampling, and resampled grid dimensions.
 
         Resolution is determined entirely by the k-space bandwidth
-        (kv/ku bounds).  The oversampling factors control only the
-        number of samples in the rectangular grid — they change the
-        sampling density without affecting bandwidth or resolution.
+        (kv/ku bounds).  The grid *dimensions* (rec_n_samples,
+        rec_n_pulses) are determined by the scene illumination extent
+        derived from the CPHD receive-window (TOA) duration and the
+        mean grazing angle, not by the CPHD sampling density.
+
+        The oversampling factors scale the number of output pixels
+        above the Nyquist baseline without affecting bandwidth or
+        resolution.
         """
         xp = self._xp
         geo = self.geometry
@@ -221,45 +229,53 @@ class PolarGrid:
         ku_span = float(abs(self.ku_bounds[1] - self.ku_bounds[0]))
         self.azimuth_resolution = 0.886 / ku_span
 
-        # Range sampling: Nyquist from receive window length.
-        #
-        # For an alias-free output that covers the full unambiguous
-        # receive-window swath D = c * T / 2 (where T is the receive
-        # window length), we need at least N samples such that the
-        # output spatial extent N / kv_span >= D, i.e.
-        #   N >= D * kv_span = (c * T / 2) * (2 * proc_bw / c)
-        #      = T * proc_bw.
-        # Equivalently, the Nyquist frequency-sample spacing is
-        # 1 / T (one freq bin per receive-window time).
-        #
-        # The 0.886 factor is the IPR width constant for an unweighted
-        # sinc and belongs in resolution formulas, not sampling. The
-        # range_oversample factor scales density above this Nyquist
-        # baseline. Falls back to the per-pulse frequency step from
-        # the CPHD geometry when the receive-window length is
-        # unavailable.
-        rcv_params = self._get_rcv_window()
-        if rcv_params is not None:
-            nyquist_freq_sampling = 1.0 / rcv_params
+        # K-space bandwidths (1/m)
+        kv_span = float(abs(self.kv_bounds[1] - self.kv_bounds[0]))
+
+        # Scene extent from TOA receive window.
+        # scene_range = c × mean(toa2 − toa1) / 2
+        toa1 = getattr(geo, 'toa1', None)
+        toa2 = getattr(geo, 'toa2', None)
+        if toa1 is not None and toa2 is not None:
+            toa_window = float(np.mean(np.abs(toa2 - toa1)))
+            scene_range = c * toa_window / 2.0
         else:
-            nyquist_freq_sampling = float(geo.fxss[0])
+            # Fallback: use unambiguous range from fxss (less accurate)
+            fxss0 = float(geo.fxss[0]) if geo.fxss is not None else 0.0
+            if fxss0 > 0.0:
+                scene_range = c / (2.0 * fxss0)
+            else:
+                raw_bw = float(np.mean(np.abs(geo.fx2 - geo.fx1)))
+                scene_range = (
+                    c * max(geo.nsamples - 1, 1) / (2.0 * raw_bw)
+                    if raw_bw > 0.0 else 1.0
+                )
 
         self.rec_n_samples = max(
             1,
-            int(np.ceil(self.proc_bw / nyquist_freq_sampling
-                        * self.range_oversample)),
+            int(np.ceil(kv_span * scene_range * self.range_oversample)),
         )
 
-        # Azimuth sampling: minimum ku step between adjacent pulses,
-        # then scale by oversampling factor
-        az_sf_sampling = float(xp.min(xp.abs(xp.diff(
-            self.kv_bounds[0] * xp.tan(geo.phi),
-        )))) * 0.889
+        # Azimuth scene extent: scene_range / cos(mean grazing angle)
+        mean_graze = float(np.mean(geo.graz_ang))
+        scene_az = scene_range / max(np.cos(mean_graze), 0.1)
 
         self.rec_n_pulses = max(
             1,
-            int(ku_span / az_sf_sampling * self.azimuth_oversample),
+            int(np.ceil(ku_span * scene_az * self.azimuth_oversample)),
         )
+
+        # Diagnostic: log grid sizing inputs so callers can verify
+        self._diag = {
+            'npulses': geo.npulses,
+            'nsamples': geo.nsamples,
+            'proc_bw': self.proc_bw,
+            'kv_span': kv_span,
+            'ku_span': ku_span,
+            'scene_range': scene_range,
+            'scene_az': scene_az,
+            'mean_graze_deg': float(np.degrees(mean_graze)),
+        }
 
         # SICD Grid parameters
         self.rg_imp_resp_bw = float(self.kv_bounds[1] - self.kv_bounds[0])
@@ -273,17 +289,6 @@ class PolarGrid:
         self.az_imp_resp_wid = 0.886 / self.az_imp_resp_bw
         self.az_ss = 1.0 / self.az_imp_resp_bw
         self.az_kctr = float(xp.mean(self.ku_bounds))
-
-    def _get_rcv_window(self) -> Optional[float]:
-        """Get receive window length from metadata."""
-        rcv = self._get_metadata_attr('rcv_parameters')
-        if rcv is not None:
-            return getattr(rcv, 'window_length', None)
-        return None
-
-    def _get_metadata_attr(self, name: str):
-        """Safely get an attribute from the metadata."""
-        return getattr(self.geometry._metadata, name, None)
 
     # ------------------------------------------------------------------
     # Polar grid sample accessors (used by PFA)

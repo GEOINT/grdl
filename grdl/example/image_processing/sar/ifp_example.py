@@ -386,6 +386,7 @@ def run_ifp(
     title = filepath.name
     if meta.collection_info and meta.collection_info.collector_name:
         title += f"  |  {meta.collection_info.collector_name}"
+    print(f"\nDisplaying image with title: {title}")
     display_image(image, signal, title=title)
 
     return image
