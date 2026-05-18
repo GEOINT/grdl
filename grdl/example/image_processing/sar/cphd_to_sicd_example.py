@@ -551,11 +551,14 @@ def convert(
         Optional YAML tuning config.
     launch_viewer : bool
         If True (default), open the written SICD in grdk-viewer.
+    dry_run : bool
+        If True, run the conversion pipeline without writing the SICD file
+        or launching the viewer.
 
     Returns
     -------
-    Path
-        Path of the written SICD file.
+    Optional[Path]
+        Path of the written SICD file, or ``None`` when ``dry_run=True``.
     """
     t0 = time.perf_counter()
 
