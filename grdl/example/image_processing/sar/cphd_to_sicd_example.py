@@ -390,14 +390,17 @@ def build_pfa(
         range_oversample=range_oversample,
         azimuth_oversample=az_oversample,
     )
-    d = grid._diag
+    diagnostics = getattr(grid, 'diagnostics', None)
     print(f"  PolarGrid ({grid_mode}): {grid.rec_n_pulses} x {grid.rec_n_samples}  "
           f"rng_res={grid.range_resolution:.3f}m  az_res={grid.azimuth_resolution:.3f}m")
-    print(f"  [diag] input: {d['npulses']} pulses x {d['nsamples']} samples")
-    print(f"  [diag] proc_bw={d['proc_bw']:.3e} Hz  kv_span={d['kv_span']:.6e} 1/m  "
-          f"ku_span={d['ku_span']:.6e} 1/m")
-    print(f"  [diag] scene_range={d['scene_range']:.1f}m  scene_az={d['scene_az']:.1f}m  "
-          f"graze={d['mean_graze_deg']:.2f}°")
+    if isinstance(diagnostics, dict):
+        print(f"  [diag] input: {diagnostics['npulses']} pulses x {diagnostics['nsamples']} samples")
+        print(f"  [diag] proc_bw={diagnostics['proc_bw']:.3e} Hz  "
+              f"kv_span={diagnostics['kv_span']:.6e} 1/m  "
+              f"ku_span={diagnostics['ku_span']:.6e} 1/m")
+        print(f"  [diag] scene_range={diagnostics['scene_range']:.1f}m  "
+              f"scene_az={diagnostics['scene_az']:.1f}m  "
+              f"graze={diagnostics['mean_graze_deg']:.2f}°")
 
     gp        = meta.global_params
     phase_sgn = gp.phase_sgn if gp is not None else -1
