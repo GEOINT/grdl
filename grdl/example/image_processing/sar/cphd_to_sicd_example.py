@@ -61,7 +61,7 @@ Usage
 ::
 
     python cphd_to_sicd_example.py <cphd_file>
-    python cphd_to_sicd_example.py <cphd_file> --output formed.sicd
+    python cphd_to_sicd_example.py <cphd_file> --output formed.nitf
     python cphd_to_sicd_example.py <cphd_file> --config cphd_to_sicd.yaml
     python cphd_to_sicd_example.py <cphd_file> --no-viewer
     python cphd_to_sicd_example.py --help
