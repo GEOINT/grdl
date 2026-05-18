@@ -636,7 +636,7 @@ def convert(
 
     # ── Launch viewer ────────────────────────────────────────────
     if launch_viewer:
-        print(f"\nLaunching grdk-viewer...")
+        print("\nLaunching grdk-viewer...")
         subprocess.Popen(
             ['grdk-viewer', str(output_path)],
             stdout=subprocess.DEVNULL,
