@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-02-13
+2026-05-19
 """
 
 import pytest
@@ -483,6 +483,23 @@ class TestPolarGrid:
         grid = PolarGrid(geo, grid_mode='circumscribed')
         assert grid.rec_n_samples > 0
         assert grid.rec_n_pulses > 0
+
+    def test_fxss_fallback_uses_positive_values(self, geo):
+        geo.toa1 = None
+        geo.toa2 = None
+        geo.fxss[:] = 0.0
+        geo.fxss[1:] = 1.0e6
+
+        grid = PolarGrid(geo, grid_mode='inscribed')
+
+        kv_span = float(abs(grid.kv_bounds[1] - grid.kv_bounds[0]))
+        expected_scene_range = geo.c / (2.0 * 1.0e6)
+        expected_rec_n_samples = max(
+            1,
+            int(np.ceil(kv_span * expected_scene_range)),
+        )
+
+        assert grid.rec_n_samples == expected_rec_n_samples
 
     def test_invalid_mode_raises(self, geo):
         with pytest.raises(ValueError, match="grid_mode"):
