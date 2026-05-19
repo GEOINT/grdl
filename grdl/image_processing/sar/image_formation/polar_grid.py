@@ -28,6 +28,9 @@ Created
 
 Modified
 --------
+2026-05-19  Use a positive-value check for fxss fallback selection so the
+            unambiguous-range estimate is only used when fxss is actually
+            populated, not merely allocated.
 2026-05-15  Fix rec_n_samples / rec_n_pulses: size the output grid to the
             scene illumination footprint (TOA receive window × graze angle)
             instead of the CPHD unambiguous range, which inflated output by
@@ -241,8 +244,10 @@ class PolarGrid:
             scene_range = c * toa_window / 2.0
         else:
             # Fallback: use unambiguous range from fxss (less accurate)
-            fxss0 = float(geo.fxss[0]) if geo.fxss is not None else 0.0
-            if fxss0 > 0.0:
+            fxss = np.asarray(geo.fxss)
+            positive_fxss = fxss[fxss > 0.0]
+            if positive_fxss.size > 0:
+                fxss0 = float(np.mean(positive_fxss))
                 scene_range = c / (2.0 * fxss0)
             else:
                 raw_bw = float(np.mean(np.abs(geo.fx2 - geo.fx1)))
