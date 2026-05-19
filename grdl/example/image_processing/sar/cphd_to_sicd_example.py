@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
 def derive_output_path(input_path: Path) -> Path:
     """Derive the default SICD output path from the CPHD input path.
 
-    Replaces the file extension with ``.sicd`` and substitutes any
+    Replaces the file extension with ``.nitf`` and substitutes any
     occurrence of ``cphd`` (case-insensitive) in the stem with ``sicd``.
 
     Parameters
