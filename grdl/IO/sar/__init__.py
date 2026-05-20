@@ -59,6 +59,7 @@ from grdl.IO.sar.crsd_writer import CRSDWriter
 # Conversion pipelines
 from grdl.IO.models.cphd_metadata import build_sicd_metadata
 from grdl.IO.sar.sentinel1_l0.cphd_builder import Sentinel1CRSDtoCPHD
+from grdl.IO.sar.cphd_to_sicd_pipeline import CPHDToSICDConverter
 
 # TerraSAR-X / TanDEM-X
 from grdl.IO.sar.terrasar import TerraSARReader, open_terrasar
@@ -215,6 +216,7 @@ __all__ = [
     'CRSDWriter',
     # Conversion pipelines
     'build_sicd_metadata',
+    'CPHDToSICDConverter',
     # TerraSAR-X / TanDEM-X
     'TerraSARReader',
     'TerraSARMetadata',

@@ -1,6 +1,10 @@
 input:
   sicd_path: /code/data/2025-05-01-04-56-28_UMBRA-07_SICD.nitf
+<<<<<<< Updated upstream
   chip_size: 5000
+=======
+  chip_size: 512
+>>>>>>> Stashed changes
 
 sublook:
   num_looks: 7

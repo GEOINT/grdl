@@ -74,6 +74,7 @@ try:
 except ImportError:
     HAS_GRDL_RT = False
 
+<<<<<<< Updated upstream
 # grdl-te benchmarking (optional)
 try:
     from grdl_te.benchmarking import (
@@ -84,6 +85,14 @@ try:
     HAS_GRDL_TE = True
 except ImportError:
     HAS_GRDL_TE = False
+=======
+# GRDL-TE benchmarking
+from grdl_te.benchmarking import (
+    ActiveBenchmarkRunner,
+    BenchmarkSource,
+    save_report,
+)
+>>>>>>> Stashed changes
 
 
 class DominanceDetection:
@@ -235,7 +244,10 @@ def main():
     benchmarking = True
     sequential = True
     parallel = True
+<<<<<<< Updated upstream
     gpu = False
+=======
+>>>>>>> Stashed changes
 
     # ---------- Configuration ----------
     CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -275,6 +287,7 @@ def main():
               dimension=cfg["sublook"]["dimension"],
               normalization='log')
     )
+<<<<<<< Updated upstream
 
     # ---------- Parallel Workflow (DAG) ----------
     # chip → ┬─ SublookDecomposition → DominanceDetection
@@ -326,6 +339,58 @@ def main():
             elif sequential:
                 plot_results(chip, dominance_seq, labeled_seq, csi_rgb_seq,
                             n_detections_seq, cfg)
+=======
+
+    # ---------- Parallel Workflow (DAG) ----------
+    # chip → ┬─ SublookDecomposition → DominanceDetection
+    #        └─ CSIProcessor
+    parallel_wf = (
+        Workflow("CSI-Detection", version="2.0.0", modalities=["SAR"])
+        .branches(
+            Workflow.branch("detection")
+                .step(SublookDecomposition,
+                      id="sublook",
+                      num_looks=cfg["sublook"]["num_looks"],
+                      dimension=cfg["sublook"]["dimension"])
+                .step(DominanceDetection,
+                      id="dominance",
+                      smooth_win=cfg["detection"]["smooth_win"],
+                      dom_window=cfg["detection"]["dom_window"],
+                      dom_sigma=cfg["detection"]["sigma"],
+                      morph_size=cfg["detection"]["morph_size"]),
+            Workflow.branch("csi")
+                .step(CSIProcessor,
+                      id="csi_proc",
+                      dimension=cfg["sublook"]["dimension"],
+                      normalization='log'),
+        )
+    )
+
+    # ---------- Execute ----------
+    if sequential:
+        det_result = det_wf.execute(chip, metadata=chip_metadata)
+        dominance_seq, labeled_seq = det_result.result
+        csi_result = csi_wf.execute(chip, metadata=chip_metadata)
+        csi_rgb_seq = csi_result.result
+        n_detections_seq = labeled_seq.max()
+        print(f"Sequential Detections: {n_detections_seq}")
+
+    if parallel:
+        result = parallel_wf.execute(chip, metadata=chip_metadata)
+        dominance, labeled = result.step_results["dominance"]
+        csi_rgb = result.step_results["csi_proc"]
+        n_detections = labeled.max()
+        print(f"Parallel Detections: {n_detections}")
+
+    # ---------- Plot ----------
+    if plotting:
+        if parallel:
+            plot_results(chip, dominance, labeled, csi_rgb,
+                         n_detections, cfg)
+        elif sequential:
+            plot_results(chip, dominance_seq, labeled_seq, csi_rgb_seq,
+                         n_detections_seq, cfg)
+>>>>>>> Stashed changes
 
     # ---------- Benchmarking ----------
     if benchmarking:
@@ -354,8 +419,13 @@ def main():
                 iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "CSI"},
             )
+<<<<<<< Updated upstream
             det_rec = det_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
             csi_rec = csi_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
+=======
+            det_rec = det_runner.run(metadata=chip_metadata)
+            csi_rec = csi_runner.run(metadata=chip_metadata)
+>>>>>>> Stashed changes
             save_report(
                 [det_rec, csi_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
@@ -368,7 +438,11 @@ def main():
                 iterations=bench_iterations, warmup=bench_warmup,
                 tags={"workflow": "CSI-Detection (parallel)"},
             )
+<<<<<<< Updated upstream
             unified_rec = unified_runner.run(metadata=chip_metadata, prefer_gpu=gpu)
+=======
+            unified_rec = unified_runner.run(metadata=chip_metadata)
+>>>>>>> Stashed changes
             save_report(
                 [unified_rec],
                 f"{Path.cwd()}/../benchmark_reports/"
