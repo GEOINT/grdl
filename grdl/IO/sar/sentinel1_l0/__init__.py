@@ -39,9 +39,15 @@ from grdl.IO.sar.sentinel1_l0.reader import (
     Sentinel1L0Reader,
     open_safe_product,
 )
+from grdl.IO.sar.sentinel1_l0.crsd_converter import (
+    Sentinel1L0ToCRSD,
+    convert_s1_l0_to_crsd,
+)
 
 __all__ = [
     "ReaderConfig",
     "Sentinel1L0Reader",
     "open_safe_product",
+    "Sentinel1L0ToCRSD",
+    "convert_s1_l0_to_crsd",
 ]

@@ -399,9 +399,13 @@ class BurstReader:
             for (swath, pol), group_df in df.groupby(
                 ["Swath Number", pol_col]
             ):
+                pol_int = (
+                    int(pol.value) if hasattr(pol, "value")
+                    else int(pol)
+                )
                 bursts.extend(
                     self._detect_burst_boundaries(
-                        group_df, int(swath), int(pol)
+                        group_df, int(swath), pol_int
                     )
                 )
         elif "Swath Number" in df.columns:
@@ -428,6 +432,9 @@ class BurstReader:
             return []
 
         bursts: List[BurstInfo] = []
+        # Reset index so we get simple integer indices even
+        # if df came from a groupby with MultiIndex.
+        df = df.reset_index(drop=True)
         indices = df.index.tolist()
 
         coarse_times = df["Coarse Time"].values

@@ -12,6 +12,7 @@ This page covers:
 6. [Orbit and geometry](#6-orbit-and-geometry)
 7. [Reader configuration](#7-reader-configuration)
 8. [Limitations and gotchas](#8-limitations-and-gotchas)
+9. [CRSD conversion](#9-crsd-conversion)
 
 ---
 
@@ -78,8 +79,23 @@ manifest-derived metadata, but every `read_burst()` /
 ### 2c. Recommended for precise orbit / geolocation
 
 - An ESA **POE** file (`S1[ABCD]_OPER_AUX_POEORB_OPOD_*.EOF`)
-  whose validity period covers your acquisition. Download from
-  <https://step.esa.int/auxdata/orbits/Sentinel-1/POEORB/>.
+  whose validity period covers your acquisition.
+
+The reader can **automatically download** a matching POE file if
+none is found locally. Two public sources are tried in order:
+
+1. **ASF Orbit API** (preferred) —
+   `https://s1-orbits.asf.alaska.edu/scene/<scene_name>`.
+   Single redirect, fast, no authentication.
+2. **ESA step.esa.int** (fallback) —
+   `https://step.esa.int/auxdata/orbits/Sentinel-1/POEORB/`.
+   Directory listing + HTTP download, no authentication.
+
+This happens transparently inside `OrbitLoader.find_and_load_poe()`
+when `download=True` (the default). The downloaded `.EOF` file
+is saved to the search directory for reuse.
+
+#### Where the reader searches for POE files
 
 The reader looks for POE files in this order:
 
@@ -102,7 +118,48 @@ So the easy way to organise a working tree is:
 ```
 
 The reader will pick the POE file whose validity window covers
-the acquisition's start time.
+the acquisition's start time. If no local file is found and the
+`requests` package is installed, the reader downloads one
+automatically.
+
+#### Standalone POE download functions
+
+You can also download POE files outside the reader:
+
+```python
+from grdl.IO.sar.sentinel1_l0.orbit import (
+    download_poe,
+    ensure_poe_available,
+)
+
+# Option 1: Download by scene name (fastest — uses ASF API)
+poe_path = download_poe(
+    scene_name="S1A_IW_RAW__0SDV_20251108T152805_20251108T152837_061788_07B92C_9365",
+    output_dir="/data/orbits/",
+)
+
+# Option 2: Download by time + mission (falls back to ESA)
+from datetime import datetime
+poe_path = download_poe(
+    target_time=datetime(2025, 11, 8, 15, 28, 5),
+    mission="S1A",
+    output_dir="/data/orbits/",
+)
+
+# Option 3: Ensure availability (searches local, downloads if needed)
+poe_path = ensure_poe_available(
+    target_time=datetime(2025, 11, 8, 15, 28, 5),
+    mission="S1A",
+    scene_name="S1A_IW_RAW__0SDV_20251108T152805_20251108T152837_061788_07B92C_9365",
+    search_dir="/data/orbits/",
+)
+```
+
+`download_poe()` returns `None` if no file could be obtained.
+`ensure_poe_available()` raises `FileNotFoundError` with
+manual-download instructions if it fails.
+
+Both require `pip install requests`.
 
 ### 2d. About attitude data
 
@@ -287,9 +344,12 @@ with Sentinel1L0Reader(path) as r:
         print("PRF:", timing.prf_hz, "Hz")
 ```
 
-If the reader can't find a POE file, `orbit_state_vectors` will
-be empty and `get_geometry_calculator()` returns `None`. Either
-provide `ReaderConfig(poe_directory=...)` or disable POE loading.
+If the reader can't find a POE file (and auto-download is
+unavailable or fails), `orbit_state_vectors` will be empty and
+`get_geometry_calculator()` returns `None`. Either provide
+`ReaderConfig(poe_directory=...)`, install `requests` for
+auto-download, or disable POE loading with
+`ReaderConfig(load_poe=False)`.
 
 ---
 
@@ -375,3 +435,52 @@ entirely if you know you don't need precise orbit data.
 | Interpolated positions/velocities     | `reader.get_geometry_calculator()`              |
 | Time-relative math (`t_ref`)          | `reader.get_timing_calculator()`                |
 | Close / release resources             | `reader.close()` or use `with ... as`           |
+| Product summary                       | `reader.summary()`                              |
+| Download a POE file                   | `orbit.download_poe(scene_name=..., ...)`       |
+| Ensure POE available                  | `orbit.ensure_poe_available(target_time, ...)`  |
+| **Convert L0 to CRSD**                | `convert_s1_l0_to_crsd(safe_path, ...)`         |
+
+---
+
+## 9. CRSD conversion
+
+Convert a Sentinel-1 IW L0 SAFE product to NGA CRSD
+(Compensated Raw Signal Data) format:
+
+```python
+from grdl.IO.sar.sentinel1_l0 import convert_s1_l0_to_crsd
+
+crsd_path = convert_s1_l0_to_crsd(
+    "/data/S1A_IW_RAW__0SDV_....SAFE/",
+    polarization="VV",
+    output_dir="/data/output/",
+)
+```
+
+Or use the class interface for more control:
+
+```python
+from grdl.IO.sar.sentinel1_l0 import Sentinel1L0ToCRSD
+
+converter = Sentinel1L0ToCRSD(
+    safe_path="/data/S1A_IW_RAW__0SDV_....SAFE/",
+    polarization="VV",
+    output_dir="/data/output/",
+    swaths=["IW1", "IW2"],  # optional sub-swath filter
+)
+crsd_path = converter.convert()
+```
+
+**What the converter produces:**
+
+- One CRSD file per polarization with one channel per burst per
+  sub-swath (typically 34–35 channels for a standard IW product).
+- CI2 (int8 complex) signal data — raw I/Q, not range-compressed.
+- Per-vector PVP arrays (receive positions, velocities, timing)
+  and per-pulse PPP arrays (transmit waveform parameters).
+- CRSD XML metadata conforming to the `CRSDsar` schema
+  (`http://api.nsgreg.nga.mil/schema/crsd/1.0`).
+
+**Requirements:** `sarkit >= 1.5.0` (for `sarkit.crsd.Writer`).
+The converter auto-detects POE orbit files co-located in the SAFE
+directory.
