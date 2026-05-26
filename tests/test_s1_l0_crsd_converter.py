@@ -11,8 +11,8 @@ All tests use synthetic data — no real imagery or network access required.
 
 Author
 ------
-James Fritz
-jpfritz@users.noreply.github.com
+Jason Fritz
+43161141+stryder-vtx@users.noreply.github.com
 
 License
 -------

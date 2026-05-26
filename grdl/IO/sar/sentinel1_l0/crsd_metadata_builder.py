@@ -15,8 +15,8 @@ lxml
 
 Author
 ------
-James Fritz
-jpfritz@users.noreply.github.com
+Jason Fritz
+43161141+stryder-vtx@users.noreply.github.com
 
 License
 -------

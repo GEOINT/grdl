@@ -18,7 +18,7 @@ h5py
 Author
 ------
 Jason Fritz
-jpfritz@zai.com
+43161141+stryder-vtx@users.noreply.github.com
 
 License
 -------
