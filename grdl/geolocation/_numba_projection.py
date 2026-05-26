@@ -178,10 +178,27 @@ if _HAS_NUMBA:
             out[i, 2] = nz
 
 
+# ── JIT warmup ───────────────────────────────────────────────────────
+# Force eager compile so the first real call from a worker process
+# does not pay the multi-second compile cost. Gated by
+# ``GRDL_JIT_WARMUP``; see :mod:`grdl.geolocation._numba_warmup`.
+
+if _HAS_NUMBA:
+    try:
+        from grdl.geolocation._numba_warmup import warmup_projection_kernels
+        warmup_projection_kernels()
+    except Exception:  # pragma: no cover
+        pass
+
+
 # ── Public wrappers ──────────────────────────────────────────────────
 
-# Minimum point count to justify numba dispatch overhead (JIT warm-up)
-_NUMBA_THRESHOLD = 64
+# Minimum point count to justify numba dispatch overhead (JIT warm-up).
+# Lowered from 64 to 16 so per-tile chunks of a few hundred points that
+# fall under the old gate now take the JIT path. With warmup
+# (:mod:`grdl.geolocation._numba_warmup`) the first-call compile no
+# longer dominates, so the break-even point shifts down.
+_NUMBA_THRESHOLD = 16
 
 
 def image_to_ground_plane_fast(

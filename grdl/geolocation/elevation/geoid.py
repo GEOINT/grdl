@@ -48,6 +48,11 @@ Created
 
 Modified
 --------
+2026-05-26  Add ``to_shared`` / ``release_shared`` plus pickle hooks so
+            the in-memory geoid grid can be hoisted into
+            ``multiprocessing.shared_memory`` once and attached by
+            every worker, instead of shipping a 285 MB float64 array
+            through the IPC pipe per worker.
 2026-04-21  Accept any post-aligned global EGM PGM grid; infer lat/lon
             vectors from header dimensions instead of enforcing the
             EGM96 15-arc-minute shape.
@@ -120,6 +125,14 @@ class GeoidCorrection:
     array([-32.15, -32.68])
     """
 
+    # Shared-memory backing for the geoid grid. Populated by
+    # :meth:`to_shared` so multiple worker processes can attach to a
+    # single ~285 MB float64 raster instead of each unpickling its
+    # own copy. Class-level defaults keep legacy instances picklable
+    # without migration.
+    _shm = None
+    _shm_meta: Optional[dict] = None
+
     def __init__(self, geoid_path: str) -> None:
         """Initialize geoid correction model.
 
@@ -175,6 +188,97 @@ class GeoidCorrection:
                 f"Expected .pgm, .tif, or .tiff."
             )
         logger.info("Loaded geoid grid %s", geoid_path.name)
+
+    # ────────────────────────────────────────────────────────
+    # Shared-memory transport (cross-process zero-copy)
+    # ────────────────────────────────────────────────────────
+
+    def to_shared(self):
+        """Move ``_grid`` into a shared-memory block. Idempotent.
+
+        After this call, reads of ``_grid`` in this process use the
+        shared block directly (no duplicate copy retained). Pickling
+        this instance drops the grid bytes entirely and ships only
+        ``(name, shape, dtype)`` metadata; the unpickling process
+        attaches to the same block via
+        :class:`multiprocessing.shared_memory.SharedMemory`.
+
+        The caller owns the lifecycle. The block stays alive as long
+        as this object holds it; call :meth:`release_shared` after
+        every worker that attached has exited.
+
+        Returns
+        -------
+        multiprocessing.shared_memory.SharedMemory
+            The shared block. Already-shared instances return the
+            existing handle.
+        """
+        if self._shm is not None:
+            return self._shm
+        from multiprocessing import shared_memory
+        grid = np.ascontiguousarray(self._grid)
+        shm = shared_memory.SharedMemory(create=True, size=grid.nbytes)
+        view = np.ndarray(grid.shape, dtype=grid.dtype, buffer=shm.buf)
+        view[...] = grid
+        self._shm = shm
+        self._shm_meta = {
+            'name': shm.name,
+            'shape': tuple(grid.shape),
+            'dtype': str(grid.dtype),
+        }
+        # Rebind reads in this process to the shared view so the
+        # parent doesn't keep a duplicate 285 MB array alive.
+        self._grid = view
+        return shm
+
+    def release_shared(self):
+        """Detach the grid into an owned copy, then close + unlink.
+
+        Safe no-op when not shared. Idempotent. Call this only after
+        every worker that attached to the shared block has exited —
+        unlinking while a worker is mid-read may segfault that
+        worker.
+        """
+        if self._shm is None:
+            return
+        # Detach so reads after release continue to work without a
+        # dangling buffer reference.
+        self._grid = np.array(self._grid)
+        try:
+            self._shm.close()
+        finally:
+            try:
+                self._shm.unlink()
+            except FileNotFoundError:
+                pass
+        self._shm = None
+        self._shm_meta = None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if self._shm_meta is not None:
+            # Workers attach to the shared block instead of
+            # unpickling 285 MB of float64 — drop the grid array
+            # and the (unpicklable) SHM handle from the payload.
+            state['_grid'] = None
+            state['_shm'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if self._shm_meta is not None and self._grid is None:
+            from multiprocessing import shared_memory
+            shm = shared_memory.SharedMemory(
+                name=self._shm_meta['name'],
+            )
+            # Hold the handle for the worker's lifetime; the OS frees
+            # the mapping on process exit.
+            self._shm = shm
+            self._grid = np.ndarray(
+                self._shm_meta['shape'],
+                dtype=np.dtype(self._shm_meta['dtype']),
+                buffer=shm.buf,
+            )
 
     def _load_geotiff(self, filepath: Path) -> None:
         """Load a geoid GeoTIFF and set up interpolation arrays.

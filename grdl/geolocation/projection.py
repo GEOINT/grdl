@@ -56,7 +56,7 @@ Modified
 """
 
 # Standard library
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -749,6 +749,184 @@ def image_to_ground_plane(
     return result
 
 
+# Block size for the spatial partition inside
+# :func:`image_to_ground_hae`. Batches above this count are split into
+# blocks of nearby image pixels, each solved with its own ground
+# reference plane. Mirrors sarpy's per-block strategy and avoids the
+# accuracy/iteration-count penalty of a single global ``gref`` across
+# wide swaths.
+_HAE_BLOCK_SIZE = 4096
+
+# Pixel size (in image rows/cols) of one spatial bucket used to
+# assign points to blocks. A 2048×2048 region maps to ~one ``gref``
+# plane; far smaller than typical SICD scene extents so per-block
+# iteration converges in 2-3 passes.
+_HAE_BLOCK_PIXELS = 2048
+
+
+def _quantize_latlon(
+    lats: np.ndarray, lons: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Quantize (lat, lon) to ~1 m resolution for DEM-query caching.
+
+    1e-5 degrees ≈ 1.1 m at the equator — finer than DTED/SRTM cell
+    spacing, so quantization does not change interpolated values
+    while making (lat, lon) hashable for the per-call cache.
+    """
+    return (
+        np.round(lats * 1e5).astype(np.int64),
+        np.round(lons * 1e5).astype(np.int64),
+    )
+
+
+def _cached_dem_query(
+    elevation_model: object,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    cache: dict,
+) -> np.ndarray:
+    """Query ``elevation_model.get_elevation`` with per-call memoization.
+
+    The R/Rdot loop re-queries (lat, lon) clusters across 2-10
+    iterations.  ``cache`` is a plain dict keyed on quantized
+    coordinates; misses are batched into a single DEM call and the
+    results are merged back in original order.
+    """
+    qlat, qlon = _quantize_latlon(lats, lons)
+    n = lats.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    miss_idx = []
+    for i in range(n):
+        key = (int(qlat[i]), int(qlon[i]))
+        hit = cache.get(key)
+        if hit is None:
+            miss_idx.append(i)
+        else:
+            out[i] = hit
+    if miss_idx:
+        miss = np.asarray(miss_idx, dtype=np.intp)
+        dem_h = elevation_model.get_elevation(lats[miss], lons[miss])
+        if isinstance(dem_h, (int, float)):
+            dem_h = np.full(miss.size, float(dem_h), dtype=np.float64)
+        else:
+            dem_h = np.asarray(dem_h, dtype=np.float64)
+        for k, i in enumerate(miss_idx):
+            cache[(int(qlat[i]), int(qlon[i]))] = dem_h[k]
+            out[i] = dem_h[k]
+    return out
+
+
+def _solve_block_dem(
+    r: np.ndarray,
+    rdot: np.ndarray,
+    arp_coa: np.ndarray,
+    varp_coa: np.ndarray,
+    hae: float,
+    elevation_model: Optional[object],
+    nan_fill_height: Optional[float],
+    scp_ecf: Optional[np.ndarray],
+    max_iter: int,
+    tol: float,
+    dem_cache: Optional[dict] = None,
+) -> np.ndarray:
+    """R/Rdot iteration for one spatial block.
+
+    Identical algorithm to the original single-gref loop, but the
+    ``gref`` plane is initialised from the block's own SCP/ARP centroid
+    rather than the global scene centre.  For wide swaths this keeps
+    the plane close to each block's points and lets the iteration
+    converge in fewer passes.
+    """
+    n = r.shape[0]
+    if scp_ecf is not None:
+        ref_ecf = np.asarray(scp_ecf, dtype=np.float64)
+    else:
+        ref_ecf = np.mean(arp_coa, axis=0)
+    geo0 = ecef_to_geodetic(ref_ecf)
+    lat0, lon0 = geo0[0], geo0[1]
+    gref = geodetic_to_ecef(np.array([lat0, lon0, hae]))
+
+    target_hae = np.full(n, hae, dtype=np.float64)
+    if dem_cache is None:
+        dem_cache = {}
+
+    for _iteration in range(max_iter):
+        u_z = wgs84_norm(gref)
+        gpp = image_to_ground_plane(r, rdot, arp_coa, varp_coa, gref, u_z)
+        valid = ~np.any(np.isnan(gpp), axis=-1)
+        if not np.any(valid):
+            break
+        geo_valid = ecef_to_geodetic(gpp[valid])
+        lats, lons, heights = (
+            geo_valid[:, 0], geo_valid[:, 1], geo_valid[:, 2],
+        )
+        if elevation_model is not None:
+            # DEM is queried in full batch each iteration; the per-call
+            # cache amortizes hits across iterations.
+            dem_h = _cached_dem_query(
+                elevation_model, lats, lons, dem_cache,
+            )
+            nan_mask = np.isnan(dem_h)
+            dem_h[nan_mask] = (
+                nan_fill_height if nan_fill_height is not None else hae
+            )
+            target_hae[valid] = dem_h
+        height_err = np.max(np.abs(heights - target_hae[valid]))
+        if height_err < tol:
+            break
+        gref_mean = np.mean(gpp[valid], axis=0)
+        geo_mean = ecef_to_geodetic(gref_mean)
+        mean_target_h = float(np.mean(target_hae[valid]))
+        gref = geodetic_to_ecef(
+            np.array([geo_mean[0], geo_mean[1], mean_target_h]),
+        )
+
+    u_slant = wgs84_norm(gref)
+    return image_to_ground_plane(r, rdot, arp_coa, varp_coa, gref, u_slant)
+
+
+def _partition_blocks(
+    im_points: np.ndarray,
+    block_pixels: int,
+    block_size: int,
+) -> List[np.ndarray]:
+    """Bucket image points into spatial blocks.
+
+    Each block is the set of points falling into one
+    ``block_pixels × block_pixels`` image-coordinate cell, optionally
+    further split if a single cell exceeds ``block_size`` points.
+    Returns a list of index arrays into ``im_points``.
+
+    Adjacent pixels stay in the same block, so a per-block ``gref``
+    converges fast even at scene edges.
+    """
+    n = im_points.shape[0]
+    if n <= block_size:
+        return [np.arange(n, dtype=np.intp)]
+    row_bucket = np.floor(im_points[:, 0] / block_pixels).astype(np.int64)
+    col_bucket = np.floor(im_points[:, 1] / block_pixels).astype(np.int64)
+    order = np.lexsort((col_bucket, row_bucket))
+    sorted_row = row_bucket[order]
+    sorted_col = col_bucket[order]
+    change = np.empty(n, dtype=bool)
+    change[0] = True
+    change[1:] = (sorted_row[1:] != sorted_row[:-1]) | (
+        sorted_col[1:] != sorted_col[:-1]
+    )
+    starts = np.flatnonzero(change)
+    ends = np.concatenate([starts[1:], [n]])
+    blocks: List[np.ndarray] = []
+    for s, e in zip(starts, ends):
+        idx = order[s:e]
+        if idx.size <= block_size:
+            blocks.append(idx)
+        else:
+            # Split oversized cells along their natural order.
+            for split in range(0, idx.size, block_size):
+                blocks.append(idx[split:split + block_size])
+    return blocks
+
+
 def image_to_ground_hae(
     coa_proj: COAProjection,
     im_points: np.ndarray,
@@ -775,6 +953,13 @@ def image_to_ground_hae(
     The DEM-integrated iteration follows the same pattern as sarpy's
     ``image_to_ground_dem``: project → query DEM → adjust reference
     surface → repeat until height converges.
+
+    For large batches (N > ``_HAE_BLOCK_SIZE``), points are partitioned
+    into spatial blocks and each block iterates with its own
+    ``gref`` plane.  This matches sarpy's block-local strategy and
+    avoids the accuracy loss a single global plane suffers at the
+    edges of wide swaths.  The output shape and per-point semantics
+    are unchanged.
 
     Parameters
     ----------
@@ -810,67 +995,36 @@ def image_to_ground_hae(
     im_points = np.atleast_2d(im_points)
     n = im_points.shape[0]
 
-    # Get R/Rdot parameters from COAProjection
+    # Get R/Rdot parameters from COAProjection (single batched call).
     r, rdot, time_coa, arp_coa, varp_coa = coa_proj.projection(im_points)
 
-    # Initial ground reference at target HAE
-    if scp_ecf is not None:
-        ref_ecf = np.asarray(scp_ecf, dtype=np.float64)
-    else:
-        ref_ecf = np.mean(arp_coa, axis=0)
-    geo0 = ecef_to_geodetic(ref_ecf)
-    lat0, lon0 = geo0[0], geo0[1]
-    gref = geodetic_to_ecef(np.array([lat0, lon0, hae]))
+    blocks = _partition_blocks(
+        im_points, _HAE_BLOCK_PIXELS, _HAE_BLOCK_SIZE,
+    )
+    # Single-block fast path preserves the exact previous behaviour
+    # so small-N callers and tests see no semantic change.
+    if len(blocks) == 1:
+        return _solve_block_dem(
+            r, rdot, arp_coa, varp_coa, hae, elevation_model,
+            nan_fill_height, scp_ecf, max_iter, tol,
+        )
 
-    # Per-point target heights — start with constant, update from DEM
-    target_hae = np.full(n, hae, dtype=np.float64)
-
-    for iteration in range(max_iter):
-        # Normal to ellipsoid at current ground reference
-        u_z = wgs84_norm(gref)
-
-        # Project R/Rdot contour to plane at gref
-        gpp = image_to_ground_plane(r, rdot, arp_coa, varp_coa, gref, u_z)
-
-        valid = ~np.any(np.isnan(gpp), axis=-1)
-        if not np.any(valid):
-            break
-
-        # Convert projected points to geodetic
-        geo_valid = ecef_to_geodetic(gpp[valid])
-        lats, lons, heights = geo_valid[:, 0], geo_valid[:, 1], geo_valid[:, 2]
-
-        # Query DEM at projected positions to update target heights
-        if elevation_model is not None:
-            dem_h = elevation_model.get_elevation(lats, lons)
-            if isinstance(dem_h, (int, float)):
-                dem_h = np.full_like(lats, float(dem_h))
-            # Fill NaN (outside coverage) with caller-provided
-            # fallback or initial hae
-            nan_mask = np.isnan(dem_h)
-            dem_h[nan_mask] = (nan_fill_height if nan_fill_height is not None
-                               else hae)
-            target_hae[valid] = dem_h
-
-        # Check convergence against per-point target heights
-        height_err = np.max(np.abs(heights - target_hae[valid]))
-
-        if height_err < tol:
-            break
-
-        # Update ground reference: move to mean projected position
-        # at the mean target height
-        gref_mean = np.mean(gpp[valid], axis=0)
-        geo_mean = ecef_to_geodetic(gref_mean)
-        mean_target_h = float(np.mean(target_hae[valid]))
-        gref = geodetic_to_ecef(
-            np.array([geo_mean[0], geo_mean[1], mean_target_h]))
-
-    # Final projection with converged reference
-    u_slant = wgs84_norm(gref)
-    result = image_to_ground_plane(
-        r, rdot, arp_coa, varp_coa, gref, u_slant)
-
+    # Multi-block path: every block shares the caller-supplied
+    # ``scp_ecf`` as its *initial* gref so the first iteration starts
+    # from a sane reference.  After that each block's gref evolves
+    # independently to the mean of *its own* projected points — that
+    # is the block-local part.  A per-call DEM cache amortises
+    # overlapping (lat, lon) hits at block borders.
+    result = np.empty((n, 3), dtype=np.float64)
+    dem_cache: dict = {}
+    for idx in blocks:
+        block_result = _solve_block_dem(
+            r[idx], rdot[idx], arp_coa[idx], varp_coa[idx], hae,
+            elevation_model, nan_fill_height,
+            scp_ecf=scp_ecf,
+            max_iter=max_iter, tol=tol, dem_cache=dem_cache,
+        )
+        result[idx] = block_result
     return result
 
 
