@@ -40,8 +40,29 @@ from grdl.IO.sar.sentinel1_l0.reader import (
     open_safe_product,
 )
 
+try:
+    from grdl.IO.sar.sentinel1_l0.crsd_converter import (
+        Sentinel1L0ToCRSD,
+        convert_s1_l0_to_crsd,
+    )
+except ImportError as _crsd_import_error:
+    _CRSD_DEPENDENCY_ERROR = (
+        "CRSD conversion dependencies are not installed. "
+        "Install the optional dependencies required by "
+        "'grdl.IO.sar.sentinel1_l0.crsd_converter' to use "
+        "'Sentinel1L0ToCRSD' or 'convert_s1_l0_to_crsd'."
+    )
+
+    def Sentinel1L0ToCRSD(*args, **kwargs):
+        raise ImportError(_CRSD_DEPENDENCY_ERROR) from _crsd_import_error
+
+    def convert_s1_l0_to_crsd(*args, **kwargs):
+        raise ImportError(_CRSD_DEPENDENCY_ERROR) from _crsd_import_error
+
 __all__ = [
     "ReaderConfig",
     "Sentinel1L0Reader",
     "open_safe_product",
+    "Sentinel1L0ToCRSD",
+    "convert_s1_l0_to_crsd",
 ]
