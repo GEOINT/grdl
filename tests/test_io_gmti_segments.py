@@ -106,8 +106,13 @@ class TestTargetReport:
             velocity_los_std=12, truth_tag_application=1,
             truth_tag_entity=99, target_rcs=-3,
         )
-        buf = S.serialize_target_report(tr)
-        tr2, off = S.parse_target_report(buf, 0)
+        # Target-report fields are gated by bits 16-33 of the parent
+        # dwell's existence mask (D32.1-D32.18). Set all of them so
+        # the standalone serialise/parse round-trips every field.
+        # bits 16..33 inclusive → 0x3FFFF0000.
+        mask = 0x3FFFF0000
+        buf = S.serialize_target_report(tr, mask)
+        tr2, off = S.parse_target_report(buf, 0, mask)
         assert off == len(buf)
         assert tr2.report_index == 7
         assert _approx(tr2.target_lat, 45.5)
@@ -168,7 +173,12 @@ class TestDwellSegment:
         assert len(seg.target_reports) == 3
         assert [t.report_index for t in seg.target_reports] == [0, 1, 2]
 
-    def test_existence_mask_filled_to_all_ones(self):
+    def test_existence_mask_carries_mandatory_bits(self):
+        """The dwell writer always sets the AEDP-7 mandatory bits, plus
+        a bit per populated optional field. Bits 56-63 cover D2-D9 and
+        bits 38-41 cover D24-D27 — those should always survive a
+        round-trip even when every other field is left at default.
+        """
         d = DwellSegment(
             revisit_index=1, dwell_index=1, last_dwell_of_revisit=0,
             target_report_count=0, dwell_time_ms=0,
@@ -176,7 +186,10 @@ class TestDwellSegment:
         )
         buf = S.serialize_segment(d)
         seg, _ = S.parse_segment(buf, 0)
-        assert seg.existence_mask == 0xFFFFFFFFFFFFFFFF
+        mandatory = 0
+        for bit in (63, 62, 61, 60, 59, 58, 57, 56, 41, 40, 39, 38):
+            mandatory |= 1 << bit
+        assert seg.existence_mask & mandatory == mandatory
 
 
 class TestJobDefinition:

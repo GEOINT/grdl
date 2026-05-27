@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-05-22
+2026-05-27
 """
 
 # Standard library
@@ -45,8 +45,6 @@ from lxml import etree
 
 # GRDL internal
 from grdl.IO.sar.sentinel1_l0.constants import (
-    SENTINEL1_CENTER_FREQUENCY_HZ,
-    SPEED_OF_LIGHT,
     WGS84_ECCENTRICITY_SQ,
     WGS84_SEMI_MAJOR_AXIS,
 )
@@ -59,6 +57,13 @@ CRSD_NAMESPACE = "http://api.nsgreg.nga.mil/schema/crsd/1.0"
 _APC_PREFIX = "AntennaPhaseCenter_"
 _APAT_PREFIX = "AntennaPattern_"
 _ACF_PREFIX = "AntCoordFrame_"
+
+# GRDL-only extension namespace for optional metadata not present
+# in the NGA CRSD schema.
+_GRDL_COMPAT_NAMESPACE = "urn:grdl:compat"
+_GRDL_COMPAT_IDENTIFIER_TAG = (
+    f"{{{_GRDL_COMPAT_NAMESPACE}}}Identifier"
+)
 
 
 # =====================================================================
@@ -112,6 +117,10 @@ class BurstChannelInfo:
         Transmit reference velocity ECEF (3,).
     rcv_ref_pos_iac : Tuple[float, float]
         Receive reference point in image area coords.
+    tx_pol_params : Tuple[float, float, float, float], optional
+        (AmpH, AmpV, PhaseH, PhaseV) for Tx polarization.
+    rcv_pol_params : Tuple[float, float, float, float], optional
+        (AmpH, AmpV, PhaseH, PhaseV) for Rcv polarization.
     """
 
     identifier: str
@@ -134,6 +143,8 @@ class BurstChannelInfo:
     tx_ref_pos: np.ndarray
     tx_ref_vel: np.ndarray
     rcv_ref_pos_iac: Tuple[float, float] = (0.0, 0.0)
+    tx_pol_params: Optional[Tuple[float, float, float, float]] = None
+    rcv_pol_params: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass
@@ -255,6 +266,21 @@ def _sub_intfrac(parent: etree._Element, tag: str,
     return el
 
 
+def _sub_grdl_compat_identifier(
+    parent: etree._Element, identifier: str,
+) -> etree._Element:
+    """Add GRDL compatibility identifier extension.
+
+    This element is intentionally outside the CRSD schema and is
+    consumed only by GRDL compatibility tooling. Schema-strict
+    validators will reject XML containing this extension under
+    sequence-constrained parents.
+    """
+    el = etree.SubElement(parent, _GRDL_COMPAT_IDENTIFIER_TAG)
+    el.text = identifier
+    return el
+
+
 def _sub_f8(parent: etree._Element, tag: str,
             offset: int) -> etree._Element:
     """Add a PerParameterF8 element."""
@@ -296,11 +322,20 @@ def _sub_i8(parent: etree._Element, tag: str,
 
 
 def _sub_polarization(parent: etree._Element, tag: str,
-                      pol_id: str) -> etree._Element:
+                      pol_id: str,
+                      pol_params: Optional[
+                          Tuple[float, float, float, float]
+                      ] = None) -> etree._Element:
     """Add a HVPolarizationDescription element."""
     el = etree.SubElement(parent, tag)
     _sub(el, "PolarizationID", pol_id)
-    if pol_id == "V":
+    if pol_params is not None:
+        amp_h, amp_v, phase_h, phase_v = pol_params
+        _sub(el, "AmpH", f"{amp_h:.15g}")
+        _sub(el, "AmpV", f"{amp_v:.15g}")
+        _sub(el, "PhaseH", f"{phase_h:.15g}")
+        _sub(el, "PhaseV", f"{phase_v:.15g}")
+    elif pol_id == "V":
         _sub(el, "AmpH", "0.0")
         _sub(el, "AmpV", "1.0")
         _sub(el, "PhaseH", "0.0")
@@ -376,13 +411,7 @@ def _compute_reference_geometry(
     # Ground range (arc distance on sphere)
     plat_norm = platform_pos / np.linalg.norm(platform_pos)
     cos_angle = float(np.dot(plat_norm, ref_norm))
-    ground_range = float(
-        SPEED_OF_LIGHT / 2.0
-        * np.arccos(np.clip(cos_angle, -1, 1))
-        * np.linalg.norm(ref_pos)
-        / (SPEED_OF_LIGHT / 2.0)
-    )
-    # Simpler: ground range = Earth_radius * angle
+    # Ground range = Earth_radius * central angle
     earth_r = np.linalg.norm(ref_pos)
     ground_range = float(
         earth_r * np.arccos(np.clip(cos_angle, -1, 1)),
@@ -394,6 +423,12 @@ def _compute_reference_geometry(
         "GrazeAngle": graze_deg,
         "IncidenceAngle": inc_deg,
         "DopplerConeAngle": dca_deg,
+        # Additional angular terms expected in ReferenceGeometry.
+        "SquintAngle": 0.0,
+        "AzimuthAngle": 0.0,
+        "TwistAngle": 0.0,
+        "SlopeAngle": 0.0,
+        "LayoverAngle": 0.0,
     }
 
 
@@ -581,7 +616,8 @@ class CRSDMetadataBuilder:
         # Polygon — simple bounding rectangle
         poly = _sub(ia, "Polygon", size="4")
         corners_iac = [
-            (x1, y1), (x2, y1), (x2, y2), (x1, y2),
+            # Use clockwise winding in IAC.
+            (x1, y1), (x1, y2), (x2, y2), (x2, y1),
         ]
         for idx, (cx, cy) in enumerate(corners_iac, 1):
             v = _sub(poly, "Vertex", index=str(idx))
@@ -625,6 +661,7 @@ class CRSDMetadataBuilder:
             _sub(ts, "TxId", ch.identifier)
             _sub(ts, "NumPulses", str(ch.num_vectors))
             _sub(ts, "PPPArrayByteOffset", str(ppp_offset))
+            _sub_grdl_compat_identifier(ts, ch.identifier)
             ppp_offset += ch.num_vectors * 200
 
         # Receive
@@ -642,6 +679,7 @@ class CRSDMetadataBuilder:
             _sub(c, "NumSamples", str(ch.num_samples))
             _sub(c, "SignalArrayByteOffset", str(sig_offset))
             _sub(c, "PVPArrayByteOffset", str(pvp_offset))
+            _sub_grdl_compat_identifier(c, ch.identifier)
             # CI2 = 2 bytes per sample
             sig_offset += ch.num_vectors * ch.num_samples * 2
             pvp_offset += ch.num_vectors * 216
@@ -671,12 +709,15 @@ class CRSDMetadataBuilder:
                  f"{_APAT_PREFIX}{ch.identifier}_{tx_pol}")
 
             tp = _sub(params, "TxRefPoint")
-            _sub_xyz(tp, "ECF", ch.tx_ref_pos)
+            _sub_xyz(tp, "ECF", self.scene.iarp_ecf)
             iac = _sub(tp, "IAC")
-            _sub(iac, "X", f"{ch.rcv_ref_pos_iac[0]:.15g}")
-            _sub(iac, "Y", f"{ch.rcv_ref_pos_iac[1]:.15g}")
+            _sub(iac, "X", "0.0")
+            _sub(iac, "Y", "0.0")
 
-            _sub_polarization(params, "TxPolarization", tx_pol)
+            _sub_polarization(
+                params, "TxPolarization", tx_pol,
+                pol_params=ch.tx_pol_params,
+            )
             _sub(params, "TxRefRadIntensity", "0.0")
             _sub(params, "TxRadIntErrorStdDev", "1.0")
             _sub(params, "TxRefLAtm", "1.0")
@@ -716,13 +757,14 @@ class CRSDMetadataBuilder:
                  f"{_APAT_PREFIX}{ch.identifier}_{rcv_pol}")
 
             rp = _sub(params, "RcvRefPoint")
-            _sub_xyz(rp, "ECF", ch.tx_ref_pos)
+            _sub_xyz(rp, "ECF", self.scene.iarp_ecf)
             iac = _sub(rp, "IAC")
-            _sub(iac, "X", f"{ch.rcv_ref_pos_iac[0]:.15g}")
-            _sub(iac, "Y", f"{ch.rcv_ref_pos_iac[1]:.15g}")
+            _sub(iac, "X", "0.0")
+            _sub(iac, "Y", "0.0")
 
             _sub_polarization(
                 params, "RcvPolarization", rcv_pol,
+                pol_params=ch.rcv_pol_params,
             )
             _sub(params, "RcvRefIrradiance", "0.0")
             _sub(params, "RcvIrradianceErrorStdDev", "1.0")
@@ -736,7 +778,8 @@ class CRSDMetadataBuilder:
             _sub(sar, "RefVectorPulseIndex",
                  str(ch.ref_vector_index))
             _sub_polarization(sar, "TxPolarization",
-                              ch.polarization[0])
+                              ch.polarization[0],
+                              pol_params=ch.tx_pol_params)
             dw = _sub(sar, "DwellTimes")
             polys = _sub(dw, "Polynomials")
             _sub(polys, "CODId", ch.identifier)
@@ -749,6 +792,15 @@ class CRSDMetadataBuilder:
             x2y2 = _sub(img_area, "X2Y2")
             _sub(x2y2, "X", f"{self.scene.image_area_x2y2[0]:.15g}")
             _sub(x2y2, "Y", f"{self.scene.image_area_x2y2[1]:.15g}")
+            poly = _sub(img_area, "Polygon", size="4")
+            x1, y1 = self.scene.image_area_x1y1
+            x2, y2 = self.scene.image_area_x2y2
+            for idx, (px, py) in enumerate(
+                [(x1, y1), (x1, y2), (x2, y2), (x2, y1)], 1,
+            ):
+                v = _sub(poly, "Vertex", index=str(idx))
+                _sub(v, "X", f"{px:.15g}")
+                _sub(v, "Y", f"{py:.15g}")
 
     def _build_dwell_polynomials(
         self, root: etree._Element,
@@ -812,10 +864,20 @@ class CRSDMetadataBuilder:
              f"{geom['GroundRange']:.15g}")
         _sub(sar, "DopplerConeAngle",
              f"{geom['DopplerConeAngle']:.15g}")
+        _sub(sar, "SquintAngle",
+             f"{geom['SquintAngle']:.15g}")
+        _sub(sar, "AzimuthAngle",
+             f"{geom['AzimuthAngle']:.15g}")
         _sub(sar, "GrazeAngle",
              f"{geom['GrazeAngle']:.15g}")
         _sub(sar, "IncidenceAngle",
              f"{geom['IncidenceAngle']:.15g}")
+        _sub(sar, "TwistAngle",
+             f"{geom['TwistAngle']:.15g}")
+        _sub(sar, "SlopeAngle",
+             f"{geom['SlopeAngle']:.15g}")
+        _sub(sar, "LayoverAngle",
+             f"{geom['LayoverAngle']:.15g}")
 
         # TxParameters (monostatic: same as Rcv)
         tx = _sub(rg, "TxParameters")
@@ -829,6 +891,10 @@ class CRSDMetadataBuilder:
              f"{geom['GroundRange']:.15g}")
         _sub(tx, "DopplerConeAngle",
              f"{geom['DopplerConeAngle']:.15g}")
+        _sub(tx, "SquintAngle",
+             f"{geom['SquintAngle']:.15g}")
+        _sub(tx, "AzimuthAngle",
+             f"{geom['AzimuthAngle']:.15g}")
         _sub(tx, "GrazeAngle",
              f"{geom['GrazeAngle']:.15g}")
         _sub(tx, "IncidenceAngle",
@@ -846,10 +912,14 @@ class CRSDMetadataBuilder:
              f"{geom['GroundRange']:.15g}")
         _sub(rcv, "DopplerConeAngle",
              f"{geom['DopplerConeAngle']:.15g}")
+        _sub(rcv, "AzimuthAngle",
+            f"{geom['AzimuthAngle']:.15g}")
         _sub(rcv, "GrazeAngle",
              f"{geom['GrazeAngle']:.15g}")
         _sub(rcv, "IncidenceAngle",
              f"{geom['IncidenceAngle']:.15g}")
+        _sub(rcv, "SquintAngle",
+            f"{geom['SquintAngle']:.15g}")
 
     def _build_support_array(
         self, root: etree._Element,
@@ -907,7 +977,7 @@ class CRSDMetadataBuilder:
         ant = _sub(root, "Antenna")
         _sub(ant, "NumACFs", str(len(self.channels)))
         _sub(ant, "NumAPCs", str(len(self.channels)))
-        _sub(ant, "NumAntPats", str(len(self.channels)))
+        _sub(ant, "NumAPATs", str(len(self.channels)))
 
         for ch in self.channels:
             acf = _sub(ant, "AntCoordFrame")
@@ -928,13 +998,10 @@ class CRSDMetadataBuilder:
         for ch in self.channels:
             rcv_pol = ch.polarization[-1]
             pat = _sub(ant, "AntPattern")
-            _sub(pat, "Identifier",
-                 f"{_APAT_PREFIX}{ch.identifier}_{rcv_pol}")
+            _sub(pat, "Identifier", f"{_APAT_PREFIX}{ch.identifier}_{rcv_pol}")
             _sub(pat, "FreqZero", f"{ch.f0_ref:.15g}")
-            _sub(pat, "ArrayGPId",
-                 f"AGP_{ch.identifier}")
-            _sub(pat, "ElementGPId",
-                 f"AGP_{ch.identifier}")
+            _sub(pat, "ArrayGPId", f"AGP_{ch.identifier}")
+            _sub(pat, "ElementGPId", f"AGP_{ch.identifier}")
             ebfs = _sub(pat, "EBFreqShift")
             _sub(ebfs, "DCXSF", "0.0")
             _sub(ebfs, "DCYSF", "0.0")

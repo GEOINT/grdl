@@ -64,6 +64,7 @@ from grdl.IO.models.sentinel1_l0 import (
     S1L0AttitudeRecord,
     S1L0OrbitStateVector,
 )
+from grdl.exceptions import DependencyError
 
 try:
     import requests as _requests
@@ -592,13 +593,29 @@ class OrbitLoader:
         if not download:
             return False
 
+        if not _HAS_REQUESTS:
+            logger.debug(
+                "Skipping POE download: 'requests' is not "
+                "installed",
+            )
+            return False
+
         # 2. Download from ASF / ESA
-        downloaded = download_poe(
-            target_time=target_time,
-            mission=mission,
-            scene_name=scene_name,
-            output_dir=directory,
-        )
+        try:
+            downloaded = download_poe(
+                target_time=target_time,
+                mission=mission,
+                scene_name=scene_name,
+                output_dir=directory,
+            )
+        except DependencyError as e:
+            # Keep this method's boolean contract for callers.
+            logger.debug(
+                "Skipping POE download due to missing "
+                "dependency: %s",
+                e,
+            )
+            return False
         if downloaded:
             self.load_poe_file(downloaded)
             return True
@@ -1028,9 +1045,14 @@ def download_poe(
         if result:
             return result
 
+    target_time_str = (
+        target_time.isoformat()
+        if target_time is not None
+        else "unknown time"
+    )
     logger.warning(
         "Could not download POE orbit file for %s (%s)",
-        target_time.isoformat(), mission,
+        target_time_str, mission,
     )
     return None
 

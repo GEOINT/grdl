@@ -65,10 +65,13 @@ def _get_channel_ids(path: Path) -> list:
     """Extract ordered channel identifiers from a CRSD file."""
     with open(path, "rb") as f:
         r = Reader(f)
-        root = r.metadata.xmltree.getroot()
-        params = root.findall(".//c:Channel/c:Parameters", NS)
-        return [p.find("c:Identifier", NS).text for p in params]
-
+        try:
+            root = r.metadata.xmltree.getroot()
+            params = root.findall(".//c:Channel/c:Parameters", NS)
+            channel_ids = [p.find("c:Identifier", NS).text for p in params]
+        finally:
+            r.done()
+        return channel_ids
 
 def _rcvstart_to_sec(rs) -> float:
     """Convert a structured RcvStart (Int, Frac) to seconds."""

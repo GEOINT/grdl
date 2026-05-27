@@ -52,7 +52,7 @@ from grdl.IO.sar.sentinel1_l0.crsd_metadata_builder import (
     _compute_reference_geometry,
     ecef_to_geodetic,
 )
-from grdl.IO.sar.sentinel1_l0.crsd_pvp_builder import (
+from grdl.IO.sar.crsd_pvp_builder import (
     build_ppp_array,
     build_pvp_array,
     get_ppp_dtype,
