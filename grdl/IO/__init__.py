@@ -31,7 +31,7 @@ Created
 
 Modified
 --------
-2026-03-29
+2026-05-27
 """
 
 # Standard library
@@ -72,10 +72,12 @@ from grdl.IO.sar import (
     Sentinel1SLCReader,
     TerraSARReader,
     NISARReader,
+    SICDCollectionReader,
     open_sar,
     open_biomass,
     open_terrasar,
     open_nisar,
+    open_sicd_collection,
 )
 
 # SAR writers
@@ -349,6 +351,7 @@ __all__ = [
     'CRSDReader',
     'SIDDReader',
     'Sentinel1SLCReader',
+    'SICDCollectionReader',
     # BIOMASS
     'BIOMASSL1Reader',
     'BIOMASSCatalog',
@@ -400,6 +403,7 @@ __all__ = [
     # Convenience functions
     'open_image',
     'open_sar',
+    'open_sicd_collection',
     'open_biomass',
     'open_eo',
     'open_ir',
