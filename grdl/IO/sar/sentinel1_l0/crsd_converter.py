@@ -51,15 +51,8 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 from lxml import etree
 
-try:
-    import sarkit.crsd
-except ImportError as exc:
-    raise ImportError(
-        "sarkit is required for CRSD writing. "
-        "Install with: pip install sarkit"
-    ) from exc
-
 # GRDL internal
+from grdl.IO.sar._backend import require_sarkit
 from grdl.IO.sar.sentinel1_l0.constants import (
     BURST_GAP_THRESHOLD_US,
     FINE_TIME_DIVISOR,
@@ -82,7 +75,7 @@ from grdl.IO.sar.sentinel1_l0.crsd_metadata_builder import (
     CRSDSceneInfo,
     ecef_to_geodetic,
 )
-from grdl.IO.sar.sentinel1_l0.crsd_pvp_builder import (
+from grdl.IO.sar.crsd_pvp_builder import (
     build_ppp_array,
     build_pvp_array,
     get_ppp_dtype,
@@ -99,6 +92,9 @@ from grdl.IO.sar.sentinel1_l0.timing import (
     TimingCalculator,
     determine_reference_time,
 )
+
+require_sarkit('CRSD')
+import sarkit.crsd
 
 logger = logging.getLogger(__name__)
 

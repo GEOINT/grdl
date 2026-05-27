@@ -376,13 +376,7 @@ def _compute_reference_geometry(
     # Ground range (arc distance on sphere)
     plat_norm = platform_pos / np.linalg.norm(platform_pos)
     cos_angle = float(np.dot(plat_norm, ref_norm))
-    ground_range = float(
-        SPEED_OF_LIGHT / 2.0
-        * np.arccos(np.clip(cos_angle, -1, 1))
-        * np.linalg.norm(ref_pos)
-        / (SPEED_OF_LIGHT / 2.0)
-    )
-    # Simpler: ground range = Earth_radius * angle
+    # Ground range = Earth_radius * central angle
     earth_r = np.linalg.norm(ref_pos)
     ground_range = float(
         earth_r * np.arccos(np.clip(cos_angle, -1, 1)),
