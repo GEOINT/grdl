@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-05-22
+2026-05-27
 """
 
 # Standard library
@@ -55,16 +55,12 @@ from lxml import etree
 from grdl.IO.sar._backend import require_sarkit
 from grdl.IO.sar.sentinel1_l0.constants import (
     BURST_GAP_THRESHOLD_US,
-    FINE_TIME_DIVISOR,
     GPS_EPOCH_DAY,
     GPS_EPOCH_MONTH,
     GPS_EPOCH_YEAR,
     GPS_LEAP_SECONDS,
     IW_MODE_PARAMS,
-    S1A_INSTRUMENT_TIMING_BIAS_S,
     SENTINEL1_CENTER_FREQUENCY_HZ,
-    SPEED_OF_LIGHT,
-    WGS84_ECCENTRICITY_SQ,
     WGS84_SEMI_MAJOR_AXIS,
 )
 from grdl.IO.sar.sentinel1_l0.decoder import Sentinel1Decoder
@@ -194,6 +190,25 @@ class _EchoBurst:
     swst: float
 
 
+@dataclass
+class _ChannelState:
+    """Per-channel arrays needed for polarization and PVP/PPP.
+
+    Kept separate from :class:`BurstChannelInfo` so channel metadata
+    remains a stable schema and does not rely on dynamic attributes.
+    """
+
+    tx_times: np.ndarray
+    tx_pos: np.ndarray
+    tx_vel: np.ndarray
+    rcv_pos: np.ndarray
+    rcv_vel: np.ndarray
+    tx_acx: np.ndarray
+    tx_acy: np.ndarray
+    rcv_acx: np.ndarray
+    rcv_acy: np.ndarray
+
+
 # =====================================================================
 # Converter
 # =====================================================================
@@ -270,7 +285,9 @@ class Sentinel1L0ToCRSD:
         self._load_orbit()
 
         # Step 3: Detect bursts and compute per-burst metadata
-        burst_channels, burst_data = self._process_bursts()
+        burst_channels, burst_data, channel_states = (
+            self._process_bursts()
+        )
 
         if not burst_channels:
             raise ValueError(
@@ -280,6 +297,9 @@ class Sentinel1L0ToCRSD:
 
         # Step 4: Compute scene geometry
         scene = self._compute_scene(burst_channels)
+        self._compute_channel_polarization_params(
+            burst_channels, scene, channel_states,
+        )
         ref_geom = self._compute_reference_geometry(
             burst_channels, scene,
         )
@@ -297,7 +317,10 @@ class Sentinel1L0ToCRSD:
 
         # Step 6: Write CRSD file
         output_path = self._write_crsd(
-            xmltree, burst_channels, burst_data,
+            xmltree,
+            burst_channels,
+            burst_data,
+            channel_states,
         )
 
         logger.info("CRSD written: %s", output_path)
@@ -596,6 +619,7 @@ class Sentinel1L0ToCRSD:
     ) -> Tuple[
         List[BurstChannelInfo],
         Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+        Dict[str, _ChannelState],
     ]:
         """Process all bursts: decode, compute timing, geometry.
 
@@ -605,6 +629,8 @@ class Sentinel1L0ToCRSD:
             Metadata per burst/channel.
         burst_data : dict
             ``{channel_id: (ci2_signal, amp_sf, pvp_times)}``
+        channel_states : dict
+            ``{channel_id: _ChannelState}`` for per-channel arrays.
         """
         echo_bursts = self._detect_echo_bursts()
 
@@ -618,6 +644,7 @@ class Sentinel1L0ToCRSD:
         burst_data: Dict[
             str, Tuple[np.ndarray, np.ndarray, np.ndarray]
         ] = {}
+        channel_states: Dict[str, _ChannelState] = {}
 
         # Burst cycle base from GPS time
         cycle_duration = IW_MODE_PARAMS.get(
@@ -650,18 +677,19 @@ class Sentinel1L0ToCRSD:
                 self.relative_orbit, burst_cycle, sname,
             )
 
-            channel_info, data = self._process_single_burst(
+            channel_info, data, state = self._process_single_burst(
                 burst, chan_id,
             )
             channels.append(channel_info)
             burst_data[chan_id] = data
+            channel_states[chan_id] = state
 
             logger.debug(
                 "  Burst %s: %d vectors × %d samples",
                 chan_id, burst.num_lines, burst.num_samples,
             )
 
-        return channels, burst_data
+        return channels, burst_data, channel_states
 
     def _process_single_burst(
         self,
@@ -670,6 +698,7 @@ class Sentinel1L0ToCRSD:
     ) -> Tuple[
         BurstChannelInfo,
         Tuple[np.ndarray, np.ndarray, np.ndarray],
+        _ChannelState,
     ]:
         """Process a single burst → channel info + binary data.
 
@@ -677,6 +706,8 @@ class Sentinel1L0ToCRSD:
         -------
         channel_info : BurstChannelInfo
         data : (ci2_signal, amp_sf, rcv_times)
+        state : _ChannelState
+            Per-channel arrays for polarization and PVP/PPP building.
         """
         n_lines = burst.num_lines
         n_samples = burst.num_samples
@@ -702,6 +733,14 @@ class Sentinel1L0ToCRSD:
         swst_s = burst.swst if burst.swst > 0 else 0.0
         rcv_delay = rank * pri_s + swst_s
         rcv_times = tx_times + rcv_delay
+        # CRSD expects per-vector receive start times to lie on the
+        # sample clock grid relative to the first vector in channel.
+        sample_period = 1.0 / IW_MODE_PARAMS[
+            "range_sampling_rate_hz"
+        ]
+        rcv_times = rcv_times[0] + np.round(
+            (rcv_times - rcv_times[0]) / sample_period,
+        ) * sample_period
 
         # -- Orbit interpolation --
         tx_pos, tx_vel = (
@@ -770,8 +809,11 @@ class Sentinel1L0ToCRSD:
 
         # F0Ref = center frequency of digitized band
         f0_ref = SENTINEL1_CENTER_FREQUENCY_HZ
-        # BWInst = instantaneous bandwidth of digitizer
-        bw_inst = fs  # Nyquist bandwidth
+        # BWInst = instantaneous signal bandwidth (chirp sweep).
+        # Using Fs here drives OSR to ~1 and triggers consistency
+        # failures; CRSD checks expect receive sampling to over-sample
+        # the occupied signal bandwidth.
+        bw_inst = bw
 
         # Chirp start frequency (baseband offset)
         # fx_freq0 = f0_ref - ramp_rate * tx_dur / 2
@@ -806,22 +848,90 @@ class Sentinel1L0ToCRSD:
 
         # Pack data for later writing
         data = (ci2, amp_sf, rcv_times)
-        # Store orbit data on channel_info for PVP/PPP building
-        channel_info._tx_times = tx_times
-        channel_info._tx_pos = tx_pos
-        channel_info._tx_vel = tx_vel
-        channel_info._rcv_pos = rcv_pos
-        channel_info._rcv_vel = rcv_vel
-        channel_info._tx_acx = tx_acx
-        channel_info._tx_acy = tx_acy
-        channel_info._rcv_acx = rcv_acx
-        channel_info._rcv_acy = rcv_acy
+        state = _ChannelState(
+            tx_times=tx_times,
+            tx_pos=tx_pos,
+            tx_vel=tx_vel,
+            rcv_pos=rcv_pos,
+            rcv_vel=rcv_vel,
+            tx_acx=tx_acx,
+            tx_acy=tx_acy,
+            rcv_acx=rcv_acx,
+            rcv_acy=rcv_acy,
+        )
 
-        return channel_info, data
+        return channel_info, data, state
 
     # -----------------------------------------------------------------
     # Step 4: Scene geometry
     # -----------------------------------------------------------------
+
+    def _compute_channel_polarization_params(
+        self,
+        channels: List[BurstChannelInfo],
+        scene: CRSDSceneInfo,
+        channel_states: Dict[str, _ChannelState],
+    ) -> None:
+        """Populate per-channel Tx/Rcv HV polarization parameters.
+
+        These values are derived from APC geometry and antenna
+        X/Y polarization references using the same Sarkit utility
+        used by CrsdConsistency checks.
+        """
+        for ch in channels:
+            state = channel_states[ch.identifier]
+            idx = int(np.clip(
+                ch.ref_vector_index, 0, ch.num_vectors - 1,
+            ))
+
+            tx_pol = ch.polarization[0]
+            rcv_pol = ch.polarization[-1]
+
+            if tx_pol == "V":
+                tx_amp_x, tx_amp_y = 0.0, 1.0
+            else:
+                tx_amp_x, tx_amp_y = 1.0, 0.0
+
+            if rcv_pol == "V":
+                rcv_amp_x, rcv_amp_y = 0.0, 1.0
+            else:
+                rcv_amp_x, rcv_amp_y = 1.0, 0.0
+
+            tx_params = sarkit.crsd.compute_h_v_pol_parameters(
+                state.tx_pos[idx],
+                state.tx_acx[idx],
+                state.tx_acy[idx],
+                scene.iarp_ecf,
+                1,
+                tx_amp_x,
+                tx_amp_y,
+                0.0,
+                0.0,
+            )
+            rcv_params = sarkit.crsd.compute_h_v_pol_parameters(
+                state.rcv_pos[idx],
+                state.rcv_acx[idx],
+                state.rcv_acy[idx],
+                scene.iarp_ecf,
+                -1,
+                rcv_amp_x,
+                rcv_amp_y,
+                0.0,
+                0.0,
+            )
+
+            ch.tx_pol_params = (
+                float(tx_params[0]),
+                float(tx_params[1]),
+                float(tx_params[2]),
+                float(tx_params[3]),
+            )
+            ch.rcv_pol_params = (
+                float(rcv_params[0]),
+                float(rcv_params[1]),
+                float(rcv_params[2]),
+                float(rcv_params[3]),
+            )
 
     def _compute_scene(
         self, channels: List[BurstChannelInfo],
@@ -842,26 +952,34 @@ class Sentinel1L0ToCRSD:
             iarp_ecf[0], iarp_ecf[1], iarp_ecf[2],
         )
 
-        # Image area axes: uIAX = along-track, uIAY = cross-track
-        vel_hat = ref_vel / np.linalg.norm(ref_vel)
-        up = ref_ecf_norm
-        cross = np.cross(vel_hat, up)
-        cross /= np.linalg.norm(cross)
-        along = np.cross(up, cross)
-        along /= np.linalg.norm(along)
-        uiax = along
-        uiay = cross
+        # Image area axes from local tangent frame at IARP.
+        # uIAX is the platform velocity projected onto tangent plane;
+        # uIAY completes a right-handed frame with local up.
+        up = iarp_ecf / np.linalg.norm(iarp_ecf)
+        v_tan = ref_vel - np.dot(ref_vel, up) * up
+        if np.linalg.norm(v_tan) < 1e-9:
+            # Robust fallback if velocity projection is degenerate.
+            trial = np.array([0.0, 0.0, 1.0])
+            if abs(np.dot(trial, up)) > 0.9:
+                trial = np.array([1.0, 0.0, 0.0])
+            v_tan = np.cross(up, trial)
+        uiax = v_tan / np.linalg.norm(v_tan)
+        uiay = np.cross(up, uiax)
+        uiay /= np.linalg.norm(uiay)
 
         # Image area extents in IAC (metres)
-        # Compute from all channel reference points
-        all_ref_pos = np.array([
-            ch.tx_ref_pos for ch in channels
+        # Compute from all channel nadir projections (ground points),
+        # not from platform positions.
+        all_ground_pos = np.array([
+            (ch.tx_ref_pos / np.linalg.norm(ch.tx_ref_pos))
+            * WGS84_SEMI_MAJOR_AXIS
+            for ch in channels
         ])
-        offsets = all_ref_pos - iarp_ecf
+        offsets = all_ground_pos - iarp_ecf
         x_coords = offsets @ uiax
         y_coords = offsets @ uiay
 
-        margin = 50000.0  # 50 km margin
+        margin = 5000.0
         x1 = float(np.min(x_coords)) - margin
         y1 = float(np.min(y_coords)) - margin
         x2 = float(np.max(x_coords)) + margin
@@ -870,7 +988,7 @@ class Sentinel1L0ToCRSD:
         # Corner coordinates (approximate geodetic)
         corners = []
         for cx, cy in [
-            (x1, y1), (x2, y1), (x2, y2), (x1, y2),
+            (x1, y1), (x1, y2), (x2, y2), (x2, y1),
         ]:
             corner_ecf = iarp_ecf + cx * uiax + cy * uiay
             corner_ecf *= (
@@ -927,6 +1045,7 @@ class Sentinel1L0ToCRSD:
         burst_data: Dict[
             str, Tuple[np.ndarray, np.ndarray, np.ndarray]
         ],
+        channel_states: Dict[str, _ChannelState],
     ) -> Path:
         """Write the CRSD file using sarkit.
 
@@ -938,6 +1057,8 @@ class Sentinel1L0ToCRSD:
             Per-channel metadata.
         burst_data : dict
             ``{channel_id: (ci2_signal, amp_sf, rcv_times)}``
+        channel_states : dict
+            ``{channel_id: _ChannelState}`` for per-channel arrays.
 
         Returns
         -------
@@ -951,6 +1072,52 @@ class Sentinel1L0ToCRSD:
 
         pvp_dtype = get_pvp_dtype(xmltree)
         ppp_dtype = get_ppp_dtype(xmltree)
+
+        pvp_by_channel: Dict[str, np.ndarray] = {}
+        ppp_by_channel: Dict[str, np.ndarray] = {}
+        for ch in channels:
+            cid = ch.identifier
+            ci2, amp_sf, rcv_times = burst_data[cid]
+            state = channel_states[cid]
+
+            pvp_by_channel[cid] = build_pvp_array(
+                channel=ch,
+                pvp_dtype=pvp_dtype,
+                rcv_times=rcv_times,
+                rcv_positions=state.rcv_pos,
+                rcv_velocities=state.rcv_vel,
+                rcv_acx=state.rcv_acx,
+                rcv_acy=state.rcv_acy,
+                amp_sf=amp_sf,
+            )
+            ppp_by_channel[cid] = build_ppp_array(
+                channel=ch,
+                ppp_dtype=ppp_dtype,
+                tx_times=state.tx_times,
+                tx_positions=state.tx_pos,
+                tx_velocities=state.tx_vel,
+                tx_acx=state.tx_acx,
+                tx_acy=state.tx_acy,
+                tx_rad_int=np.full(ch.num_vectors, 0.0),
+            )
+
+        ref_ch_id = xmltree.findtext(".//Channel/RefChId")
+        if not ref_ch_id or ref_ch_id not in pvp_by_channel:
+            ref_ch_id = channels[0].identifier
+
+        computed_refgeom = sarkit.crsd.compute_reference_geometry(
+            xmltree,
+            pvps=pvp_by_channel[ref_ch_id],
+            ppps=ppp_by_channel[ref_ch_id],
+        )
+        root = xmltree.getroot()
+        old_refgeom = root.find("ReferenceGeometry")
+        if old_refgeom is not None:
+            idx = list(root).index(old_refgeom)
+            root.remove(old_refgeom)
+            root.insert(idx, computed_refgeom)
+        else:
+            root.append(computed_refgeom)
 
         metadata = sarkit.crsd.Metadata(xmltree=xmltree)
 
@@ -971,33 +1138,9 @@ class Sentinel1L0ToCRSD:
 
             for ch in channels:
                 cid = ch.identifier
-                ci2, amp_sf, rcv_times = burst_data[cid]
-
-                # Build PVP
-                pvp = build_pvp_array(
-                    channel=ch,
-                    pvp_dtype=pvp_dtype,
-                    rcv_times=rcv_times,
-                    rcv_positions=ch._rcv_pos,
-                    rcv_velocities=ch._rcv_vel,
-                    rcv_acx=ch._rcv_acx,
-                    rcv_acy=ch._rcv_acy,
-                    amp_sf=amp_sf,
-                )
-
-                # Build PPP
-                ppp = build_ppp_array(
-                    channel=ch,
-                    ppp_dtype=ppp_dtype,
-                    tx_times=ch._tx_times,
-                    tx_positions=ch._tx_pos,
-                    tx_velocities=ch._tx_vel,
-                    tx_acx=ch._tx_acx,
-                    tx_acy=ch._tx_acy,
-                    tx_rad_int=np.full(
-                        ch.num_vectors, 0.0,
-                    ),
-                )
+                ci2, _, _ = burst_data[cid]
+                pvp = pvp_by_channel[cid]
+                ppp = ppp_by_channel[cid]
 
                 # Write arrays
                 writer.write_signal(cid, ci2)
