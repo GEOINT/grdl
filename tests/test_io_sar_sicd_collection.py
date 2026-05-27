@@ -47,7 +47,6 @@ from grdl.IO.models.sicd import (
     SICDRcvChannel,
     SICDCollectionMetadata,
 )
-from grdl.IO.models.base import ChannelMetadata
 from grdl.vocabulary import PolarimetricMode
 
 
