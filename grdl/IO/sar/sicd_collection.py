@@ -164,9 +164,9 @@ class SICDCollectionReader(ImageReader):
     polarizations : list of str, optional
         Explicit polarization labels (e.g. ``['HH', 'VV']``).  If
         supplied, ``len(polarizations)`` must equal ``len(filepaths)``
-        and each label is used verbatim.  If ``None`` (default), the
-        label for each file is inferred from its SICD metadata via
-        :func:`_infer_polarization`.
+        and each label is normalized to uppercase before use.  If
+        ``None`` (default), the label for each file is inferred from its
+        SICD metadata via :func:`_infer_polarization`.
 
     Raises
     ------
