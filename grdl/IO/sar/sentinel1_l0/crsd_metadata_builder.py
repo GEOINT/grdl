@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-05-22
+2026-05-27
 """
 
 # Standard library
@@ -57,6 +57,13 @@ CRSD_NAMESPACE = "http://api.nsgreg.nga.mil/schema/crsd/1.0"
 _APC_PREFIX = "AntennaPhaseCenter_"
 _APAT_PREFIX = "AntennaPattern_"
 _ACF_PREFIX = "AntCoordFrame_"
+
+# GRDL-only extension namespace for optional metadata not present
+# in the NGA CRSD schema.
+_GRDL_COMPAT_NAMESPACE = "urn:grdl:compat"
+_GRDL_COMPAT_IDENTIFIER_TAG = (
+    f"{{{_GRDL_COMPAT_NAMESPACE}}}Identifier"
+)
 
 
 # =====================================================================
@@ -256,6 +263,21 @@ def _sub_intfrac(parent: etree._Element, tag: str,
     _sub(el, "Offset", str(offset))
     _sub(el, "Size", str(size))
     _sub(el, "Format", fmt)
+    return el
+
+
+def _sub_grdl_compat_identifier(
+    parent: etree._Element, identifier: str,
+) -> etree._Element:
+    """Add GRDL compatibility identifier extension.
+
+    This element is intentionally outside the CRSD schema and is
+    consumed only by GRDL compatibility tooling. Schema-strict
+    validators will reject XML containing this extension under
+    sequence-constrained parents.
+    """
+    el = etree.SubElement(parent, _GRDL_COMPAT_IDENTIFIER_TAG)
+    el.text = identifier
     return el
 
 
@@ -639,10 +661,7 @@ class CRSDMetadataBuilder:
             _sub(ts, "TxId", ch.identifier)
             _sub(ts, "NumPulses", str(ch.num_vectors))
             _sub(ts, "PPPArrayByteOffset", str(ppp_offset))
-            id_node = etree.SubElement(
-                ts, "{urn:grdl:compat}Identifier",
-            )
-            id_node.text = ch.identifier
+            _sub_grdl_compat_identifier(ts, ch.identifier)
             ppp_offset += ch.num_vectors * 200
 
         # Receive
@@ -660,10 +679,7 @@ class CRSDMetadataBuilder:
             _sub(c, "NumSamples", str(ch.num_samples))
             _sub(c, "SignalArrayByteOffset", str(sig_offset))
             _sub(c, "PVPArrayByteOffset", str(pvp_offset))
-            id_node = etree.SubElement(
-                c, "{urn:grdl:compat}Identifier",
-            )
-            id_node.text = ch.identifier
+            _sub_grdl_compat_identifier(c, ch.identifier)
             # CI2 = 2 bytes per sample
             sig_offset += ch.num_vectors * ch.num_samples * 2
             pvp_offset += ch.num_vectors * 216

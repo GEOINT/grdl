@@ -94,11 +94,61 @@ import sarkit.crsd
 
 logger = logging.getLogger(__name__)
 
+_CONVERTER_LOGGERS = (
+    "grdl.IO.sar.sentinel1_l0.crsd_converter",
+    "grdl.IO.sar.sentinel1_l0.crsd_metadata_builder",
+    "grdl.IO.sar.sentinel1_l0.orbit",
+    "grdl.IO.sar.sentinel1_l0.safe_product",
+    "grdl.IO.sar.sentinel1_l0.decoder",
+    "grdl.IO.sar.sentinel1_l0.geometry",
+    "grdl.IO.sar.sentinel1_l0.timing",
+)
+
 # GPS epoch for time conversion (naive UTC — consistent with
 # POEParser and TimingCalculator which use naive datetimes)
 _GPS_EPOCH = datetime(
     GPS_EPOCH_YEAR, GPS_EPOCH_MONTH, GPS_EPOCH_DAY,
 )
+
+
+def _configure_conversion_logging(
+    log_level: Optional[Union[int, str]],
+) -> None:
+    """Configure logger verbosity for converter and related modules.
+
+    Parameters
+    ----------
+    log_level : int, str, or None
+        Standard Python logging level (e.g. ``logging.INFO`` or
+        ``"INFO"``). If ``None``, no logging configuration changes
+        are applied.
+    """
+    if log_level is None:
+        return
+
+    if isinstance(log_level, str):
+        level_name = log_level.upper()
+        level = getattr(logging, level_name, None)
+        if not isinstance(level, int):
+            raise ValueError(f"Invalid log_level: {log_level}")
+    elif isinstance(log_level, int):
+        level = log_level
+    else:
+        raise TypeError(
+            "log_level must be int, str, or None",
+        )
+
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+
+    root_logger = logging.getLogger()
+    if root_logger.level > level:
+        root_logger.setLevel(level)
+
+    for logger_name in _CONVERTER_LOGGERS:
+        logging.getLogger(logger_name).setLevel(level)
 
 
 # =====================================================================
@@ -279,12 +329,15 @@ class Sentinel1L0ToCRSD:
         )
 
         # Step 1: Open SAFE product
+        logger.info("Step 1/6: Open SAFE product")
         self._open_safe()
 
         # Step 2: Load orbit
+        logger.info("Step 2/6: Load precise orbit")
         self._load_orbit()
 
         # Step 3: Detect bursts and compute per-burst metadata
+        logger.info("Step 3/6: Process bursts")
         burst_channels, burst_data, channel_states = (
             self._process_bursts()
         )
@@ -296,6 +349,7 @@ class Sentinel1L0ToCRSD:
             )
 
         # Step 4: Compute scene geometry
+        logger.info("Step 4/6: Compute scene geometry")
         scene = self._compute_scene(burst_channels)
         self._compute_channel_polarization_params(
             burst_channels, scene, channel_states,
@@ -305,6 +359,7 @@ class Sentinel1L0ToCRSD:
         )
 
         # Step 5: Build XML metadata
+        logger.info("Step 5/6: Build CRSD XML metadata")
         builder = CRSDMetadataBuilder(
             product_name=self._product_name,
             collection_ref_time=self._ref_time,
@@ -316,6 +371,7 @@ class Sentinel1L0ToCRSD:
         xmltree = builder.build()
 
         # Step 6: Write CRSD file
+        logger.info("Step 6/6: Write CRSD file")
         output_path = self._write_crsd(
             xmltree,
             burst_channels,
@@ -640,6 +696,12 @@ class Sentinel1L0ToCRSD:
                 f"{self.polarization}",
             )
 
+        logger.info(
+            "Processing %d bursts for polarization %s",
+            len(echo_bursts),
+            self.polarization,
+        )
+
         channels: List[BurstChannelInfo] = []
         burst_data: Dict[
             str, Tuple[np.ndarray, np.ndarray, np.ndarray]
@@ -653,14 +715,14 @@ class Sentinel1L0ToCRSD:
         first_gps = echo_bursts[0].reference_time_gps
         burst_cycle_base = int(first_gps / cycle_duration)
 
-        # Group by swath for logging
+        # Group by swath for diagnostics
         swath_counts: Dict[str, int] = {}
         for b in echo_bursts:
             swath_counts[b.swath_name] = (
                 swath_counts.get(b.swath_name, 0) + 1
             )
         for sname, cnt in sorted(swath_counts.items()):
-            logger.info(
+            logger.debug(
                 "Detected %s: %d echo bursts", sname, cnt,
             )
 
@@ -1166,6 +1228,7 @@ def convert_s1_l0_to_crsd(
     relative_orbit: Optional[int] = None,
     output_dir: Optional[Union[str, Path]] = None,
     swaths: Optional[List[str]] = None,
+    log_level: Optional[Union[int, str]] = 'WARNING',
 ) -> Path:
     """Convert a Sentinel-1 Level 0 SAFE product to CRSD.
 
@@ -1183,6 +1246,9 @@ def convert_s1_l0_to_crsd(
         Output directory for the CRSD file.
     swaths : list of str, optional
         Sub-swaths to include (e.g. ``["IW1"]``).
+    log_level : int or str, optional
+        Python logging level for converter and related Sentinel-1 L0
+        modules. Examples: ``logging.INFO`` or ``"INFO"``.
 
     Returns
     -------
@@ -1197,8 +1263,11 @@ def convert_s1_l0_to_crsd(
     ...     poe_path='/data/poe/',
     ...     polarization='VV',
     ...     output_dir='/data/output/',
+    ...     log_level='INFO',
     ... )
     """
+    _configure_conversion_logging(log_level)
+
     converter = Sentinel1L0ToCRSD(
         safe_path=safe_path,
         poe_path=poe_path,
