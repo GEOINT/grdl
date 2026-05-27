@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-04-16
+2026-05-27
 """
 
 # Standard library
@@ -1055,6 +1055,68 @@ def test_orbit_loader_prefers_poe():
     assert loader.get_vectors(prefer_poe=False) == ann
 
 
+def test_find_and_load_poe_no_requests_returns_false(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0.orbit import OrbitLoader
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    loader = OrbitLoader()
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", False)
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+
+    called = {"download": False}
+
+    def _fake_download(**kwargs):
+        called["download"] = True
+        return None
+
+    monkeypatch.setattr(orbit, "download_poe", _fake_download)
+
+    out = loader.find_and_load_poe(
+        directory=tmp_path,
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        mission="S1A",
+        download=True,
+    )
+    assert out is False
+    assert called["download"] is False
+
+
+def test_find_and_load_poe_dependency_error_returns_false(
+    monkeypatch,
+    tmp_path,
+):
+    from grdl.exceptions import DependencyError
+    from grdl.IO.sar.sentinel1_l0.orbit import OrbitLoader
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    loader = OrbitLoader()
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+
+    def _raise_dep(**kwargs):
+        raise DependencyError("requests missing")
+
+    monkeypatch.setattr(orbit, "download_poe", _raise_dep)
+
+    out = loader.find_and_load_poe(
+        directory=tmp_path,
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        mission="S1A",
+        download=True,
+    )
+    assert out is False
+
+
 def test_download_poe_prefers_asf(monkeypatch, tmp_path):
     from grdl.IO.sar.sentinel1_l0 import orbit
 
@@ -1565,6 +1627,51 @@ def test_burst_reader_respects_custom_thresholds(
     )
     assert reader._burst_gap_threshold_us == 500_000
     assert reader._burst_line_filter_ratio == 0.5
+
+
+def test_burst_reader_preserves_original_packet_indices(
+    monkeypatch, tmp_path,
+):
+    """Burst packet bounds map to original metadata rows.
+
+    Grouped DataFrames keep parent metadata indices; burst
+    detection may normalize local indexing for array math, but
+    BurstInfo packet ranges must retain original packet positions.
+    """
+    import pandas as pd
+
+    from grdl.IO.sar.sentinel1_l0 import decoder as dec_mod
+    from grdl.IO.sar.sentinel1_l0.burst_reader import BurstReader
+
+    class _FakeDecoder:
+        def __init__(self, df):
+            self._metadata_df = df
+            self.num_packets = len(df)
+
+    monkeypatch.setattr(dec_mod, "_HAS_S1_DECODER", False)
+
+    meas = tmp_path / "s1a-iw-raw-vv-test.dat"
+    meas.write_bytes(b"")
+    reader = BurstReader(meas)
+
+    metadata_df = pd.DataFrame(
+        {
+            "Coarse Time": [1000, 1000, 1000, 1010, 1010, 1010],
+            "Fine Time": [0.0, 0.1, 0.2, 0.0, 0.1, 0.2],
+            "Swath Number": [11, 11, 11, 11, 11, 11],
+            "Polarization": [0, 0, 0, 0, 0, 0],
+        },
+        index=[10, 11, 12, 20, 21, 22],
+    )
+    reader._decoder = _FakeDecoder(metadata_df)
+
+    bursts = reader.get_burst_info(force_recompute=True)
+
+    assert len(bursts) == 2
+    assert bursts[0].start_packet == 10
+    assert bursts[0].end_packet == 13
+    assert bursts[1].start_packet == 20
+    assert bursts[1].end_packet == 23
 
 
 # ===================================================================

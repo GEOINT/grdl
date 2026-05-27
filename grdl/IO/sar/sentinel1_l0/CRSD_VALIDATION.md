@@ -204,7 +204,9 @@ radiometric output.
 | PVP field names and dtypes | ✓ Identical (16 fields) |
 | IW1/IW2 range sample count | ✓ Exact match |
 | sarkit round-trip (write → read) | ✓ 67 unit tests pass |
-| CRSD 1.0 XML schema compliance | ✓ sarkit validates on write |
+| Sarkit consistency (default full-file checks) | ✗ Fails on generated files |
+| Sarkit split-gate consistency (non-schema checks) | ✓ Passes after converter/metadata fixes |
+| Sarkit split-gate schema validation | ✗ Fails (known verifier/schema mismatch) |
 
 **The GRDL converter produces CRSD files that are structurally
 valid, metrically accurate, and interchangeable with NGA/Valkyrie
@@ -213,7 +215,28 @@ differences are either cosmetic (channel IDs), conservative
 (extra edge pulses), or fully compensated by metadata fields
 (AmpSF, RcvStart epoch).
 
-## 6. Comparison Tool
+## 6. Sarkit CRSD Consistency Findings
+
+The following findings summarize `sarkit.verification.CrsdConsistency`
+run against the three generated VV files in
+`/data/sar/raw_crsd/sentinel-1/test` (full-file mode).
+
+### 6a. Current status
+
+After applying converter and metadata fixes, a split-gate validation
+approach was adopted:
+
+- Run non-schema consistency checks (ignore `check_against_schema`):
+  passing on regenerated test output (`consistency_fail_count=0`).
+- Run explicit XML schema validation separately: failing due
+  metadata-versus-schema constraint mismatches observed in current
+  generated output.
+
+This means geometry/timing/packing consistency checks can now pass
+cleanly when schema gating is isolated, while schema-level failures
+still require metadata/schema alignment work.
+
+## 7. Comparison Tool
 
 A reusable CLI tool for comparing any two CRSD files is available at:
 
