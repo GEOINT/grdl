@@ -1028,9 +1028,14 @@ def download_poe(
         if result:
             return result
 
+    target_time_str = (
+        target_time.isoformat()
+        if target_time is not None
+        else "unknown time"
+    )
     logger.warning(
         "Could not download POE orbit file for %s (%s)",
-        target_time.isoformat(), mission,
+        target_time_str, mission,
     )
     return None
 
