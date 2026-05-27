@@ -380,11 +380,13 @@ class SICDCollectionReader(ImageReader):
 
     def close(self) -> None:
         """Close all sub-readers and release file handles."""
-        for reader in self._readers:
+        for i, reader in enumerate(self._readers):
             try:
                 reader.close()
             except Exception:
-                pass
+                logger.exception(
+                    'Failed to close SICD sub-reader at index %d.', i
+                )
 
     # -----------------------------------------------------------------------
     # Convenience methods
