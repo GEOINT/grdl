@@ -111,22 +111,28 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
                 len(rcv_channels),
             )
         pol_str = getattr(rcv_channels[0], 'tx_rcv_polarization', None)
-        if pol_str and pol_str.upper() not in _PASSTHROUGH_POLS:
+        if pol_str:
+            pol_upper = pol_str.upper()
+            if pol_upper in _PASSTHROUGH_POLS:
+                return pol_upper
             if ':' in pol_str:
                 # 'V:V' → 'VV', 'H:V' → 'HV', etc.
                 parts = pol_str.split(':', maxsplit=1)
                 return (parts[0] + parts[1]).upper()
-            return pol_str.upper()
+            return pol_upper
 
     # ---- Fallback: tx_polarization (single char, e.g. 'V') ------------
     tx_pol = getattr(rc, 'tx_polarization', None) if rc else None
-    if tx_pol and tx_pol.upper() not in _PASSTHROUGH_POLS:
+    if tx_pol:
+        tx_pol_upper = tx_pol.upper()
+        if tx_pol_upper in _PASSTHROUGH_POLS:
+            return tx_pol_upper
         logger.warning(
             "Could not determine full Tx:Rcv polarization; using "
             "tx_polarization=%r as label.  Accuracy not guaranteed.",
             tx_pol,
         )
-        return tx_pol.upper()
+        return tx_pol_upper
 
     logger.warning(
         "Polarization cannot be determined from SICD metadata "
