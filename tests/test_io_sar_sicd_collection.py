@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-05-26
+2026-05-28
 """
 
 # Standard library
@@ -98,6 +98,22 @@ def _make_collection(
         'HV': 'H:V',
         'VH': 'V:H',
         'VV': 'V:V',
+        'XX': 'X:X',
+        'XY': 'X:Y',
+        'YY': 'Y:Y',
+        'YX': 'Y:X',
+        'SH': 'S:H',
+        'SV': 'S:V',
+        'SX': 'S:X',
+        'SY': 'S:Y',
+        'RH': 'R:H',
+        'RV': 'R:V',
+        'LH': 'L:H',
+        'LV': 'L:V',
+        'RX': 'R:X',
+        'RY': 'R:Y',
+        'LX': 'L:X',
+        'LY': 'L:Y',
     }
     mock_readers = [
         _make_sicd_reader(rows, cols, pol_map.get(p, 'H:H'))
@@ -183,6 +199,29 @@ class TestInferPolarization:
             radar_collection=SICDRadarCollection(rcv_channels=rcv_channels),
         )
         assert _infer_polarization(meta) == 'HH'
+
+    def test_passthrough_other(self):
+        # 'OTHER' is in _PASSTHROUGH_POLS — must be returned as-is, not
+        # silently dropped to 'UNKNOWN' via the tx_pol fallback chain.
+        meta = _make_sicd_meta(tx_rcv_polarization='OTHER')
+        assert _infer_polarization(meta) == 'OTHER'
+
+    def test_passthrough_unknown_from_rcv_channel(self):
+        # 'UNKNOWN' encoded in rcv_channels should be surfaced directly.
+        meta = _make_sicd_meta(tx_rcv_polarization='UNKNOWN')
+        assert _infer_polarization(meta) == 'UNKNOWN'
+
+    def test_passthrough_sequence(self):
+        # 'SEQUENCE' indicates multi-waveform; returned as-is so callers
+        # know to supply an explicit polarizations= override.
+        meta = _make_sicd_meta(tx_rcv_polarization='SEQUENCE')
+        assert _infer_polarization(meta) == 'SEQUENCE'
+
+    def test_passthrough_lowercase_normalised(self):
+        # Passthrough strings are normalised to uppercase regardless of
+        # the case present in the raw SICD XML.
+        meta = _make_sicd_meta(tx_rcv_polarization='other')
+        assert _infer_polarization(meta) == 'OTHER'
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +485,37 @@ class TestPolarimetricModeIntegration:
         reader = _make_collection(['HH', 'HV'])
         mode = PolarimetricMode.from_reader(reader)
         assert mode == PolarimetricMode.DUAL_POL
+
+    @pytest.mark.parametrize(
+        'pair',
+        [
+            ['VV', 'VH'],
+            ['HH', 'VV'],
+            ['HV', 'VH'],
+            ['XX', 'XY'],
+            ['YY', 'YX'],
+        ],
+    )
+    def test_dual_pol_mode_additional_pairs(self, pair):
+        reader = _make_collection(pair)
+        mode = PolarimetricMode.from_reader(reader)
+        assert mode == PolarimetricMode.DUAL_POL
+
+    @pytest.mark.parametrize(
+        'pair',
+        [
+            ['SH', 'SV'],
+            ['SX', 'SY'],
+            ['RH', 'RV'],
+            ['LH', 'LV'],
+            ['RX', 'RY'],
+            ['LX', 'LY'],
+        ],
+    )
+    def test_compact_pol_mode_pairs(self, pair):
+        reader = _make_collection(pair)
+        mode = PolarimetricMode.from_reader(reader)
+        assert mode == PolarimetricMode.COMPACT_POL
 
     def test_single_pol_mode(self):
         reader = _make_collection(['HH'])
