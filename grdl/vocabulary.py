@@ -237,6 +237,16 @@ class PolarimetricMode(Enum):
             frozenset({'VV', 'VH'}),
             frozenset({'HH', 'VV'}),
             frozenset({'HV', 'VH'}),
+            frozenset({'XX', 'XY'}),
+            frozenset({'YY', 'YX'}),
+        )
+        _COMPACT_PAIRS = (
+            frozenset({'SH', 'SV'}),
+            frozenset({'SX', 'SY'}),
+            frozenset({'RH', 'RV'}),
+            frozenset({'LH', 'LV'}),
+            frozenset({'RX', 'RY'}),
+            frozenset({'LX', 'LY'}),
         )
         meta = getattr(reader, 'metadata', None)
         channel_metadata = getattr(meta, 'channel_metadata', None)
@@ -251,6 +261,8 @@ class PolarimetricMode(Enum):
                 return cls.QUAD_POL
             if len(pols) == 2 and pols in _DUAL_PAIRS:
                 return cls.DUAL_POL
+            if len(pols) == 2 and pols in _COMPACT_PAIRS:
+                return cls.COMPACT_POL
             if len(pols) == 1:
                 return cls.SINGLE_POL
             return None

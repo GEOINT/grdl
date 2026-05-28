@@ -29,7 +29,7 @@ Created
 
 Modified
 --------
-2026-03-07
+2026-05-27
 """
 
 # Standard library
@@ -60,6 +60,9 @@ from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 
 # NISAR
 from grdl.IO.sar.nisar import NISARReader, open_nisar
+
+# SICD Collection (multi-polarization)
+from grdl.IO.sar.sicd_collection import SICDCollectionReader, open_sicd_collection
 
 # Metadata models
 from grdl.IO.models import (
@@ -199,6 +202,7 @@ __all__ = [
     # Sentinel-1
     'Sentinel1SLCReader',
     'Sentinel1L0Reader',
+    'SICDCollectionReader',
     'S1L0ReaderConfig',
     'open_safe_product',
     # TerraSAR-X / TanDEM-X
@@ -218,6 +222,7 @@ __all__ = [
     'Sentinel1L0Metadata',
     # Convenience functions
     'open_sar',
+    'open_sicd_collection',
     'open_biomass',
     'open_nisar',
 ]

@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-05-26
 """
 
 # Standard library
@@ -1243,3 +1243,39 @@ class SICDMetadata(ImageMetadata):
     rg_az_comp: Optional[SICDRgAzComp] = None
     pfa: Optional[SICDPFA] = None
     rma: Optional[SICDRMA] = None
+
+
+@dataclass
+class SICDCollectionMetadata(ImageMetadata):
+    """Typed metadata for a multi-polarization SICD collection.
+
+    Produced by ``SICDCollectionReader`` when multiple single-polarization
+    SICD files (one per channel) are opened together as a CYX cube.  All
+    CYX-standard fields (``axis_order``, ``channel_metadata``, ``bands``)
+    are inherited from ``ImageMetadata``.
+
+    Parameters
+    ----------
+    per_file_metadata : List[SICDMetadata], optional
+        Per-channel ``SICDMetadata`` objects in channel-index order.
+        Required for downstream geolocation::
+
+            geo = SICDGeolocation.from_reader(
+                collection.get_reader_for('HH')
+            )
+
+    Examples
+    --------
+    >>> coll = open_sicd_collection(['hh.nitf', 'vv.nitf'])
+    >>> meta = coll.metadata  # SICDCollectionMetadata
+    >>> meta.axis_order
+    'CYX'
+    >>> meta.bands
+    2
+    >>> meta.channel_metadata[0].polarization
+    'HH'
+    >>> meta.per_file_metadata[0].geo_data.scp.llh.lat
+    34.05
+    """
+
+    per_file_metadata: Optional[List[SICDMetadata]] = None
