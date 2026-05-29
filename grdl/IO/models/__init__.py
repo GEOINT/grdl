@@ -88,6 +88,7 @@ from grdl.IO.models.sicd import (
     SICDRMRef,
     SICDINCA,
     SICDRMA,
+    SICDCollectionMetadata,
 )
 
 # SIDD
