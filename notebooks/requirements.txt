@@ -1,0 +1,2 @@
+napari[all]>=0.4.19
+ipykernel>=6.0
