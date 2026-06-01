@@ -52,6 +52,9 @@ Created
 
 Modified
 --------
+2026-06-01  Use scene_sizing='full' (whole scene from data sampling) and
+            the default (fixed) KaiserSinc interpolator; AMP_SF is applied
+            automatically. Drop the Polyphase interpolator workaround.
 2026-02-12
 """
 
@@ -66,8 +69,6 @@ import numpy as np
 
 # GRDL
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from grdl.interpolation import PolyphaseInterpolator
-
 from grdl.IO.sar import CPHDReader
 from grdl.image_processing.sar import (
     CollectionGeometry,
@@ -120,6 +121,14 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="Azimuth k-space oversampling factor, 1.0 = Nyquist (default: 1.0).",
+    )
+    parser.add_argument(
+        "--scene-sizing",
+        type=str,
+        default="full",
+        choices=["full", "toa"],
+        help="Output scene sizing: 'full' = whole scene from data sampling "
+             "(default), 'toa' = receive-window footprint.",
     )
     parser.add_argument(
         "--slant",
@@ -237,6 +246,7 @@ def run_ifp(
     grid_mode: str = "inscribed",
     range_oversample: float = 1.0,
     azimuth_oversample: float = 1.0,
+    scene_sizing: str = "full",
     slant: bool = True,
     plot_geometry: bool = False,
     plot_grid: bool = False,
@@ -255,6 +265,10 @@ def run_ifp(
         Range k-space oversampling factor.
     azimuth_oversample : float
         Azimuth k-space oversampling factor.
+    scene_sizing : str
+        ``'full'`` (default) sizes the output to the full scene the data
+        supports (range ``c/(2·fxss)``, azimuth ``npulses``); ``'toa'``
+        uses the smaller receive-window footprint.
     slant : bool
         If True, use slant plane.
     plot_geometry : bool
@@ -311,6 +325,7 @@ def run_ifp(
         grid_mode=grid_mode,
         range_oversample=range_oversample,
         azimuth_oversample=azimuth_oversample,
+        scene_sizing=scene_sizing,
     )
     print(f"  kv bounds: [{grid.kv_bounds[0]:.2f}, {grid.kv_bounds[1]:.2f}]")
     print(f"  ku bounds: [{grid.ku_bounds[0]:.4f}, {grid.ku_bounds[1]:.4f}]")
@@ -329,9 +344,12 @@ def run_ifp(
     phase_sgn = gp.phase_sgn if gp is not None else -1
     print(f"  PhaseSGN: {phase_sgn:+d}")
 
+    # Default interpolator is the bandwidth-preserving KaiserSinc, which
+    # now scales its kernel support with the downsample ratio (flat
+    # passband when the output grid is coarser than the input). Per-vector
+    # AMP_SF is applied automatically inside interpolate_range.
     pfa = PolarFormatAlgorithm(
         grid=grid,
-        interpolator=PolyphaseInterpolator( kernel_length=64, num_phases=256, prototype='kaiser' ),
         phase_sgn=phase_sgn,
     )
 
@@ -400,6 +418,7 @@ if __name__ == "__main__":
         grid_mode=args.grid_mode,
         range_oversample=args.range_oversample,
         azimuth_oversample=args.azimuth_oversample,
+        scene_sizing=args.scene_sizing,
         slant=not args.ground,
         plot_geometry=args.plot_geometry,
         plot_grid=args.plot_grid,
