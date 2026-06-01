@@ -46,9 +46,16 @@ class TestNRLStretch:
     def test_matches_sarpy(self, sar_amp):
         sarpy_remap = pytest.importorskip("sarpy.visualization.remap")
         ours = NRLStretch(knee=0.8, percentile=99.0).apply(sar_amp)
-        sarpy_raw = sarpy_remap.NRL(
-            bit_depth=8, knee=int(0.8 * 255), percentile=99.0,
-        ).raw_call(sar_amp) / 255.0
+        try:
+            sarpy_raw = sarpy_remap.NRL(
+                bit_depth=8, knee=int(0.8 * 255), percentile=99.0,
+            ).raw_call(sar_amp) / 255.0
+        except NameError as exc:
+            # sarpy 2.0.1's visualization.remap._nrl_stats references an
+            # undefined 'stats_calculation' (upstream regression). GRDL's
+            # NRLStretch is unaffected; skip the cross-check when sarpy's own
+            # reference implementation is broken.
+            pytest.skip(f"sarpy remap reference is broken: {exc}")
         np.testing.assert_allclose(
             ours, sarpy_raw.astype(np.float32), atol=2e-3, rtol=1e-3,
         )

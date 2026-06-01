@@ -4,7 +4,7 @@
 # SAR Format Readers (grdl.IO.sar)
 # ---------------------------------
 # sarkit is preferred; sarpy is the fallback
-sarpy>=1.3.0
+sarpy>=2.0.0
 sarkit>=1.3.0
 
 # Raster / GeoTIFF format support (grdl.IO.geotiff, grdl.IO.nitf, grdl.IO.sar.biomass)

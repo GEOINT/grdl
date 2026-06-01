@@ -19,7 +19,7 @@ dependencies:
   - glymur
   # Keep these in sync with pyproject.toml — unpinned conda specs let
   # an older sarkit/sarpy from the user-site silently shadow the env.
-  - sarpy>=1.3.0
+  # sarpy 2.0 is PyPI-only for now (not yet on conda-forge); see the pip section below.
   - sarkit>=1.3.0
   - requests
   - pyyaml
@@ -36,3 +36,5 @@ dependencies:
   - pip
   - pip:
     - spectral
+    # sarpy 2.0 is not yet packaged on conda-forge (max 1.3.x) — install from PyPI
+    - sarpy>=2.0.0
