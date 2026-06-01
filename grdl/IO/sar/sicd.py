@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-06-01
 """
 
 # Standard library
@@ -264,13 +264,19 @@ def _sarpy_xyz(obj: Any) -> Optional[XYZ]:
 
 
 def _sarpy_latlon(obj: Any) -> Optional[LatLon]:
-    """Convert sarpy LatLonType to LatLon."""
+    """Convert sarpy LatLonType (or [lat, lon] array) to LatLon."""
     if obj is None:
         return None
-    return LatLon(
-        lat=float(obj.Lat) if obj.Lat is not None else 0.0,
-        lon=float(obj.Lon) if obj.Lon is not None else 0.0,
-    )
+    if hasattr(obj, 'Lat'):
+        return LatLon(
+            lat=float(obj.Lat) if obj.Lat is not None else 0.0,
+            lon=float(obj.Lon) if obj.Lon is not None else 0.0,
+        )
+    # sarpy's SerializableCPArray exposes image corners as numpy
+    # [lat, lon] arrays via attribute access (both sarpy 1.3 and 2.0);
+    # handle that form as well.
+    arr = np.asarray(obj, dtype=float).ravel()
+    return LatLon(lat=float(arr[0]), lon=float(arr[1]))
 
 
 def _sarpy_latlonhae(obj: Any) -> Optional[LatLonHAE]:

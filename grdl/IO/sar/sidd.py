@@ -36,7 +36,7 @@ Created
 
 Modified
 --------
-2026-03-29
+2026-06-01
 """
 
 # Standard library
@@ -265,6 +265,27 @@ def _sarpy_poly2d(obj: Any) -> Optional[Poly2D]:
     if coefs is None:
         return None
     return Poly2D(coefs=np.array(coefs))
+
+
+def _sarpy_poly1d(obj: Any) -> Optional[Poly1D]:
+    """Convert sarpy Poly1DType to Poly1D."""
+    if obj is None:
+        return None
+    coefs = getattr(obj, 'Coefs', None)
+    if coefs is None:
+        return None
+    return Poly1D(coefs=np.array(coefs))
+
+
+def _sarpy_xyzpoly(obj: Any) -> Optional[XYZPoly]:
+    """Convert sarpy XYZPolyType to XYZPoly."""
+    if obj is None:
+        return None
+    return XYZPoly(
+        x=_sarpy_poly1d(_safe_get(obj, 'X')),
+        y=_sarpy_poly1d(_safe_get(obj, 'Y')),
+        z=_sarpy_poly1d(_safe_get(obj, 'Z')),
+    )
 
 
 # ===================================================================
@@ -980,7 +1001,7 @@ def _extract_measurement_sarpy(sm: Any) -> Optional[SIDDMeasurement]:
         ref_point = None
         rp = _safe_get(pp, 'ReferencePoint')
         if rp is not None:
-            ecf = _safe_get(rp, 'ECF')
+            ecf = _safe_get(rp, 'ECEF')
             ecef = None
             if ecf is not None:
                 ecef = XYZ(
@@ -1773,10 +1794,8 @@ class SIDDReader(ImageReader):
                 self._cached_image = self._read_image_sarkit()
             return self._cached_image[row_start:row_end, col_start:col_end]
         else:
-            return self._reader.read_chip(
-                np.s_[row_start:row_end, col_start:col_end],
-                index=self.image_index,
-            )
+            return self._reader[row_start:row_end, col_start:col_end,
+                                self.image_index]
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the full SIDD product image.
@@ -1796,9 +1815,7 @@ class SIDDReader(ImageReader):
                 self._cached_image = self._read_image_sarkit()
             return self._cached_image
         else:
-            return self._reader.read_chip(
-                np.s_[:, :], index=self.image_index,
-            )
+            return self._reader[:, :, self.image_index]
 
     def _read_image_sarkit(self) -> np.ndarray:
         """Read the SIDD pixel array via sarkit, decoding J2K if needed.

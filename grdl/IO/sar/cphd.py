@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-05-05
+2026-06-01
 """
 
 # Standard library
@@ -1667,12 +1667,18 @@ class CPHDReader(ImageReader):
         radar_mode_obj = getattr(ci, 'RadarMode', None)
         params: List[CPHDParameter] = []
         sarpy_params = getattr(ci, 'Parameters', None)
-        if sarpy_params:
-            for p in sarpy_params:
-                params.append(CPHDParameter(
-                    name=getattr(p, 'name', '') or '',
-                    value=getattr(p, 'value', '') or '',
-                ))
+        if sarpy_params is not None:
+            if hasattr(sarpy_params, 'get_collection'):
+                # sarpy ParametersCollection is dict-like (name -> value),
+                # not a list of objects with .name/.value.
+                for name, value in sarpy_params.get_collection().items():
+                    params.append(CPHDParameter(name=name or '', value=value or ''))
+            else:
+                for p in sarpy_params:
+                    params.append(CPHDParameter(
+                        name=getattr(p, 'name', '') or '',
+                        value=getattr(p, 'value', '') or '',
+                    ))
         return CPHDCollectionInfo(
             collector_name=getattr(ci, 'CollectorName', None),
             illuminator_name=getattr(ci, 'IlluminatorName', None),
@@ -1706,14 +1712,15 @@ class CPHDReader(ImageReader):
         timeline = None
         tl = getattr(g, 'Timeline', None)
         if tl is not None:
+            def _iso(x):
+                # sarpy may return numpy.datetime64 (no .isoformat) or datetime.
+                if x is None:
+                    return None
+                return x.isoformat() if hasattr(x, 'isoformat') else str(x)
             cs = getattr(tl, 'CollectionStart', None)
             timeline = CPHDTimeline(
-                collection_start=cs.isoformat() if cs is not None else None,
-                rcv_collection_start=(
-                    getattr(tl, 'RcvCollectionStart', None).isoformat()
-                    if getattr(tl, 'RcvCollectionStart', None) is not None
-                    else None
-                ),
+                collection_start=_iso(cs),
+                rcv_collection_start=_iso(getattr(tl, 'RcvCollectionStart', None)),
                 tx_time1=(
                     float(tl.TxTime1)
                     if getattr(tl, 'TxTime1', None) is not None else None
@@ -1922,11 +1929,7 @@ class CPHDReader(ImageReader):
                 stop_vector=row_end,
             )[:, col_start:col_end]
         else:
-            return self._reader.read_chip(
-                index=channel,
-                dim1_range=(row_start, row_end),
-                dim2_range=(col_start, col_end),
-            )
+            return self._reader[row_start:row_end, col_start:col_end, channel]
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read full phase history data.
