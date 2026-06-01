@@ -32,7 +32,8 @@ Created
 
 Modified
 --------
-2026-05-15
+2026-06-01  Expose per-vector AMP_SF (CPHD amplitude scale factor) so the
+            PFA can calibrate per-pulse amplitude.
 """
 
 # Standard library
@@ -159,6 +160,12 @@ class CollectionGeometry:
         # Receive window (TOA) parameters — used by PolarGrid for scene extent
         self.toa1 = pvp.toa1
         self.toa2 = pvp.toa2
+
+        # Per-vector amplitude scale factor (CPHD AMP_SF). Calibrated
+        # signal = AmpSF * stored signal. Some sensors (e.g. Capella)
+        # record pulses at varying receiver gain encoded here; the PFA
+        # applies it so every pulse is on a common amplitude scale.
+        self.amp_sf = pvp.amp_sf
 
         # Build geometry
         self._build_reference_vectors(pvp)

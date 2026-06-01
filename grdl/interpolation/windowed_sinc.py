@@ -32,7 +32,12 @@ Created
 
 Modified
 --------
-2026-02-12
+2026-06-01  Fix downsampling: scale kernel support by the downsample ratio
+            so the anti-alias filter has ~kernel_length taps in OUTPUT
+            spacing. The fixed-input-width window rolled off the passband
+            (eating real signal -> defocused PFA images); now flat to
+            near Nyquist. Estimate local spacing from immediate neighbors
+            so non-uniform (polar keystone) axes are handled correctly.
 """
 
 # Standard library
@@ -127,33 +132,62 @@ if _HAS_NUMBA:
                     hi_s = mid
             idx = lo_s
 
-            # Neighbor window centered at idx
-            start = idx - half + 1
-            if start < 0:
-                start = 0
-            if start + kernel_length > n:
-                start = n - kernel_length
-            if start < 0:
-                start = 0
-            end = start + kernel_length
-            if end > n:
-                end = n
-
-            # Local input spacing from neighborhood span
-            npts = end - start
-            if npts > 1:
-                dx_local = (x_old[end - 1] - x_old[start]) / (npts - 1)
+            # Estimate the LOCAL input spacing from the immediate
+            # neighbors (works for non-uniform axes, e.g. the polar
+            # keystone ku = kv*tan(phi)).
+            jb = idx - 1
+            if jb < 0:
+                jb = 0
+            jf = idx
+            if jf > n - 1:
+                jf = n - 1
+            if jf > jb:
+                dx_local = (x_old[jf] - x_old[jb]) / (jf - jb)
             else:
                 dx_local = 1.0
             if dx_local < 1e-30:
                 dx_local = 1.0
 
-            # Anti-alias: normalize sinc by the coarser of
-            # input/output spacing so cutoff tracks output Nyquist
-            # when downsampling.
+            # Downsample ratio. When the output grid is coarser than the
+            # input (ratio > 1), the anti-alias sinc must be cut off at
+            # the OUTPUT Nyquist -- which requires ~kernel_length taps in
+            # OUTPUT spacing, i.e. kernel_length*ratio INPUT samples. The
+            # original code fixed the window at kernel_length INPUT
+            # samples, giving only kernel_length/ratio output taps -> a
+            # far-too-short filter that rolls off the passband (eats real
+            # signal). Scale the kernel support by the ratio so the
+            # passband stays flat to ~output Nyquist.
+            ratio = dx_output / dx_local
+            if ratio < 1.0:
+                ratio = 1.0
+            half_eff = int(half * ratio + 0.5)
+            if half_eff < half:
+                half_eff = half
+            klen = 2 * half_eff
+
+            # Window of klen input samples centered at idx
+            start = idx - half_eff + 1
+            if start < 0:
+                start = 0
+            if klen > n:
+                klen = n
+            if start + klen > n:
+                start = n - klen
+            if start < 0:
+                start = 0
+            end = start + klen
+            if end > n:
+                end = n
+
+            # Sinc cutoff at the coarser (output) spacing for anti-alias;
+            # Kaiser window spans the full (scaled) support so the filter
+            # is long enough in output-spacing taps.
             dx_norm = dx_local
             if dx_output > dx_local:
                 dx_norm = dx_output
+            support = half_eff * dx_local   # = half*dx_output when downsampling
+            if support < 1e-30:
+                support = 1.0
 
             # Accumulate weighted sum
             w_sum = 0.0
@@ -165,8 +199,8 @@ if _HAS_NUMBA:
                 # Sinc referenced to max(input, output) spacing
                 w = _sinc(dist / dx_norm * oversample)
 
-                # Kaiser window on input spacing (full kernel support)
-                u = dist / (dx_local * half)
+                # Kaiser window over the full (ratio-scaled) support
+                u = dist / support
                 u_sq = u * u
                 if u_sq < 1.0:
                     arg = beta * math.sqrt(1.0 - u_sq)
