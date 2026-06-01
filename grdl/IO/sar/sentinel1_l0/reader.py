@@ -7,7 +7,9 @@ High-level reader for Sentinel-1 L0 SAFE products.  Inherits
 
 - SAFE product validation and file discovery
 - Annotation XML parsing
-- Orbit and attitude loading (annotation + optional POE file)
+- Orbit loading (annotation, optional POE file, or onboard GPS
+  ephemeris reconstructed from the ISP packets when neither is
+  present -- requires sentinel1decoder >= 2.0)
 - Burst-level I/Q data access (via the optional ``sentinel1decoder``
   package)
 - Typed :class:`Sentinel1L0Metadata` exposed through
@@ -47,13 +49,14 @@ Created
 
 Modified
 --------
-2026-04-16
+2026-06-01
 """
 
 # Standard library
 import logging
 import warnings
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import (
     Dict,
@@ -91,6 +94,7 @@ from grdl.IO.sar.sentinel1_l0.burst_reader import (
     SwathInfo,
 )
 from grdl.IO.sar.sentinel1_l0.constants import (
+    GPS_LEAP_SECONDS,
     IW_MODE_PARAMS,
     IW_RAW_TO_LOGICAL,
     MODE_PARAMS,
@@ -99,6 +103,7 @@ from grdl.IO.sar.sentinel1_l0.constants import (
 )
 from grdl.IO.sar.sentinel1_l0.decoder import (
     check_decoder_available,
+    read_packet_ephemeris,
 )
 from grdl.IO.sar.sentinel1_l0.geometry import GeometryCalculator
 from grdl.IO.sar.sentinel1_l0.orbit import OrbitLoader
@@ -894,6 +899,92 @@ class Sentinel1L0Reader(ImageReader):
                 mission, [str(d) for d in search_dirs],
             )
 
+    def _load_packet_ephemeris(
+        self,
+    ) -> List[S1L0OrbitStateVector]:
+        """Reconstruct orbit state vectors from packet ephemeris.
+
+        Sentinel-1 L0 ISP packets carry the spacecraft's onboard
+        GPS-derived state (ECEF position + velocity) in their
+        sub-commutated ancillary data.  When no POE/RESORB file is
+        available, this yields metre-accurate orbit directly from the
+        product -- sufficient for image formation.
+
+        Requires ``sentinel1decoder >= 2.0`` (``Level0File``).  Returns
+        an empty list when the API or data is unavailable.
+
+        Returns
+        -------
+        list of S1L0OrbitStateVector
+            Deduplicated, time-sorted orbit state vectors (UTC).
+        """
+        if (
+            self._product is None
+            or not self._product.measurement_files
+        ):
+            return []
+
+        meas = self._product.measurement_files[0].measurement_file
+        df = read_packet_ephemeris(meas)
+        if df is None or len(df) == 0:
+            return []
+
+        pos_cols = [
+            "X-axis position ECEF",
+            "Y-axis position ECEF",
+            "Z-axis position ECEF",
+        ]
+        vel_cols = [
+            "X-axis velocity ECEF",
+            "Y-axis velocity ECEF",
+            "Z-axis velocity ECEF",
+        ]
+        tcol = "POD Solution Data Timestamp"
+        if not all(
+            c in df.columns for c in pos_cols + vel_cols + [tcol]
+        ):
+            logger.debug(
+                "Packet ephemeris missing expected columns"
+            )
+            return []
+
+        # Sub-commutated ephemeris repeats across packets; keep one
+        # row per unique POD solution time, time-sorted.
+        sub = df.drop_duplicates(subset=[tcol]).sort_values(tcol)
+
+        gps_epoch = datetime(1980, 1, 6)
+        osvs: List[S1L0OrbitStateVector] = []
+        for _, row in sub.iterrows():
+            try:
+                gps_s = float(row[tcol])
+            except (TypeError, ValueError):
+                continue
+            if gps_s <= 0:
+                continue
+            # Packet time is seconds since the GPS epoch; convert to
+            # UTC by removing accumulated leap seconds.
+            utc = (
+                gps_epoch
+                + timedelta(seconds=gps_s)
+                - timedelta(seconds=GPS_LEAP_SECONDS)
+            )
+            osvs.append(S1L0OrbitStateVector(
+                time=utc,
+                x=float(row[pos_cols[0]]),
+                y=float(row[pos_cols[1]]),
+                z=float(row[pos_cols[2]]),
+                vx=float(row[vel_cols[0]]),
+                vy=float(row[vel_cols[1]]),
+                vz=float(row[vel_cols[2]]),
+            ))
+
+        if osvs:
+            logger.info(
+                "Loaded %d orbit state vectors from packet "
+                "ephemeris (no POE needed)", len(osvs),
+            )
+        return osvs
+
     def _init_burst_readers(self) -> None:
         """Initialize a :class:`BurstReader` per measurement file."""
         if not check_decoder_available():
@@ -1022,6 +1113,14 @@ class Sentinel1L0Reader(ImageReader):
                 )
             )
 
+        # Final fallback: reconstruct orbit from the onboard GPS
+        # ephemeris embedded in the ISP packets (sentinel1decoder >= 2.0
+        # Level0File).  No external POE/RESORB file required.
+        if not meta.orbit_state_vectors:
+            meta.orbit_state_vectors = (
+                self._load_packet_ephemeris()
+            )
+
         # Fallback: derive swath parameters from packet-based
         # burst detection when annotations are missing or empty.
         if (
@@ -1145,12 +1244,23 @@ class Sentinel1L0Reader(ImageReader):
                     from sentinel1decoder.utilities import (
                         range_dec_to_sample_rate,
                     )
+                    # 2.0 reports Range Decimation as an enum (no
+                    # median); 1.x as an int code.  Use the modal value
+                    # and unwrap ``.value`` when present.
+                    rgdec_val = (
+                        sub["Range Decimation"].mode().iloc[0]
+                    )
                     rgdec = int(
-                        sub["Range Decimation"].median()
+                        getattr(rgdec_val, "value", rgdec_val)
                     )
-                    rgdec_fs = range_dec_to_sample_rate(
-                        rgdec
-                    )
+                    try:
+                        rgdec_fs = float(
+                            range_dec_to_sample_rate(rgdec_val)
+                        )
+                    except Exception:
+                        rgdec_fs = float(
+                            range_dec_to_sample_rate(rgdec)
+                        )
                 except Exception:
                     rgdec = -1
                     rgdec_fs = 0.0

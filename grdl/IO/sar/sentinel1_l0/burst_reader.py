@@ -41,7 +41,7 @@ Created
 
 Modified
 --------
-2026-04-16
+2026-06-01
 """
 
 # Standard library
@@ -78,6 +78,17 @@ from grdl.IO.sar.sentinel1_l0.decoder import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _to_int(value) -> int:
+    """Coerce a packet-metadata value to a plain ``int``.
+
+    sentinel1decoder 1.x reports ``Swath Number`` / ``Polarisation`` as
+    integer codes; 2.0 reports them as ``IntEnum`` members.  ``int()``
+    fails directly on the enum, so unwrap ``.value`` when present.  Works
+    for both eras.
+    """
+    return int(getattr(value, "value", value))
 
 
 # =============================================================================
@@ -386,6 +397,14 @@ class BurstReader:
         if df is None or len(df) == 0:
             return []
 
+        # sentinel1decoder 2.0 indexes metadata by a MultiIndex
+        # (Acquisition Chunk, Packet Number); 1.x used a positional
+        # RangeIndex.  GRDL records burst packet ranges POSITIONALLY
+        # (read_burst slices the original frame with .iloc), so detect
+        # boundaries on a copy carrying a 0..N RangeIndex.  The original
+        # ``_metadata_df`` is left untouched for the decoder.
+        df = df.reset_index(drop=True)
+
         bursts: List[BurstInfo] = []
 
         # British spelling used by some versions of the decoder.
@@ -401,14 +420,14 @@ class BurstReader:
             ):
                 bursts.extend(
                     self._detect_burst_boundaries(
-                        group_df, int(swath), int(pol)
+                        group_df, _to_int(swath), _to_int(pol)
                     )
                 )
         elif "Swath Number" in df.columns:
             for swath, group_df in df.groupby("Swath Number"):
                 bursts.extend(
                     self._detect_burst_boundaries(
-                        group_df, int(swath), 0
+                        group_df, _to_int(swath), 0
                     )
                 )
         else:
@@ -633,8 +652,10 @@ class BurstReader:
             )
 
         df = self._decoder._metadata_df
-        burst_df = df.loc[
-            burst.start_packet:burst.end_packet - 1
+        # Positional slice — burst.start/end_packet are positions, and
+        # 2.0's MultiIndex makes label-based .loc unsafe.
+        burst_df = df.iloc[
+            burst.start_packet:burst.end_packet
         ]
 
         if "SWST" in burst_df.columns:
