@@ -49,7 +49,8 @@ Created
 
 Modified
 --------
-2026-06-01
+2026-06-01  Pass scene_name to POE auto-download so the ASF orbit API is
+            used (the ESA step.esa.int fallback 404s for recent dates).
 """
 
 # Standard library
@@ -864,6 +865,13 @@ class Sentinel1L0Reader(ImageReader):
         )
         mission = f"S1{mission_letter}"
 
+        # Scene name (SAFE dir without the .SAFE suffix) enables the ASF
+        # orbit API in download_poe. Without it, download falls straight
+        # to the ESA step.esa.int archive, which 404s for recent dates.
+        scene_name = self.filepath.name
+        if scene_name.upper().endswith(".SAFE"):
+            scene_name = scene_name[:-5]
+
         # Candidate search locations in priority order.
         search_dirs = []
         if self._config.poe_directory:
@@ -879,6 +887,7 @@ class Sentinel1L0Reader(ImageReader):
             try:
                 found = self._orbit_loader.find_and_load_poe(
                     directory, start_time, mission,
+                    scene_name=scene_name,
                 )
                 if found:
                     logger.info(
