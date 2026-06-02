@@ -7,7 +7,7 @@ All tests use synthetic data -- no real TSX/TDX products required.
 Author
 ------
 Jason Fritz
-jpfritz@zai.com
+43161141+stryder-vtx@users.noreply.github.com
 
 License
 -------

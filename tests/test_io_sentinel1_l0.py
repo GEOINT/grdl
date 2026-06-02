@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-04-16
+2026-05-27
 """
 
 # Standard library
@@ -1055,6 +1055,258 @@ def test_orbit_loader_prefers_poe():
     assert loader.get_vectors(prefer_poe=False) == ann
 
 
+def test_find_and_load_poe_no_requests_returns_false(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0.orbit import OrbitLoader
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    loader = OrbitLoader()
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", False)
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+
+    called = {"download": False}
+
+    def _fake_download(**kwargs):
+        called["download"] = True
+        return None
+
+    monkeypatch.setattr(orbit, "download_poe", _fake_download)
+
+    out = loader.find_and_load_poe(
+        directory=tmp_path,
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        mission="S1A",
+        download=True,
+    )
+    assert out is False
+    assert called["download"] is False
+
+
+def test_find_and_load_poe_dependency_error_returns_false(
+    monkeypatch,
+    tmp_path,
+):
+    from grdl.exceptions import DependencyError
+    from grdl.IO.sar.sentinel1_l0.orbit import OrbitLoader
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    loader = OrbitLoader()
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+
+    def _raise_dep(**kwargs):
+        raise DependencyError("requests missing")
+
+    monkeypatch.setattr(orbit, "download_poe", _raise_dep)
+
+    out = loader.find_and_load_poe(
+        directory=tmp_path,
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        mission="S1A",
+        download=True,
+    )
+    assert out is False
+
+
+def test_download_poe_prefers_asf(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    asf_path = tmp_path / "asf_file.EOF"
+
+    def _fake_asf(scene_name, out_dir, timeout=60):
+        assert scene_name == "S1A_SCENE"
+        assert out_dir == tmp_path
+        return asf_path
+
+    def _fake_esa(*args, **kwargs):
+        raise AssertionError("ESA fallback should not be called")
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(orbit, "_download_poe_asf", _fake_asf)
+    monkeypatch.setattr(orbit, "_download_poe_esa", _fake_esa)
+
+    out = orbit.download_poe(
+        scene_name="S1A_SCENE",
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        output_dir=tmp_path,
+    )
+    assert out == asf_path
+
+
+def test_download_poe_asf_failure_without_target_time(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    def _fake_asf(scene_name, out_dir, timeout=60):
+        return None
+
+    called = {"esa": False}
+
+    def _fake_esa(*args, **kwargs):
+        called["esa"] = True
+        return tmp_path / "esa_should_not_be_called.EOF"
+
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(orbit, "_download_poe_asf", _fake_asf)
+    monkeypatch.setattr(orbit, "_download_poe_esa", _fake_esa)
+
+    out = orbit.download_poe(
+        target_time=None,
+        scene_name="S1A_SCENE",
+        output_dir=tmp_path,
+    )
+    assert out is None
+    assert called["esa"] is False
+
+
+def test_ensure_poe_available_download_success(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    downloaded = tmp_path / "downloaded.EOF"
+
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(
+        orbit,
+        "download_poe",
+        lambda **kwargs: downloaded,
+    )
+
+    out = orbit.ensure_poe_available(
+        target_time=datetime(2023, 5, 1, 6, 0, 0),
+        mission="S1A",
+        scene_name="S1A_SCENE",
+        search_dir=tmp_path,
+        download=True,
+    )
+    assert out == downloaded
+
+
+def test_ensure_poe_available_failure_message(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    monkeypatch.setattr(
+        orbit,
+        "find_poe_file_for_time",
+        lambda directory, target_time, mission: None,
+    )
+    monkeypatch.setattr(orbit, "_HAS_REQUESTS", True)
+    monkeypatch.setattr(
+        orbit,
+        "download_poe",
+        lambda **kwargs: None,
+    )
+
+    t = datetime(2023, 5, 1, 6, 0, 0)
+    with pytest.raises(FileNotFoundError) as exc:
+        orbit.ensure_poe_available(
+            target_time=t,
+            mission="S1A",
+            scene_name="S1A_SCENE",
+            search_dir=tmp_path,
+            download=True,
+        )
+
+    msg = str(exc.value)
+    assert "No POE orbit file found covering" in msg
+    assert "step.esa.int" in msg
+    assert "s1-orbits.s3.us-west-2.amazonaws.com" in msg
+
+
+def test_download_poe_asf_request_mocked(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    class _Resp:
+        def __init__(self):
+            self.headers = {
+                "Content-Disposition": (
+                    "attachment; filename=\""
+                    "S1A_OPER_AUX_POEORB_OPOD_20230503T000000_"
+                    "V20230501T000000_20230502T000000.EOF\""
+                )
+            }
+            self.url = "https://example.com/path/file.EOF"
+            self.content = b"EOFDATA"
+
+        def raise_for_status(self):
+            return None
+
+    class _Req:
+        class RequestException(Exception):
+            pass
+
+        @staticmethod
+        def get(url, timeout=60, allow_redirects=True):
+            return _Resp()
+
+    monkeypatch.setattr(orbit, "_requests", _Req)
+
+    out = orbit._download_poe_asf(
+        "S1A_SCENE", tmp_path, timeout=3,
+    )
+    assert out is not None
+    assert out.exists()
+    assert out.suffix == ".EOF"
+    assert out.read_bytes() == b"EOFDATA"
+
+
+def test_download_poe_esa_request_mocked(monkeypatch, tmp_path):
+    from grdl.IO.sar.sentinel1_l0 import orbit
+
+    fname = (
+        "S1A_OPER_AUX_POEORB_OPOD_20230503T000000_"
+        "V20230501T000000_20230502T000000.EOF"
+    )
+
+    class _RespDir:
+        def __init__(self):
+            self.text = f'<a href="{fname}">{fname}</a>'
+
+        def raise_for_status(self):
+            return None
+
+    class _RespFile:
+        def __init__(self):
+            self.content = b"POEFILE"
+
+        def raise_for_status(self):
+            return None
+
+    class _Req:
+        class RequestException(Exception):
+            pass
+
+        @staticmethod
+        def get(url, timeout=60, allow_redirects=True):
+            if url.endswith(".EOF"):
+                return _RespFile()
+            return _RespDir()
+
+    monkeypatch.setattr(orbit, "_requests", _Req)
+
+    out = orbit._download_poe_esa(
+        mission="S1A",
+        target_time=datetime(2023, 5, 1, 12, 0, 0),
+        output_dir=tmp_path,
+        timeout=3,
+    )
+    assert out is not None
+    assert out.name == fname
+    assert out.read_bytes() == b"POEFILE"
+
+
 def test_geometry_state_vector_basics():
     import numpy as np
     from grdl.IO.sar.sentinel1_l0.geometry import StateVector
@@ -1375,6 +1627,51 @@ def test_burst_reader_respects_custom_thresholds(
     )
     assert reader._burst_gap_threshold_us == 500_000
     assert reader._burst_line_filter_ratio == 0.5
+
+
+def test_burst_reader_preserves_original_packet_indices(
+    monkeypatch, tmp_path,
+):
+    """Burst packet bounds map to original metadata rows.
+
+    Grouped DataFrames keep parent metadata indices; burst
+    detection may normalize local indexing for array math, but
+    BurstInfo packet ranges must retain original packet positions.
+    """
+    import pandas as pd
+
+    from grdl.IO.sar.sentinel1_l0 import decoder as dec_mod
+    from grdl.IO.sar.sentinel1_l0.burst_reader import BurstReader
+
+    class _FakeDecoder:
+        def __init__(self, df):
+            self._metadata_df = df
+            self.num_packets = len(df)
+
+    monkeypatch.setattr(dec_mod, "_HAS_S1_DECODER", False)
+
+    meas = tmp_path / "s1a-iw-raw-vv-test.dat"
+    meas.write_bytes(b"")
+    reader = BurstReader(meas)
+
+    metadata_df = pd.DataFrame(
+        {
+            "Coarse Time": [1000, 1000, 1000, 1010, 1010, 1010],
+            "Fine Time": [0.0, 0.1, 0.2, 0.0, 0.1, 0.2],
+            "Swath Number": [11, 11, 11, 11, 11, 11],
+            "Polarization": [0, 0, 0, 0, 0, 0],
+        },
+        index=[10, 11, 12, 20, 21, 22],
+    )
+    reader._decoder = _FakeDecoder(metadata_df)
+
+    bursts = reader.get_burst_info(force_recompute=True)
+
+    assert len(bursts) == 2
+    assert bursts[0].start_packet == 10
+    assert bursts[0].end_packet == 13
+    assert bursts[1].start_packet == 20
+    assert bursts[1].end_packet == 23
 
 
 # ===================================================================

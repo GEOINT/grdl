@@ -19,7 +19,7 @@ rasterio (only for detected products -- MGD/GEC/EEC via GeoTIFF)
 Author
 ------
 Jason Fritz
-jpfritz@zai.com
+43161141+stryder-vtx@users.noreply.github.com
 
 License
 -------

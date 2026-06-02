@@ -28,6 +28,11 @@ Created
 
 Modified
 --------
+2026-06-01  Add scene_sizing='toa'|'full'. 'full' accurately predicts the
+            whole scene from the data sampling (range c/(2·fxss), azimuth
+            rec_n_pulses=npulses) so spotlight CPHDs that 'toa'
+            undersizes form their full footprint without hand-tuned
+            oversample. Default stays 'toa' (unchanged behavior).
 2026-05-19  Use a positive-value check for fxss fallback selection so the
             unambiguous-range estimate is only used when fxss is actually
             populated, not merely allocated.
@@ -78,6 +83,19 @@ class PolarGrid:
     azimuth_oversample : float
         Azimuth k-space oversampling factor.  1.0 = Nyquist rate,
         2.0 = twice Nyquist (twice as many azimuth samples).
+    scene_sizing : str
+        How the output grid dimensions are sized:
+
+        - ``'toa'`` (default): size to the receive-window illumination
+          footprint (``scene_range = c·(toa2−toa1)/2``; azimuth =
+          ``scene_range/cos(graze)``). Compact, but undersizes
+          collections whose recorded swath exceeds the TOA window.
+        - ``'full'``: accurate full-scene prediction from the data
+          sampling — range extent ``c/(2·fxss)`` (FX unambiguous swath,
+          → ``rec_n_samples`` ≈ ``nsamples``) and azimuth
+          ``rec_n_pulses = npulses`` (the pulse-Nyquist limit). No
+          geometry heuristic and no cap; use for spotlight CPHDs that
+          ``'toa'`` undersizes (e.g. Capella, Umbra).
 
     Attributes
     ----------
@@ -113,11 +131,17 @@ class PolarGrid:
         grid_mode: str = 'inscribed',
         range_oversample: float = 1.0,
         azimuth_oversample: float = 1.0,
+        scene_sizing: str = 'toa',
     ) -> None:
         self.geometry = geometry
         self.grid_mode = grid_mode.upper()
         self.range_oversample = range_oversample
         self.azimuth_oversample = azimuth_oversample
+        self.scene_sizing = scene_sizing.lower()
+        if self.scene_sizing not in ('toa', 'full'):
+            raise ValueError(
+                f"scene_sizing must be 'toa' or 'full', got '{scene_sizing}'"
+            )
 
         # Spatial frequency conversion factor: k = 2f/c
         self.sf_conv = 2.0 / geometry.c
@@ -235,40 +259,56 @@ class PolarGrid:
         # K-space bandwidths (1/m)
         kv_span = float(abs(self.kv_bounds[1] - self.kv_bounds[0]))
 
-        # Scene extent from TOA receive window.
-        # scene_range = c × mean(toa2 − toa1) / 2
-        toa1 = getattr(geo, 'toa1', None)
-        toa2 = getattr(geo, 'toa2', None)
-        if toa1 is not None and toa2 is not None:
-            toa_window = float(np.mean(np.abs(toa2 - toa1)))
-            scene_range = c * toa_window / 2.0
+        # Full FX unambiguous range swath: c / (2 * fxss).
+        fxss = np.asarray(geo.fxss)
+        positive_fxss = fxss[fxss > 0.0]
+        if positive_fxss.size > 0:
+            fx_scene_range = c / (2.0 * float(np.mean(positive_fxss)))
         else:
-            # Fallback: use unambiguous range from fxss (less accurate)
-            fxss = np.asarray(geo.fxss)
-            positive_fxss = fxss[fxss > 0.0]
-            if positive_fxss.size > 0:
-                fxss0 = float(np.mean(positive_fxss))
-                scene_range = c / (2.0 * fxss0)
-            else:
-                raw_bw = float(np.mean(np.abs(geo.fx2 - geo.fx1)))
-                scene_range = (
-                    c * max(geo.nsamples - 1, 1) / (2.0 * raw_bw)
-                    if raw_bw > 0.0 else 1.0
-                )
-
-        self.rec_n_samples = max(
-            1,
-            int(np.ceil(kv_span * scene_range * self.range_oversample)),
-        )
-
-        # Azimuth scene extent: scene_range / cos(mean grazing angle)
+            raw_bw = float(np.mean(np.abs(geo.fx2 - geo.fx1)))
+            fx_scene_range = (
+                c * max(geo.nsamples - 1, 1) / (2.0 * raw_bw)
+                if raw_bw > 0.0 else 1.0
+            )
         mean_graze = float(np.mean(geo.graz_ang))
-        scene_az = scene_range / max(np.cos(mean_graze), 0.1)
 
-        self.rec_n_pulses = max(
-            1,
-            int(np.ceil(ku_span * scene_az * self.azimuth_oversample)),
-        )
+        if self.scene_sizing == 'full':
+            # Accurate full-scene prediction from the data sampling, with
+            # no geometry heuristic and no Nyquist cap needed:
+            #   range  : extent = c/(2*fxss) (FX unambiguous swath)
+            #            -> rec_n_samples = kv_span * extent (~= nsamples)
+            #   azimuth: unambiguous extent = npulses / ku_span
+            #            -> rec_n_pulses = npulses (the pulse-Nyquist limit)
+            scene_range = fx_scene_range
+            scene_az = float(geo.npulses) / ku_span if ku_span > 0 else 0.0
+            self.rec_n_samples = max(
+                1,
+                int(np.ceil(kv_span * scene_range * self.range_oversample)),
+            )
+            self.rec_n_pulses = max(
+                1,
+                int(np.ceil(geo.npulses * self.azimuth_oversample)),
+            )
+        else:
+            # 'toa': size to the receive-window illumination footprint.
+            # scene_range = c * mean(toa2 - toa1) / 2.
+            toa1 = getattr(geo, 'toa1', None)
+            toa2 = getattr(geo, 'toa2', None)
+            if toa1 is not None and toa2 is not None:
+                toa_window = float(np.mean(np.abs(toa2 - toa1)))
+                scene_range = c * toa_window / 2.0
+            else:
+                scene_range = fx_scene_range
+            self.rec_n_samples = max(
+                1,
+                int(np.ceil(kv_span * scene_range * self.range_oversample)),
+            )
+            # Azimuth scene extent: scene_range / cos(mean grazing angle)
+            scene_az = scene_range / max(np.cos(mean_graze), 0.1)
+            self.rec_n_pulses = max(
+                1,
+                int(np.ceil(ku_span * scene_az * self.azimuth_oversample)),
+            )
 
         # Diagnostic: log grid sizing inputs so callers can verify
         self._diag = {

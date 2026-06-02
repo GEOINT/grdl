@@ -37,6 +37,10 @@ Created
 
 Modified
 --------
+2026-06-01  Apply per-vector AMP_SF (CPHD amplitude scale factor) in
+            interpolate_range so per-pulse receiver-gain variation
+            (e.g. Capella) is normalized; otherwise high-gain pulses
+            act as slow-time impulses and smear azimuth.
 2026-05-14  Cast CI2/CI4 structured int signal to complex64 in
             interpolate_range so numba kernels receive a standard
             floating-point complex dtype (fixes Capella CPHD).
@@ -266,10 +270,23 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             pg.sf_conv * np.cos(geo.phi[:npulses]) * geo.k_sf[:npulses]
         )
 
+        # Per-vector AMP_SF (CPHD amplitude scale factor). Calibrated
+        # signal = AmpSF * stored signal. Applied per pulse so sensors
+        # that record at varying receiver gain (e.g. Capella, whose
+        # high-gain pulses carry amp_sf ~0.002) are normalized to a
+        # common scale -- without it those pulses are orders of magnitude
+        # too bright, acting as slow-time impulses that smear azimuth.
+        amp = getattr(geo, 'amp_sf', None)
+        if amp is not None:
+            amp = np.asarray(amp)
+            if amp.shape[0] < npulses or not np.any(amp != amp.flat[0]):
+                amp = None  # missing/constant -> nothing to do
+
         for i in range(npulses):
             freq_i = sample_indices * geo.fxss[i] + geo.fx0[i]
             kv_i = pulse_scale[i] * freq_i
-            result[i, :] = self._interp(kv_i, signal[i, :], kv_uniform)
+            pulse = signal[i, :] if amp is None else signal[i, :] * amp[i]
+            result[i, :] = self._interp(kv_i, pulse, kv_uniform)
 
         return result
 

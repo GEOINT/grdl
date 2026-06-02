@@ -418,9 +418,13 @@ class BurstReader:
             for (swath, pol), group_df in df.groupby(
                 ["Swath Number", pol_col]
             ):
+                pol_int = (
+                    int(pol.value) if hasattr(pol, "value")
+                    else int(pol)
+                )
                 bursts.extend(
                     self._detect_burst_boundaries(
-                        group_df, _to_int(swath), _to_int(pol)
+                        group_df, int(swath), pol_int
                     )
                 )
         elif "Swath Number" in df.columns:
@@ -447,7 +451,12 @@ class BurstReader:
             return []
 
         bursts: List[BurstInfo] = []
-        indices = df.index.tolist()
+        # Preserve packet positions from the parent metadata
+        # DataFrame before normalizing local indexing.
+        packet_indices = df.index.to_numpy()
+        # Reset index so local array indexing is contiguous
+        # even if df came from a grouped subset.
+        df = df.reset_index(drop=True)
 
         coarse_times = df["Coarse Time"].values
         fine_times = df["Fine Time"].values
@@ -511,8 +520,8 @@ class BurstReader:
                 burst_index=burst_num,
                 swath=swath,
                 polarization=polarization,
-                start_packet=int(indices[start_idx]),
-                end_packet=int(indices[end_idx - 1]) + 1,
+                start_packet=int(packet_indices[start_idx]),
+                end_packet=int(packet_indices[end_idx - 1]) + 1,
                 num_lines=end_idx - start_idx,
                 num_samples=n_samples,
                 reference_time=burst_ref_time,
@@ -522,18 +531,18 @@ class BurstReader:
             ))
             start_idx = end_idx
 
-        if start_idx < len(indices):
+        if start_idx < len(packet_indices):
             burst_ref_time = times[start_idx] / 1e6
             swst, pri, rank, n_samples = get_timing_params(
-                start_idx, len(indices)
+                start_idx, len(packet_indices)
             )
             bursts.append(BurstInfo(
                 burst_index=len(gap_indices),
                 swath=swath,
                 polarization=polarization,
-                start_packet=int(indices[start_idx]),
-                end_packet=int(indices[-1]) + 1,
-                num_lines=len(indices) - start_idx,
+                start_packet=int(packet_indices[start_idx]),
+                end_packet=int(packet_indices[-1]) + 1,
+                num_lines=len(packet_indices) - start_idx,
                 num_samples=n_samples,
                 reference_time=burst_ref_time,
                 swst=swst,
