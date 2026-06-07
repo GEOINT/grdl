@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-09
+2026-06-07
 """
 
 # Standard library
@@ -162,6 +162,42 @@ class Tiler(ChipBase):
             self._snap_region(int(r), int(c), tr, tc)
             for r, c in zip(r_origins, c_origins)
         ]
+
+    def partition_positions(self) -> List[ChipRegion]:
+        """Compute a strict non-overlapping partition of the image.
+
+        Unlike :meth:`tile_positions` (which snaps edge tiles inward to keep a
+        constant size, creating overlap), this covers every pixel exactly
+        once: edge tiles are clipped to the image bounds and are therefore
+        smaller than ``tile_size`` where the dimension is not an exact
+        multiple. ``stride`` is ignored. Use this for per-pixel aggregation
+        (statistics, histograms, masks, reductions), where overlap would
+        double-count pixels.
+
+        Returns
+        -------
+        List[ChipRegion]
+            Non-overlapping tile regions in row-major order whose union is
+            the full image.
+
+        Examples
+        --------
+        >>> from grdl.data_prep import Tiler
+        >>> tiler = Tiler(nrows=100, ncols=100, tile_size=64)
+        >>> regions = tiler.partition_positions()
+        >>> len(regions)
+        4
+        >>> regions[-1]
+        ChipRegion(row_start=64, col_start=64, row_end=100, col_end=100)
+        """
+        tr, tc = self._tile_size
+        regions: List[ChipRegion] = []
+        for r0 in range(0, self._nrows, tr):
+            r1 = min(r0 + tr, self._nrows)
+            for c0 in range(0, self._ncols, tc):
+                c1 = min(c0 + tc, self._ncols)
+                regions.append(ChipRegion(r0, c0, r1, c1))
+        return regions
 
     def __repr__(self) -> str:
         return (

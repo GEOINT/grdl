@@ -35,7 +35,9 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Write imagery to disk | `grdl.IO` writers (`GeoTIFFWriter`, `SICDWriter`, `NumpyWriter`, ...) | Raw write calls |
 | Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
+| Plan non-overlapping tiles for per-pixel aggregation | `grdl.data_prep.Tiler.partition_positions()` | Overlapping `tile_positions()`/`chip_positions()` (double-counts edges) |
 | Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
+| Full-image stats baseline (mean/std/percentiles, valid-masked, tiled/parallel) | `grdl.data_prep.compute_image_statistics` / `Normalizer.fit_streaming` | Loading the whole image for `arr.mean()`/`np.percentile` |
 | Image to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual affine math or GCP interpolation |
 | EO NITF geolocation (RPC/RSM) | `grdl.geolocation.eo.rpc` / `grdl.geolocation.eo.rsm` | Manual RPC polynomial evaluation |
 | Coordinate conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |

@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-06-07
 """
 
 # Standard library
@@ -246,6 +246,92 @@ class Normalizer:
             np.percentile(arr, self._percentile_high)
         )
         self._l2_norm = float(np.linalg.norm(arr))
+        self._is_fitted = True
+
+        return self
+
+    def fit_streaming(
+        self,
+        source: object,
+        *,
+        tile: int = 2048,
+        transform: str = 'auto',
+        mask: str = 'none',
+        n_bins: int = 65536,
+        hist_spacing: str = 'log',
+        parallel: object = 'auto',
+        n_workers: Optional[int] = None,
+        band: int = 0,
+    ) -> 'Normalizer':
+        """Fit parameters from a full image without loading it into memory.
+
+        Streams the image tile-by-tile through
+        :func:`grdl.data_prep.compute_image_statistics`, accumulating exact
+        mean/std/min/max (and percentiles for the ``'percentile'`` method)
+        over the selected valid pixels. Scales across CPU cores for large
+        imagery. Equivalent to :meth:`fit` on the full image but bounded in
+        memory and parallelizable -- use it to build a normalization baseline
+        from imagery too large (or too slow) to load whole.
+
+        Parameters
+        ----------
+        source : str or ImageReader
+            Image path, or an open GRDL reader. A path enables parallel
+            execution (readers are not picklable).
+        tile : int
+            Tile size for the non-overlapping partition.
+        transform : str
+            Value transform applied to each tile (``'auto'``, ``'magnitude'``,
+            ``'power'``, ``'decibel'``, ``'identity'``). ``'auto'`` takes the
+            magnitude of complex imagery and passes real imagery through.
+        mask : {'none', 'nonzero_finite', 'metadata', 'both'}
+            Valid-pixel selection. NaN/inf are always excluded; for SAR
+            imagery with zero-fill prefer ``'nonzero_finite'`` or
+            ``'metadata'`` (the sensor valid-data polygon).
+        n_bins : int
+            Histogram bins for percentile estimation (``'percentile'`` method).
+        hist_spacing : {'log', 'linear'}
+            Histogram bin spacing for percentile estimation.
+        parallel : {'auto', True, False}
+            Parallel execution policy (see
+            :func:`grdl.data_prep.compute_image_statistics`).
+        n_workers : int, optional
+            Process count for parallel execution.
+        band : int
+            Band index for multi-band imagery.
+
+        Returns
+        -------
+        Normalizer
+            Self, for method chaining.
+
+        Raises
+        ------
+        ProcessorError
+            If no valid pixels are found in the image.
+        """
+        from grdl.data_prep.streaming_stats import compute_image_statistics
+
+        pcts = ([self._percentile_low, self._percentile_high]
+                if self._method == 'percentile' else None)
+        res = compute_image_statistics(
+            source, tile=tile, transform=transform, mask=mask,
+            percentiles=pcts, n_bins=n_bins, hist_spacing=hist_spacing,
+            parallel=parallel, n_workers=n_workers, band=band,
+        )
+        if res.count == 0:
+            raise ProcessorError(
+                "No valid pixels found; cannot fit. Check the mask strategy."
+            )
+
+        self._min = res.minimum
+        self._max = res.maximum
+        self._mean = res.mean
+        self._std = res.std
+        self._l2_norm = res.l2_norm
+        if pcts is not None:
+            self._pct_low_val = res.percentiles[self._percentile_low]
+            self._pct_high_val = res.percentiles[self._percentile_high]
         self._is_fitted = True
 
         return self
