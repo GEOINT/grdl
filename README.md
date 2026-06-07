@@ -26,7 +26,9 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 | Write imagery to disk | `grdl.IO` (`GeoTIFFWriter`, `SICDWriter`, `SIDDWriter`, `NumpyWriter`, `PngWriter`) | Raw `rasterio` / `h5py` write calls |
 | Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
 | Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
+| Partition an image into non-overlapping tiles (per-pixel aggregation) | `grdl.data_prep.Tiler.partition_positions()` | Overlapping `tile_positions()` / `chip_positions()` (double-counts edges) |
 | Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
+| Full-image stats baseline (mean/std/percentiles, valid-masked, tiled/parallel) | `grdl.data_prep.compute_image_statistics` / `Normalizer.fit_streaming` | Loading the whole image for `arr.mean()` / `np.percentile` |
 | Transform pixel to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual interpolation of GCPs or affine math |
 | Coordinate system conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |
 | Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
@@ -288,9 +290,10 @@ GRDL/
 │   │   └── detection.py             #   transform_pixel_geometry, transform_detection, transform_detection_set
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
 │   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
-│   │   ├── tiler.py                 #   Tiler (stride-based tile region computation)
+│   │   ├── tiler.py                 #   Tiler (overlapping tiles + non-overlapping partition_positions)
 │   │   ├── chip_extractor.py        #   ChipExtractor (point-centered and whole-image chip regions)
-│   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
+│   │   ├── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm; fit_streaming)
+│   │   └── streaming_stats.py       #   StreamingStats, compute_image_statistics, build_valid_mask
 │   ├── coregistration/              # Image alignment and registration
 │   │   ├── base.py                  #   Base coregistration classes
 │   │   ├── affine.py                #   Affine transform alignment
@@ -933,9 +936,37 @@ with GeoTIFFReader('large_scene.tif') as reader:
 tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
 tile_regions = tiler.tile_positions()
 
+# -- Non-overlapping exact cover (use for per-pixel aggregation; no overlap) --
+partition = Tiler(1000, 2000, tile_size=256).partition_positions()
+
 # -- Normalize to [0, 1] range --
 norm = Normalizer(method='minmax')
 normalized = norm.normalize(image)
+```
+
+For a full-image normalization baseline over imagery too large (or too slow) to
+load whole, `compute_image_statistics` streams any reader tile-by-tile -- exact
+mean/std/min/max (Chan merge) plus histogram percentiles, with valid-pixel
+masking and an automatic serial-or-parallel policy. `Normalizer.fit_streaming`
+wires it into the fit/transform API:
+
+```python
+from grdl.data_prep import compute_image_statistics, Normalizer
+
+# -- Direct full-image statistics over valid pixels --
+stats = compute_image_statistics(
+    'scene.nitf',
+    transform='auto',        # magnitude for complex, passthrough for real
+    mask='metadata',         # sensor valid-data polygon (or 'nonzero_finite')
+    percentiles=[1, 99],
+    parallel='auto',         # fork only when the image is large enough to pay off
+)
+print(stats.mean, stats.std, stats.percentiles[99])
+
+# -- Fit a normalizer straight from disk, then apply to chips --
+norm = Normalizer(method='zscore').fit_streaming('scene.nitf',
+                                                 mask='nonzero_finite')
+chip_norm = norm.transform(chip)
 ```
 
 ### Querying Processor Metadata at Runtime
