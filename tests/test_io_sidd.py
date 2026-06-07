@@ -425,10 +425,10 @@ class TestSIDDXMLExtraction:
   <GeoData>
     <EarthModel>WGS_84</EarthModel>
     <ImageCorners>
-      <ICP><Lat>40.0</Lat><Lon>-80.0</Lon></ICP>
-      <FRFC><Lat>40.0</Lat><Lon>-79.0</Lon></FRFC>
-      <FRLC><Lat>39.0</Lat><Lon>-79.0</Lon></FRLC>
-      <LRLC><Lat>39.0</Lat><Lon>-80.0</Lon></LRLC>
+      <ICP index="1:FRFC"><Lat>40.0</Lat><Lon>-80.0</Lon></ICP>
+      <ICP index="2:FRLC"><Lat>40.0</Lat><Lon>-79.0</Lon></ICP>
+      <ICP index="3:LRLC"><Lat>39.0</Lat><Lon>-79.0</Lon></ICP>
+      <ICP index="4:LRFC"><Lat>39.0</Lat><Lon>-80.0</Lon></ICP>
     </ImageCorners>
   </GeoData>
   <Measurement>
