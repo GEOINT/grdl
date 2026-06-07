@@ -26,6 +26,9 @@ Raster-vector conversion:
 I/O:
     ``VectorReader``, ``VectorWriter``
 
+Coordinate fast path:
+    ``CoordSet``, ``read_coords``, ``coords_from_geojson``
+
 Author
 ------
 Duane Smalley, PhD
@@ -56,6 +59,7 @@ from grdl.vector.spatial import (
 )
 from grdl.vector.conversion import RasterToPoints, Rasterize
 from grdl.vector.io import VectorReader, VectorWriter
+from grdl.vector.coords import CoordSet, read_coords, coords_from_geojson
 
 __all__ = [
     # Data models
@@ -79,4 +83,8 @@ __all__ = [
     # I/O
     'VectorReader',
     'VectorWriter',
+    # Coordinate fast path
+    'CoordSet',
+    'read_coords',
+    'coords_from_geojson',
 ]
