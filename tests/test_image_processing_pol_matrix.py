@@ -15,6 +15,7 @@ Covers:
 
 import numpy as np
 import pytest
+import dataclasses
 
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.pol_matrix import (
@@ -80,20 +81,23 @@ def dual_meta():
 
 class TestCovarianceMatrix:
 
+    def test_default_window_size_is_one(self):
+        assert CovarianceMatrix().window_size == 1
+
     def test_c3_shape(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        C = CovarianceMatrix(window_size=3).compute(shh, shv, svh, svv)
+        C = CovarianceMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         assert C.shape == (3, 3, *SHAPE)
 
     def test_c2_shape(self, dual_pol):
         s_co, s_cross = dual_pol
-        C = CovarianceMatrix(window_size=3).compute(s_co, s_cross)
+        C = CovarianceMatrix(window_size=3).compute(np.stack([s_co, s_cross], axis=0))
         assert C.shape == (2, 2, *SHAPE)
 
     def test_c3_hermitian(self, quad_pol):
         """C[i,j] = conj(C[j,i]) everywhere."""
         shh, shv, svh, svv = quad_pol
-        C = CovarianceMatrix(window_size=3).compute(shh, shv, svh, svv)
+        C = CovarianceMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(3):
             for j in range(3):
                 np.testing.assert_allclose(C[i, j], np.conj(C[j, i]), atol=1e-6)
@@ -101,14 +105,14 @@ class TestCovarianceMatrix:
     def test_c3_diagonal_real(self, quad_pol):
         """Diagonal elements should be real (zero imaginary part)."""
         shh, shv, svh, svv = quad_pol
-        C = CovarianceMatrix(window_size=3).compute(shh, shv, svh, svv)
+        C = CovarianceMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(3):
             np.testing.assert_allclose(C[i, i].imag, 0.0, atol=1e-6)
 
     def test_c3_diagonal_nonnegative(self, quad_pol):
         """Power elements must be >= 0."""
         shh, shv, svh, svv = quad_pol
-        C = CovarianceMatrix(window_size=3).compute(shh, shv, svh, svv)
+        C = CovarianceMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(3):
             assert np.all(C[i, i].real >= -1e-6)
 
@@ -131,6 +135,53 @@ class TestCovarianceMatrix:
         assert C.shape == (2, 2, *SHAPE)
         assert out_meta.axis_order == 'CCYX'
         assert out_meta.bands == 4
+
+    def test_execute_three_channel_cube(self, quad_pol, quad_meta):
+        shh, shv, _, svv = quad_pol
+        cube = np.stack([shh, shv, svv], axis=0)
+        meta3 = dataclasses.replace(
+            quad_meta,
+            bands=3,
+            channel_metadata=[
+                ChannelMetadata(index=0, name='HH'),
+                ChannelMetadata(index=1, name='HV'),
+                ChannelMetadata(index=2, name='VV'),
+            ],
+        )
+        cmat = CovarianceMatrix(window_size=3)
+        C, out_meta = cmat.execute(meta3, cube)
+        assert C.shape == (3, 3, *SHAPE)
+        assert out_meta.axis_order == 'CCYX'
+
+    def test_execute_generic_kwargs_aliases(self, quad_pol, quad_meta):
+        shh, shv, svh, svv = quad_pol
+        cmat = CovarianceMatrix(window_size=3)
+        C, _ = cmat.execute(
+            quad_meta,
+            np.zeros((SHAPE[0], SHAPE[1])),
+            co_pol_a=shh,
+            cross_pol=shv,
+            cross_pol_2=svh,
+            co_pol_b=svv,
+        )
+        assert C.shape == (3, 3, *SHAPE)
+
+    def test_execute_role_based_extraction_generic_names(self, quad_pol, quad_meta):
+        shh, shv, _, svv = quad_pol
+        cube = np.stack([shh, shv, svv], axis=0)
+        meta3 = dataclasses.replace(
+            quad_meta,
+            bands=3,
+            channel_metadata=[
+                ChannelMetadata(index=0, name='chan_a', role='co_pol'),
+                ChannelMetadata(index=1, name='chan_b', role='cross_pol'),
+                ChannelMetadata(index=2, name='chan_c', role='co_pol'),
+            ],
+        )
+        cmat = CovarianceMatrix(window_size=3)
+        C, out_meta = cmat.execute(meta3, cube)
+        assert C.shape == (3, 3, *SHAPE)
+        assert out_meta.axis_order == 'CCYX'
 
     def test_execute_kwargs_interface(self, quad_pol, quad_meta):
         shh, shv, svh, svv = quad_pol
@@ -157,26 +208,29 @@ class TestCovarianceMatrix:
 
 class TestCoherencyMatrix:
 
+    def test_default_window_size_is_one(self):
+        assert CoherencyMatrix().window_size == 1
+
     def test_t3_shape(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        T = CoherencyMatrix(window_size=3).compute(shh, shv, svh, svv)
+        T = CoherencyMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         assert T.shape == (3, 3, *SHAPE)
 
     def test_t2_shape(self, dual_pol):
         s_co, s_cross = dual_pol
-        T = CoherencyMatrix(window_size=3).compute(s_co, s_cross)
+        T = CoherencyMatrix(window_size=3).compute(np.stack([s_co, s_cross], axis=0))
         assert T.shape == (2, 2, *SHAPE)
 
     def test_t3_hermitian(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        T = CoherencyMatrix(window_size=3).compute(shh, shv, svh, svv)
+        T = CoherencyMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(3):
             for j in range(3):
                 np.testing.assert_allclose(T[i, j], np.conj(T[j, i]), atol=1e-6)
 
     def test_t3_diagonal_real(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        T = CoherencyMatrix(window_size=3).compute(shh, shv, svh, svv)
+        T = CoherencyMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(3):
             np.testing.assert_allclose(T[i, i].imag, 0.0, atol=1e-6)
 
@@ -184,8 +238,9 @@ class TestCoherencyMatrix:
         """Under reciprocity trace(T3) = trace(C3) = span."""
         shh, shv, svh, svv = quad_pol
         ws = 3
-        C = CovarianceMatrix(ws).compute(shh, shv, svh, svv)
-        T = CoherencyMatrix(ws).compute(shh, shv, svh, svv)
+        chans = np.stack([shh, shv, svh, svv], axis=0)
+        C = CovarianceMatrix(ws).compute(chans)
+        T = CoherencyMatrix(ws).compute(chans)
         trace_c = sum(C[i, i].real for i in range(3))
         trace_t = sum(T[i, i].real for i in range(3))
         np.testing.assert_allclose(trace_c, trace_t, rtol=1e-4)
@@ -234,6 +289,9 @@ def test_importable_from_decomposition_package():
 # ---------------------------------------------------------------------------
 
 class TestStokesVector:
+
+    def test_default_window_size_is_one(self):
+        assert StokesVector().window_size == 1
 
     def test_shape_dual_pol(self, dual_pol):
         e_h, e_v = dual_pol
@@ -312,7 +370,7 @@ class TestStokesVector:
 
     def test_invalid_window_too_small(self):
         with pytest.raises(ValueError):
-            StokesVector(window_size=1)
+            StokesVector(window_size=0)
 
     def test_s2_s3_identity_channel(self):
         # When e_h and e_v are identical: S3 = -2 Im(e*conj(e)) = 0
@@ -328,19 +386,22 @@ class TestStokesVector:
 
 class TestKennaughMatrix:
 
+    def test_default_window_size_is_one(self):
+        assert KennaughMatrix().window_size == 1
+
     def test_shape_quad_pol(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        K = KennaughMatrix(window_size=3).compute(shh, shv, svh, svv)
+        K = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         assert K.shape == (4, 4, *SHAPE)
 
     def test_dtype_float32(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        K = KennaughMatrix(window_size=3).compute(shh, shv, svh, svv)
+        K = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         assert K.dtype == np.float32
 
     def test_symmetric(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        K = KennaughMatrix(window_size=3).compute(shh, shv, svh, svv)
+        K = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         # K[i,j] == K[j,i] for all pixels
         for i in range(4):
             for j in range(i + 1, 4):
@@ -348,7 +409,7 @@ class TestKennaughMatrix:
 
     def test_diagonal_positive_semidefinite(self, quad_pol):
         shh, shv, svh, svv = quad_pol
-        K = KennaughMatrix(window_size=3).compute(shh, shv, svh, svv)
+        K = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, svh, svv], axis=0))
         for i in range(4):
             assert np.all(K[i, i] >= -1e-5)
 
@@ -359,7 +420,7 @@ class TestKennaughMatrix:
         svv = (rng.standard_normal(SHAPE) + 1j * rng.standard_normal(SHAPE)).astype(np.complex64)
         shv = (rng.standard_normal(SHAPE) + 1j * rng.standard_normal(SHAPE)).astype(np.complex64)
         # svh = shv → perfect reciprocity
-        K = KennaughMatrix(window_size=3).compute(shh, shv, shv, svv)
+        K = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, shv, svv], axis=0))
         # The 4th row / col (index 3) should be near zero
         np.testing.assert_allclose(K[3, :], 0.0, atol=1e-4)
         np.testing.assert_allclose(K[:, 3], 0.0, atol=1e-4)
@@ -369,7 +430,7 @@ class TestKennaughMatrix:
         # → K[1,1] = K[2,2] = K[3,3] = 0, K[0,0] > 0
         a = (np.ones(SHAPE) + 0j).astype(np.complex64)
         zeros = np.zeros(SHAPE, dtype=np.complex64)
-        K = KennaughMatrix(window_size=3).compute(a, zeros, zeros, a)
+        K = KennaughMatrix(window_size=3).compute(np.stack([a, zeros, zeros, a], axis=0))
         np.testing.assert_allclose(K[1, 1], 0.0, atol=1e-5)
         np.testing.assert_allclose(K[2, 2], 0.0, atol=1e-5)
         np.testing.assert_allclose(K[3, 3], 0.0, atol=1e-5)
@@ -378,14 +439,14 @@ class TestKennaughMatrix:
     def test_reciprocity_default_svh(self, quad_pol):
         # Passing svh=None should behave identically to svh=shv
         shh, shv, _, svv = quad_pol
-        K_none = KennaughMatrix(window_size=3).compute(shh, shv, None, svv)
-        K_expl = KennaughMatrix(window_size=3).compute(shh, shv, shv, svv)
+        K_none = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, svv], axis=0))
+        K_expl = KennaughMatrix(window_size=3).compute(np.stack([shh, shv, shv, svv], axis=0))
         np.testing.assert_array_equal(K_none, K_expl)
 
     def test_missing_svv_raises(self, quad_pol):
-        shh, shv, svh, _ = quad_pol
-        with pytest.raises(ValueError, match='svv'):
-            KennaughMatrix(window_size=3).compute(shh, shv, svh, svv=None)
+        sxx, sxy = quad_pol[0], quad_pol[1]
+        with pytest.raises(ValueError, match='channels'):
+            KennaughMatrix(window_size=3).compute(np.stack([sxx, sxy], axis=0))
 
     def test_execute_cyx_extraction(self, quad_pol, quad_meta):
         cube = np.stack(quad_pol, axis=0)
