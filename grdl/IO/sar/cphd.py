@@ -30,7 +30,7 @@ Created
 
 Modified
 --------
-2026-05-05
+2026-06-07
 """
 
 # Standard library
@@ -380,6 +380,11 @@ class CPHDReader(ImageReader):
             self._reader = sarkit.cphd.Reader(self._file_handle)
             xml = self._reader.metadata.xmltree
             self._xmltree = xml
+
+            # Some CPHD writers emit inconsistent per-channel PVP byte
+            # offsets; repair them in-place before any PVP read so the
+            # signal reader lands on the correct bytes for channels > 0.
+            self._repair_pvp_offsets_sarkit(xml)
 
             collection_info = self._parse_collection_info_sarkit(xml)
             global_params = self._parse_global_sarkit(xml)
@@ -853,6 +858,96 @@ class CPHDReader(ImageReader):
     # ------------------------------------------------------------------
     # 6. PVP — array load (signal block) and definition table
     # ------------------------------------------------------------------
+
+    def _repair_pvp_offsets_sarkit(self, xml: Any) -> None:
+        """Repair inconsistent per-channel PVP byte offsets in the XML.
+
+        Some CPHD writers store ``Data/Channel/PVPArrayByteOffset`` values
+        that are not laid out as a contiguous PVP block (e.g. scaled by
+        ``NumSamples``), so ``read_pvps`` lands on the wrong bytes for
+        channels after the first. Recompute each offset as
+        ``cumulative_NumVectors * pvp_bytes_per_vector`` and rewrite it
+        in-place. No-op when offsets are already consistent.
+
+        Parameters
+        ----------
+        xml : xml.etree.ElementTree.Element
+            The sarkit CPHD metadata XML tree (mutated in-place).
+        """
+        try:
+            from sarkit.cphd._io import get_pvp_dtype
+        except Exception as exc:  # pragma: no cover - sarkit internals moved
+            logger.debug("PVP offset repair skipped (sarkit API): %s", exc)
+            return
+
+        try:
+            pvp_bytes = get_pvp_dtype(xml).itemsize
+        except Exception as exc:
+            logger.debug("PVP offset repair skipped (dtype): %s", exc)
+            return
+
+        cumulative = 0
+        for ch_elem in xml.findall('{*}Data/{*}Channel'):
+            nv_text = ch_elem.findtext('{*}NumVectors')
+            if nv_text is None:
+                return
+            nv = int(nv_text)
+            off_elem = ch_elem.find('{*}PVPArrayByteOffset')
+            expected = cumulative * pvp_bytes
+            actual = int(off_elem.text) if off_elem is not None else expected
+            if off_elem is not None and actual != expected:
+                logger.info(
+                    "Repairing PVP byte offset for channel %s: %d -> %d",
+                    ch_elem.findtext('{*}Identifier'), actual, expected,
+                )
+                off_elem.text = str(expected)
+            cumulative += nv
+
+    def read_pvp(self, channel: Union[int, str] = 0) -> CPHDPVP:
+        """Read the per-vector parameters (PVP) for a single channel.
+
+        This is the public, backend-dispatching accessor for per-channel
+        PVP data. The ``metadata.pvp`` attribute holds only the first
+        channel; multi-channel processing (e.g. STAP) should call this
+        method for each channel.
+
+        Parameters
+        ----------
+        channel : int or str
+            Channel index (0-based) or channel identifier string.
+            Default is 0 (the first channel).
+
+        Returns
+        -------
+        CPHDPVP
+            Per-vector parameter arrays for the requested channel.
+
+        Raises
+        ------
+        ValueError
+            If ``channel`` is a string that does not match any channel
+            identifier, or an index outside the channel range.
+        """
+        channels = self.metadata.channels
+        if isinstance(channel, str):
+            ids = [c.identifier for c in channels]
+            if channel not in ids:
+                raise ValueError(
+                    f"Unknown channel identifier {channel!r}; "
+                    f"available: {ids}"
+                )
+            index = ids.index(channel)
+        else:
+            index = int(channel)
+            if index < 0 or index >= len(channels):
+                raise ValueError(
+                    f"Channel index {index} out of range "
+                    f"(0..{len(channels) - 1})"
+                )
+
+        if self.backend == 'sarkit':
+            return self._load_pvp_sarkit(channels[index].identifier)
+        return self._load_pvp_sarpy(index)
 
     def _load_pvp_sarkit(self, channel_id: str) -> CPHDPVP:
         """Read PVP arrays for a channel via the sarkit signal reader."""
