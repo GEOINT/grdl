@@ -132,14 +132,16 @@ result.save_geotiff('savannah_ortho.tif')
 | | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS, Sentinel-1 SLC, TerraSAR-X, NISAR | |
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
-| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial; full TRE suite: RPC00B, RSMPCA multi-segment, RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC) | |
-| | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG | |
-| | Generic: `GDALFallbackReader` (`open_any()`), `InvasiveProbeReader` | |
-| | Parallel I/O: `ReadConfig` opt-in multi-threaded reads for rasterio-based readers | |
+| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial; full TRE suite: RPC00B, RSMPCA multi-segment, RSMIDA, RSMGGA, RSMPIA, RSM error covariance (RSMDCA/B, RSMECA/B, RSMAPA/B), CSEXRA, CSCRNA, CSEPHA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC, BANDSB/BANDSA, SENSRB, MENSRB/A, ACFTB; TRE_OVERFLOW DES) | |
+| | EO NITF multi-image: heterogeneous segment grouping (overviews, masks, support images never fail loading), primary-group auto-selection, ICHIPB / ILOC-IALVL / stacked placement, `image_index` pinning | |
+| | EO NITF pixel domain: `read_chip(decimation=)` (overview-group / GDAL out_shape served), `read_mask()` (pad/block masks), `get_lut()`, `normalize_abpp()`, remote `https://`/`s3://`/`/vsi*` URIs | |
+| | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG, EO NITF chip-out (`write_chip()`: ICHIPB + RPC00B + RSM propagation) | |
+| | Generic: `GDALFallbackReader` (`open_any()` with SICD/SIDD/EO NITF auto-dispatch), `InvasiveProbeReader` | |
+| | Parallel I/O: `ReadConfig` opt-in multi-threaded reads, parallel segment opening/stitching, `gdal_env` tuning | |
 | **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
 | | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
 | | SAR: `SICDGeolocation` (native R/Rdot + sarpy), `SIDDGeolocation`, `GCPGeolocation`, `NISARGeolocation`, `Sentinel1SLCGeolocation` | |
-| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B + ICHIPB), `RSMGeolocation` (RSMPCA multi-segment + ICHIPB) | |
+| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B + ICHIPB), `RSMGeolocation` (RSMPCA multi-segment + ICHIPB), `CornerGeolocation` (CSCRNA/BLOCKA/IGEOLO fallback incl. MGRS) | |
 | | Projection: `COAProjection` (native R/Rdot engine), `image_to_ground_hae`, `image_to_ground_dem`, `ground_to_image` | |
 | | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
 | | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic` | |
@@ -193,7 +195,10 @@ GRDL/
 │   │   │   ├── sentinel2.py         #     Sentinel2Metadata
 │   │   │   ├── terrasar.py          #     TerraSARMetadata
 │   │   │   ├── nisar.py             #     NISARMetadata
-│   │   │   └── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients, RSMSegmentGrid, ICHIPBMetadata, CSEXRAMetadata, USE00AMetadata, BLOCKAMetadata, CollectionInfo, AccuracyInfo
+│   │   │   ├── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients, RSMSegmentGrid, ICHIPBMetadata, CSEXRAMetadata, CSCRNAMetadata, USE00AMetadata, BLOCKAMetadata, ImageSegmentInfo, ImageGroupInfo, CollectionInfo, AccuracyInfo
+│   │   │   ├── rsm_error.py         #     RSMPIAMetadata, RSMDCAMetadata, RSMECAMetadata, RSMAPAMetadata (A/B variants)
+│   │   │   ├── eo_band.py           #     BANDSBMetadata, BANDSAMetadata (band characterization)
+│   │   │   └── eo_airborne.py       #     SENSRBMetadata, MENSRBMetadata, MENSRAMetadata, ACFTBMetadata
 │   │   ├── sar/                     #   SAR-specific formats
 │   │   │   ├── _backend.py          #     sarkit/sarpy availability detection
 │   │   │   ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
@@ -216,7 +221,12 @@ GRDL/
 │   │   └── eo/                      #   EO readers
 │   │       ├── _backend.py          #     rasterio/glymur availability detection
 │   │       ├── sentinel2.py         #     Sentinel2Reader
-│   │       └── nitf.py              #     EONITFReader (RPC/RSM extraction)
+│   │       ├── nitf.py              #     EONITFReader (multi-segment unification, decimation, masks, remote URIs)
+│   │       ├── nitf_writer.py       #     write_chip() (geolocation-preserving chip-out)
+│   │       ├── _tre_xml.py          #     xml:TRE / xml:DES (TRE_OVERFLOW) field-by-name parsing
+│   │       ├── _tre_rsm_error.py    #     RSM error TRE parsers + summarize_accuracy()
+│   │       ├── _tre_band.py         #     BANDSB/BANDSA parsers
+│   │       └── _tre_airborne.py     #     SENSRB/MENSRB/MENSRA/ACFTB parsers
 │   │   └── catalog/                 #   Remote query, download & cataloging
 │   │       ├── remote_utils.py      #     Shared credentials, token auth
 │   │       ├── biomass_catalog.py   #     BIOMASSCatalog (ESA MAAP STAC)
@@ -235,7 +245,8 @@ GRDL/
 │   │   ├── eo/
 │   │   │   ├── affine.py            #   AffineGeolocation (geocoded rasters, affine + pyproj)
 │   │   │   ├── rpc.py               #   RPCGeolocation (RPC00B rational polynomials)
-│   │   │   └── rsm.py               #   RSMGeolocation (RSMPCA replacement sensor model)
+│   │   │   ├── rsm.py               #   RSMGeolocation (RSMPCA replacement sensor model)
+│   │   │   └── corner.py            #   CornerGeolocation (CSCRNA/BLOCKA/IGEOLO fallback, MGRS decode)
 │   │   └── elevation/               #   Terrain elevation models
 │   │       ├── base.py              #   ElevationModel ABC
 │   │       ├── constant.py          #   ConstantElevation (fixed-height fallback)
@@ -670,6 +681,37 @@ with EONITFReader('worldview.ntf') as reader:
     if reader.has_rsm:
         geo = RSMGeolocation.from_reader(reader)
         lat, lon, h = geo.image_to_latlon(2048, 2048)
+```
+
+Multi-image NITFs unify automatically: segments group by imaging
+characteristics, the primary imagery group is auto-discovered, and
+geolocation + `read_chip` share its full-image coordinate space.
+Heterogeneous files (overviews, cloud masks, support images) never
+fail to load:
+
+```python
+from grdl.IO.eo import EONITFReader, write_chip
+from grdl.geolocation import create_geolocation
+
+with EONITFReader('multi_segment.ntf') as reader:    # or https:// / s3:// URI
+    for grp in reader.image_groups or []:            # explore everything
+        print(grp.group_id, grp.rows, grp.cols, grp.is_primary, grp.placement)
+
+    geo = create_geolocation(reader)   # RSM > RPC > corner fallback (CSCRNA/BLOCKA/IGEOLO)
+    row, col = geo.latlon_to_image(38.89, -77.03)
+
+    chip = reader.read_chip(0, 4096, 0, 4096)              # stitched across segments
+    quicklook = reader.read_chip(0, 4096, 0, 4096, decimation=8)  # overview-served
+    valid = reader.read_mask(0, 4096, 0, 4096)             # pad/block-mask aware
+    display = reader.normalize_abpp(chip)                  # true ABPP bit depth
+
+    # Geolocation-preserving chip-out: ICHIPB + RPC/RSM carried forward
+    write_chip(reader, 1000, 2024, 1000, 2024, 'chip.ntf')
+
+# Accuracy provenance: RSM error covariance > CSEXRA > USE00A > RPC
+with EONITFReader('multi_segment.ntf') as reader:
+    if reader.metadata.accuracy:
+        print(reader.metadata.accuracy.source, reader.metadata.accuracy.ce90)
 ```
 
 ### Native R/Rdot Projection Engine

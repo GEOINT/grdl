@@ -345,6 +345,9 @@ GRDL/
         terrasar.py          # TerraSARMetadata
         nisar.py             # NISARMetadata
         eo_nitf.py           # EONITFMetadata, RPCCoefficients, RSMCoefficients
+        rsm_error.py         # RSM error model (RSMPIA, RSMDCA/B, RSMECA/B, RSMAPA/B)
+        eo_band.py           # BANDSBMetadata, BANDSAMetadata (band characterization)
+        eo_airborne.py       # SENSRBMetadata, MENSRB/A, ACFTBMetadata (airborne EO)
       sar/                   # SAR modality submodule
         _backend.py          # sarkit/sarpy availability
         sicd.py              # SICDReader (sarkit/sarpy)
@@ -367,7 +370,12 @@ GRDL/
       eo/                    # EO modality submodule
         _backend.py          # rasterio/glymur availability
         sentinel2.py         # Sentinel2Reader
-        nitf.py              # EONITFReader (RPC/RSM extraction)
+        nitf.py              # EONITFReader (multi-segment unification, RPC/RSM, decimation, masks, remote URIs)
+        nitf_writer.py       # write_chip() (geolocation-preserving NITF chip-out)
+        _tre_xml.py          # xml:TRE/xml:DES parser (field-by-name, TRE_OVERFLOW)
+        _tre_rsm_error.py    # RSM error TRE parsers + summarize_accuracy()
+        _tre_band.py         # BANDSB/BANDSA parsers
+        _tre_airborne.py     # SENSRB/MENSRB/MENSRA/ACFTB parsers
       catalog/               # Remote query, download & SQLite cataloging
         remote_utils.py      # Shared credentials, token auth, streaming download
         biomass_catalog.py   # BIOMASSCatalog (ESA MAAP STAC)
@@ -378,8 +386,7 @@ GRDL/
       coordinates.py         # geodetic_to_ecef, ecef_to_geodetic, geodetic_to_enu, enu_to_geodetic
       projection.py          # COAProjection, image_to_ground_hae/dem, ground_to_image, wgs84_norm
       chip.py                # ChipGeolocation (row/col offset wrapper for chipped images)
-      factory.py             # create_geolocation() (auto-detect geolocation from reader)
-      __init__.py            # Re-exports all public classes, ChipGeolocation, create_geolocation
+      __init__.py            # Re-exports all public classes, create_geolocation() (auto-detect geolocation from reader)
       sar/                   # SAR geolocation submodule
         _backend.py          # sarpy/sarkit availability probing
         gcp.py               # GCPGeolocation (BIOMASS Delaunay interpolation)
@@ -393,6 +400,7 @@ GRDL/
         affine.py            # AffineGeolocation (geocoded rasters, affine + pyproj)
         rpc.py               # RPCGeolocation (RPC00B rational polynomials)
         rsm.py               # RSMGeolocation (RSMPCA replacement sensor model)
+        corner.py            # CornerGeolocation (CSCRNA/BLOCKA/IGEOLO fallback, MGRS decode)
         __init__.py
       elevation/             # Terrain elevation models
         _backend.py          # rasterio availability probing

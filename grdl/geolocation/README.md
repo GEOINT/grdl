@@ -397,6 +397,30 @@ and stacked array inputs all work the same way.
 
 ---
 
+### Corner-Based Fallback (CornerGeolocation)
+
+When an EO NITF carries no RPC or RSM, `CornerGeolocation` fits a
+projective homography to the image footprint corners so geolocation
+still works (at corner-level accuracy — no terrain, approximate by
+construction; check `accuracy_source` for provenance). Corner sources
+in priority order: CSCRNA TRE → BLOCKA TRE → the IGEOLO header field
+(all ICORDS forms: geographic, decimal degrees, UTM, and full MGRS
+decoding).
+
+```python
+from grdl.IO.eo import EONITFReader
+from grdl.geolocation import CornerGeolocation, create_geolocation
+
+with EONITFReader('no_rpc.ntf') as reader:
+    geo = create_geolocation(reader)   # RSM > RPC > corner fallback
+    print(type(geo).__name__, getattr(geo, 'accuracy_source', None))
+
+    lat, lon, h = geo.image_to_latlon(1024, 1024)
+    row, col = geo.latlon_to_image(lat, lon)
+```
+
+---
+
 ### ICHIPB (Chipped Image) Support
 
 When imagery has been chipped (sub-region extracted) from a larger

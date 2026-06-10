@@ -56,7 +56,9 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 |--------|-------------|---------|--------|
 | Sentinel-2 MSI | `Sentinel2Reader` | JP2Reader (rasterio/glymur) | ✅ Implemented |
 | EO NITF (RPC/RSM) | `EONITFReader` | rasterio | ✅ Implemented |
-| | | Parses: RPC00B, RSMPCA (multi-segment), RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC | |
+| | | Parses: RPC00B, RSMPCA (multi-segment), RSMIDA, RSMGGA, RSMPIA, RSMDCA/B, RSMECA/B, RSMAPA/B, CSEXRA, CSCRNA, CSEPHA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC, BANDSB, BANDSA, SENSRB, MENSRB, MENSRA, ACFTB — from image subheaders and TRE_OVERFLOW DES | |
+| | | Multi-image: heterogeneous segment grouping + primary auto-selection (overviews/masks never fail loading); placement via ICHIPB → ILOC/IALVL → stacking; `image_index` pinning | |
+| | | Pixel domain: `read_chip(decimation=)` (overview-group / `out_shape` served), `read_mask()`, `get_lut()`, `normalize_abpp()`; remote `https://`/`s3://`/`/vsi*` URIs | |
 | Landsat OLI | - | - | 🔄 Planned |
 | WorldView | - | - | 🔄 Planned |
 
@@ -71,6 +73,8 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | PNG | `PngWriter` | Pillow | ✅ Implemented |
 | SICD (NITF) | `SICDWriter` | sarpy | ✅ Implemented |
 | SIDD (NITF) | `SIDDWriter` | sarpy | ✅ Implemented |
+| EO NITF chip-out | `write_chip()` | rasterio/GDAL | ✅ Implemented |
+| | | Writes ICHIPB (composed with parent) + RPC00B + serialized RSMIDA/RSMPCA so chips geolocate identically to the parent | |
 
 ### Geospatial Vector
 
@@ -581,7 +585,7 @@ All readers populate `self.metadata` with a typed dataclass. Format-specific rea
 | `Sentinel2Reader` | `Sentinel2Metadata` | `satellite`, `processing_level`, `product_type`, `band_id`, `mgrs_tile_id`, `resolution_tier`, `sensing_datetime` |
 | `VIIRSReader` | `VIIRSMetadata` | `satellite_name`, `product_short_name`, `day_night_flag`, `geospatial_bounds`, `scale_factor`, `add_offset`, `fill_value`, `dataset_path` |
 | `ASTERReader` | `ASTERMetadata` | `processing_level`, `acquisition_date`, `sun_azimuth`, `sun_elevation`, `cloud_cover`, `vnir_available`, `swir_available`, `tir_available` |
-| `EONITFReader` | `EONITFMetadata` | `rpc` (RPCCoefficients), `rsm` (RSMCoefficients), `rsm_segments` (RSMSegmentGrid), `rsm_id` (RSMIdentification), `ichipb` (ICHIPBMetadata), `csexra` (CSEXRAMetadata), `use00a` (USE00AMetadata), `blocka` (BLOCKAMetadata), `collection_info` (CollectionInfo), `accuracy` (AccuracyInfo), `idatim`, `tgtid`, `isource`, `igeolo` |
+| `EONITFReader` | `EONITFMetadata` | `rpc` (RPCCoefficients), `rsm` (RSMCoefficients), `rsm_segments` (RSMSegmentGrid), `rsm_id` (RSMIdentification), `rsm_pia`/`rsm_dca`/`rsm_eca`/`rsm_apa` (RSM error model), `ichipb` (ICHIPBMetadata), `csexra` (CSEXRAMetadata), `cscrna` (CSCRNAMetadata), `use00a` (USE00AMetadata), `blocka` (BLOCKAMetadata), `bandsb`/`bandsa` (band characterization → `band_names`/`wavelengths`), `sensrb`/`mensrb`/`mensra`/`acftb` (airborne), `image_segments` (ImageSegmentInfo), `image_groups` (ImageGroupInfo), `collection_info` (CollectionInfo), `accuracy` (AccuracyInfo), `idatim`, `tgtid`, `isource`, `igeolo` |
 
 ```python
 from grdl.IO.models import SICDMetadata, LatLonHAE, XYZ

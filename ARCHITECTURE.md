@@ -26,7 +26,7 @@ grdl/                            ~60k lines, 152 files
 │   ├── base.py                    ImageReader, ImageWriter, CatalogInterface ABCs
 │   ├── models/                    Typed metadata dataclasses (SICD, SIDD, CPHD, ...)
 │   ├── sar/                       SAR readers (SICD, CPHD, CRSD, SIDD, Sentinel-1, BIOMASS, ...)
-│   ├── eo/                        EO readers (Sentinel-2, NITF RPC/RSM)
+│   ├── eo/                        EO readers (Sentinel-2, NITF: multi-segment, RPC/RSM + error model, band/airborne TREs, chip-out writer)
 │   ├── ir/                        IR/thermal readers (ASTER)
 │   ├── multispectral/             MSI readers (VIIRS)
 │   ├── catalog/                   Remote query, download, SQLite cataloging
@@ -116,6 +116,7 @@ Geolocation (ABC)                              geolocation/base.py
 ├── AffineGeolocation                             Affine + CRS reprojection
 ├── RPCGeolocation                                RPC00B rational polynomials
 ├── RSMGeolocation                                RSM variable-order polynomials
+├── CornerGeolocation                             CSCRNA/BLOCKA/IGEOLO corners (approximate fallback)
 └── NoGeolocation                                 Fallback (raises)
 
 ElevationModel (ABC)                           geolocation/elevation/base.py
@@ -327,7 +328,7 @@ Sensor models:
 | `SIDDMetadata` | Detected SAR | Measurement, display, geographic data |
 | `CPHDMetadata` | Phase history | Channel, dwell, antenna patterns |
 | `BIOMASSMetadata` | ESA BIOMASS | GCPs, orbit, polarizations |
-| `EONITFMetadata` | EO NITF | `RPCCoefficients`, `RSMCoefficients` |
+| `EONITFMetadata` | EO NITF | `RPCCoefficients`, `RSMCoefficients`, RSM error model, `ImageSegmentInfo`/`ImageGroupInfo`, BANDSB/SENSRB families |
 | `Sentinel1SLCMetadata` | Sentinel-1 | Annotation, calibration, orbit state |
 | `NISARMetadata` | NISAR | RSLC/GSLC geolocation grids |
 
