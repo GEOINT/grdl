@@ -22,15 +22,18 @@ Created
 
 Modified
 --------
+2026-06-09  Add CornerGeolocation corner-coordinate fallback.
 2026-02-11
 """
 
 from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.eo.corner import CornerGeolocation
 from grdl.geolocation.eo.rpc import RPCGeolocation
 from grdl.geolocation.eo.rsm import RSMGeolocation
 
 __all__ = [
     'AffineGeolocation',
+    'CornerGeolocation',
     'RPCGeolocation',
     'RSMGeolocation',
 ]

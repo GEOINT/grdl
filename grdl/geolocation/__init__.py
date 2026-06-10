@@ -66,6 +66,8 @@ Created
 
 Modified
 --------
+2026-06-09  Add CornerGeolocation fallback (CSCRNA/BLOCKA/IGEOLO) for
+            EO NITF imagery without RPC/RSM.
 2026-04-17  Prefer RSM over RPC in create_geolocation factory.
 2026-04-01
 """
@@ -85,6 +87,7 @@ from grdl.geolocation.sar.sicd import SICDGeolocation
 from grdl.geolocation.sar.sidd import SIDDGeolocation
 from grdl.geolocation.sar.sentinel1_slc import Sentinel1SLCGeolocation
 from grdl.geolocation.eo.affine import AffineGeolocation
+from grdl.geolocation.eo.corner import CornerGeolocation
 from grdl.geolocation.eo.rpc import RPCGeolocation
 from grdl.geolocation.eo.rsm import RSMGeolocation
 from grdl.geolocation.elevation.base import ElevationModel
@@ -114,6 +117,7 @@ __all__ = [
     'SIDDGeolocation',
     'Sentinel1SLCGeolocation',
     'AffineGeolocation',
+    'CornerGeolocation',
     'RPCGeolocation',
     'RSMGeolocation',
     'ElevationModel',
@@ -213,18 +217,22 @@ def create_geolocation(reader: object, **kwargs) -> Geolocation:
                 return RSMGeolocation.from_reader(reader, **kwargs)
             if getattr(meta, 'rpc', None) is not None:
                 return RPCGeolocation.from_reader(reader, **kwargs)
+            # Corner-coordinate fallback (CSCRNA TRE → BLOCKA TRE →
+            # IGEOLO header) so EO NITFs without RPC/RSM still get an
+            # approximate geolocation.  Failures fall through to the
+            # affine/GCP fallbacks below.
+            try:
+                return CornerGeolocation.from_reader(reader, **kwargs)
+            except (ValueError, TypeError):
+                pass
     except ImportError:
         pass
 
     try:
         from grdl.IO.models.biomass import BIOMASSMetadata
         if isinstance(meta, BIOMASSMetadata):
-            gcps = getattr(meta, 'gcps', None)
-            if gcps is not None:
-                return GCPGeolocation(
-                    gcps=gcps,
-                    shape=(meta.rows, meta.cols),
-                )
+            if getattr(meta, 'gcps', None) is not None:
+                return GCPGeolocation.from_reader(reader)
             # Geocoded BIOMASS — fall through to affine
     except ImportError:
         pass
@@ -234,12 +242,8 @@ def create_geolocation(reader: object, **kwargs) -> Geolocation:
         return AffineGeolocation.from_reader(reader, **kwargs)
 
     # GCP fallback (e.g., dict-like metadata)
-    gcps = getattr(meta, 'gcps', None)
-    if gcps is not None:
-        return GCPGeolocation(
-            gcps=gcps,
-            shape=(meta.rows, meta.cols),
-        )
+    if getattr(meta, 'gcps', None) is not None:
+        return GCPGeolocation.from_reader(reader)
 
     raise TypeError(
         f"Cannot determine geolocation type for reader with metadata "
