@@ -27,7 +27,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-06-09
 """
 
 from typing import Dict, List, Tuple, Union, Any
@@ -295,6 +295,42 @@ class GCPGeolocation(Geolocation):
             'rms_error_m': float(np.sqrt(np.mean(errors_array**2))),
             'max_error_m': float(np.max(errors_array))
         }
+
+    @classmethod
+    def from_reader(cls, reader: object, crs: str = 'WGS84') -> 'GCPGeolocation':
+        """Create GCPGeolocation from a GRDL imagery reader.
+
+        Extracts ground control points and image shape from the reader's
+        metadata. Works with any reader whose metadata has a ``gcps``
+        attribute (e.g., ``BIOMASSL1Reader``).
+
+        Parameters
+        ----------
+        reader : ImageReader
+            A GRDL imagery reader with populated metadata.
+        crs : str, default='WGS84'
+            Coordinate reference system of the GCP coordinates.
+
+        Returns
+        -------
+        GCPGeolocation
+            Configured geolocation object.
+
+        Raises
+        ------
+        ValueError
+            If the reader's metadata does not contain GCPs.
+        """
+        meta = reader.metadata
+        gcps = getattr(meta, 'gcps', None)
+        if gcps is None:
+            raise ValueError(
+                "Reader metadata does not contain GCPs. "
+                "GCPGeolocation requires metadata.gcps to be a list of "
+                "(lon, lat, height, row, col) tuples."
+            )
+        shape = (meta.rows, meta.cols)
+        return cls(gcps, shape, crs)
 
     @classmethod
     def from_dict(cls, geo_info: Dict[str, Any], reader_metadata: Dict[str, Any]) -> 'GCPGeolocation':
