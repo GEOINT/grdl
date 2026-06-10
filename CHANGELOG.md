@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.0] — 2026-06-09
 
 ### Added
 
@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Parallel segment opening**: multi-image discovery opens + parses
   all subdatasets concurrently; unreadable segments are skipped with a
   warning instead of failing the file.
+- **Nested DTED archive discovery**: `DTEDElevation` finds tiles in
+  nested layouts (resolution subdirectories, per-longitude folders)
+  via bbox-driven candidate paths; without a bbox a recursive scan
+  discovers tiles at any depth. `open_elevation` routes both layouts.
+- **DEM query deduplication**: repeat quantized coordinates within one
+  DEM-cache query collapse to a single sample, bounding query count by
+  distinct DEM cells during the R/Rdot vertical-step search.
+- **Explicit DEM kwargs on `from_reader`**: every Geolocation factory
+  (SICD, SIDD, GCP, NISAR, Sentinel-1, Affine, RPC, RSM) now takes
+  `dem_path`, `geoid_path`, and `interpolation` explicitly instead of
+  `**kwargs` pass-through.
 
 ### Changed
 
