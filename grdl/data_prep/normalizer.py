@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-06-07
+2026-06-09
 """
 
 # Standard library
@@ -258,7 +258,7 @@ class Normalizer:
         transform: str = 'auto',
         mask: str = 'none',
         n_bins: int = 65536,
-        hist_spacing: str = 'log',
+        hist_spacing: str = 'auto',
         parallel: object = 'auto',
         n_workers: Optional[int] = None,
         band: int = 0,
@@ -290,8 +290,10 @@ class Normalizer:
             ``'metadata'`` (the sensor valid-data polygon).
         n_bins : int
             Histogram bins for percentile estimation (``'percentile'`` method).
-        hist_spacing : {'log', 'linear'}
-            Histogram bin spacing for percentile estimation.
+        hist_spacing : {'auto', 'float32', 'log', 'linear'}
+            Histogram bin geometry for percentile estimation. ``'auto'``
+            (single-pass float32 bins) reads the image exactly once;
+            ``'log'``/``'linear'`` add a second pass over the image.
         parallel : {'auto', True, False}
             Parallel execution policy (see
             :func:`grdl.data_prep.compute_image_statistics`).

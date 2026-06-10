@@ -25,7 +25,7 @@ Created
 
 Modified
 --------
-2026-06-07
+2026-06-09
 """
 
 # Standard library
@@ -171,6 +171,55 @@ class TestStreamingStatsHistogram:
         with pytest.raises(ValidationError):
             StreamingStats(hist_range=(1.0, 2.0), hist_spacing='quadratic')
 
+    def test_float32_percentiles_close_to_numpy(self):
+        rng = np.random.default_rng(9)
+        data = rng.lognormal(mean=0.0, sigma=1.5, size=(600, 600))
+        acc = StreamingStats(percentiles=[1, 50, 95, 99],
+                             hist_spacing='float32')
+        for r in _tiles(data, 200):
+            acc.update(data[r.row_start:r.row_end, r.col_start:r.col_end])
+        res = acc.result()
+        for q in (1, 50, 95, 99):
+            assert res.percentiles[q] == pytest.approx(
+                np.percentile(data, q), rel=1e-2
+            )
+
+    def test_float32_handles_negative_values(self):
+        # dB-like data spanning zero exercises the total-order key path.
+        rng = np.random.default_rng(10)
+        data = rng.normal(loc=-30.0, scale=20.0, size=100_000)
+        acc = StreamingStats(percentiles=[5, 50, 95], hist_spacing='float32')
+        acc.update(data)
+        res = acc.result()
+        for q in (5, 50, 95):
+            ref = np.percentile(data, q)
+            assert res.percentiles[q] == pytest.approx(ref, abs=0.2)
+
+    def test_float32_merge_matches_single_pass(self):
+        rng = np.random.default_rng(11)
+        data = rng.lognormal(size=20_000)
+        single = StreamingStats(percentiles=[50], hist_spacing='float32')
+        single.update(data)
+        a = StreamingStats(percentiles=[50], hist_spacing='float32')
+        a.update(data[:7000])
+        b = StreamingStats(percentiles=[50], hist_spacing='float32')
+        b.update(data[7000:])
+        a.merge(b)
+        assert a.result().percentiles[50] == single.result().percentiles[50]
+        assert a.result().mean == pytest.approx(single.result().mean)
+
+    def test_float32_zero_and_negative_zero(self):
+        acc = StreamingStats(percentiles=[50], hist_spacing='float32')
+        acc.update(np.array([-0.0, 0.0, 0.0, 0.0]))
+        res = acc.result()
+        assert res.count == 4
+        assert res.percentiles[50] == pytest.approx(0.0, abs=1e-30)
+
+    def test_float32_bad_n_bins_raises(self):
+        with pytest.raises(ValidationError):
+            StreamingStats(percentiles=[50], n_bins=1000,
+                           hist_spacing='float32')
+
 
 # ---------------------------------------------------------------------------
 # Value transforms
@@ -216,6 +265,21 @@ class TestComputeImageStatistics:
         assert res.percentiles[50] == pytest.approx(
             np.percentile(ref, 50), rel=1e-3
         )
+
+    def test_decibel_nonzero_mask_excludes_zero_fill(self):
+        # Zero-fill pixels must not leak into dB stats as floored -200 dB
+        # outliers: the nonzero test runs on raw pixels, pre-transform.
+        rng = np.random.default_rng(12)
+        data = rng.lognormal(size=(128, 128))
+        data[:16, :] = 0.0
+        res = compute_image_statistics(
+            _ArrayReader(data), tile=32, transform='decibel',
+            mask='nonzero_finite',
+        )
+        ref = 20.0 * np.log10(data[data != 0])
+        assert res.count == ref.size
+        assert res.mean == pytest.approx(ref.mean(), rel=1e-6)
+        assert res.minimum == pytest.approx(ref.min(), rel=1e-6)
 
     def test_none_includes_zeros(self):
         data = np.ones((100, 100))
@@ -275,6 +339,22 @@ class TestBuildValidMask:
         # Roughly a quarter of the image (32x32 of 64x64), all value 7.
         assert res.mean == pytest.approx(7.0)
         assert 32 * 32 * 0.9 < res.count <= 33 * 33
+
+    def test_tiles_outside_polygon_not_read(self):
+        data = np.ones((64, 64))
+        verts = [SimpleNamespace(row=0, col=0),
+                 SimpleNamespace(row=0, col=31),
+                 SimpleNamespace(row=31, col=31),
+                 SimpleNamespace(row=31, col=0)]
+        reader = _ArrayReader(data, valid_data=verts)
+        reads = []
+        orig = reader.read_chip
+        reader.read_chip = lambda *a: (reads.append(a), orig(*a))[1]
+        compute_image_statistics(
+            reader, tile=16, transform='identity', mask='metadata',
+        )
+        # Only the 4 tiles overlapping the 32x32 polygon get read (of 16).
+        assert len(reads) == 4
 
 
 # ---------------------------------------------------------------------------
