@@ -22,6 +22,8 @@ Created
 
 Modified
 --------
+2026-06-16  Add _ensure_2d() and _validate_single_pol() shape helpers.
+2026-06-16  Add _enforce_2d flag and _assert_2d() strict 2D shape helper.
 2026-04-18  Add read_band(index) convenience method to ImageReader.
 2026-02-10
 """
@@ -55,6 +57,10 @@ class ImageReader(ABC):
     Implementations should use lazy loading where possible to avoid loading
     large datasets into memory until explicitly requested.
     """
+
+    #: Set to True on single-channel SAR readers to guarantee that
+    #: read_chip / read_full always return a 2-D (rows, cols) array.
+    _enforce_2d: bool = False
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         """
@@ -202,6 +208,76 @@ class ImageReader(ABC):
             f"{type(self).__name__}.read_full"
         )
 
+    @staticmethod
+    def _assert_2d(
+        data: np.ndarray,
+        context: str = '',
+        strict: bool = False,
+    ) -> np.ndarray:
+        """Validate or coerce a single-channel array to 2-D.
+
+        Called by concrete single-pol SAR readers (SICD, CPHD, CRSD) to
+        guarantee a ``(rows, cols)`` return shape.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Array returned by the reader's ``read_chip`` or ``read_full``.
+        context : str
+            Human-readable label used in error messages, e.g.
+            ``'SICDReader.read_chip'``.
+        strict : bool
+            If ``True``, raise :class:`ValueError` when a singleton band
+            axis is present rather than squeezing silently.  Strict mode
+            is used when ``_enforce_2d = True`` to catch reader bugs at
+            the earliest possible point.
+
+        Returns
+        -------
+        np.ndarray
+            2-D ``(rows, cols)`` array.
+
+        Raises
+        ------
+        ValueError
+            In strict mode when the array has a singleton band axis that
+            indicates a reader implementation defect.
+        ValueError
+            When ``data`` has more than one non-trivial band axis and
+            cannot be reduced to 2-D regardless of mode.
+        """
+        if data.ndim == 2:
+            return data
+
+        if data.ndim == 3:
+            if data.shape[0] == 1:          # (1, rows, cols)
+                if strict:
+                    raise ValueError(
+                        f"[{context}] Strict 2D policy violation: "
+                        f"single-channel array has shape {data.shape}. "
+                        "Reader must return (rows, cols), not (1, rows, cols). "
+                        "This is a reader implementation defect."
+                    )
+                return data[0]
+            if data.shape[2] == 1:          # (rows, cols, 1)
+                if strict:
+                    raise ValueError(
+                        f"[{context}] Strict 2D policy violation: "
+                        f"single-channel array has shape {data.shape}. "
+                        "Reader must return (rows, cols), not (rows, cols, 1). "
+                        "This is a reader implementation defect."
+                    )
+                return data[..., 0]
+            raise ValueError(
+                f"[{context}] Cannot apply 2D policy to a multi-band array "
+                f"with shape {data.shape}. Use bands= to select a single channel."
+            )
+
+        raise ValueError(
+            f"[{context}] Unexpected array dimensionality {data.ndim} "
+            f"(shape {data.shape}). Expected 2-D or 3-D."
+        )
+
     @abstractmethod
     def get_shape(self) -> Tuple[int, ...]:
         """
@@ -214,6 +290,78 @@ class ImageReader(ABC):
             (rows, cols, bands) for multi-band imagery
         """
         pass
+
+    # -----------------------------------------------------------------
+    # Shape-contract helpers (static — callable from concrete readers)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _ensure_2d(arr: np.ndarray) -> np.ndarray:
+        """Squeeze singleton band axes to enforce the 2D output contract.
+
+        All single-band reads must return shape ``(rows, cols)``, not
+        ``(1, rows, cols)`` or ``(rows, cols, 1)``.  This is the
+        canonical GRDL output contract documented in PATTERNS.md §1.
+
+        Concrete readers should call this at the end of
+        ``read_chip()`` / ``read_full()`` before returning single-band
+        data.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            Raw array returned by a backend read call.
+
+        Returns
+        -------
+        np.ndarray
+            Array squeezed to ``(rows, cols)`` when the band dimension
+            is a singleton; multi-band arrays are returned unchanged.
+
+        Raises
+        ------
+        ValueError
+            If ``arr`` has fewer than 2 dimensions.
+        """
+        if arr.ndim < 2:
+            raise ValueError(
+                f"Read data must be at least 2D, got shape {arr.shape}"
+            )
+        if arr.ndim == 3:
+            if arr.shape[0] == 1:        # (1, rows, cols) → (rows, cols)
+                return arr[0]
+            if arr.shape[2] == 1:        # (rows, cols, 1) → (rows, cols)
+                return arr[..., 0]
+        return arr
+
+    @staticmethod
+    def _validate_single_pol(arr: np.ndarray, context: str = "") -> None:
+        """Raise if a single-polarization read is not strictly 2D.
+
+        Intended for SAR readers that carry complex single-pol data
+        where a lingering extra axis would violate the shape contract
+        and cause silent broadcast errors downstream.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            Array to validate.
+        context : str, optional
+            Reader name or operation description included in the error
+            message for easier diagnosis.
+
+        Raises
+        ------
+        ValueError
+            If ``arr.ndim != 2``.
+        """
+        if arr.ndim != 2:
+            prefix = f"[{context}] " if context else ""
+            raise ValueError(
+                f"{prefix}Single-polarization read must return a 2D "
+                f"array (rows, cols), got shape {arr.shape}. "
+                "For multi-band reads supply an explicit bands=[…] list."
+            )
 
     @abstractmethod
     def get_dtype(self) -> np.dtype:

@@ -22,6 +22,8 @@ Created
 
 Modified
 --------
+2026-06-16  Add get_reader, register_reader, register_writer to
+            parametrized smoke test and __all__ verification.
 2026-02-10
 """
 
@@ -44,6 +46,8 @@ import pytest
     'ASTERReader', 'VIIRSReader',
     'open_image', 'open_sar', 'open_biomass', 'load_credentials',
     'open_eo', 'open_ir', 'open_multispectral',
+    # Reader factory additions
+    'get_reader', 'register_reader', 'register_writer',
 ])
 def test_io_public_name_importable(name):
     """Every name in IO.__all__ is importable and is a class or callable."""
@@ -69,6 +73,8 @@ def test_io_all_exports():
         'ASTERReader', 'VIIRSReader',
         'open_image', 'open_sar', 'open_biomass', 'load_credentials',
         'open_eo', 'open_ir', 'open_multispectral',
+        # Reader factory additions
+        'get_reader', 'register_reader', 'register_writer',
     ]
     for name in expected:
         assert name in io_mod.__all__, f"'{name}' missing from IO.__all__"

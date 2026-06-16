@@ -1475,6 +1475,8 @@ class SICDReader(ImageReader):
     SICD data is complex-valued (I/Q). Use ``abs()`` for magnitude images.
     """
 
+    _enforce_2d: bool = True  # SICD is always single-pol complex
+
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('SICD')
         logger.info("SICD backend selected: %s", self.backend)
@@ -1643,9 +1645,14 @@ class SICDReader(ImageReader):
             data, _ = self._reader.read_sub_image(
                 row_start, col_start, row_end, col_end,
             )
-            return self._to_complex(data)
+            data = self._to_complex(data)
         else:
-            return self._reader[row_start:row_end, col_start:col_end]
+            data = self._reader[row_start:row_end, col_start:col_end]
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire SICD image.
@@ -1666,9 +1673,14 @@ class SICDReader(ImageReader):
         instead.
         """
         if self.backend == 'sarkit':
-            return self._to_complex(self._reader.read_image())
+            data = self._to_complex(self._reader.read_image())
         else:
-            return self._reader[:, :]
+            data = self._reader[:, :]
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_full',
+            strict=self._enforce_2d,
+        )
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.

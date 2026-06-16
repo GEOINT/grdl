@@ -34,6 +34,7 @@ Created
 
 Modified
 --------
+2026-06-16  Warn on DependencyError in open_any() opener cascade.
 2026-06-09  NITF auto-dispatch: sniff SICD/SIDD XML DES vs EO NITF.
 2026-04-01
 """
@@ -833,6 +834,12 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
     """
     filepath = Path(filepath)
 
+    # Accumulates ImportError / DependencyError messages from every
+    # specialized reader that fails due to a missing library.  Emitted
+    # as a single consolidated UserWarning when execution reaches the
+    # GDAL fallback (Phase 3) or invasive-probe (Phase 5) tiers.
+    _import_failures: List[str] = []
+
     # --- Phase 0: NITF dispatch (SICD / SIDD / EO sniff) ---
     if filepath.suffix.lower() in _NITF_EXTENSIONS:
         reader = _dispatch_nitf(filepath)
@@ -852,7 +859,11 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
             mod = importlib.import_module(mod_path)
             opener = getattr(mod, func_name)
             return opener(filepath)
-        except (ValueError, ImportError, Exception):
+        except (DependencyError, ImportError) as exc:
+            _import_failures.append(
+                f"{func_name}(): {exc}"
+            )
+        except Exception:
             pass
 
     # --- Phase 2: Try base format readers directly ---
@@ -868,13 +879,42 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
             mod = importlib.import_module(mod_path)
             reader_cls = getattr(mod, cls_name)
             return reader_cls(filepath)
-        except (ValueError, ImportError, Exception):
+        except (DependencyError, ImportError) as exc:
+            _import_failures.append(
+                f"{cls_name}: {exc}"
+            )
+        except Exception:
             pass
 
     # --- Phase 3: GDAL fallback with classification ---
+    # Emit a consolidated warning listing every missing library before
+    # degrading to the GDAL tier, so the user knows exactly what to fix.
+    if _import_failures:
+        _failure_lines = "\n".join(f"  • {m}" for m in _import_failures)
+        warnings.warn(
+            f"open_any: no specialized reader could open "
+            f"'{filepath.name}' — falling back to GDALFallbackReader.\n"
+            f"The following reader dependencies were not installed:\n"
+            f"{_failure_lines}\n"
+            "Install the missing packages (see requirements-optional.txt) "
+            "for richer metadata and stricter format validation.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     try:
         fallback = GDALFallbackReader(filepath)
-    except (ImportError, ValueError):
+    except (DependencyError, ImportError) as exc:
+        warnings.warn(
+            f"open_any: GDALFallbackReader is also unavailable for "
+            f"'{filepath.name}' ({exc}). "
+            "Falling back to invasive file probing. "
+            "Install rasterio for broad format support: pip install rasterio",
+            UserWarning,
+            stacklevel=2,
+        )
+        fallback = None
+    except (ValueError, OSError):
         fallback = None
 
     if fallback is not None:
@@ -886,6 +926,19 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
         return fallback
 
     # --- Phase 5: Invasive probe (non-cooperative) ---
+    # Warn again if we reach the probe tier (GDAL also failed).
+    if _import_failures:
+        _failure_lines = "\n".join(f"  • {m}" for m in _import_failures)
+        warnings.warn(
+            f"open_any: both specialized readers and GDALFallbackReader "
+            f"failed for '{filepath.name}' — falling back to "
+            f"InvasiveProbeReader (non-cooperative probing).\n"
+            f"Missing reader dependencies:\n"
+            f"{_failure_lines}\n"
+            "Resolve the missing packages for reliable format support.",
+            UserWarning,
+            stacklevel=2,
+        )
     try:
         return InvasiveProbeReader(filepath)
     except (ValueError, ImportError):
