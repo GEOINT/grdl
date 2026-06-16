@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Reader factory** (`grdl/IO/__init__.py`): `_READER_REGISTRY` — a 20-entry
+  module-level dict mapping case-insensitive format keys (e.g. `'sicd'`,
+  `'geotiff'`, `'sentinel1-slc'`) to `(module_path, ClassName)` tuples for
+  lazy loading, mirroring the existing `_WRITER_REGISTRY`.
+- `get_reader(format, filepath)` — symmetric counterpart to `get_writer`.
+  Normalizes the key, lazy-imports the module, and raises a clean `ImportError`
+  pointing to `requirements-optional.txt` when an optional dependency is absent.
+- `list_reader_formats()` — returns `sorted(_READER_REGISTRY.keys())` for
+  runtime enumeration of all registered reader formats.
+- `_READER_EXTENSION_MAP` — 14-extension map (`.tif`, `.nitf`, `.h5`, `.jp2`,
+  etc.) to registry keys, used by `open_reader()`.
+- `open_reader(filepath)` — new primary auto-detect entry point, replacing
+  `open_image()`. Extension → `get_reader()` fast path; captures `ImportError`
+  into `_missing_lib_msg` and falls through to `open_any()`. Emits a
+  `UserWarning` naming the missing package when a GDAL or
+  `InvasiveProbeReader` fallback is used.
+- `ImageReader._enforce_2d: bool = False` — class attribute; SAR readers that
+  return single-channel data override this to `True`.
+- `ImageReader._assert_2d(data, context, strict)` — static method that
+  validates or squeezes an array to `(rows, cols)`. In strict mode, raises
+  `ValueError` naming the reader class and method when a singleton band axis
+  is present (e.g. `(1, R, C)`), catching backend shape regressions at the
+  earliest possible point.
+
+### Changed
+
+- `open_any()` (`grdl/IO/generic.py`): accumulates `ImportError` and
+  `DependencyError` messages from every skipped specialized reader into
+  `_import_failures: List[str]`. Emits a consolidated `UserWarning` listing
+  all missing libraries with bullet points before degrading to
+  `GDALFallbackReader` (Phase 3) and again before `InvasiveProbeReader`
+  (Phase 5), giving users an actionable path to resolve environment issues.
+- `SICDReader`, `CPHDReader`, `CRSDReader`: set `_enforce_2d = True` and
+  wrap the return paths of `read_chip()` and `read_full()` in
+  `self._assert_2d(data, context, strict=self._enforce_2d)`, guaranteeing
+  `(rows, cols)` output for all single-pol reads.
+
+### Deprecated
+
+- `open_image(filepath)` — replaced by `open_reader(filepath)`. `open_image`
+  now emits a `DeprecationWarning` and delegates to `open_reader`. Will be
+  removed in a future major release.
+
+---
+
 ## [0.6.0] — 2026-06-09
 
 ### Added

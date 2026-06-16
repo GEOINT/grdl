@@ -2,7 +2,7 @@
 
 Technical design documentation for the IO module.
 
-Modified: 2026-03-29
+Modified: 2026-06-16
 
 ## Design Philosophy
 
@@ -19,7 +19,7 @@ grdl/
 ├── exceptions.py            # Custom exception hierarchy (GrdlError, DependencyError, etc.)
 ├── py.typed                 # PEP 561 type stub marker
 ├── IO/
-│   ├── __init__.py          # Public API exports + open_image(), get_writer(), write()
+│   ├── __init__.py          # Public API exports + get_reader(), open_reader(), get_writer(), write()
 │   ├── base.py              # Abstract base classes (ABCs)
 │   ├── models/              # Typed metadata dataclasses
 │   │   ├── __init__.py      # Re-exports all metadata classes
@@ -60,10 +60,10 @@ grdl/
 │   ├── sar/                 # SAR-specific format readers
 │   │   ├── __init__.py      # SAR exports + open_sar()
 │   │   ├── _backend.py      # sarkit/sarpy availability detection
-│   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback)
+│   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback) — _enforce_2d=True
 │   │   ├── sicd_writer.py   # SICDWriter
-│   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback)
-│   │   ├── crsd.py          # CRSDReader (sarkit-only)
+│   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback) — _enforce_2d=True
+│   │   ├── crsd.py          # CRSDReader (sarkit-only) — _enforce_2d=True
 │   │   ├── sidd.py          # SIDDReader (sarkit-only)
 │   │   ├── sidd_writer.py   # SIDDWriter
 │   │   ├── biomass.py       # BIOMASSL1Reader (rasterio) + open_biomass()
@@ -161,6 +161,8 @@ Abstract class for writing imagery.
   - Format conversion without information loss
 
 **Implementations:** `GeoTIFFWriter`, `HDF5Writer`, `NITFWriter`, `SICDWriter`, `SIDDWriter`, `PngWriter`, `NumpyWriter`. Factory access via `get_writer(format, path)` or the convenience `write(data, path)` function.
+
+**Reader factory:** `get_reader(format, path)` mirrors `get_writer` for the read side — same registry pattern, lazy imports, and `ImportError` with install guidance. Use `list_reader_formats()` to enumerate all registered keys.
 
 ### CatalogInterface (ABC)
 
@@ -305,6 +307,24 @@ Unlike SICD (formed imagery), CPHD doesn't have fixed rows/cols. Instead:
 
 3. **Band indexing**: Users provide 0-based indices; internally converts to rasterio's 1-based indexing
 
+### Reader Factory — `get_reader()` / `open_reader()`
+
+Two entry points for opening imagery:
+
+| Function | When to use |
+|----------|-------------|
+| `get_reader(format, path)` | You know the format. Fast, unambiguous, best for pipelines. |
+| `open_reader(path)` | Unknown or mixed-format file set. Auto-detects via extension map then `open_any()`. |
+| `open_sar(path)` | SAR-only auto-detection (modality-specific cascade). |
+
+`get_reader` and `get_writer` are symmetric: both use a module-level registry (`_READER_REGISTRY` / `_WRITER_REGISTRY`) with lazy `importlib` loading and clean `ImportError` messages pointing to `requirements-optional.txt`.
+
+`open_reader()` replaces the deprecated `open_image()`. It extends the writer-side factory pattern to the reader side:
+1. Looks up the file extension in `_READER_EXTENSION_MAP` → calls `get_reader(fmt, path)`
+2. If an `ImportError` fires (missing library), saves the message and falls through
+3. Delegates to `open_any()` for NITF sniffing, modality cascades, GDAL fallback, and invasive probing
+4. Emits a `UserWarning` naming the missing package when a fallback reader is used
+
 ### open_sar() Auto-Detection
 
 Convenience function that tries readers in order:
@@ -321,7 +341,17 @@ Convenience function that tries readers in order:
 - **Pro**: User-friendly for unknown files; enables format-agnostic batch processing
 - **Con**: Slower than direct reader (multiple open attempts); may misidentify ambiguous formats
 
-Best for interactive exploration and prototyping. Use specific readers in performance-critical pipelines.
+Best for interactive exploration and prototyping. Use `get_reader(format, path)` in performance-critical pipelines.
+
+### Strict 2-D Shape Policy (`_enforce_2d`)
+
+Single-channel SAR readers (SICD, CPHD, CRSD) set the `_enforce_2d = True` class attribute. `ImageReader.read_chip()` and `read_full()` wrap their return arrays in `_assert_2d(data, context, strict)`:
+
+- Returns the array unchanged if already `(rows, cols)`
+- Raises `ValueError` in strict mode if a singleton band axis is present (e.g., `(1, R, C)` from a backend version change) — catches reader implementation defects immediately at read time rather than silently propagating bad shapes into processing code
+- Non-strict (default on all other readers): silently squeezes `(1, R, C)` → `(R, C)`
+
+To apply the policy to a new single-channel reader, set `_enforce_2d = True` on the class and call `self._assert_2d(data, context=f'{type(self).__name__}.read_chip', strict=self._enforce_2d)` before returning.
 
 ## Metadata Architecture
 
