@@ -26,6 +26,7 @@ __init__(filepath)          # validates path, calls _load_metadata()
 - Validate bounds in `read_chip()` before backend call; raise `ValueError` for OOB
 - All readers support context managers (`with Reader(...) as r:`)
 - Single-band output is squeezed to 2D `(rows, cols)`; multi-band is `(bands, rows, cols)`
+- Single-channel SAR readers (SICD, CPHD, CRSD) set `_enforce_2d = True` — call `self._assert_2d(data, context=..., strict=self._enforce_2d)` before returning to guarantee the contract and catch backend shape regressions early
 
 ---
 
@@ -351,28 +352,92 @@ def _extract_product_info(root: ET.Element) -> ProductInfo:
 
 ---
 
-## 11. Writer Factory Registry
+## 11. Reader / Writer Factory Registry
 
 **File:** `__init__.py`
 
-Writers are registered in a module-level dict for lazy loading.
+Both readers and writers use symmetric module-level registries for lazy loading. Registering a new reader or writer in the appropriate dict is sufficient — no other code changes are needed.
 
 ```python
-_WRITER_REGISTRY = {
-    'geotiff': ('grdl.IO.geotiff', 'GeoTIFFWriter'),
-    'numpy':   ('grdl.IO.numpy_io', 'NumpyWriter'),
+# Reader registry
+_READER_REGISTRY: Dict[str, tuple] = {
+    'sicd':    ('grdl.IO.sar.sicd',   'SICDReader'),
+    'geotiff': ('grdl.IO.geotiff',    'GeoTIFFReader'),
+    # ... 20 entries total
 }
 
+# Writer registry
+_WRITER_REGISTRY: Dict[str, tuple] = {
+    'geotiff': ('grdl.IO.geotiff',    'GeoTIFFWriter'),
+    'numpy':   ('grdl.IO.numpy_io',   'NumpyWriter'),
+    # ...
+}
+
+def get_reader(format: str, filepath) -> ImageReader:
+    key = format.lower()
+    if key not in _READER_REGISTRY:
+        raise ValueError(f"Unknown format {format!r}. "
+                         f"Supported: {sorted(_READER_REGISTRY.keys())}.")
+    module_path, class_name = _READER_REGISTRY[key]
+    try:
+        mod = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise ImportError(
+            f"Reader '{format}' requires optional dependencies: {exc}. "
+            "See requirements-optional.txt."
+        ) from exc
+    return getattr(mod, class_name)(filepath)
+
 def get_writer(format: str, filepath, metadata=None) -> ImageWriter:
-    if format not in _WRITER_REGISTRY:
-        raise ValueError(f"Unknown format '{format}'. Supported: {list(_WRITER_REGISTRY)}")
-    module_path, class_name = _WRITER_REGISTRY[format]
+    key = format.lower()
+    if key not in _WRITER_REGISTRY:
+        raise ValueError(f"Unknown format {format!r}. "
+                         f"Supported: {sorted(_WRITER_REGISTRY.keys())}.")
+    module_path, class_name = _WRITER_REGISTRY[key]
     mod = importlib.import_module(module_path)
-    cls = getattr(mod, class_name)
-    return cls(filepath, metadata)
+    return getattr(mod, class_name)(filepath, metadata)
 ```
 
 **Rules:**
-- Writers are not imported until requested (lazy loading)
-- Extension auto-detection via `_EXTENSION_MAP` (case-insensitive)
-- Convenience `write()` function handles lifecycle (open, write, close)
+- Both registries use `(module_path, ClassName)` tuples — imports are deferred until the factory is called
+- `get_reader` raises `ImportError` with a `requirements-optional.txt` reference for missing optional libraries
+- Reader extension auto-detection via `_READER_EXTENSION_MAP`; writer extension via `_EXTENSION_MAP`
+- Use `list_reader_formats()` to enumerate registered reader keys at runtime
+- Convenience `write()` handles the writer lifecycle (open, write, close)
+- `open_reader()` wraps `get_reader` with extension-based dispatch and `open_any()` fallback
+- `open_image()` is a deprecated alias for `open_reader()` — use `open_reader()` in new code
+
+## 12. Strict 2-D Shape Enforcement (`_enforce_2d`)
+
+**Files:** `base.py`, `sar/sicd.py`, `sar/cphd.py`, `sar/crsd.py`
+
+Single-channel SAR readers guarantee a `(rows, cols)` return shape and catch backend regressions at read time.
+
+```python
+class MySinglePolReader(ImageReader):
+    _enforce_2d: bool = True   # guarantees (rows, cols) output
+
+    def read_chip(self, row_start, row_end, col_start, col_end, bands=None):
+        # ... backend call ...
+        data = backend.read(...)          # may return (1, R, C) depending on version
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,      # True → ValueError on singleton axis
+        )
+```
+
+`ImageReader._assert_2d(data, context, strict)` behaviour:
+
+| Input shape | `strict=False` | `strict=True` |
+|-------------|----------------|---------------|
+| `(R, C)` | returned as-is | returned as-is |
+| `(1, R, C)` | squeezed → `(R, C)` | `ValueError` with context |
+| `(R, C, 1)` | squeezed → `(R, C)` | `ValueError` with context |
+| `(N, R, C)` N>1 | `ValueError` | `ValueError` |
+
+**Rules:**
+- Set `_enforce_2d = True` on every new single-pol/single-channel reader
+- Always pass `context=f'{type(self).__name__}.read_chip'` so error messages identify the exact reader
+- Do **not** set `_enforce_2d = True` on multi-band readers (GeoTIFFReader, VIIRSReader, etc.)
+- `_enforce_2d = False` on the base class — existing readers are unaffected by default

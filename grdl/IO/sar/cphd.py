@@ -351,6 +351,8 @@ class CPHDReader(ImageReader):
     ...     data = reader.read_chip(0, 100, 0, 200)
     """
 
+    _enforce_2d: bool = True  # CPHD is always single-channel phase history
+
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('CPHD')
         logger.info("CPHD backend selected: %s", self.backend)
@@ -2011,17 +2013,22 @@ class CPHDReader(ImageReader):
 
         if self.backend == 'sarkit':
             ch_id = self.metadata.channels[channel].identifier
-            return self._reader.read_signal(
+            data = self._reader.read_signal(
                 ch_id,
                 start_vector=row_start,
                 stop_vector=row_end,
             )[:, col_start:col_end]
         else:
-            return self._reader.read_chip(
+            data = self._reader.read_chip(
                 index=channel,
                 dim1_range=(row_start, row_end),
                 dim2_range=(col_start, col_end),
             )
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read full phase history data.
@@ -2040,9 +2047,14 @@ class CPHDReader(ImageReader):
 
         if self.backend == 'sarkit':
             ch_id = self.metadata.channels[channel].identifier
-            return self._reader.read_signal(ch_id)
+            data = self._reader.read_signal(ch_id)
         else:
-            return self._reader.read(index=channel)
+            data = self._reader.read(index=channel)
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_full',
+            strict=self._enforce_2d,
+        )
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get phase history dimensions for first channel."""

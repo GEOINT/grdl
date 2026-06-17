@@ -206,11 +206,15 @@ with HDF5Reader('product.h5') as reader:
 #### GeoTIFF - Any Raster Imagery (SAR GRD, EO, MSI)
 
 ```python
-from grdl.IO import GeoTIFFReader, open_image
+from grdl.IO import GeoTIFFReader, open_reader, get_reader
 
-# Auto-detect any supported raster format
-with open_image('scene.tif') as reader:
+# Auto-detect any supported raster format (replaces deprecated open_image)
+with open_reader('scene.tif') as reader:
     print(f"Format: {reader.metadata.format}")
+    chip = reader.read_chip(0, 1024, 0, 1024)
+
+# Explicit format via the reader factory — faster and unambiguous
+with get_reader('geotiff', 'scene.tif') as reader:
     chip = reader.read_chip(0, 1024, 0, 1024)
 
 # Or use the GeoTIFFReader directly
