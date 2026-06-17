@@ -10,13 +10,14 @@ Reader, writer, and helpers for STANAG 4607 GMTI data. Provides:
   ``open_eo``, etc.
 - Helpers for dwell footprint geometry, ground-relative velocity,
   target-report filtering, and quick-look summary statistics.
-- ``build_steering_matrix_from_cphd_metadata`` — derive a ground-
+- ``build_steering_matrix_from_cphd_metadata`` — derive a scene-
   projected per-channel steering matrix from the CPHD ``Antenna``
-  section, by ray-tracing each ``DCx`` scan sample around the antenna's
-  electrical boresight to the planar reference surface and evaluating
-  the per-channel ``Array``/``Element`` gain/phase polynomials at the
-  resulting direction cosines. Use this as the column dictionary for
-  STAP detectors driven by metadata rather than data.
+  section. Given a set of scene cross-range offsets from the SRP (one
+  per image column), it evaluates each channel's ``Array``/``Element``
+  gain/phase polynomials at the SRP-relative look-direction cosines of
+  those scene points and returns a matrix whose columns align with the
+  image cross-range bins. Use this as the column dictionary for STAP
+  detectors driven by metadata rather than data.
 
 Author
 ------
