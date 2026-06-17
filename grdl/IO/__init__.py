@@ -31,11 +31,14 @@ Created
 
 Modified
 --------
+2026-06-17  Add warnings import, tighten open_reader fallback exceptions,
+            and export register_reader/register_writer APIs.
 2026-05-27
 """
 
 # Standard library
 import importlib
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -124,6 +127,14 @@ from grdl.IO.gmti import (
 from grdl.IO.models.stanag4607 import STANAG4607Metadata
 
 
+def _normalize_reader_key(format_key: str) -> str:
+    """Normalize reader registry key.
+
+    Reader keys are case-insensitive and canonicalized to hyphen form so
+    callers may pass either ``sentinel1-slc`` or ``sentinel1_slc``.
+    """
+    return format_key.strip().lower().replace('_', '-')
+
 
 # Reader registry: maps format keys → (module_path, class_name).
 # All imports are lazy — optional dependencies are only loaded when
@@ -147,17 +158,50 @@ _READER_REGISTRY: Dict[str, tuple] = {
     'nisar':          ('grdl.IO.sar.nisar',              'NISARReader'),
     # EO readers
     'sentinel2':      ('grdl.IO.eo.sentinel2',           'Sentinel2Reader'),
-    'eo-nitf':        ('grdl.IO.eo.nitf',               'EONITFReader'),
+    'eo-nitf':        ('grdl.IO.eo.nitf',                'EONITFReader'),
     # IR / thermal readers
-    'aster':          ('grdl.IO.ir.aster',              'ASTERReader'),
+    'aster':          ('grdl.IO.ir.aster',               'ASTERReader'),
     # Multispectral readers
     'viirs':          ('grdl.IO.multispectral.viirs',    'VIIRSReader'),
     # GMTI
-    'stanag4607':     ('grdl.IO.gmti.stanag4607',       'STANAG4607Reader'),
+    'stanag4607':     ('grdl.IO.gmti.stanag4607',        'STANAG4607Reader'),
     # Generic fallbacks (explicit use only)
-    'gdal':           ('grdl.IO.generic',               'GDALFallbackReader'),
+    'gdal':           ('grdl.IO.generic',                'GDALFallbackReader'),
     'probe':          ('grdl.IO.probe',                  'InvasiveProbeReader'),
 }
+
+
+def register_reader(
+    format: str,
+    module_path: str,
+    class_name: str,
+    overwrite: bool = False,
+) -> None:
+    """Register a reader class in the reader factory registry.
+
+    Parameters
+    ----------
+    format : str
+        Reader format key. Case-insensitive; underscores normalize to hyphens.
+    module_path : str
+        Import path of the module containing the reader class.
+    class_name : str
+        Class name of the reader implementation.
+    overwrite : bool, default=False
+        If False, raising ValueError when the key already exists.
+
+    Raises
+    ------
+    ValueError
+        If *format* already exists and *overwrite* is False.
+    """
+    key = _normalize_reader_key(format)
+    if not overwrite and key in _READER_REGISTRY:
+        raise ValueError(
+            f"Reader format {format!r} is already registered. "
+            f"Use overwrite=True to replace it."
+        )
+    _READER_REGISTRY[key] = (module_path, class_name)
 
 
 def get_reader(
@@ -202,12 +246,12 @@ def get_reader(
     >>> chip = reader.read_chip(0, 1000, 0, 1000)
     >>> reader.close()
     """
-    key = format.lower()
+    key = _normalize_reader_key(format)
     if key not in _READER_REGISTRY:
         raise ValueError(
             f"Unknown reader format: {format!r}. "
             f"Supported formats: {sorted(_READER_REGISTRY.keys())}. "
-            f"Use open_reader(filepath) for automatic format detection."
+            "Use open_reader(filepath) for automatic format detection."
         )
     module_path, class_name = _READER_REGISTRY[key]
     try:
@@ -216,7 +260,7 @@ def get_reader(
         raise ImportError(
             f"Reader '{format}' requires optional dependencies that are "
             f"not installed: {exc}. "
-            f"See requirements-optional.txt for install instructions."
+            "See requirements-optional.txt for install instructions."
         ) from exc
     reader_cls = getattr(module, class_name)
     return reader_cls(filepath)
@@ -229,12 +273,6 @@ def list_reader_formats() -> List[str]:
     -------
     List[str]
         Sorted list of format keys accepted by :func:`get_reader`.
-
-    Examples
-    --------
-    >>> from grdl.IO import list_reader_formats
-    >>> list_reader_formats()
-    ['aster', 'biomass', 'cphd', 'crsd', 'eo-nitf', ...]
     """
     return sorted(_READER_REGISTRY.keys())
 
@@ -251,6 +289,39 @@ _WRITER_REGISTRY: Dict[str, tuple] = {
     # ``get_writer(path, metadata=ImageMetadata).write(data)`` contract.
     # Use ``grdl.IO.STANAG4607Writer`` directly instead.
 }
+
+
+def register_writer(
+    format: str,
+    module_path: str,
+    class_name: str,
+    overwrite: bool = False,
+) -> None:
+    """Register a writer class in the writer factory registry.
+
+    Parameters
+    ----------
+    format : str
+        Writer format key. Case-insensitive.
+    module_path : str
+        Import path of the module containing the writer class.
+    class_name : str
+        Class name of the writer implementation.
+    overwrite : bool, default=False
+        If False, raising ValueError when the key already exists.
+
+    Raises
+    ------
+    ValueError
+        If *format* already exists and *overwrite* is False.
+    """
+    key = format.strip().lower()
+    if not overwrite and key in _WRITER_REGISTRY:
+        raise ValueError(
+            f"Writer format {format!r} is already registered. "
+            f"Use overwrite=True to replace it."
+        )
+    _WRITER_REGISTRY[key] = (module_path, class_name)
 
 
 def get_writer(
@@ -283,13 +354,8 @@ def get_writer(
     ------
     ValueError
         If *format* is not a recognized format string.
-
-    Examples
-    --------
-    >>> from grdl.IO import get_writer
-    >>> writer = get_writer('geotiff', 'output.tif')
     """
-    key = format.lower()
+    key = format.strip().lower()
     if key not in _WRITER_REGISTRY:
         raise ValueError(
             f"Unknown writer format: {format!r}. "
@@ -301,7 +367,7 @@ def get_writer(
     return writer_cls(filepath, metadata=metadata)
 
 
-# Extension-to-format mapping for auto-detection
+# Extension-to-format mapping for writer auto-detection
 _EXTENSION_MAP: Dict[str, str] = {
     '.tif': 'geotiff',
     '.tiff': 'geotiff',
@@ -316,24 +382,23 @@ _EXTENSION_MAP: Dict[str, str] = {
 }
 
 
-
 # Reader extension-to-format mapping for open_reader() auto-detection.
 # Maps lowercase file extension → _READER_REGISTRY key.
 _READER_EXTENSION_MAP: Dict[str, str] = {
-    '.tif':    'geotiff',
-    '.tiff':   'geotiff',
-    '.geotiff':'geotiff',
-    '.h5':     'hdf5',
-    '.hdf5':   'hdf5',
-    '.he5':    'hdf5',
-    '.hdf':    'hdf5',
-    '.nitf':   'nitf',
-    '.ntf':    'nitf',
-    '.nsf':    'nitf',
-    '.jp2':    'jpeg2000',
-    '.j2k':    'jpeg2000',
-    '.j2c':    'jpeg2000',
-    '.jpx':    'jpeg2000',
+    '.tif': 'geotiff',
+    '.tiff': 'geotiff',
+    '.geotiff': 'geotiff',
+    '.h5': 'hdf5',
+    '.hdf5': 'hdf5',
+    '.he5': 'hdf5',
+    '.hdf': 'hdf5',
+    '.nitf': 'nitf',
+    '.ntf': 'nitf',
+    '.nsf': 'nitf',
+    '.jp2': 'jpeg2000',
+    '.j2k': 'jpeg2000',
+    '.j2c': 'jpeg2000',
+    '.jpx': 'jpeg2000',
 }
 
 
@@ -344,40 +409,7 @@ def write(
     format: Optional[str] = None,
     geolocation: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Write array data to a file, auto-detecting format from extension.
-
-    Convenience function that creates the appropriate writer, writes
-    the data, and closes the writer.  For finer control (chip writes,
-    multiple datasets), use :func:`get_writer` directly.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        Image data to write.
-    path : str or Path
-        Output file path.
-    metadata : ImageMetadata, optional
-        Typed metadata passed to the writer.
-    format : str, optional
-        Output format override.  If ``None``, auto-detected from the
-        file extension.
-    geolocation : Dict[str, Any], optional
-        Geolocation information (CRS, transform) for geospatial formats.
-
-    Raises
-    ------
-    ValueError
-        If *format* is ``None`` and the extension is not recognized.
-
-    Examples
-    --------
-    >>> from grdl.IO import write
-    >>> import numpy as np
-    >>> data = np.random.rand(64, 64).astype(np.float32)
-    >>> write(data, 'output.tif')
-    >>> write(data, 'output.npy')
-    >>> write(data, 'result.dat', format='numpy')
-    """
+    """Write array data to a file, auto-detecting format from extension."""
     path = Path(path)
     if format is None:
         ext = path.suffix.lower()
@@ -385,7 +417,7 @@ def write(
             raise ValueError(
                 f"Cannot determine writer format from extension '{ext}'. "
                 f"Supported extensions: {sorted(_EXTENSION_MAP.keys())}. "
-                f"Provide an explicit format= argument."
+                "Provide an explicit format= argument."
             )
         format = _EXTENSION_MAP[ext]
 
@@ -394,54 +426,7 @@ def write(
 
 
 def open_reader(filepath: Union[str, Path]) -> ImageReader:
-    """Open any supported image file, auto-detecting format.
-
-    Extension-to-format dispatch via :data:`_READER_EXTENSION_MAP` and
-    :func:`get_reader`.  Falls through to
-    :func:`~grdl.IO.generic.open_any` (NITF sniffing, modality cascades,
-    GDAL fallback, invasive probing) when the extension is unknown or when
-    the primary reader raises :exc:`ImportError` due to a missing
-    dependency.
-
-    A :class:`UserWarning` is emitted — via :func:`~grdl.IO.generic.open_any`
-    — when execution reaches the GDAL or invasive-probe fallback because a
-    specialized library is not installed.  The warning message names the
-    missing packages so the user can take corrective action.
-
-    For SAR-specific auto-detection (SICD/CPHD/CRSD/SIDD/Sentinel-1 etc.),
-    :func:`open_sar` is preferred.
-
-    Parameters
-    ----------
-    filepath : str or Path
-        Path to the image file or directory.
-
-    Returns
-    -------
-    ImageReader
-        Most appropriate reader for the file.
-
-    Raises
-    ------
-    ValueError
-        If no reader can open the file.
-
-    Warns
-    -----
-    UserWarning
-        When a specialized reader failed due to a missing dependency
-        and GDAL or :class:`~grdl.IO.probe.InvasiveProbeReader` is used
-        as fallback.
-
-    Examples
-    --------
-    >>> from grdl.IO import open_reader
-    >>> with open_reader('scene.tif') as reader:
-    ...     chip = reader.read_chip(0, 512, 0, 512)
-
-    >>> # Explicit format is faster and unambiguous:
-    >>> reader = get_reader('sicd', 'image.nitf')
-    """
+    """Open any supported image file, auto-detecting format."""
     filepath = Path(filepath)
     ext = filepath.suffix.lower()
     _missing_lib_msg: Optional[str] = None
@@ -452,16 +437,14 @@ def open_reader(filepath: Union[str, Path]) -> ImageReader:
         try:
             return get_reader(fmt, filepath)
         except ImportError as exc:
-            # Specialized library missing — record the message and fall
-            # through to open_any() so the user still gets a result.
+            # Specialized library missing — record and fall through.
             _missing_lib_msg = str(exc)
-        except (ValueError, Exception):
+        except ValueError:
+            # Format mismatch from a specific reader (try generic cascade).
             pass
 
     # 2. Delegate to open_any for NITF sniffing, modality cascades,
-    #    GDAL fallback, and invasive probing.  open_any() emits its own
-    #    UserWarning when it reaches the GDAL / probe fallback tiers.
-    from grdl.IO.generic import open_any
+    #    GDAL fallback, and invasive probing.
     try:
         reader = open_any(filepath)
     except ValueError:
@@ -477,8 +460,7 @@ def open_reader(filepath: Union[str, Path]) -> ImageReader:
             "a supported format and all required libraries are installed."
         )
 
-    # Surface the missing-library message as a warning even when
-    # open_any() succeeded via a lower-tier fallback.
+    # Surface missing-library message when fallback path succeeded.
     if _missing_lib_msg:
         warnings.warn(
             f"Opened '{filepath.name}' via fallback reader "
@@ -497,18 +479,8 @@ def open_image(filepath: Union[str, Path]) -> ImageReader:
     """Open any supported raster image file.
 
     .. deprecated::
-        Use :func:`open_reader` instead.  ``open_image`` is a thin
-        compatibility alias and will be removed in a future release.
-
-    Parameters
-    ----------
-    filepath : str or Path
-        Path to raster image file.
-
-    Returns
-    -------
-    ImageReader
-        Appropriate reader instance.
+        Use :func:`open_reader` instead. ``open_image`` is a compatibility
+        alias and will be removed in a future release.
     """
     warnings.warn(
         "open_image() is deprecated and will be removed in a future release. "
@@ -588,14 +560,16 @@ __all__ = [
     'SICDWriter',
     'SIDDWriter',
     # Reader factory
+    'register_reader',
     'get_reader',
     'list_reader_formats',
     # Writer factory and convenience
+    'register_writer',
     'get_writer',
     'write',
     # Convenience functions
     'open_reader',
-    'open_image',       # deprecated alias for open_reader
+    'open_image',  # deprecated alias for open_reader
     'open_sar',
     'open_sicd_collection',
     'open_biomass',
