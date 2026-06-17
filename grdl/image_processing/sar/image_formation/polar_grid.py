@@ -28,11 +28,17 @@ Created
 
 Modified
 --------
+2026-06-17  Default scene_sizing 'toa' -> 'full': size the output grid to
+            the unambiguous extent the data supports (range c/(2·fxss) ->
+            ~nsamples; azimuth rec_n_pulses=npulses, the pulse-Nyquist /
+            Doppler limit) rather than the TOA grazing-angle heuristic,
+            which cropped the cross-range swath (~50% on space-based
+            spotlight CPHDs). 'toa' remains available for footprint sizing.
 2026-06-01  Add scene_sizing='toa'|'full'. 'full' accurately predicts the
             whole scene from the data sampling (range c/(2·fxss), azimuth
             rec_n_pulses=npulses) so spotlight CPHDs that 'toa'
             undersizes form their full footprint without hand-tuned
-            oversample. Default stays 'toa' (unchanged behavior).
+            oversample.
 2026-05-19  Use a positive-value check for fxss fallback selection so the
             unambiguous-range estimate is only used when fxss is actually
             populated, not merely allocated.
@@ -86,16 +92,17 @@ class PolarGrid:
     scene_sizing : str
         How the output grid dimensions are sized:
 
-        - ``'toa'`` (default): size to the receive-window illumination
-          footprint (``scene_range = c·(toa2−toa1)/2``; azimuth =
-          ``scene_range/cos(graze)``). Compact, but undersizes
+        - ``'full'`` (default): accurate full-scene prediction from the
+          data sampling — range extent ``c/(2·fxss)`` (FX unambiguous
+          swath, → ``rec_n_samples`` ≈ ``nsamples``) and azimuth
+          ``rec_n_pulses = npulses`` (the pulse-Nyquist / Doppler-
+          unambiguous limit). No geometry heuristic and no cap: the
+          formed image spans the maximum extent the data supports
+          without aliasing. This is the principled, data-faithful size.
+        - ``'toa'``: size to the receive-window illumination footprint
+          (``scene_range = c·(toa2−toa1)/2``; azimuth =
+          ``scene_range/cos(graze)``). Compact, but undersizes (crops)
           collections whose recorded swath exceeds the TOA window.
-        - ``'full'``: accurate full-scene prediction from the data
-          sampling — range extent ``c/(2·fxss)`` (FX unambiguous swath,
-          → ``rec_n_samples`` ≈ ``nsamples``) and azimuth
-          ``rec_n_pulses = npulses`` (the pulse-Nyquist limit). No
-          geometry heuristic and no cap; use for spotlight CPHDs that
-          ``'toa'`` undersizes (e.g. Capella, Umbra).
 
     Attributes
     ----------
@@ -131,7 +138,7 @@ class PolarGrid:
         grid_mode: str = 'inscribed',
         range_oversample: float = 1.0,
         azimuth_oversample: float = 1.0,
-        scene_sizing: str = 'toa',
+        scene_sizing: str = 'full',
     ) -> None:
         self.geometry = geometry
         self.grid_mode = grid_mode.upper()
