@@ -55,6 +55,7 @@ Modified
 """
 
 # Standard library
+import os
 import sys
 import time
 from pathlib import Path
@@ -78,7 +79,7 @@ from grdl.image_processing.ortho import orthorectify, detect_backend
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_DIR = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS")
+DATA_DIR = Path(os.environ.get("GRDL_BIOMASS_DATA", "data/sar/biomass"))
 
 
 # ---------------------------------------------------------------------------

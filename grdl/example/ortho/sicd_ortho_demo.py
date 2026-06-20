@@ -37,10 +37,11 @@ Created
 
 Modified
 --------
-2026-04-19
+2026-06-20
 """
 
 # Standard library
+import os
 from pathlib import Path
 
 # Third-party
@@ -56,12 +57,12 @@ from grdl.geolocation.sar.sicd import SICDGeolocation
 from grdl.image_processing.ortho import orthorectify
 
 
-# Default inputs -- override by calling run() with different arguments.
+# Default inputs -- override by calling run() with different arguments,
+# or set the GRDL_SICD_PATH / GRDL_DEM_PATH environment variables.
 SICD_PATH = Path(
-    '/Users/duanesmalley/SAR_DATA/SICD/'
-    '2025-06-20-02-42-41_UMBRA-05_SICD.nitf'
+    os.environ.get('GRDL_SICD_PATH', 'data/sar/sicd/scene_SICD.nitf')
 )
-DEM_PATH = Path('/Volumes/PRO-G40/terrain/FABDEM')
+DEM_PATH = Path(os.environ.get('GRDL_DEM_PATH', 'data/terrain/dem'))
 OUTPUT_DIR = Path(__file__).resolve().parents[3] / 'docs' / 'images'
 CHIP_SIZE = 2048*4
 

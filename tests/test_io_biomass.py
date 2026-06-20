@@ -32,6 +32,7 @@ Modified
 """
 
 import pytest
+import os
 from pathlib import Path
 import sys
 
@@ -75,8 +76,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from grdl.IO import BIOMASSL1Reader, open_biomass
 
 
-# Path to test data - update this to your local path
-TEST_DATA_PATH = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS/BIO_S1_SCS__1S_20251121T045325_20251121T045346_T_G01_M01_C01_T003_F290_01_DJUPJI")
+# Path to test data - set the GRDL_BIOMASS_DATA env var to your local path.
+TEST_DATA_PATH = Path(
+    os.environ.get("GRDL_BIOMASS_DATA", "data/sar/biomass/sample_product")
+)
 
 # Skip all tests if data is not available
 pytestmark = pytest.mark.skipif(
@@ -537,7 +540,7 @@ def plot_polarization_comparison(reader, row_start=0, col_start=0, size=512, sav
 
 def run_simple_test():
     """Simple non-unittest test for quick verification."""
-    test_path = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS/BIO_S1_SCS__1S_20251121T045325_20251121T045346_T_G01_M01_C01_T003_F290_01_DJUPJI")
+    test_path = TEST_DATA_PATH
 
     if not test_path.exists():
         print(f"❌ Test data not found at {test_path}")
@@ -596,7 +599,7 @@ def run_simple_test():
 
 def run_plot_test():
     """Run test with visualization."""
-    test_path = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS/BIO_S1_SCS__1S_20251121T045325_20251121T045346_T_G01_M01_C01_T003_F290_01_DJUPJI")
+    test_path = TEST_DATA_PATH
 
     if not test_path.exists():
         print(f"❌ Test data not found at {test_path}")
@@ -636,7 +639,7 @@ def run_plot_test():
 
 def run_interactive_test():
     """Run interactive viewer with contrast controls."""
-    test_path = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS/BIO_S1_SCS__1S_20251121T045325_20251121T045346_T_G01_M01_C01_T003_F290_01_DJUPJI")
+    test_path = TEST_DATA_PATH
 
     if not test_path.exists():
         print(f"❌ Test data not found at {test_path}")

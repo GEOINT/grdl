@@ -57,7 +57,7 @@ import numpy as np
 import yaml
 
 # GRDL
-sys.path.insert(0, str(Path.home() / "GRDL"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from grdl.IO.sar import SICDReader
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.image_processing.sar.csi import CSIProcessor
