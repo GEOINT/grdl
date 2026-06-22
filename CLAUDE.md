@@ -33,7 +33,8 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 |------|----------|----------|
 | Load any imagery format | `grdl.IO` readers (`SICDReader`, `NISARReader`, `Sentinel2Reader`, `EONITFReader`, ...) | Raw `rasterio.open()` / `h5py.File()` |
 | Write imagery to disk | `grdl.IO` writers (`GeoTIFFWriter`, `SICDWriter`, `NumpyWriter`, ...) | Raw write calls |
-| Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
+| Open any supported format | `grdl.IO.open_reader()` (auto-detect; `open_any()` for ambiguous files) | Manual format detection or the deprecated `open_image()` |
+| Construct a reader/writer by format name | `grdl.IO.get_reader()` / `get_writer()`; register custom ones with `register_reader()` / `register_writer()` | Hard-coded `if fmt == ...: Reader()` dispatch |
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
 | Plan non-overlapping tiles for per-pixel aggregation | `grdl.data_prep.Tiler.partition_positions()` | Overlapping `tile_positions()`/`chip_positions()` (double-counts edges) |
 | Normalize for ML | `grdl.data_prep.Normalizer` | Inline min-max arithmetic |
@@ -41,7 +42,7 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Image to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual affine math or GCP interpolation |
 | EO NITF geolocation (RPC/RSM) | `grdl.geolocation.eo.rpc` / `grdl.geolocation.eo.rsm` | Manual RPC polynomial evaluation |
 | Coordinate conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |
-| Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
+| Terrain elevation lookup | `grdl.geolocation.elevation` (`open_elevation()`, `DTEDElevation`, `GeoTIFFDEM`, `TiledGeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
 | SAR decomposition | `grdl.image_processing` (`PauliDecomposition`, `DualPolHAlpha`) | Manual complex arithmetic |
 | Sub-aperture dominance | `grdl.image_processing.sar.dominance` (`compute_dominance`) | Manual sublook power ratios |
 | CSI RGB composite | `grdl.image_processing.sar.CSIProcessor` | Ad-hoc HSV mapping |
@@ -56,6 +57,10 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Read / write STANAG 4607 (GMTI) | `grdl.IO.gmti` (`STANAG4607Reader`, `STANAG4607Writer`, `open_gmti`) | Manual `struct.unpack` of packet headers and target reports |
 | GMTI dwell footprint / velocity / filtering / summary | `grdl.IO.gmti` helpers (`dwell_footprint_polygon`, `ground_relative_velocity`, `filter_target_reports`, `summarize`) | Ad-hoc polygon math and per-target filter loops |
 | GMTI target reports → GRDL Detections | `STANAG4607Reader.to_detection_set()` | Manual mapping of dwell+target into shapely geometries |
+| Geographic ROI / shape → pixel mask, overlay, or cued detection | `grdl.shapes` (`Circle`, `Ellipse`, `GeoPolygon`, `Arc`; `cued_detect`, `burn_shape`) | Manual lat/lon→pixel polygon rasterization |
+| Combine uncertainty ellipses / error budgets | `grdl.shapes` (`convolve_ellipses`, `combine_evidence`) | Manual covariance arithmetic |
+| Geo-registered vector features (labels, AOIs, masks, exports) + spatial ops | `grdl.vector` (`Feature`, `FeatureSet`, `BufferOperator`, …, `RasterToPoints`/`Rasterize`) | Ad-hoc GeoJSON dicts / direct shapely calls |
+| Scan a directory of imagery / build a queryable catalog | `grdl.discovery` (`MetadataScanner`, `LocalCatalog`) | Hand-rolled `os.walk` + metadata parsing |
 
 Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
 
@@ -359,8 +364,14 @@ GRDL/
         biomass.py           # BIOMASSL1Reader
         biomass_catalog.py   # BIOMASSCatalog
         sentinel1_slc.py     # Sentinel1SLCReader
+        sentinel1_l0/        # Sentinel1L0Reader, open_safe_product(), CRSD conversion/verification
+        sicd_collection.py   # SICDCollectionReader, open_sicd_collection()
         terrasar.py          # TerraSARReader, open_terrasar()
         nisar.py             # NISARReader, open_nisar()
+      gmti/                  # STANAG 4607 GMTI (vector moving-target reports)
+        stanag4607.py        # STANAG4607Reader/Writer, open_gmti(), to_detection_set()
+        helpers.py           # dwell_footprint_polygon, ground_relative_velocity, filter_target_reports, summarize
+        cphd_steering.py     # build_steering_matrix_from_cphd_metadata()
       ir/                    # IR/thermal modality submodule
         _backend.py          # rasterio/h5py availability
         aster.py             # ASTERReader (L1T, GDEM)
@@ -377,9 +388,14 @@ GRDL/
         _tre_band.py         # BANDSB/BANDSA parsers
         _tre_airborne.py     # SENSRB/MENSRB/MENSRA/ACFTB parsers
       catalog/               # Remote query, download & SQLite cataloging
-        remote_utils.py      # Shared credentials, token auth, streaming download
+        remote_utils.py      # Credentials (~/.config/geoint), CDSE/Earthdata tokens, download_file()
         biomass_catalog.py   # BIOMASSCatalog (ESA MAAP STAC)
         sentinel1_catalog.py # Sentinel1SLCCatalog (CDSE OData)
+        sentinel2_catalog.py # Sentinel2Catalog (CDSE OData)
+        nisar_catalog.py     # NISARCatalog (NASA Earthdata / ASF)
+        aster_catalog.py     # ASTERCatalog (NASA Earthdata / LP DAAC)
+        viirs_catalog.py     # VIIRSCatalog (NASA Earthdata / LAADS)
+        terrasar_catalog.py  # TerraSARCatalog (local discovery)
     geolocation/             # Image-to-geographic coordinate transforms with DEM integration
       base.py                # Geolocation ABC, NoGeolocation, iterative DEM refinement
       utils.py               # Footprint, bounds, distance helpers
@@ -407,8 +423,11 @@ GRDL/
         base.py              # ElevationModel ABC
         constant.py          # ConstantElevation (fixed-height fallback)
         dted.py              # DTEDElevation (DTED tiles, bicubic default, cross-tile stitching)
-        geotiff_dem.py       # GeoTIFFDEM (GeoTIFF DEM via rasterio)
-        geoid.py             # GeoidCorrection (EGM96 geoid undulation lookup)
+        tiled_geotiff_dted.py# TiledGeoDTED (high-performance DTED backend)
+        geotiff_dem.py       # GeoTIFFDEM (single GeoTIFF DEM via rasterio)
+        tiled_geotiff_dem.py # TiledGeoTIFFDEM (FABDEM/Copernicus tile dirs, LRU cache, cross-tile interp)
+        geoid.py             # GeoidCorrection (EGM96/EGM2008 geoid undulation lookup)
+        open_elevation.py    # open_elevation() auto-detect DEM factory
         __init__.py
     image_processing/        # Image transforms, detection, formation
       base.py                # ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
@@ -458,9 +477,10 @@ GRDL/
       detection.py           # transform_pixel_geometry, transform_detection, transform_detection_set
     data_prep/               # ML/AI data preparation — index-only chip/tile planning
       base.py                # ChipBase ABC, ChipRegion NamedTuple, shared helpers
-      tiler.py               # Tiler (stride-based tile region computation)
+      tiler.py               # Tiler (overlapping tile_positions + non-overlapping partition_positions)
       chip_extractor.py      # ChipExtractor (point-centered and whole-image chip regions)
-      normalizer.py          # Normalizer (minmax, zscore, percentile, unit_norm)
+      normalizer.py          # Normalizer (minmax, zscore, percentile, unit_norm, mad; fit_streaming)
+      streaming_stats.py     # StreamingStats, compute_image_statistics, build_valid_mask
     coregistration/          # Image alignment and registration
       affine.py              # Affine transform alignment
       projective.py          # Projective transform alignment
@@ -476,6 +496,30 @@ GRDL/
       histogram.py           # HistogramEqualization, CLAHE (skimage)
       percentile.py          # re-export of PercentileStretch
       decibel.py             # re-export of ToDecibels
+    vector/                  # Geo-registered vector features + spatial operators
+      models.py              # Feature, FieldSchema, FeatureSet
+      base.py                # VectorProcessor ABC (FeatureSet in/out)
+      spatial.py             # Buffer/Intersection/Union/Dissolve/SpatialJoin/Clip/Centroid/ConvexHull operators
+      conversion.py          # RasterToPoints, Rasterize
+      coords.py              # CoordSet, read_coords, coords_from_geojson (coordinate-only fast path)
+      io.py                  # VectorReader, VectorWriter (GeoJSON native; geopandas optional)
+    shapes/                  # Geographic analysis primitives (project through any geolocation)
+      base.py                # GeographicShape ABC (perimeter → DEM → to_pixels → rasterize)
+      circle.py              # Circle (geodesic)
+      ellipse.py             # Ellipse, GeodesicEllipse (two-foci WGS-84)
+      polygon.py             # GeoPolygon
+      arc.py                 # Arc (open shape, is_closed=False)
+      combine.py             # convolve_ellipses, combine_evidence, minkowski_sum, union/intersect_shapes
+      cueing.py              # cued_detect (ROI-cued detection)
+      display.py             # overlay_shape(s), burn_shape
+      rasterize.py           # rasterize_polygon, rasterize_batch, to_pixels_batch
+      backend.py             # ComputeBackend (CuPy/numba/thread/process dispatch)
+    discovery/               # Metadata scanning, in-memory catalog, beam footprints
+      base.py                # DiscoveryPlugin ABC, PluginRegistry
+      scanner.py             # MetadataScanner, ScanResult, compute_beam_footprint
+      catalog.py             # LocalCatalog (spatial/temporal queries, optional SQLite)
+      synthesizer.py         # DataSynthesizer (synthetic test imagery)
+      plugins.py             # GRDLCatalogPlugin
   tests/
     conftest.py              # Shared pytest fixtures (synthetic images)
     test_<domain>_<module>.py
@@ -497,8 +541,12 @@ Domain directories map to the module areas defined in the README:
 | `data_prep/` | Index-only chip/tile planning (`ChipExtractor`, `Tiler`) and normalization (`Normalizer`) for ML/AI pipelines |
 | `coregistration/` | Affine, projective, and feature-matching image alignment |
 | `contrast/` | Display-time contrast / dynamic range adjustment (sarpy.visualization.remap ports for SAR + multi-modal stretches for MSI/EO/PAN/HSI) |
-| `IO/catalog/` | Remote query, download & SQLite cataloging (Sentinel-1, BIOMASS, etc.) |
-| `vocabulary.py` | Enum definitions (ImageModality, ProcessorCategory, DetectionType, SegmentationType) |
+| `vector/` | Generic geo-registered vector features (`Feature`, `FeatureSet`), 8 shapely-backed spatial operators, raster ↔ vector conversion, GeoJSON I/O, coordinate-only fast path (`CoordSet`) |
+| `shapes/` | Geographic analysis primitives (`Circle`, `Ellipse`, `GeodesicEllipse`, `GeoPolygon`, `Arc`) that project through any geolocation with per-vertex DEM sampling; masks, overlays, ROI-cued detection, covariance algebra; GPU/numba backends |
+| `discovery/` | Fast metadata scanning (`MetadataScanner`), in-memory catalog with spatial/temporal queries (`LocalCatalog`), beam-footprint computation, plugin registry, synthetic data |
+| `IO/gmti/` | STANAG 4607 GMTI reader/writer, dwell/target helpers, `to_detection_set()`, CPHD steering-matrix builder |
+| `IO/catalog/` | Remote query, download & SQLite cataloging (Sentinel-1/2, NISAR, BIOMASS, ASTER, VIIRS, TerraSAR) |
+| `vocabulary.py` | Enum definitions (ImageModality, ProcessorCategory, DetectionType, SegmentationType, ExecutionPhase, GpuCapability, PolarimetricMode, ...) |
 | `exceptions.py` | Custom exception hierarchy (GrdlError, ValidationError, ProcessorError, etc.) |
 | `sensors/` | Sensor-specific operations (subdirs: `sar/`, `eo/`, `msi/`) -- planned |
 | `ml/` | Feature extraction, annotation, dataset builders -- planned |

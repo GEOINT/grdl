@@ -58,27 +58,58 @@ chip_b_disp = remap.apply(chip_b, data_mean=mean)     # same brightness
 | `Brighter` | `Brighter` | Preset: `dmin=60`, `mmult=40`. The default for SAR via `auto_select`. |
 | `Darker` | `Darker` | Preset: `dmin=0`, `mmult=40`. |
 | `HighContrast` | `High_Contrast` | Preset: `dmin=30`, `mmult=4` (lower mmult = harder contrast). |
-| `GDM` | `GDM` | Generalized Density Mapping with graze/slope-aware cutoffs. Requires `graze_deg`, `slope_deg`. |
-| `PEDF` | `PEDF` | Density with the top half compressed by 0.5× — preserves bright detail. |
-| `NRLStretch` | `NRL` | Linear up to `changeover` (typically the 99th percentile), then `log2` to max. Knee defaults to 80% of output range. |
-| `LogStretch` | `Logarithmic` | Bounded `log2((clip(x, min, max) − min) / (max − min) + 1)`. |
-| `ToDecibels` (re-export) | — | `20·log10(\|x\| + ε)` clamped to `floor_db`. |
+| `GDM` | `GDM` | Generalized Density Mapping with graze/slope-aware cutoffs. Requires `graze_deg`, `slope_deg`; optional `weighting='uniform'` (or `'taylor'`). |
+| `PEDF` | `PEDF` | Density with the top half compressed by 0.5× — preserves bright detail. `dmin=30`, `mmult=40`, `eps=1e-5`. |
+| `NRLStretch` | `NRL` | Linear up to `changeover` (typically the 99th percentile), then `log2` to max. `knee=0.8` (fraction of output range), `percentile=99.0`. |
+| `LogStretch` | `Logarithmic` | Bounded `log2((clip(x, min, max) − min) / (max − min) + 1)`. `min_value`/`max_value` default to `None` → input min/max. |
+| `ToDecibels` (re-export from `image_processing.intensity`) | — | `20·log10(\|x\| + ε)` clamped to `floor_db=-60.0`. |
 
 ### Generic — works on any modality
 
 | Class | Notes |
 |-------|-------|
-| `LinearStretch` | `(x − min) / (max − min)`, clipped to `[0, 1]`. Non-finite samples saturate to `1.0`. |
-| `PercentileStretch` (re-export) | 2/99 (configurable) percentile clip. |
-| `GammaCorrection` | `x^(1/gamma)` — expects input already in `[0, 1]`. `gamma > 1` brightens, `< 1` darkens. |
-| `SigmoidStretch` | Logistic S-curve, rescaled so `x=0 → y=0` and `x=1 → y=1`. |
-| `HistogramEqualization` | Global CDF remap. NaN-aware. |
-| `CLAHE` | Contrast-Limited Adaptive Histogram Equalization (scikit-image). 2D-only. |
+| `LinearStretch` | `(x − min) / (max − min)`, clipped to `[0, 1]`. `min_value`/`max_value` default to `None` → input min/max. Non-finite samples saturate to `1.0`. |
+| `PercentileStretch` (re-export from `image_processing.intensity`) | `plow=2.0`/`phigh=98.0` percentile clip over the **whole array** (global, not per-band), then rescale to `[0, 1]`. |
+| `GammaCorrection` | `x^(1/gamma)` — expects input already in `[0, 1]`. `gamma=1.0` default; `gamma > 1` brightens, `< 1` darkens. |
+| `SigmoidStretch` | Logistic S-curve (`center=0.5`, `slope=10.0`), rescaled so `x=0 → y=0` and `x=1 → y=1`. |
+| `HistogramEqualization` | Global CDF remap, `n_bins=256`. NaN-aware. |
+| `CLAHE` | Contrast-Limited Adaptive Histogram Equalization (`kernel_size=64`, `clip_limit=0.01`). 2D-only. Requires scikit-image. |
 
 ### Skipped from sarpy
 
 `LUT8bit` (matplotlib `cmap=` covers it) and the `_register_defaults` /
 named-registry pattern (YAGNI for v1).
+
+---
+
+## Constructor Signatures
+
+Every operator is constructed with keyword arguments and then called via `apply(source,
+**kwargs)`. Defaults shown are the actual code defaults.
+
+```python
+LinearStretch(min_value=None, max_value=None)        # None -> input min/max
+LogStretch(min_value=None, max_value=None)           # None -> input min/max
+MangisDensity(dmin=30.0, mmult=40.0, eps=1e-5)
+Brighter(eps=1e-5)                                    # MangisDensity(dmin=60, mmult=40)
+Darker(eps=1e-5)                                      # MangisDensity(dmin=0,  mmult=40)
+HighContrast(eps=1e-5)                                # MangisDensity(dmin=30, mmult=4)
+GDM(graze_deg, slope_deg, weighting='uniform')       # graze_deg/slope_deg required
+PEDF(dmin=30.0, mmult=40.0, eps=1e-5)
+NRLStretch(knee=0.8, percentile=99.0)                # 0 < knee < 1; 0 < percentile < 100
+GammaCorrection(gamma=1.0)
+SigmoidStretch(center=0.5, slope=10.0)
+HistogramEqualization(n_bins=256)
+CLAHE(kernel_size=64, clip_limit=0.01)               # requires scikit-image
+PercentileStretch(plow=2.0, phigh=98.0)              # re-export; plow < phigh
+ToDecibels(floor_db=-60.0)                           # re-export; floor_db <= 0
+```
+
+All tunable constructor parameters are also declared as `Annotated` class-body fields with
+`Range` / `Options` / `Desc` markers, and can be overridden per call via `apply()` kwargs
+(merged through `_resolve_params`). The stat kwargs in the next section
+(`data_mean`, `data_median`, `min_value`/`max_value`, `stats`) are read separately, outside
+`_resolve_params`.
 
 ---
 
@@ -98,7 +129,7 @@ auto_select(None)          # → 'percentile' (universal safe default)
 |---|---|---|
 | `SICDMetadata`, `SIDDMetadata`, `CPHDMetadata`, `CRSDMetadata`, `BIOMASSMetadata`, `Sentinel1SLCMetadata`, `TerraSARMetadata`, `NISARMetadata` | `'brighter'` | Mangis preset (`dmin=60`, `mmult=40`) — bright SAR display without per-image tuning |
 | `EONITFMetadata` | `'gamma'` | Pooled 2/99 percentile + gamma=1.4 — typical 8-bit optical |
-| `Sentinel2Metadata`, `VIIRSMetadata`, `ASTERMetadata` | `'percentile'` | Per-band 2/99 clip — predictable across bands |
+| `Sentinel2Metadata`, `VIIRSMetadata`, `ASTERMetadata` | `'percentile'` | 2/99 percentile clip — predictable, robust default |
 | Unknown / `None` | `'percentile'` | Universal safe default |
 
 `auto_select` is dispatched at module level with no extras-gated imports —

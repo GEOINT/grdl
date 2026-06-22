@@ -20,7 +20,7 @@ dependencies:
   # Keep these in sync with pyproject.toml — unpinned conda specs let
   # an older sarkit/sarpy from the user-site silently shadow the env.
   - sarpy>=1.3.0
-  - sarkit>=1.3.0
+  - sarkit>=1.8.0
   - requests
   - pyyaml
   - lxml

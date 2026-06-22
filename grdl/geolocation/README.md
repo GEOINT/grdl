@@ -17,6 +17,10 @@ multi-segment RSM dispatch, DEM ownership, etc.).
 Every geolocation object follows the same pattern:
 
 ```python
+from grdl.IO.sar import SICDReader
+from grdl.geolocation import SICDGeolocation
+from grdl.geolocation.elevation import open_elevation
+
 # 1. Load imagery
 reader = SICDReader('image.nitf')
 
@@ -31,6 +35,57 @@ result = geo.image_to_latlon(500, 1000)        # → (3,) [lat, lon, h]
 lat, lon, h = result                           # tuple unpacking works
 px = geo.latlon_to_image(lat, lon)             # → (2,) [row, col]
 ```
+
+Equivalently, build the DEM in one step by passing ``dem_path=`` /
+``geoid_path=`` / ``interpolation=`` straight to ``from_reader()`` — every
+``from_reader()`` factory (except ``GCPGeolocation``, which derives heights
+from its control points) forwards these to the constructor:
+
+```python
+geo = SICDGeolocation.from_reader(
+    reader,
+    dem_path='/data/dted/',
+    geoid_path='/data/egm96.pgm',
+    interpolation=3,          # 1=bilinear, 3=bicubic (default), 5=quintic
+)
+# geo.elevation is now populated — no separate open_elevation() call needed
+```
+
+### Auto-Dispatch with `create_geolocation()`
+
+When you do not want to name the concrete class yourself, the
+`create_geolocation()` factory inspects the reader's metadata type and
+returns the right subclass. It forwards `dem_path` / `geoid_path` /
+`interpolation` (and class-specific options like `backend` and `refine`)
+straight to the selected `from_reader()`.
+
+```python
+from grdl.geolocation import create_geolocation
+
+geo = create_geolocation(reader, dem_path='/data/dted/', interpolation=3)
+lat, lon, h = geo.image_to_latlon(500, 1000)
+```
+
+Dispatch order (first match wins):
+
+| # | Metadata | Geolocation |
+|---|----------|-------------|
+| 1 | SICD | `SICDGeolocation` |
+| 2 | SIDD | `SIDDGeolocation` |
+| 3 | NISAR | `NISARGeolocation` (GSLC → `AffineGeolocation`) |
+| 4 | Sentinel-1 SLC | `Sentinel1SLCGeolocation` |
+| 5 | EO NITF with **RSM** | `RSMGeolocation` (preferred per STDI-0002) |
+| 6 | EO NITF with **RPC** | `RPCGeolocation` |
+| 7 | EO NITF, neither | `CornerGeolocation` (corner fallback) |
+| 8 | BIOMASS with GCPs | `GCPGeolocation` |
+| 9 | Any geocoded raster (transform + CRS) | `AffineGeolocation` |
+| 10 | Any metadata exposing GCPs | `GCPGeolocation` |
+
+Unrecognized metadata raises `TypeError`. For EO NITF, RSM is chosen over
+RPC whenever both TREs are present (RSM encodes higher-fidelity geometry);
+the corner fallback is only used when no RPC/RSM is available.
+
+---
 
 All public methods accept **two input forms** and return stacked ndarrays:
 
@@ -59,10 +114,12 @@ types (PFA, INCA, RgAzComp, PLANE).
 
 ```python
 from grdl.IO.sar import SICDReader
-from grdl.geolocation import SICDGeolocation, open_elevation
+from grdl.geolocation import SICDGeolocation
+from grdl.geolocation.elevation import open_elevation
 
 with SICDReader('complex.nitf') as reader:
-    # From reader (auto-selects best backend)
+    # From reader (auto-selects best backend; accepts dem_path=,
+    # geoid_path=, interpolation= to build the DEM in one step)
     geo = SICDGeolocation.from_reader(reader)
 
     # Or from metadata directly (always uses native backend)
@@ -139,7 +196,8 @@ accuracy.
 
 ```python
 from grdl.IO.sar import SIDDReader
-from grdl.geolocation import SIDDGeolocation, open_elevation
+from grdl.geolocation import SIDDGeolocation
+from grdl.geolocation.elevation import open_elevation
 
 with SIDDReader('detected.nitf') as reader:
     # Default: enables R/Rdot refinement when metadata supports it
@@ -299,7 +357,8 @@ imagery (WorldView, GeoEye, RapidEye).
 
 ```python
 from grdl.IO.eo import EONITFReader
-from grdl.geolocation import RPCGeolocation, open_elevation
+from grdl.geolocation import RPCGeolocation
+from grdl.geolocation.elevation import open_elevation
 
 with EONITFReader('satellite.ntf') as reader:
     geo = RPCGeolocation.from_reader(reader)
@@ -465,6 +524,22 @@ with EONITFReader('satellite.ntf') as reader:
         print(f"Cloud cover: {ci.cloud_cover}%")
 ```
 
+### No Geolocation (Fallback)
+
+When imagery carries no usable geolocation metadata, `NoGeolocation`
+provides a uniform object whose transform methods raise
+`NotImplementedError` and whose `get_footprint()` returns an empty
+footprint. This lets callers hold a geolocation reference unconditionally
+and fail loudly only when a transform is actually attempted.
+
+```python
+from grdl.geolocation import NoGeolocation
+
+geo = NoGeolocation(shape=(4096, 4096))
+geo.get_footprint()        # {'type': 'None', 'coordinates': None, 'bounds': None}
+geo.image_to_latlon(0, 0)  # raises NotImplementedError
+```
+
 ---
 
 ## Elevation / DEM
@@ -475,7 +550,7 @@ The DEM is **always** attached to the geolocation object. It is never
 passed separately to downstream consumers (orthorectifier, etc.).
 
 ```python
-from grdl.geolocation import open_elevation
+from grdl.geolocation.elevation import open_elevation
 
 # Auto-detect format from path
 dem = open_elevation('/data/srtm/')                          # DTED directory
@@ -498,6 +573,28 @@ row, col = geo.latlon_to_image(lat, lon)
 geo = SICDGeolocation(metadata, dem_path='/data/dted/', interpolation=1)  # bilinear
 geo = RPCGeolocation(rpc, shape=(4096, 4096), dem_path='/data/srtm.tif', interpolation=5)  # quintic
 ```
+
+**Building the DEM through `from_reader()`** — every `from_reader()` factory
+(SICD, SIDD, NISAR, Sentinel-1 SLC, Affine, RPC, RSM, Corner) accepts
+explicit `dem_path=`, `geoid_path=`, and `interpolation=` keyword arguments
+and forwards them to the constructor, which calls `open_elevation()` to
+populate `geo.elevation`. This is the one-step alternative to assigning
+`geo.elevation` after construction:
+
+```python
+geo = RPCGeolocation.from_reader(
+    reader,
+    dem_path='/data/fabdem/',
+    geoid_path='/data/egm96.pgm',
+    interpolation=3,
+)
+# geo.elevation is already populated
+```
+
+The interpolation order flows `constructor → _build_elevation_model →
+open_elevation → DEM backend`. `GCPGeolocation.from_reader()` is the lone
+exception — it takes only `crs=` because BIOMASS GCPs carry their own
+heights and never consult an external DEM.
 
 ### Unified Height Resolution and NaN Fill
 
@@ -569,7 +666,8 @@ dem = open_elevation(
     location=(34.05, -118.25),  # optional coverage check
     fallback_height=0.0,        # if nothing works
 )
-# Returns DTEDElevation, GeoTIFFDEM, TiledGeoTIFFDEM, or ConstantElevation
+# Returns TiledGeoDTED, DTEDElevation, GeoTIFFDEM, TiledGeoTIFFDEM,
+# or ConstantElevation (DTED directories prefer TiledGeoDTED).
 # Never returns None
 ```
 
@@ -660,7 +758,8 @@ geolocation object.
 
 ```python
 from grdl.IO.sar import SICDReader
-from grdl.geolocation import SICDGeolocation, open_elevation
+from grdl.geolocation import SICDGeolocation
+from grdl.geolocation.elevation import open_elevation
 from grdl.image_processing.ortho import orthorectify, GeographicGrid
 
 with SICDReader('complex.nitf') as reader:

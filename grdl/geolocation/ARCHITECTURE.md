@@ -1,6 +1,6 @@
 # Geolocation Module — Architecture
 
-*Modified: 2026-03-22*
+*Modified: 2026-06-20*
 
 ## Overview
 
@@ -25,8 +25,9 @@ unpacking.
 
 ```
 geolocation/
-├── __init__.py              # Top-level re-exports
+├── __init__.py              # Top-level re-exports, create_geolocation() factory
 ├── base.py                  # Geolocation ABC, NoGeolocation, DEM builder
+├── chip.py                  # ChipGeolocation (row/col offset wrapper)
 ├── projection.py            # R/Rdot engine (COAProjection, formation projectors)
 ├── coordinates.py           # geodetic ↔ ECEF ↔ ENU conversions (WGS-84)
 ├── utils.py                 # Footprint, bounds, geographic distance helpers
@@ -44,6 +45,7 @@ geolocation/
 │   ├── __init__.py          #   Re-exports EO classes
 │   ├── _backend.py          #   rasterio/pyproj availability probing
 │   ├── affine.py            #   AffineGeolocation (geocoded rasters)
+│   ├── corner.py            #   CornerGeolocation (CSCRNA/BLOCKA/IGEOLO homography)
 │   ├── rpc.py               #   RPCGeolocation (RPC00B rational polynomials)
 │   └── rsm.py               #   RSMGeolocation (RSM variable-order polynomials)
 │
@@ -55,7 +57,8 @@ geolocation/
     ├── dted.py              #   DTEDElevation (DTED Level 0/1/2, bicubic, cross-tile stitching)
     ├── geotiff_dem.py       #   GeoTIFFDEM (single GeoTIFF DEM)
     ├── tiled_geotiff_dem.py #   TiledGeoTIFFDEM (multi-tile: FABDEM, SRTM, Copernicus)
-    ├── geoid.py             #   GeoidCorrection (EGM96 undulation lookup)
+    ├── tiled_geotiff_dted.py#   TiledGeoDTED (bbox-aware DTED archive, LRU handles)
+    ├── geoid.py             #   GeoidCorrection (EGM96/EGM2008 undulation lookup)
     └── open_elevation.py    #   open_elevation() factory (auto-detect format)
 ```
 
@@ -73,6 +76,10 @@ Geolocation (ABC)                       ← base.py
 │
 ├── NoGeolocation                       ← base.py
 │     Raises NotImplementedError for all operations
+│
+├── ChipGeolocation                     ← chip.py
+│     Wraps a parent geolocation, applies a constant (row, col) offset;
+│     inherits parent's elevation and _handles_dem_internally flag
 │
 ├── SICDGeolocation                     ← sar/sicd.py
 │     Native R/Rdot via COAProjection, sarpy, or sarkit backends
@@ -94,11 +101,16 @@ Geolocation (ABC)                       ← base.py
 ├── AffineGeolocation                   ← eo/affine.py
 │     Affine transform + pyproj CRS reprojection
 │
+├── CornerGeolocation                   ← eo/corner.py
+│     Projective homography from footprint corners (CSCRNA → BLOCKA →
+│     IGEOLO); corner-level accuracy, flat-plane (no terrain)
+│
 ├── RPCGeolocation                      ← eo/rpc.py
-│     RPC00B rational polynomials (forward: direct, inverse: Newton)
+│     RPC00B rational polynomials (forward: Newton, inverse: direct)
 │
 └── RSMGeolocation                      ← eo/rsm.py
-      RSM variable-order polynomials (forward: direct, inverse: Newton)
+      RSM variable-order polynomials, multi-segment grid auto-dispatch
+      (forward: Newton per segment, inverse: direct)
 
 
 ElevationModel (ABC)                    ← elevation/base.py
@@ -114,9 +126,14 @@ ElevationModel (ABC)                    ← elevation/base.py
 ├── GeoTIFFDEM                          ← elevation/geotiff_dem.py
 │     Single GeoTIFF DEM via rasterio, bilinear/bicubic/quintic
 │
-└── TiledGeoTIFFDEM                     ← elevation/tiled_geotiff_dem.py
-      Multi-tile GeoTIFF (FABDEM, SRTM, Copernicus) with cross-tile
-      interpolation and LRU tile cache
+├── TiledGeoTIFFDEM                     ← elevation/tiled_geotiff_dem.py
+│     Multi-tile GeoTIFF (FABDEM, SRTM, Copernicus) with cross-tile
+│     interpolation and LRU tile cache (max_open_tiles)
+│
+└── TiledGeoDTED                        ← elevation/tiled_geotiff_dted.py
+      bbox-aware DTED archive backend; pickle-light path-only index and
+      LRU file handles for multi-worker pipelines (open_elevation()
+      prefers this over DTEDElevation for DTED directories)
 
 
 GeoidCorrection                         ← elevation/geoid.py
@@ -149,18 +166,21 @@ COAProjection                           ← projection.py
 | Sentinel-1 SLC | `Sentinel1SLCGeolocation` | Bivariate spline on annotation grid |
 | Geocoded raster (GeoTIFF, etc.) | `AffineGeolocation` | Affine + CRS reprojection |
 | EO NITF with RPC | `RPCGeolocation` | Rational polynomial coefficients |
-| EO NITF with RSM | `RSMGeolocation` | Replacement sensor model polynomials |
+| EO NITF with RSM | `RSMGeolocation` | Replacement sensor model polynomials (multi-segment aware) |
+| EO NITF, no RPC/RSM | `CornerGeolocation` | Projective homography from footprint corners |
+| Sub-region (chip) of any product | `ChipGeolocation` | Offset wrapper over a parent geolocation |
 | Unknown / no metadata | `NoGeolocation` | Raises NotImplementedError |
 
 ### Elevation Models
 
 | DEM source | Class | Notes |
 |-----------|-------|-------|
-| DTED folder (Level 0/1/2) | `DTEDElevation` | Auto-indexes `.dt0`/`.dt1`/`.dt2` tiles; bicubic default, cross-tile stitching |
+| DTED archive (Level 0/1/2) | `TiledGeoDTED` | Preferred DTED backend: bbox-aware, LRU file handles, pickle-light; standard + nested archive layouts; `.dt2`>`.dt1`>`.dt0` |
+| DTED folder (Level 0/1/2) | `DTEDElevation` | Fallback DTED backend; auto-indexes `.dt0`/`.dt1`/`.dt2` tiles; bicubic default, cross-tile stitching |
 | Single GeoTIFF DEM | `GeoTIFFDEM` | Any CRS, bilinear/bicubic/quintic interpolation |
-| Multi-tile GeoTIFF folder | `TiledGeoTIFFDEM` | FABDEM, SRTM, Copernicus; cross-tile interpolation |
+| Multi-tile GeoTIFF folder | `TiledGeoTIFFDEM` | FABDEM, SRTM, Copernicus; cross-tile interpolation, LRU tile cache |
 | No DEM available | `ConstantElevation` | Fixed height fallback |
-| Auto-detect format | `open_elevation()` | Factory: inspects path, returns best model |
+| Auto-detect format | `open_elevation()` | Factory: inspects path, returns best model; never returns `None` |
 
 ### Coordinate Conversions
 
@@ -291,16 +311,22 @@ intersection.
 
 ### 6. Geoid Correction (Composition)
 
-`GeoidCorrection` is not an `ElevationModel` — it is composed into
-elevation models via constructor injection:
+`GeoidCorrection` is not an `ElevationModel` — every DEM model accepts a
+`geoid_path` argument and constructs a `GeoidCorrection` internally in the
+`ElevationModel` base `__init__`. There is no `geoid=` parameter; pass the
+path:
 
 ```python
-geoid = GeoidCorrection('/path/to/egm96.pgm')
-dem = GeoTIFFDEM('/path/to/dem.tif', geoid=geoid)
+dem = GeoTIFFDEM('/path/to/dem.tif', geoid_path='/path/to/egm96.pgm')
 
 # dem.get_elevation() internally adds geoid undulation to convert
-# MSL heights (from the DEM file) to HAE (WGS-84 ellipsoid heights)
+# MSL heights (from the DEM file) to HAE (WGS-84 ellipsoid heights):
+#   height_hae = height_msl + geoid_undulation
 ```
+
+`GeoidCorrection` reads any post-aligned global EGM-family PGM grid
+(EGM96 15′, EGM2008 5′/2.5′/1′) or a single-band geographic GeoTIFF;
+grid dimensions and scale/offset are read from the file header.
 
 ---
 
@@ -381,6 +407,23 @@ pixels (N, 2) [row, col]
 | `latlon_to_image(coords_Nx2)` | (N, 2) `[lat, lon]` | (N, 2) `[row, col]` |
 | `latlon_to_image(coords_Nx3)` | (N, 3) `[lat, lon, h]` | (N, 2) `[row, col]` |
 
+### Base-Class Height Helpers
+
+| Method | Role |
+|--------|------|
+| `default_hae` (property) | Scene reference height; overridden per subclass (SICD → SCP HAE, SIDD → measurement reference point HAE, Corner → construction `height`, others → 0.0) |
+| `_resolve_height(height)` | Returns explicit height if non-zero, else `default_hae` |
+| `_fill_nan_heights(dem_h, fallback)` | Fills NaN DEM gaps with `fallback` (if non-zero) else `default_hae` |
+| `_image_to_latlon_with_dem(..., max_iter=5, tol=0.5)` | Per-point iterative DEM refinement (bypassed when `_handles_dem_internally`) |
+| `_latlon_to_image_with_dem(...)` | Single DEM lookup on the inverse path |
+
+### Construction Factories
+
+| Entry point | Behavior |
+|-------------|----------|
+| `Class.from_reader(reader, dem_path=, geoid_path=, interpolation=, ...)` | Per-class factory; forwards DEM kwargs to the constructor → `open_elevation()`. `GCPGeolocation.from_reader` is the exception (takes only `crs=`). |
+| `create_geolocation(reader, **kwargs)` | Global factory; dispatches on metadata type and forwards `**kwargs` to the selected `from_reader()`. Raises `TypeError` on unrecognized metadata. |
+
 ### Coordinate Functions
 
 | Function | Input | Output |
@@ -397,14 +440,15 @@ pixels (N, 2) [row, col]
 
 | Submodule | Required | Optional |
 |-----------|----------|----------|
-| `base`, `coordinates`, `utils` | numpy | — |
+| `base`, `chip`, `coordinates`, `utils` | numpy | — |
 | `projection` | numpy, scipy | — |
 | `sar/sicd` | numpy | sarpy, sarkit |
 | `sar/sidd`, `sar/gcp` | numpy, scipy | — |
 | `sar/nisar`, `sar/sentinel1_slc` | numpy, scipy | — |
 | `eo/affine` | numpy, rasterio, pyproj | — |
+| `eo/corner` | numpy | pyproj (UTM/MGRS decode only) |
 | `eo/rpc`, `eo/rsm` | numpy | — |
-| `elevation/dted`, `elevation/geotiff_dem` | numpy, rasterio | pyproj |
+| `elevation/dted`, `elevation/geotiff_dem`, `elevation/tiled_geotiff_dem`, `elevation/tiled_geotiff_dted` | numpy, rasterio | pyproj |
 | `elevation/geoid` | numpy | rasterio |
 
 All optional dependencies are probed at import time via `_backend.py`

@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Robust MAD normalization** (`grdl/data_prep`): `Normalizer` gains a
+  ``'mad'`` method -- robust z-score ``(x - median) / (1.4826 * MAD)`` where
+  ``MAD = median(|x - median(x)|)``. Outlier-resistant (50%% breakdown point);
+  the ``1.4826`` consistency constant is exported as
+  `grdl.data_prep.MAD_TO_STD`.
+- `compute_image_statistics(..., mad=True)` and `Normalizer.fit_streaming`
+  (for ``method='mad'``) compute the streaming median and MAD over a full
+  image. The MAD is taken about the median, so it adds one deviation pass
+  (non-negative single-pass float32 histogram) on top of the median pass.
+- `StatsResult` gains `median` and `mad` fields and a `mad_std` property
+  (``1.4826 * mad``). Both stay ``nan`` unless ``mad=True`` was requested; the
+  internal median percentile is not leaked into ``percentiles``.
+
+---
+
+## [0.6.1] — 2026-06-17
+
+### Added
+
 - **Reader factory** (`grdl/IO/__init__.py`): `_READER_REGISTRY` — a 20-entry
   module-level dict mapping case-insensitive format keys (e.g. `'sicd'`,
   `'geotiff'`, `'sentinel1-slc'`) to `(module_path, ClassName)` tuples for
@@ -20,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointing to `requirements-optional.txt` when an optional dependency is absent.
 - `list_reader_formats()` — returns `sorted(_READER_REGISTRY.keys())` for
   runtime enumeration of all registered reader formats.
+- `register_reader(format, module_path, class_name, overwrite=False)` and
+  `register_writer(...)` — runtime registration of custom readers/writers
+  into the factory (keys normalized to lowercase-hyphen; `ValueError` on
+  conflict unless `overwrite=True`).
 - `_READER_EXTENSION_MAP` — 14-extension map (`.tif`, `.nitf`, `.h5`, `.jp2`,
   etc.) to registry keys, used by `open_reader()`.
 - `open_reader(filepath)` — new primary auto-detect entry point, replacing
@@ -47,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrap the return paths of `read_chip()` and `read_full()` in
   `self._assert_2d(data, context, strict=self._enforce_2d)`, guaranteeing
   `(rows, cols)` output for all single-pol reads.
+- `PolarFormatAlgorithm` / `PolarGrid`: default `scene_sizing` changed from
+  `'toa'` to `'full'` — output grids are now sized to the data-unambiguous
+  full-scene extent (FX swath in range, pulse-Nyquist in azimuth) instead of
+  the receive-window grazing-angle heuristic, fixing ~50% cross-range
+  cropping on space-based spotlight CPHDs. `'toa'` remains available.
+- `IO.gmti`: consolidated `cphd_steering` onto the validated GMTI
+  steering-matrix algorithm (`build_steering_matrix_from_cphd_metadata`),
+  SRP-relative polynomial convention.
 
 ### Deprecated
 

@@ -10,7 +10,8 @@ ortho/
   enu_grid.py          ENUGrid (local meters grid, satisfies OutputGridProtocol)
   utm_grid.py          UTMGrid (UTM projection grid, satisfies OutputGridProtocol)
   web_mercator_grid.py WebMercatorGrid (Web Mercator projection grid, satisfies OutputGridProtocol)
-  ortho_builder.py     OrthoBuilder (builder), OrthoResult (output container)
+  ortho_builder.py     orthorectify() (function), OrthoBuilder (builder), OrthoResult
+  roi.py               orthorectify_point_roi(), PointRoiResult (point-centered chip)
   accelerated.py       Multi-backend resampling dispatch (numba/torch/scipy)
   resolution.py        Auto-compute output pixel spacing from metadata
 ```
@@ -242,6 +243,8 @@ All paths convert meters to degrees via `spacing_m / 111320` (lat) and
 3. **Grid objects are value types.** GeographicGrid, ENUGrid, UTMGrid, and WebMercatorGrid carry no mutable state. They define a coordinate system and can be shared freely.
 
 4. **DEM integrates at mapping time, not resampling time.** Terrain heights are looked up once during `compute_mapping()` and baked into the source coordinates. The resampler sees only 2D fractional pixel coordinates.
+
+   **The DEM lives on the geolocation object, not the orthorectifier.** Neither `orthorectify()`, `OrthoBuilder`, nor `Orthorectifier` has an `elevation` parameter. Terrain correction flows entirely through `geo.elevation`, which the geolocation consults inside its own R/Rdot inverse during `latlon_to_image()`. When `geo.elevation` is unset, the projection falls back to the WGS-84 ellipsoid (height 0) — terrain-uncorrected output. This keeps a single source of truth for terrain and matches the GRDL "DEM / Elevation Ownership" rule.
 
 5. **Backend dispatch is transparent.** `resample()` auto-detects the best backend. User code is identical regardless of whether numba, torch, or scipy runs underneath.
 
