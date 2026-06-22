@@ -30,6 +30,7 @@ Created
 
 Modified
 --------
+2026-06-09  Add ReadConfig.gdal_env + apply_gdal_env for remote reads.
 2026-04-01
 """
 
@@ -72,12 +73,37 @@ class ReadConfig:
         Minimum total pixels in a ``read_chip`` window before
         chunked parallel read is attempted.  Default 4,000,000
         (roughly 2000 × 2000).
+    gdal_env : dict of str to str, optional
+        GDAL configuration options applied to ``os.environ`` before
+        opening or reading (e.g. ``{'GDAL_CACHEMAX': '512'}``,
+        ``{'GDAL_DISABLE_READDIR_ON_OPEN': 'EMPTY_DIR'}`` for remote
+        ``/vsicurl/`` access).  Existing environment values are NOT
+        overwritten — user environment wins.
     """
 
     parallel: bool = False
     max_workers: Optional[int] = None
     gdal_num_threads: Optional[int] = None
     chunk_threshold: int = 4_000_000
+    gdal_env: Optional[dict] = None
+
+
+def apply_gdal_env(config: Optional['ReadConfig']) -> None:
+    """Apply ``config.gdal_env`` entries to the process environment.
+
+    Only sets keys that are not already present in ``os.environ`` so
+    explicit user configuration always wins.  No-op when ``config``
+    is ``None`` or carries no ``gdal_env``.
+
+    Parameters
+    ----------
+    config : ReadConfig, optional
+        Configuration whose ``gdal_env`` mapping should be applied.
+    """
+    if config is None or not config.gdal_env:
+        return
+    for key, value in config.gdal_env.items():
+        os.environ.setdefault(str(key), str(value))
 
 
 _gdal_threads_configured = False

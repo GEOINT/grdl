@@ -158,6 +158,8 @@ class CRSDReader(ImageReader):
     ...     signal = reader.read_chip(0, 100, 0, 200)
     """
 
+    _enforce_2d: bool = True  # CRSD is always single-channel signal data
+
     def __init__(self, filepath: Union[str, Path]) -> None:
         require_sarkit('CRSD')
         super().__init__(filepath)
@@ -336,8 +338,13 @@ class CRSDReader(ImageReader):
         """
         channel = bands[0] if bands else 0
         ch_id = list(self.metadata['channels'].keys())[channel]
-        data = self._reader.read_signal(ch_id)
-        return data[row_start:row_end, col_start:col_end]
+        raw = self._reader.read_signal(ch_id)
+        data = raw[row_start:row_end, col_start:col_end]
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read full signal data for a channel.
@@ -354,7 +361,12 @@ class CRSDReader(ImageReader):
         """
         channel = bands[0] if bands else 0
         ch_id = list(self.metadata['channels'].keys())[channel]
-        return self._reader.read_signal(ch_id)
+        data = self._reader.read_signal(ch_id)
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_full',
+            strict=self._enforce_2d,
+        )
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get signal dimensions for first channel.

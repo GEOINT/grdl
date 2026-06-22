@@ -36,13 +36,15 @@ image_processing/
 │   ├── enu_grid.py          #   ENUGrid (satisfies OutputGridProtocol)
 │   ├── utm_grid.py          #   UTMGrid (satisfies OutputGridProtocol)
 │   ├── web_mercator_grid.py #   WebMercatorGrid (satisfies OutputGridProtocol)
-│   ├── ortho_builder.py     #   OrthoBuilder, OrthoResult (builder + ROI + tiling)
+│   ├── ortho_builder.py     #   orthorectify(), OrthoBuilder, OrthoResult (builder + ROI + tiling)
+│   ├── roi.py               #   orthorectify_point_roi(), PointRoiResult (point-centered ortho)
 │   ├── accelerated.py       #   resample(), detect_backend() (multi-backend dispatch)
 │   └── resolution.py        #   compute_output_resolution (SICD, BIOMASS dispatch)
 │
 ├── decomposition/           # Polarimetric decompositions
 │   ├── base.py              #   PolarimetricDecomposition (ABC)
 │   ├── pauli.py             #   PauliDecomposition (quad-pol)
+│   ├── pol_matrix.py        #   Scattering/coherency matrix helpers
 │   └── dual_pol_halpha.py   #   DualPolHAlpha (dual-pol)
 │
 ├── detection/               # Sparse vector detectors
@@ -107,10 +109,11 @@ ImageProcessor (ABC)
 │   ├── PauliDecomposition      (quad-pol)
 │   └── DualPolHAlpha           (dual-pol H/Alpha eigendecomposition)
 │
-├── SublookDecomposition        [STACKS, SAR] ── 1D sub-aperture
+├── SublookDecomposition        [SAR] ── 1D sub-aperture (no category tag)
 ├── MultilookDecomposition      [STACKS, SAR] ── 2D sub-aperture
+├── DominanceFeatures           [ANALYZE, SAR] ── aperture dominance/entropy
 │
-└── CSIProcessor                [STACKS, SAR] ── coherent shape index
+└── CSIProcessor                [ENHANCE, SAR] ── coherent shape index
 
 ImageFormationAlgorithm (ABC) ── phase history → complex image
 ├── PolarFormatAlgorithm        (spotlight PFA)
@@ -121,6 +124,15 @@ ImageFormationAlgorithm (ABC) ── phase history → complex image
 
 Tags in `[brackets]` are `ProcessorCategory` / `ImageModality` values
 set by `@processor_tags`.
+
+**Image-formation algorithms are not yet registered in the processor
+metadata catalog.** `ImageFormationAlgorithm` is a standalone ABC (not an
+`ImageProcessor` subclass), and `PolarFormatAlgorithm`,
+`RangeDopplerAlgorithm`, `FastBackProjection`, and `StripmapPFA` do
+**not** currently carry `@processor_version` / `@processor_tags`. Their
+contract is `form_image(signal, geometry)` and `get_output_grid()`, not
+`apply()` / `__param_specs__`. They are therefore invisible to
+grdl-runtime catalog discovery and grdk UI generation until tagged.
 
 ---
 
@@ -315,6 +327,54 @@ decompose(image)
 Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 (specific depends on generic).
 
+### 6. Universal `execute()` Protocol
+
+Every `ImageProcessor` exposes `execute(metadata, source, **kwargs) ->
+(result, updated_metadata)` for grdl-runtime. The base implementation
+sets `self._metadata` (so domain methods can read `self.metadata`) then
+probes for `apply` / `detect` / `decompose`. Each ABC overrides it:
+
+- `ImageTransform.execute` delegates to `apply()` and rebuilds output
+  metadata (rows/cols/bands/dtype/axis_order, channel descriptors) via
+  `_update_metadata_for_result` + `_infer_3d_axis_order`.
+- `ImageDetector.execute` delegates to `detect()` and returns metadata
+  unchanged (output is a `DetectionSet`).
+- `PolarimetricDecomposition.execute` extracts quad-pol channels from a
+  4-band source (or `shh/shv/svh/svv` kwargs) and returns a component
+  dict plus per-component channel metadata.
+- `Pipeline.execute` threads updated metadata forward step to step.
+
+Concrete classes implement only the domain method, never `execute()`.
+
+### 7. Version-Check on First Instantiation
+
+`ImageProcessor.__new__` warns once per class (tracked in
+`_version_warned_classes`) if a concrete class lacks
+`__processor_version__`. The check runs in `__new__` (not
+`__init_subclass__`) so decorators have already been applied. Abstract
+classes are skipped.
+
+### 8. Detection-Input Flow
+
+Any processor can declare upstream `DetectionSet` inputs by overriding
+`detection_input_specs` (tuple of `DetectionInputSpec`). Inputs arrive as
+`**kwargs`; `_validate_detection_inputs(kwargs)` enforces required ones
+and `_get_detection_input(name, kwargs)` retrieves them. This lets a
+detector bias a downstream transform without signature changes.
+
+### 9. Detection Data Models
+
+`detection/models.py` defines `Detection` (shapely `pixel_geometry` +
+optional `geo_geometry`, `properties` dict, optional `confidence`;
+`to_geojson_feature()`) and `DetectionSet` (`__len__` / `__iter__` /
+`__getitem__`, `to_geojson()`, `filter_by_confidence()`,
+`filter_by_region(shape, geolocation, mode=...)`). Pixel coords use
+shapely `(x=col, y=row)`; geographic coords use `(x=lon, y=lat)`. Field
+names in `properties` should come from the `Fields` data dictionary
+(`detection/fields.py`, `DATA_DICTIONARY`); non-dictionary names emit a
+`UserWarning`. `CFARDetector._build_detections` emits boxes carrying
+`sar.sigma0`, `identity.is_target`, and `physical.area/length/width`.
+
 ---
 
 ## Processor Catalog
@@ -337,13 +397,27 @@ Dependency direction: `image_processing.sar` → `data_prep.Tiler`
 | `GeographicGrid` | — | — | — | min/max lat/lon, pixel sizes; `sub_grid()`, `from_geolocation()` |
 | `PauliDecomposition` | 0.1.0 | — | SAR | — |
 | `DualPolHAlpha` | 1.0.0 | — | SAR | window_size |
-| `CACFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
-| `GOCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
-| `SOCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
-| `OSCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels |
-| `SublookDecomposition` | 0.1.0 | STACKS | SAR | num_looks, overlap, deweight |
+| `CACFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels, assumption |
+| `GOCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels, assumption |
+| `SOCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels, assumption |
+| `OSCFARDetector` | 1.0.0 | FIND_MAXIMA | SAR | guard_cells, training_cells, pfa, min_pixels, assumption, percentile |
+| `SublookDecomposition` | 0.1.0 | — | SAR | num_looks, dimension, overlap, deweight, deskew |
 | `MultilookDecomposition` | 0.1.0 | STACKS | SAR | looks_rg, looks_az, overlap, deweight |
-| `CSIProcessor` | 0.1.0 | STACKS | SAR | num_looks, overlap, deweight |
+| `CSIProcessor` | 0.2.0 | ENHANCE | SAR | dimension, overlap, deweight, normalization, plow, phigh, floor_db |
+| `DominanceFeatures` | 1.0.0 | ANALYZE | SAR | num_looks, dimension, window_size, dom_window |
+
+All five CFAR parameters are declared as `Annotated` fields on the
+`CFARDetector` base; `assumption` selects `'gaussian'` (dB input,
+threshold = mean + alpha*std) vs `'exponential'` (linear input,
+threshold = alpha*mean). The `SublookDecomposition` `deskew` flag centers
+the phase history via `DeltaKCOAPoly` before sub-band cutting (required
+for stripmap / ScanSAR-TOPS, near no-op for spotlight).
+
+> **Not in this catalog:** the image-formation algorithms
+> (`PolarFormatAlgorithm`, `RangeDopplerAlgorithm`, `FastBackProjection`,
+> `StripmapPFA`) are not `ImageProcessor` subclasses and carry no
+> `@processor_version` / `@processor_tags` — they are absent from
+> runtime/grdk discovery.
 
 ---
 

@@ -308,8 +308,35 @@ from grdl.IO.models.eo_nitf import (
     RSMCoefficients,
     RSMSegmentGrid,
     CSEPHAMetadata,
+    CSCRNAMetadata,
     RSMGGAMetadata,
     RSMGGAGridPlane,
+    ImageSegmentInfo,
+    ImageGroupInfo,
+)
+
+# RSM error model
+from grdl.IO.models.rsm_error import (
+    RSMPIAMetadata,
+    RSMDCAMetadata,
+    RSMECAMetadata,
+    RSMAPAMetadata,
+)
+
+# EO band characterization
+from grdl.IO.models.eo_band import (
+    BANDSBMetadata,
+    BANDSBBand,
+    BANDSAMetadata,
+    BANDSABand,
+)
+
+# EO airborne sensor TREs
+from grdl.IO.models.eo_airborne import (
+    SENSRBMetadata,
+    MENSRBMetadata,
+    MENSRAMetadata,
+    ACFTBMetadata,
 )
 
 # STANAG 4607 (GMTI)
@@ -572,8 +599,23 @@ __all__ = [
     'RSMCoefficients',
     'RSMSegmentGrid',
     'CSEPHAMetadata',
+    'CSCRNAMetadata',
     'RSMGGAMetadata',
     'RSMGGAGridPlane',
+    'ImageSegmentInfo',
+    'ImageGroupInfo',
+    'RSMPIAMetadata',
+    'RSMDCAMetadata',
+    'RSMECAMetadata',
+    'RSMAPAMetadata',
+    'BANDSBMetadata',
+    'BANDSBBand',
+    'BANDSAMetadata',
+    'BANDSABand',
+    'SENSRBMetadata',
+    'MENSRBMetadata',
+    'MENSRAMetadata',
+    'ACFTBMetadata',
     # STANAG 4607 (GMTI)
     'STANAG4607Metadata',
     'Packet',

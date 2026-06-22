@@ -48,6 +48,9 @@ Created
 
 Modified
 --------
+2026-06-08  Deduplicate repeat coordinates within a single DEM-cache
+            query so clustered/repeat-projected pixels sample each cell
+            once (amortizes the R/Rdot vertical-step search).
 2026-04-17  Enforce RgAzComp validation; derive AzSF from KazPoly fallback.
 2026-03-31  Add nan_fill_height parameter to image_to_ground_hae.
 2026-03-27  Add numba dispatch for image_to_ground_plane and wgs84_norm.
@@ -56,7 +59,7 @@ Modified
 """
 
 # Standard library
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -791,28 +794,43 @@ def _cached_dem_query(
     iterations.  ``cache`` is a plain dict keyed on quantized
     coordinates; misses are batched into a single DEM call and the
     results are merged back in original order.
+
+    Duplicate quantized coordinates within a single call collapse to one
+    DEM sample: a cluster of pixels that quantizes to the same DEM cell —
+    or the same pixel re-projected at several altitudes during the
+    vertical-step search — is queried once, not once per occurrence. This
+    keeps the DEM-query count bounded by the number of distinct cells
+    regardless of point count or iteration depth.
     """
     qlat, qlon = _quantize_latlon(lats, lons)
     n = lats.shape[0]
     out = np.empty(n, dtype=np.float64)
-    miss_idx = []
+    # Group missing positions by quantized key so each distinct cell is
+    # queried exactly once this call.
+    miss_positions: Dict[Tuple[int, int], list] = {}
     for i in range(n):
         key = (int(qlat[i]), int(qlon[i]))
         hit = cache.get(key)
         if hit is None:
-            miss_idx.append(i)
+            miss_positions.setdefault(key, []).append(i)
         else:
             out[i] = hit
-    if miss_idx:
-        miss = np.asarray(miss_idx, dtype=np.intp)
-        dem_h = elevation_model.get_elevation(lats[miss], lons[miss])
+    if miss_positions:
+        keys = list(miss_positions)
+        repr_idx = np.fromiter(
+            (miss_positions[k][0] for k in keys),
+            dtype=np.intp, count=len(keys),
+        )
+        dem_h = elevation_model.get_elevation(lats[repr_idx], lons[repr_idx])
         if isinstance(dem_h, (int, float)):
-            dem_h = np.full(miss.size, float(dem_h), dtype=np.float64)
+            dem_h = np.full(len(keys), float(dem_h), dtype=np.float64)
         else:
             dem_h = np.asarray(dem_h, dtype=np.float64)
-        for k, i in enumerate(miss_idx):
-            cache[(int(qlat[i]), int(qlon[i]))] = dem_h[k]
-            out[i] = dem_h[k]
+        for j, key in enumerate(keys):
+            val = float(dem_h[j])
+            cache[key] = val
+            for pos in miss_positions[key]:
+                out[pos] = val
     return out
 
 

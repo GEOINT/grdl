@@ -22,13 +22,19 @@ Created
 
 Modified
 --------
-2026-03-19
+2026-06-20
 """
 
-# ── Configuration (edit these) ───────────────────────────────────────
+# ── Configuration (edit these or set the matching env vars) ──────────
 
-FILEPATH_A = '/Users/duanesmalley/SAR_DATA/SIDD/2025-06-11-08-42-52_UMBRA-10_SIDD.nitf'
-FILEPATH_B = '/Users/duanesmalley/SAR_DATA/SIDD/2024-02-11-19-53-54_UMBRA-05_SIDD.nitf'
+# Standard library
+import os
+import sys
+from pathlib import Path
+
+# Input SIDD products — override via GRDL_SIDD_A / GRDL_SIDD_B env vars.
+FILEPATH_A = os.environ.get('GRDL_SIDD_A', 'data/sar/sidd/collect_a_SIDD.nitf')
+FILEPATH_B = os.environ.get('GRDL_SIDD_B', 'data/sar/sidd/collect_b_SIDD.nitf')
 
 CENTER_LAT = -26.094455437019473
 CENTER_LON = 29.47239658007181
@@ -37,14 +43,11 @@ N_COMPONENTS = 48            # PCA components to keep for low-fi reconstruction
 N_PATCHES    = 50           # total PCA basis vectors to compute
 REVERSE_PCA  = True         # True = keep LAST N (fine detail); False = keep FIRST N (smooth)
 INTERP       = 'bilinear'  # 'nearest', 'bilinear', or 'bicubic'
-DTED_PATH  = '/Volumes/PRO-G40/terrain/FABDEM/'
-GEOID_PATH = '/Volumes/PRO-G40/terrain/us_nga_egm08_25.tif'
+# Terrain data — override via GRDL_DTED_PATH / GRDL_GEOID_PATH env vars.
+DTED_PATH  = os.environ.get('GRDL_DTED_PATH', 'data/terrain/dem/')
+GEOID_PATH = os.environ.get('GRDL_GEOID_PATH', 'data/terrain/geoid.tif')
 
 # ─────────────────────────────────────────────────────────────────────
-
-# Standard library
-import sys
-from pathlib import Path
 
 # Third-party
 import numpy as np

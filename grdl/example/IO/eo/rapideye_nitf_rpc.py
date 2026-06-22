@@ -46,6 +46,7 @@ Modified
 """
 
 # Standard library
+import os
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -68,15 +69,14 @@ from grdl.geolocation.elevation.tiled_geotiff_dem import TiledGeoTIFFDEM
 # Configuration
 # =====================================================================
 
-DATA_DIR = Path.home() / "Data" / "MSI_Data" / "rapideye" / \
-    "REScene_Basic_Analytic_nitf" / "2019-10-05T100157_RE4" / \
-    "basic_analytic_nitf"
+# RapidEye basic-analytic NITF scene directory -- override via the
+# GRDL_RAPIDEYE_DIR environment variable.
+DATA_DIR = Path(os.environ.get("GRDL_RAPIDEYE_DIR", "data/eo/rapideye"))
 
 BAND_NAMES = ["Blue", "Green", "Red", "RedEdge", "NIR"]
 
-# FABDEM tiles covering the scene (lat ~43-44, lon ~4-5, southern France)
-DEM_DIR = Path("/Volumes/PRO-G40/terrain/FABDEM/"
-               "N40E000-N50E010_FABDEM_V1-2")
+# DEM tiles covering the scene -- override via the GRDL_DEM_PATH env var.
+DEM_DIR = Path(os.environ.get("GRDL_DEM_PATH", "data/terrain/dem"))
 
 # Known footprint corners from metadata (lat, lon) for validation
 # From the _metadata.xml geographicLocation block

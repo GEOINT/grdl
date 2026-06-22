@@ -5,7 +5,7 @@
 # ---------------------------------
 # sarkit is preferred; sarpy is the fallback
 sarpy>=1.3.0
-sarkit>=1.3.0
+sarkit>=1.8.0
 
 # Raster / GeoTIFF format support (grdl.IO.geotiff, grdl.IO.nitf, grdl.IO.sar.biomass)
 rasterio>=1.2.0

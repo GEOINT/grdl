@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.5.3"
+version = "0.6.1"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -38,7 +38,7 @@ sar = [
     "sarkit>=1.8.0",
 ]
 s1_l0 = [
-    "sentinel1decoder>=0.2.0",
+    "sentinel1decoder>=2.0.0",
 ]
 eo = [
     "rasterio>=1.2.0",
@@ -85,7 +85,7 @@ examples = [
 all = [
     "sarpy>=1.3.0",
     "sarkit>=1.8.0",
-    "sentinel1decoder>=0.2.0",
+    "sentinel1decoder>=2.0.0",
     "rasterio>=1.2.0",
     "glymur>=0.9.0",
     "h5py>=3.0.0",
@@ -123,6 +123,7 @@ grdl = ["**/*.md", "py.typed"]
 [tool.setuptools.data-files]
 "share/grdl" = ["README.md", "ARCHITECTURE.md", "LICENSE"]
 "share/grdl/docs" = ["docs/logging_tutorial.md"]
+"share/grdl/.github/workflows" = [".github/workflows/publish.yml"]
 
 [tool.black]
 line-length = 100

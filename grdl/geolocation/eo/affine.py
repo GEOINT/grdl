@@ -37,7 +37,7 @@ Created
 
 Modified
 --------
-2026-02-11
+2026-06-09
 """
 
 # Standard library
@@ -277,7 +277,13 @@ class AffineGeolocation(Geolocation):
         return rows, cols
 
     @classmethod
-    def from_reader(cls, reader: 'ImageReader') -> 'AffineGeolocation':
+    def from_reader(
+        cls,
+        reader: 'ImageReader',
+        dem_path: Optional[Union[str, object]] = None,
+        geoid_path: Optional[Union[str, object]] = None,
+        interpolation: int = 3,
+    ) -> 'AffineGeolocation':
         """Create an AffineGeolocation from a GRDL imagery reader.
 
         Extracts the affine transform, CRS, and image shape from the
@@ -289,6 +295,13 @@ class AffineGeolocation(Geolocation):
         ----------
         reader : ImageReader
             A GRDL imagery reader with populated metadata.
+        dem_path : str, Path, or ElevationModel, optional
+            DEM source for terrain-aware transforms.
+        geoid_path : str or Path, optional
+            Path to geoid correction file (EGM96/EGM2008).
+        interpolation : int
+            DEM interpolation spline order (1=bilinear, 3=bicubic,
+            5=quintic). Default is 3.
 
         Returns
         -------
@@ -327,4 +340,11 @@ class AffineGeolocation(Geolocation):
 
         shape = (meta.rows, meta.cols)
 
-        return cls(transform=transform, shape=shape, crs=crs)
+        return cls(
+            transform=transform,
+            shape=shape,
+            crs=crs,
+            dem_path=dem_path,
+            geoid_path=geoid_path,
+            interpolation=interpolation,
+        )

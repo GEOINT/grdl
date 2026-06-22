@@ -53,6 +53,7 @@ Modified
 
 # Standard library
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -88,10 +89,10 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         type=Path,
         default=Path(
-            "/Volumes/PRO-G40/SAR_DATA/CPHD/"
-            "CAPELLA_C02_SM_CPHD_HH_20210131030851_20210131030856.cphd"
+            os.environ.get("GRDL_CPHD_PATH", "data/sar/cphd/stripmap.cphd")
         ),
-        help="Path to the CPHD file (default: Capella C02 stripmap).",
+        help="Path to the CPHD file (default: $GRDL_CPHD_PATH or "
+             "data/sar/cphd/stripmap.cphd).",
     )
     parser.add_argument(
         "--output", "-o",

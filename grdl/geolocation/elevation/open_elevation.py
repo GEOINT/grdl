@@ -33,6 +33,8 @@ Created
 
 Modified
 --------
+2026-06-08  Layout-agnostic DTED probe (standard + nested archive) and
+            bbox-aware DTEDElevation loader in _try_dted.
 2026-03-27  Add interpolation parameter, pass through to all DEM backends.
 2026-03-18
 """
@@ -131,9 +133,9 @@ def open_elevation(
 
     # ── Directory ────────────────────────────────────────────────
     elif dem_path.is_dir():
-        # Try DTED first. Pass bbox so the new TiledGeoDTED backend
-        # can probe candidate tile paths directly instead of an
-        # exhaustive rglob across the archive.
+        # Try DTED first. Pass bbox so DTEDElevation can probe candidate
+        # tile paths directly — covering standard and nested archive
+        # layouts — instead of an exhaustive rglob across the archive.
         model = _try_dted(
             dem_path, geoid_path, location, interpolation, bbox=bbox,
         )
@@ -161,62 +163,108 @@ def open_elevation(
     return ConstantElevation(height=fallback_height)
 
 
-def _has_dted_tiles(
+def _has_dted_files(
     dem_dir: Path,
     bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> bool:
-    """Cheap probe: any DTED file anywhere under *dem_dir*?
+    """Layout-agnostic probe: any DTED file discoverable under *dem_dir*?
 
-    When ``bbox`` is supplied, only the cells overlapping the bbox
-    (plus a 1-cell halo) are probed — bounded ``Path.exists()`` work
-    instead of a recursive scan of the entire archive.
+    Recognizes both the standard layout (``<root>/<lon>/<lat>.dt?``) and
+    nested archive layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``).
 
-    Without a bbox, falls back to scanning one directory level
-    (``e*``/``w*`` parent dirs, then their immediate DTED files).
-    ``rglob`` is intentionally avoided: against a 19 000-tile archive
-    the recursive walk is the dominant cost.
+    When ``bbox`` is supplied, only the cells overlapping the bbox (plus
+    a 1-cell halo) are probed via the same candidate-path generator the
+    loader uses — bounded ``Path.is_file()`` work instead of a recursive
+    scan of the entire archive.
+
+    Without a bbox, a shallow scan of both layout roots is used (the
+    longitude directories directly under the root, and those under
+    ``<root>/dted/dted{2,1,0}``). ``rglob`` is intentionally avoided:
+    against a 19 000-tile archive the recursive walk is the dominant
+    cost.
     """
+    # Import inside to keep the optional rasterio dependency at the
+    # construction boundary, not the probe.
+    from grdl.geolocation.elevation.dted import (
+        _CaseInsensitiveDirCache,
+        _find_dted_file,
+    )
+
     if bbox is not None:
-        # Import inside to keep optional rasterio dependency at the
-        # construction boundary, not the probe.
-        from grdl.geolocation.elevation.tiled_geotiff_dted import (
-            _candidate_paths,
-        )
+        # Shares the loader's OS-independent, cached resolution so the
+        # probe agrees with discovery on case-sensitive filesystems.
         min_lon, min_lat, max_lon, max_lat = bbox
         import math as _m
         lon_lo = int(_m.floor(min_lon)) - 1
         lon_hi = int(_m.floor(max_lon)) + 1
         lat_lo = int(_m.floor(min_lat)) - 1
         lat_hi = int(_m.floor(max_lat)) + 1
+        dir_cache = _CaseInsensitiveDirCache()
         for lon in range(lon_lo, lon_hi + 1):
             for lat in range(lat_lo, lat_hi + 1):
-                for _ext, candidate in _candidate_paths(dem_dir, lon, lat):
-                    if candidate.is_file():
-                        return True
+                if _find_dted_file(dem_dir, lon, lat, dir_cache) is not None:
+                    return True
         return False
 
-    # No bbox: one-level scan. Matches the layout we actually expect
-    # (``<root>/e116/n34.dt2``) without descending into archive
-    # subdirectories.
+    # No bbox: shallow, case-insensitive scan of both layout roots.
     import os as _os
     import re as _re
-    lon_re = _re.compile(r'^[eEwW]\d{3}$')
-    try:
-        entries = list(_os.scandir(dem_dir))
-    except OSError:
-        return False
-    for entry in entries:
-        if not entry.is_dir() or not lon_re.match(entry.name):
-            continue
+    lon_re = _re.compile(r'^[ew]\d{3}$', _re.IGNORECASE)
+    res_re = _re.compile(r'^dted$', _re.IGNORECASE)
+    res_sub_re = _re.compile(r'^dted[012]$', _re.IGNORECASE)
+
+    def _lon_dir_has_tile(lon_dir_path: str) -> bool:
         try:
-            for lat_entry in _os.scandir(entry.path):
-                if not lat_entry.is_file():
-                    continue
-                low = lat_entry.name.lower()
-                if low.endswith(('.dt2', '.dt1', '.dt0')):
-                    return True
+            with _os.scandir(lon_dir_path) as it:
+                for f in it:
+                    if (
+                        f.is_file()
+                        and f.name.lower().endswith(('.dt2', '.dt1', '.dt0'))
+                    ):
+                        return True
+        except OSError:
+            return False
+        return False
+
+    def _has_lon_dir_with_tile(parent: str) -> bool:
+        try:
+            with _os.scandir(parent) as it:
+                for entry in it:
+                    if (
+                        entry.is_dir()
+                        and lon_re.match(entry.name)
+                        and _lon_dir_has_tile(entry.path)
+                    ):
+                        return True
+        except OSError:
+            return False
+        return False
+
+    dem_dir_str = str(dem_dir)
+    # Standard layout: <root>/<lon_dir>/...
+    if _has_lon_dir_with_tile(dem_dir_str):
+        return True
+    # Nested archive layout: <root>/dted/dted{0,1,2}/<lon_dir>/... with
+    # case-insensitive matching on the 'dted' and 'dted{N}' directories.
+    try:
+        with _os.scandir(dem_dir_str) as it:
+            dted_dirs = [
+                e.path for e in it if e.is_dir() and res_re.match(e.name)
+            ]
+    except OSError:
+        dted_dirs = []
+    for dted_dir in dted_dirs:
+        try:
+            with _os.scandir(dted_dir) as it:
+                res_dirs = [
+                    e.path for e in it
+                    if e.is_dir() and res_sub_re.match(e.name)
+                ]
         except OSError:
             continue
+        for res_dir in res_dirs:
+            if _has_lon_dir_with_tile(res_dir):
+                return True
     return False
 
 
@@ -229,53 +277,65 @@ def _try_dted(
 ) -> Optional[ElevationModel]:
     """Try to open a DTED directory and verify coverage at location.
 
-    Prefers :class:`TiledGeoDTED` (bbox-aware, LRU file handles, no
-    rglob).  Falls back to the legacy :class:`DTEDElevation` when the
-    new backend is unavailable.  Returns ``None`` when no DTED files
-    are present, so callers fall through to the GeoTIFF probe.
+    Prefers :class:`TiledGeoDTED` (bbox-aware, LRU file handles, and a
+    pickle-light path-only index for multi-worker pipelines). Falls back
+    to the bbox-aware :class:`DTEDElevation` if the tiled backend is
+    unavailable. Both probe the standard layout and nested archive
+    layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) via the shared,
+    OS-independent discovery. Returns ``None`` when no DTED files are
+    present (so callers fall through to the GeoTIFF probe), when no tiles
+    index, or when a supplied ``location`` has no coverage.
     """
-    if not _has_dted_tiles(dem_dir, bbox=bbox):
+    if not _has_dted_files(dem_dir, bbox=bbox):
         logger.debug(
             "No DTED tiles under %s — skipping DTED backend",
             dem_dir,
         )
         return None
-    # New bbox-aware backend.
+
+    dted: Optional[ElevationModel] = None
+
+    # Preferred backend: TiledGeoDTED (fast, pickle-light, LRU handles).
     try:
         from grdl.geolocation.elevation.tiled_geotiff_dted import (
             TiledGeoDTED,
         )
-        dted: Optional[ElevationModel] = TiledGeoDTED(
+        candidate = TiledGeoDTED(
             str(dem_dir),
             geoid_path=geoid_path,
             interpolation=interpolation,
             bbox=bbox,
         )
-        if getattr(dted, "tile_count", 0) == 0:
-            dted = None
+        if getattr(candidate, "tile_count", 0) > 0:
+            dted = candidate
     except Exception as exc:
         logger.debug(
             "TiledGeoDTED unavailable for %s (%s); falling back to "
             "DTEDElevation.", dem_dir, exc,
         )
-        dted = None
-    # Legacy fallback (no bbox support).
+
+    # Fallback backend: bbox-aware DTEDElevation.
     if dted is None:
         try:
             from grdl.geolocation.elevation.dted import DTEDElevation
             legacy = DTEDElevation(
-                str(dem_dir), geoid_path=geoid_path,
+                str(dem_dir),
+                geoid_path=geoid_path,
                 interpolation=interpolation,
+                bbox=bbox,
             )
-            if legacy.tile_count == 0:
-                logger.debug(
-                    "DTED files found under %s but none parsed as "
-                    "tiles — layout mismatch, skipping.", dem_dir,
-                )
-                return None
-            dted = legacy
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to construct DTEDElevation for %s: %s", dem_dir, exc,
+            )
             return None
+        if legacy.tile_count == 0:
+            logger.debug(
+                "DTED files found under %s but none indexed as tiles — "
+                "layout mismatch, skipping.", dem_dir,
+            )
+            return None
+        dted = legacy
 
     # Verify coverage if location is given.
     if location is not None:
@@ -287,7 +347,10 @@ def _try_dted(
             )
             return None
 
-    logger.info("Loaded %s: %s", type(dted).__name__, dem_dir)
+    logger.info(
+        "Loaded %s: %d tile(s) from %s",
+        type(dted).__name__, dted.tile_count, dem_dir,
+    )
     return dted
 
 

@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-04-17  Replace FD Jacobian with closed-form analytic Jacobian.
+2026-06-09  Replace FD Jacobian with closed-form analytic Jacobian.
 2026-04-01  Add ICHIPB chip transform integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
 2026-03-17
@@ -517,16 +517,26 @@ class RPCGeolocation(Geolocation):
         return cls(rpc=rpc, shape=shape)
 
     @classmethod
-    def from_reader(cls, reader: object, **kwargs) -> 'RPCGeolocation':
+    def from_reader(
+        cls,
+        reader: object,
+        dem_path: Optional[str] = None,
+        geoid_path: Optional[str] = None,
+        interpolation: int = 3,
+    ) -> 'RPCGeolocation':
         """Create from an EONITFReader.
 
         Parameters
         ----------
         reader : EONITFReader
             An open EO NITF reader with populated metadata.
-        **kwargs
-            Passed to the constructor (e.g., ``dem_path``,
-            ``geoid_path``, ``interpolation``).
+        dem_path : str, Path, or ElevationModel, optional
+            DEM source for terrain-aware transforms.
+        geoid_path : str or Path, optional
+            Path to geoid correction file (EGM96/EGM2008).
+        interpolation : int
+            DEM interpolation spline order (1=bilinear, 3=bicubic,
+            5=quintic). Default is 3.
 
         Returns
         -------
@@ -548,5 +558,7 @@ class RPCGeolocation(Geolocation):
             rpc=meta.rpc,
             ichipb=getattr(meta, 'ichipb', None),
             shape=shape,
-            **kwargs,
+            dem_path=dem_path,
+            geoid_path=geoid_path,
+            interpolation=interpolation,
         )

@@ -47,6 +47,7 @@ Modified
 
 # Standard library
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -69,7 +70,7 @@ from grdl.IO.geotiff import GeoTIFFReader
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_ROOT = Path("/Volumes/PRO-G40/Imagery_data")
+DATA_ROOT = Path(os.environ.get("GRDL_EO_DATA", "data/eo"))
 
 
 # ---------------------------------------------------------------------------

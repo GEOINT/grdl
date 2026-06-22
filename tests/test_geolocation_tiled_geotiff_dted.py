@@ -44,7 +44,6 @@ from rasterio.transform import Affine as RioAffine
 
 from grdl.geolocation.elevation.tiled_geotiff_dted import (
     TiledGeoDTED,
-    _candidate_paths,
     _hemi_lat,
     _hemi_lon,
 )
@@ -276,7 +275,7 @@ class TestPickleSafety:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-class TestCandidatePaths:
+class TestHemiHelpers:
 
     def test_hemi_helpers(self):
         assert _hemi_lon(116) == 'e'
@@ -284,24 +283,49 @@ class TestCandidatePaths:
         assert _hemi_lat(34) == 'n'
         assert _hemi_lat(-12) == 's'
 
-    def test_candidate_paths_cover_case_variants(self, tmp_path):
-        # 12 candidates per cell × 3 extensions, with case variants on
-        # both the directory and filename, in dt2→dt1→dt0 order.
-        cands = list(_candidate_paths(tmp_path, 116, 34))
-        names = [p.name for _ext, p in cands]
-        dirs = [p.parent.name for _ext, p in cands]
-        # dt2 comes first.
-        assert any(n.lower() == "n34.dt2" for n in names[:4])
-        # All ordered before dt0 appears.
-        first_dt0 = next(
-            i for i, n in enumerate(names) if n.lower().endswith(".dt0")
+
+# ── Nested archive + OS-independent discovery ───────────────────────
+
+
+class TestNestedAndCaseInsensitive:
+    """TiledGeoDTED shares DTEDElevation's nested + OS-independent probe."""
+
+    def test_bbox_indexes_nested_archive(self, tmp_path):
+        base = tmp_path / "dted" / "dted2"
+        _make_dted_tile(base / "e116" / "n34.dt2", 116, 34)
+        elev = TiledGeoDTED(
+            str(tmp_path), bbox=(116.2, 34.2, 116.8, 34.8),
         )
-        first_dt1 = next(
-            i for i, n in enumerate(names) if n.lower().endswith(".dt1")
+        assert (116, 34) in elev._tile_index
+        assert np.isfinite(elev.get_elevation(34.5, 116.5))
+
+    def test_no_bbox_scan_indexes_nested_archive(self, tmp_path):
+        base = tmp_path / "dted" / "dted1"
+        _make_dted_tile(base / "e116" / "n34.dt1", 116, 34)
+        elev = TiledGeoDTED(str(tmp_path))
+        assert (116, 34) in elev._tile_index
+
+    def test_bbox_indexes_uppercase_nested(self, tmp_path):
+        base = tmp_path / "DTED" / "DTED2" / "E116"
+        _make_dted_tile(base / "N34.DT2", 116, 34)
+        elev = TiledGeoDTED(
+            str(tmp_path), bbox=(116.2, 34.2, 116.8, 34.8),
         )
-        first_dt2 = next(
-            i for i, n in enumerate(names) if n.lower().endswith(".dt2")
-        )
-        assert first_dt2 < first_dt1 < first_dt0
-        assert "e116" in dirs
-        assert "E116" in dirs
+        assert (116, 34) in elev._tile_index
+        assert np.isfinite(elev.get_elevation(34.5, 116.5))
+
+    def test_no_rglob_with_bbox_on_nested(self, tmp_path, monkeypatch):
+        base = tmp_path / "dted" / "dted2"
+        _make_dted_tile(base / "e116" / "n34.dt2", 116, 34)
+        from pathlib import Path as _Path
+        called = {"n": 0}
+        original = _Path.rglob
+
+        def trap(self, pattern):
+            called["n"] += 1
+            return iter([])
+
+        monkeypatch.setattr(_Path, "rglob", trap)
+        TiledGeoDTED(str(tmp_path), bbox=(116.0, 34.0, 116.5, 34.5))
+        monkeypatch.setattr(_Path, "rglob", original)
+        assert called["n"] == 0
