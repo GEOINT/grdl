@@ -224,6 +224,47 @@ class TestNormalizerUnitNorm:
         np.testing.assert_array_equal(result, np.zeros(20))
 
 
+class TestNormalizerMAD:
+    """Test mad normalization: robust (median, scaled MAD) standardization."""
+
+    def test_matches_manual_formula(self):
+        from grdl.data_prep import MAD_TO_STD
+        norm = Normalizer(method='mad')
+        rng = np.random.RandomState(0)
+        data = rng.standard_normal(5000)
+        med = np.median(data)
+        mad = np.median(np.abs(data - med))
+        expected = (data - med) / (MAD_TO_STD * mad)
+        np.testing.assert_allclose(norm.normalize(data), expected)
+
+    def test_robust_to_outliers(self):
+        """MAD scale is unaffected by a few extreme outliers (unlike std)."""
+        clean = np.arange(1001, dtype=np.float64)
+        contaminated = clean.copy()
+        contaminated[:5] = 1e9
+        mad_clean = Normalizer(method='mad').fit(clean)._mad
+        mad_dirty = Normalizer(method='mad').fit(contaminated)._mad
+        # Median and MAD barely move; std would explode.
+        assert mad_dirty == pytest.approx(mad_clean, rel=0.02)
+
+    def test_constant_array_returns_zeros(self):
+        """Zero MAD (constant data) must return zeros, not divide by zero."""
+        norm = Normalizer(method='mad')
+        result = norm.normalize(np.full(50, 7.0))
+        np.testing.assert_array_equal(result, np.zeros(50))
+
+    def test_fit_transform_uses_fitted_median_mad(self):
+        from grdl.data_prep import MAD_TO_STD
+        norm = Normalizer(method='mad')
+        train = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+        norm.fit(train)
+        med = np.median(train)
+        mad = np.median(np.abs(train - med))
+        test = np.array([0.0, 5.0, 10.0])
+        expected = (test - med) / (MAD_TO_STD * mad)
+        np.testing.assert_allclose(norm.transform(test), expected)
+
+
 # ---------------------------------------------------------------------------
 # Fit / Transform semantics
 # ---------------------------------------------------------------------------

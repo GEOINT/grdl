@@ -49,7 +49,7 @@ Created
 
 Modified
 --------
-2026-06-09
+2026-06-21
 """
 
 # Standard library
@@ -74,7 +74,12 @@ __all__ = [
     'VALUE_TRANSFORMS',
     'MASK_STRATEGIES',
     'PARALLEL_MIN_PIXELS',
+    'MAD_TO_STD',
 ]
+
+# Consistency constant 1 / Phi^-1(0.75): scales the Median Absolute Deviation
+# to a standard-deviation-consistent estimate for normally distributed data.
+MAD_TO_STD = 1.4826
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +152,13 @@ class StatsResult:
     percentiles : dict of float -> float
         Requested quantiles (key in [0, 100]) to estimated value. Empty when
         no histogram was configured.
+    median : float
+        Median (50th percentile). ``nan`` unless MAD was requested (it is the
+        center the MAD is taken about).
+    mad : float
+        Median Absolute Deviation ``median(|x - median(x)|)`` -- the raw,
+        *unscaled* robust spread. ``nan`` unless MAD was requested. Use
+        :attr:`mad_std` for the standard-deviation-consistent estimate.
     """
 
     count: int
@@ -156,6 +168,8 @@ class StatsResult:
     minimum: float
     maximum: float
     percentiles: Dict[float, float] = field(default_factory=dict)
+    median: float = float('nan')
+    mad: float = float('nan')
 
     @property
     def l2_norm(self) -> float:
@@ -163,6 +177,16 @@ class StatsResult:
         if self.count <= 0:
             return float('nan')
         return float(np.sqrt(self.count * (self.var + self.mean * self.mean)))
+
+    @property
+    def mad_std(self) -> float:
+        """Robust std estimate ``1.4826 * MAD``.
+
+        The constant ``1.4826`` (``1 / Phi^-1(0.75)``) makes this converge to
+        the population standard deviation for normally distributed data, so
+        ``mad_std`` is a drop-in, outlier-resistant replacement for ``std``.
+        """
+        return float(MAD_TO_STD * self.mad)
 
     def summary(self) -> str:
         """One-line human-readable summary."""
@@ -173,6 +197,8 @@ class StatsResult:
             f'n={self.count:,}  mean={self.mean:.6g}  std={self.std:.6g}  '
             f'min={self.minimum:.6g}  max={self.maximum:.6g}'
         )
+        if np.isfinite(self.mad):
+            base += f'  median={self.median:.6g}  mad={self.mad:.6g}'
         return base + (f'\n        {pct}' if pct else '')
 
 
@@ -563,8 +589,14 @@ def _accumulate_reader(
     band: int,
     poly: Optional[np.ndarray],
     acc: StreamingStats,
+    deviation_center: Optional[float] = None,
 ) -> None:
-    """Fold an open reader's tile block into ``acc`` (in place)."""
+    """Fold an open reader's tile block into ``acc`` (in place).
+
+    When ``deviation_center`` is given, the absolute deviation
+    ``|value - deviation_center|`` is accumulated instead of the value itself
+    -- the second MAD pass folds the deviation distribution about the median.
+    """
     for reg in regions:
         mtile = None
         if poly is not None:
@@ -576,7 +608,10 @@ def _accumulate_reader(
         if chip.ndim == 3:
             chip = chip[..., band]
         vals = transform(chip)
-        acc.update(_select(vals, strategy, mtile, raw=chip))
+        sel = _select(vals, strategy, mtile, raw=chip)
+        if deviation_center is not None:
+            sel = np.abs(sel - deviation_center)
+        acc.update(sel)
 
 
 def _new_acc(
@@ -596,7 +631,7 @@ def _new_acc(
 def _worker(task: tuple) -> StreamingStats:
     """Process-pool worker: open reader, accumulate an assigned tile block."""
     (path, regions, transform_name, strategy, band,
-     percentiles, hist_spec) = task
+     percentiles, hist_spec, deviation_center) = task
 
     from grdl.IO.generic import open_any
 
@@ -606,7 +641,8 @@ def _worker(task: tuple) -> StreamingStats:
     if strategy in ('metadata', 'both'):
         poly = _valid_polygon(reader)
     acc = _new_acc(percentiles, hist_spec)
-    _accumulate_reader(reader, regions, transform, strategy, band, poly, acc)
+    _accumulate_reader(reader, regions, transform, strategy, band, poly, acc,
+                       deviation_center)
     if hasattr(reader, 'close'):
         reader.close()
     return acc
@@ -629,6 +665,7 @@ def _accumulate(
     hist_spec: Optional[Tuple[Optional[float], Optional[float], int, str]],
     use_parallel: bool,
     n_workers: int,
+    deviation_center: Optional[float] = None,
 ) -> StreamingStats:
     """One accumulation pass, serial or process-parallel, over ``path``."""
     if not use_parallel:
@@ -641,7 +678,7 @@ def _accumulate(
             poly = _valid_polygon(reader)
         acc = _new_acc(percentiles, hist_spec)
         _accumulate_reader(reader, regions, transform, strategy, band,
-                           poly, acc)
+                           poly, acc, deviation_center)
         if hasattr(reader, 'close'):
             reader.close()
         return acc
@@ -655,7 +692,7 @@ def _accumulate(
 
     tasks = [
         (path, chunk, transform_name, strategy, band,
-         list(percentiles or []), hist_spec)
+         list(percentiles or []), hist_spec, deviation_center)
         for chunk in _chunk(regions, n_workers)
     ]
     merged = _new_acc(percentiles, hist_spec)
@@ -686,6 +723,7 @@ def compute_image_statistics(
     n_workers: Optional[int] = None,
     band: int = 0,
     min_pixels: int = PARALLEL_MIN_PIXELS,
+    mad: bool = False,
 ) -> StatsResult:
     """Compute exact full-image statistics over valid pixels, tile by tile.
 
@@ -729,6 +767,15 @@ def compute_image_statistics(
         Band index for multi-band imagery.
     min_pixels : int
         Pixel-count threshold for the ``'auto'`` parallel decision.
+    mad : bool
+        Also compute the median and the Median Absolute Deviation
+        ``median(|x - median(x)|)``, populating :attr:`StatsResult.median` and
+        :attr:`StatsResult.mad` (and the derived :attr:`StatsResult.mad_std`).
+        The MAD is taken about the median, so it requires the median first --
+        this adds one extra read of the image (a deviation pass over a
+        non-negative float32 histogram). The median is computed even if no
+        value percentiles were requested, but it is not added to
+        ``percentiles`` unless the caller asked for ``50.0``.
 
     Returns
     -------
@@ -788,32 +835,51 @@ def compute_image_statistics(
     if not use_parallel and mask in ('metadata', 'both'):
         poly = _valid_polygon(reader)
 
-    def _run(hist_spec, pcts):
+    def _run(hist_spec, pcts, deviation_center=None):
         if use_parallel:
             return _accumulate(path, regions, transform, mask, band,
-                               pcts, hist_spec, True, workers)
+                               pcts, hist_spec, True, workers, deviation_center)
         acc = _new_acc(pcts, hist_spec)
         _accumulate_reader(reader, regions, VALUE_TRANSFORMS[transform],
-                           mask, band, poly, acc)
+                           mask, band, poly, acc, deviation_center)
         return acc
 
+    # MAD is taken about the median, so it needs the median histogram. Add an
+    # internal request for the 50th percentile when the caller didn't ask, and
+    # strip it from the returned percentiles afterward.
+    user_pcts = list(percentiles) if percentiles else []
+    need_internal_median = mad and 50.0 not in user_pcts
+    value_pcts = user_pcts + ([50.0] if need_internal_median else [])
+
     try:
-        if percentiles and spacing == 'float32':
+        if value_pcts and spacing == 'float32':
             # Single pass: the float32 histogram needs no data range, so the
             # exact moments and the percentile histogram share one read.
-            acc = _run((None, None, n_bins, 'float32'), list(percentiles))
-            return acc.result()
+            res = _run((None, None, n_bins, 'float32'), value_pcts).result()
+        else:
+            # Pass 1: exact mean/std/min/max (no histogram).
+            res = _run(None, None).result()
 
-        # Pass 1: exact mean/std/min/max (no histogram).
-        acc1 = _run(None, None)
-        res = acc1.result()
+            # Pass 2: percentiles, with a histogram sized from pass-1 range.
+            if value_pcts:
+                lo, hi = res.minimum, res.maximum
+                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                    acc2 = _run((lo, hi, n_bins, spacing), value_pcts)
+                    res.percentiles = acc2.result().percentiles
 
-        # Pass 2: percentiles, with a histogram sized from pass-1 range.
-        if percentiles:
-            lo, hi = res.minimum, res.maximum
-            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                acc2 = _run((lo, hi, n_bins, spacing), list(percentiles))
-                res.percentiles = acc2.result().percentiles
+        if mad:
+            # Deviation pass: median(|x - median|). Deviations are
+            # non-negative, so the single-pass float32 histogram is exact in
+            # ordering and needs no range -- one extra read of the image.
+            median = res.percentiles.get(50.0, float('nan'))
+            res.median = float(median)
+            if np.isfinite(median):
+                dev = _run((None, None, n_bins, 'float32'), [50.0],
+                           deviation_center=median).result()
+                res.mad = float(dev.percentiles.get(50.0, float('nan')))
+            if need_internal_median:
+                res.percentiles.pop(50.0, None)
+
         return res
     finally:
         if own_reader is not None and hasattr(own_reader, 'close'):

@@ -306,6 +306,44 @@ class TestComputeImageStatistics:
             compute_image_statistics(_ArrayReader(np.ones((8, 8))),
                                      mask='nope')
 
+    def test_mad_matches_numpy(self):
+        rng = np.random.default_rng(21)
+        data = (rng.standard_normal((600, 700)).astype(np.float32) * 5.0 + 20.0)
+        data.ravel()[:200] = 5000.0  # outliers
+        flat = data.ravel().astype(np.float64)
+        med = np.median(flat)
+        mad = np.median(np.abs(flat - med))
+        res = compute_image_statistics(
+            _ArrayReader(data), tile=128, transform='identity', mad=True,
+        )
+        assert res.median == pytest.approx(med, abs=0.05)
+        # float32 histogram: ~0.55% relative bin width at 65536 bins
+        assert res.mad == pytest.approx(mad, rel=0.01)
+        assert res.mad_std == pytest.approx(1.4826 * mad, rel=0.01)
+
+    def test_mad_does_not_leak_internal_median_percentile(self):
+        data = np.arange(64 * 64, dtype=np.float64).reshape(64, 64)
+        res = compute_image_statistics(
+            _ArrayReader(data), tile=32, transform='identity', mad=True,
+        )
+        assert 50.0 not in res.percentiles  # internal p50 stripped
+
+    def test_mad_preserves_requested_percentiles(self):
+        data = np.arange(64 * 64, dtype=np.float64).reshape(64, 64)
+        res = compute_image_statistics(
+            _ArrayReader(data), tile=32, transform='identity', mad=True,
+            percentiles=[50.0, 90.0],
+        )
+        assert 50.0 in res.percentiles and 90.0 in res.percentiles
+        assert np.isfinite(res.mad)
+
+    def test_no_mad_leaves_median_and_mad_nan(self):
+        res = compute_image_statistics(
+            _ArrayReader(np.ones((32, 32))), tile=16, transform='identity',
+        )
+        assert not np.isfinite(res.median)
+        assert not np.isfinite(res.mad)
+
 
 # ---------------------------------------------------------------------------
 # build_valid_mask
@@ -388,6 +426,21 @@ class TestNormalizerFitStreaming:
         assert norm._pct_high_val == pytest.approx(
             np.percentile(data, 95.0), rel=1e-2
         )
+
+    def test_mad_matches_fit(self):
+        rng = np.random.default_rng(9)
+        data = (rng.standard_normal((256, 256)) * 4.0 + 10.0)
+        data.ravel()[:50] = 1e6  # outliers
+        ref = Normalizer(method='mad').fit(data)
+        stream = Normalizer(method='mad').fit_streaming(
+            _ArrayReader(data), tile=64, transform='identity', mask='none',
+        )
+        assert stream.is_fitted
+        assert stream._median == pytest.approx(ref._median, abs=0.05)
+        assert stream._mad == pytest.approx(ref._mad, rel=0.01)
+        chip = data[:32, :32]
+        assert np.allclose(stream.transform(chip), ref.transform(chip),
+                           rtol=0.01)
 
     def test_no_valid_pixels_raises(self):
         data = np.zeros((32, 32))

@@ -85,6 +85,7 @@ from grdl.data_prep.streaming_stats import (
     StreamingStats,
     compute_image_statistics,
     build_valid_mask,
+    MAD_TO_STD,
 )
 
 __all__ = [
@@ -97,4 +98,5 @@ __all__ = [
     'StreamingStats',
     'compute_image_statistics',
     'build_valid_mask',
+    'MAD_TO_STD',
 ]
