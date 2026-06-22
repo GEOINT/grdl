@@ -48,6 +48,7 @@ Created
 
 Modified
 --------
+2026-06-09  Forward DEM interpolation order through from_reader.
 2026-04-18  Document RSLC grid-vs-native accuracy limitation.
 2026-03-10
 """
@@ -254,6 +255,7 @@ class NISARGeolocation(Geolocation):
         reader: 'NISARReader',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> 'Geolocation':
         """Create geolocation from a NISAR reader.
 
@@ -269,6 +271,9 @@ class NISARGeolocation(Geolocation):
             Path to DEM data.
         geoid_path : str or Path, optional
             Path to geoid correction file.
+        interpolation : int
+            DEM interpolation spline order (1=bilinear, 3=bicubic,
+            5=quintic). Default is 3.
 
         Returns
         -------
@@ -277,14 +282,18 @@ class NISARGeolocation(Geolocation):
         """
         meta = reader.metadata
         if meta.product_type == 'GSLC':
-            return cls._build_gslc_geolocation(meta, dem_path, geoid_path)
-        return cls(meta, dem_path=dem_path, geoid_path=geoid_path)
+            return cls._build_gslc_geolocation(
+                meta, dem_path, geoid_path, interpolation,
+            )
+        return cls(meta, dem_path=dem_path, geoid_path=geoid_path,
+                   interpolation=interpolation)
 
     @staticmethod
     def _build_gslc_geolocation(
         metadata: 'NISARMetadata',
         dem_path: Optional[Union[str, Any]],
         geoid_path: Optional[Union[str, Any]],
+        interpolation: int = 3,
     ) -> 'Geolocation':
         """Build an AffineGeolocation for a GSLC product."""
         from rasterio.transform import Affine
@@ -320,4 +329,5 @@ class NISARGeolocation(Geolocation):
         return AffineGeolocation(
             transform, shape, crs,
             dem_path=dem_path, geoid_path=geoid_path,
+            interpolation=interpolation,
         )

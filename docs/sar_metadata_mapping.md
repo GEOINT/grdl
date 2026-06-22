@@ -130,6 +130,24 @@ These semantic concepts exist in multiple SAR formats with different access path
 | BIOMASS | `corner_coords` + `gcps` |
 | NISAR | `geolocation_grid.coordinate_x / coordinate_y` (3D grid with height planes) |
 
+Image corners are returned as a list ordered FRFC, FRLC, LRLC, LRFC (by the
+SICD/SIDD `ICP` index).
+
+### 3.9 Valid Data Polygon
+
+The valid-data polygon delimits real image content (vs zero-fill / padding).
+`grdl.data_prep.build_valid_mask(reader)` rasterizes it to a boolean mask,
+preferring the pixel-space polygon (no geolocation needed) and falling back to
+the geographic polygon via `create_geolocation`.
+
+| Format | Access Path |
+|---|---|
+| SICD | `image_data.valid_data` (pixel `RowCol` vertices) and `geo_data.valid_data` (lat/lon vertices) |
+| SIDD | `geo_data.valid_data` (lat/lon vertices) |
+
+Vertices are returned in `ValidData` `Vertex` index order. Both fields are
+`None` when the product omits the polygon.
+
 ### 3.9 Pixel / Sample Spacing
 
 | Format | Access Path |

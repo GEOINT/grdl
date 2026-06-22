@@ -44,6 +44,7 @@ Created
 
 Modified
 --------
+2026-06-09  Forward DEM interpolation order through from_reader.
 2026-04-18  Document grid-vs-native accuracy limitation.
 2026-03-10
 """
@@ -265,6 +266,7 @@ class Sentinel1SLCGeolocation(Geolocation):
         reader: 'Sentinel1SLCReader',
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
+        interpolation: int = 3,
     ) -> 'Sentinel1SLCGeolocation':
         """Create geolocation from a Sentinel-1 SLC reader.
 
@@ -276,6 +278,9 @@ class Sentinel1SLCGeolocation(Geolocation):
             Path to DEM data.
         geoid_path : str or Path, optional
             Path to geoid correction file.
+        interpolation : int
+            DEM interpolation spline order (1=bilinear, 3=bicubic,
+            5=quintic). Default is 3.
 
         Returns
         -------
@@ -283,4 +288,4 @@ class Sentinel1SLCGeolocation(Geolocation):
             Configured geolocation instance.
         """
         return cls(reader.metadata, dem_path=dem_path,
-                   geoid_path=geoid_path)
+                   geoid_path=geoid_path, interpolation=interpolation)

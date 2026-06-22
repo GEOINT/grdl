@@ -36,7 +36,7 @@ Created
 
 Modified
 --------
-2026-03-29
+2026-06-07
 """
 
 # Standard library
@@ -198,6 +198,55 @@ def _xml_latlon(elem: Optional[ET.Element], path: str) -> Optional[LatLon]:
     if lat is None:
         return None
     return LatLon(lat=lat, lon=lon or 0.0)
+
+
+def _xml_image_corners(geo: Optional[ET.Element]) -> Optional[List[LatLon]]:
+    """Extract GeoData/ImageCorners ICP vertices, ordered by index.
+
+    Corners are ``<ICP index="1:FRFC"><Lat/><Lon/></ICP>`` and are returned
+    sorted by the numeric index prefix (FRFC, FRLC, LRLC, LRFC).
+    """
+    if geo is None:
+        return None
+    ic = geo.find('{*}ImageCorners')
+    if ic is None:
+        return None
+    icps = ic.findall('{*}ICP')
+    if not icps:
+        return None
+
+    def _order(el: ET.Element) -> int:
+        idx = el.get('index', '0')
+        return int(idx.split(':', 1)[0]) if idx else 0
+
+    corners: List[LatLon] = []
+    for icp in sorted(icps, key=_order):
+        lat = _xml_float(icp, '{*}Lat')
+        lon = _xml_float(icp, '{*}Lon')
+        if lat is not None:
+            corners.append(LatLon(lat=lat, lon=lon or 0.0))
+    return corners or None
+
+
+def _xml_valid_vertices_latlon(
+    parent: Optional[ET.Element],
+) -> Optional[List[LatLon]]:
+    """Extract a ValidData lat/lon polygon, ordered by Vertex index."""
+    if parent is None:
+        return None
+    vd = parent.find('{*}ValidData')
+    if vd is None:
+        return None
+    verts = vd.findall('{*}Vertex')
+    if not verts:
+        return None
+    out: List[LatLon] = []
+    for v in sorted(verts, key=lambda e: int(e.get('index', '0'))):
+        lat = _xml_float(v, '{*}Lat')
+        lon = _xml_float(v, '{*}Lon')
+        if lat is not None:
+            out.append(LatLon(lat=lat, lon=lon or 0.0))
+    return out or None
 
 
 def _xml_poly1d(elem: Optional[ET.Element]) -> Optional[Poly1D]:
@@ -368,20 +417,10 @@ def _extract_geo_data(xml: ET.Element) -> Optional[SIDDGeoData]:
     if geo is None:
         return None
 
-    corners = None
-    ic = geo.find('{*}ImageCorners')
-    if ic is not None:
-        corners = []
-        for label in ('ICP', 'FRFC', 'FRLC', 'LRLC', 'LRFC'):
-            for c in ic.findall('{*}' + label):
-                lat = _xml_float(c, '{*}Lat')
-                lon = _xml_float(c, '{*}Lon')
-                if lat is not None:
-                    corners.append(LatLon(lat=lat, lon=lon or 0.0))
-
     return SIDDGeoData(
         earth_model=_xml_str(geo, '{*}EarthModel') or 'WGS_84',
-        image_corners=corners if corners else None,
+        image_corners=_xml_image_corners(geo),
+        valid_data=_xml_valid_vertices_latlon(geo),
     )
 
 
@@ -939,6 +978,25 @@ def _extract_display_sarpy(sm: Any) -> Optional[SIDDDisplay]:
     )
 
 
+def _sarpy_valid_latlon(vd: Any) -> Optional[List[LatLon]]:
+    """Convert a sarpy ValidDataType (lat/lon vertices) to List[LatLon]."""
+    if vd is None:
+        return None
+    verts = getattr(vd, 'Vertices', None)
+    if verts is None:
+        verts = vd
+    out: List[LatLon] = []
+    try:
+        for v in verts:
+            lat = getattr(v, 'Lat', None)
+            lon = getattr(v, 'Lon', None)
+            if lat is not None:
+                out.append(LatLon(lat=float(lat), lon=float(lon or 0.0)))
+    except (TypeError, AttributeError):
+        return None
+    return out or None
+
+
 def _extract_geo_data_sarpy(sm: Any) -> Optional[SIDDGeoData]:
     """Extract GeoData from sarpy SIDDType."""
     geo = _safe_get(sm, 'GeoData')
@@ -961,6 +1019,7 @@ def _extract_geo_data_sarpy(sm: Any) -> Optional[SIDDGeoData]:
     return SIDDGeoData(
         earth_model=_safe_get(geo, 'EarthModel') or 'WGS_84',
         image_corners=corners if corners else None,
+        valid_data=_sarpy_valid_latlon(_safe_get(geo, 'ValidData')),
     )
 
 

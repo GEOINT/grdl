@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-03-10
+2026-06-21
 """
 
 # Standard library
@@ -36,18 +36,28 @@ import numpy as np
 from grdl.exceptions import ProcessorError
 
 
-_VALID_METHODS = ('minmax', 'zscore', 'percentile', 'unit_norm')
+_VALID_METHODS = ('minmax', 'zscore', 'percentile', 'unit_norm', 'mad')
+
+# Consistency constant 1 / Phi^-1(0.75): scales the Median Absolute Deviation
+# to a standard-deviation-consistent estimate for normally distributed data.
+# (Mirrors grdl.data_prep.streaming_stats.MAD_TO_STD; defined locally so the
+# Normalizer stays importable without pulling in the streaming-stats stack.)
+_MAD_SCALE = 1.4826
 
 
 class Normalizer:
     """Per-chip or per-image intensity normalization.
 
-    Supports four normalization methods:
+    Supports five normalization methods:
 
     - ``'minmax'``: Scale values to [0, 1] based on min/max.
     - ``'zscore'``: Subtract mean and divide by standard deviation.
     - ``'percentile'``: Clip to percentile range, then scale to [0, 1].
     - ``'unit_norm'``: Divide by the L2 norm of the array.
+    - ``'mad'``: Robust z-score -- subtract the median and divide by the
+      scaled Median Absolute Deviation (``1.4826 * median(|x - median(x)|)``).
+      Outlier-resistant (50%% breakdown point); preferred over ``'zscore'``
+      for heavy-tailed or contaminated data (speckle spikes, hot pixels).
 
     Use ``normalize()`` for stateless one-shot normalization, or
     ``fit()`` / ``transform()`` for reusable normalization parameters
@@ -57,7 +67,7 @@ class Normalizer:
     ----------
     method : str
         One of ``'minmax'``, ``'zscore'``, ``'percentile'``,
-        ``'unit_norm'``.
+        ``'unit_norm'``, ``'mad'``.
     percentile_low : float
         Lower percentile for ``'percentile'`` method. Default ``2.0``.
     percentile_high : float
@@ -129,6 +139,8 @@ class Normalizer:
         self._pct_low_val: Optional[float] = None
         self._pct_high_val: Optional[float] = None
         self._l2_norm: Optional[float] = None
+        self._median: Optional[float] = None
+        self._mad: Optional[float] = None
         self._is_fitted: bool = False
 
     @property
@@ -139,7 +151,7 @@ class Normalizer:
         -------
         str
             One of ``'minmax'``, ``'zscore'``, ``'percentile'``,
-            ``'unit_norm'``.
+            ``'unit_norm'``, ``'mad'``.
         """
         return self._method
 
@@ -203,6 +215,14 @@ class Normalizer:
             result = np.clip(result, plow, phigh)
             return (result - plow) / prange
 
+        if self._method == 'mad':
+            median = np.median(result)
+            mad = np.median(np.abs(result - median))
+            scale = _MAD_SCALE * mad
+            if scale < self._epsilon:
+                return np.zeros_like(result)
+            return (result - median) / scale
+
         # unit_norm
         l2 = np.linalg.norm(result)
         if l2 < self._epsilon:
@@ -246,6 +266,104 @@ class Normalizer:
             np.percentile(arr, self._percentile_high)
         )
         self._l2_norm = float(np.linalg.norm(arr))
+        self._median = float(np.median(arr))
+        self._mad = float(np.median(np.abs(arr - self._median)))
+        self._is_fitted = True
+
+        return self
+
+    def fit_streaming(
+        self,
+        source: object,
+        *,
+        tile: int = 2048,
+        transform: str = 'auto',
+        mask: str = 'none',
+        n_bins: int = 65536,
+        hist_spacing: str = 'auto',
+        parallel: object = 'auto',
+        n_workers: Optional[int] = None,
+        band: int = 0,
+    ) -> 'Normalizer':
+        """Fit parameters from a full image without loading it into memory.
+
+        Streams the image tile-by-tile through
+        :func:`grdl.data_prep.compute_image_statistics`, accumulating exact
+        mean/std/min/max (plus percentiles for the ``'percentile'`` method, or
+        the median and Median Absolute Deviation for the ``'mad'`` method)
+        over the selected valid pixels. Scales across CPU cores for large
+        imagery. Equivalent to :meth:`fit` on the full image but bounded in
+        memory and parallelizable -- use it to build a normalization baseline
+        from imagery too large (or too slow) to load whole.
+
+        Note: the ``'mad'`` method reads the image one extra time -- the MAD is
+        taken about the median, so the median must be computed first.
+
+        Parameters
+        ----------
+        source : str or ImageReader
+            Image path, or an open GRDL reader. A path enables parallel
+            execution (readers are not picklable).
+        tile : int
+            Tile size for the non-overlapping partition.
+        transform : str
+            Value transform applied to each tile (``'auto'``, ``'magnitude'``,
+            ``'power'``, ``'decibel'``, ``'identity'``). ``'auto'`` takes the
+            magnitude of complex imagery and passes real imagery through.
+        mask : {'none', 'nonzero_finite', 'metadata', 'both'}
+            Valid-pixel selection. NaN/inf are always excluded; for SAR
+            imagery with zero-fill prefer ``'nonzero_finite'`` or
+            ``'metadata'`` (the sensor valid-data polygon).
+        n_bins : int
+            Histogram bins for percentile estimation (``'percentile'`` method).
+        hist_spacing : {'auto', 'float32', 'log', 'linear'}
+            Histogram bin geometry for percentile estimation. ``'auto'``
+            (single-pass float32 bins) reads the image exactly once;
+            ``'log'``/``'linear'`` add a second pass over the image.
+        parallel : {'auto', True, False}
+            Parallel execution policy (see
+            :func:`grdl.data_prep.compute_image_statistics`).
+        n_workers : int, optional
+            Process count for parallel execution.
+        band : int
+            Band index for multi-band imagery.
+
+        Returns
+        -------
+        Normalizer
+            Self, for method chaining.
+
+        Raises
+        ------
+        ProcessorError
+            If no valid pixels are found in the image.
+        """
+        from grdl.data_prep.streaming_stats import compute_image_statistics
+
+        pcts = ([self._percentile_low, self._percentile_high]
+                if self._method == 'percentile' else None)
+        want_mad = self._method == 'mad'
+        res = compute_image_statistics(
+            source, tile=tile, transform=transform, mask=mask,
+            percentiles=pcts, n_bins=n_bins, hist_spacing=hist_spacing,
+            parallel=parallel, n_workers=n_workers, band=band, mad=want_mad,
+        )
+        if res.count == 0:
+            raise ProcessorError(
+                "No valid pixels found; cannot fit. Check the mask strategy."
+            )
+
+        self._min = res.minimum
+        self._max = res.maximum
+        self._mean = res.mean
+        self._std = res.std
+        self._l2_norm = res.l2_norm
+        if pcts is not None:
+            self._pct_low_val = res.percentiles[self._percentile_low]
+            self._pct_high_val = res.percentiles[self._percentile_high]
+        if want_mad:
+            self._median = res.median
+            self._mad = res.mad
         self._is_fitted = True
 
         return self
@@ -298,6 +416,12 @@ class Normalizer:
                 return np.zeros_like(result)
             result = np.clip(result, self._pct_low_val, self._pct_high_val)
             return (result - self._pct_low_val) / prange
+
+        if self._method == 'mad':
+            scale = _MAD_SCALE * self._mad
+            if scale < self._epsilon:
+                return np.zeros_like(result)
+            return (result - self._median) / scale
 
         # unit_norm
         if self._l2_norm < self._epsilon:

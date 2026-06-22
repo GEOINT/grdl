@@ -42,6 +42,7 @@ Modified
 
 # Standard library
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -65,7 +66,7 @@ from grdl.image_processing import PauliDecomposition
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_DIR = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS")
+DATA_DIR = Path(os.environ.get("GRDL_BIOMASS_DATA", "data/sar/biomass"))
 CALVAL_GEOJSON = Path(__file__).parent.parent.parent / "ground_truth" / "biomass_calibration_targets.geojson"
 
 

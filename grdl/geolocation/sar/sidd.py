@@ -48,7 +48,7 @@ Created
 
 Modified
 --------
-2026-03-31  Use base class _resolve_height and _fill_nan_heights for
+2026-06-09  Use base class _resolve_height and _fill_nan_heights for
             consistent height/NaN handling.  Add interpolation parameter.
 2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_rdot_ppn)
             and per_point_normal constructor parameter.
@@ -947,6 +947,8 @@ class SIDDGeolocation(Geolocation):
         refine: bool = True,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
+        per_point_normal: bool = True,
+        interpolation: int = 3,
     ) -> 'SIDDGeolocation':
         """Create SIDDGeolocation from a SIDDReader.
 
@@ -961,6 +963,12 @@ class SIDDGeolocation(Geolocation):
             Path to DEM/DTED data folder.
         geoid_path : str or Path, optional
             Path to geoid correction file (EGM96/EGM2008).
+        per_point_normal : bool
+            Use per-point surface normals in the R/Rdot iteration.
+            Default is True.
+        interpolation : int
+            DEM interpolation spline order (1=bilinear, 3=bicubic,
+            5=quintic). Default is 3.
 
         Returns
         -------
@@ -992,4 +1000,6 @@ class SIDDGeolocation(Geolocation):
             refine=refine,
             dem_path=dem_path,
             geoid_path=geoid_path,
+            per_point_normal=per_point_normal,
+            interpolation=interpolation,
         )

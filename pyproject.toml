@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.5.3"
+version = "0.6.1"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -123,6 +123,7 @@ grdl = ["**/*.md", "py.typed"]
 [tool.setuptools.data-files]
 "share/grdl" = ["README.md", "ARCHITECTURE.md", "LICENSE"]
 "share/grdl/docs" = ["docs/logging_tutorial.md"]
+"share/grdl/.github/workflows" = [".github/workflows/publish.yml"]
 
 [tool.black]
 line-length = 100

@@ -166,10 +166,10 @@ Reference of open and commercially accessible remote sensing platforms, organize
 | GeoTIFF / COG | `.tif`, `.tiff` | Landsat, Planet, Maxar, HLS, NAIP, EnMAP | `rasterio` | **Implemented** |
 | NITF | `.nitf`, `.ntf` | WorldView, SkySat, NGA products | `rasterio`/GDAL | **Implemented** |
 | HDF5 / HDF-EOS5 | `.h5`, `.he5`, `.hdf5` | NASA (MODIS, VIIRS, ICESat-2, GEDI, EMIT), PRISMA, JAXA | `h5py`, `xarray` | **Implemented** |
-| JPEG2000 | `.jp2`, `.j2k` | Sentinel-2, EnMAP, Pleiades | `rasterio`/GDAL, `glymur` | Not implemented |
+| JPEG2000 | `.jp2`, `.j2k` | Sentinel-2, EnMAP, Pleiades | `rasterio`/GDAL, `glymur` | **Implemented** (`JP2Reader`, `Sentinel2Reader`) |
 | HDF4 / HDF-EOS | `.hdf`, `.he4` | MODIS (legacy), ASTER, CALIPSO | `pyhdf`, GDAL | Not implemented |
 | NetCDF-4 | `.nc`, `.nc4` | NOAA (GOES, JPSS), Sentinel-3/5P, PACE, ocean color | `xarray`, `netCDF4` | Not implemented |
-| SAFE | `.SAFE` (dir) | All Sentinel missions | XML + format readers | Not implemented |
+| SAFE | `.SAFE` (dir) | All Sentinel missions | XML + format readers | **Implemented** (Sentinel-1 SLC/L0, Sentinel-2) |
 | ENVI | `.hdr` + `.bil`/`.bip`/`.bsq` | EnMAP, AVIRIS, airborne hyperspectral | `spectral`, numpy mmap | Not implemented |
 | LAS/LAZ | `.las`, `.laz` | USGS 3DEP, LiDAR datasets | `laspy`, PDAL | Not implemented (point cloud) |
 | Zarr | `.zarr` (dir) | Planetary Computer, ERA5, cloud-native | `zarr`, `xarray` | Not implemented |

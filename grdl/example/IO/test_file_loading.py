@@ -40,11 +40,12 @@ Created
 
 Modified
 --------
-2026-03-07
+2026-06-20
 """
 
 # Standard library
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -64,8 +65,11 @@ from grdl.IO.base import ImageReader
 # Configuration
 # ===================================================================
 
-SAR_ROOT = Path("/Users/duanesmalley/SAR_DATA")
-EO_ROOT = Path("/Volumes/PRO-G40/Imagery_data")
+# Data roots default to local ./data subdirectories; override via the
+# GRDL_SAR_DATA / GRDL_EO_DATA environment variables or the --sar-root /
+# --eo-root command-line options.
+SAR_ROOT = Path(os.environ.get("GRDL_SAR_DATA", "data/sar"))
+EO_ROOT = Path(os.environ.get("GRDL_EO_DATA", "data/eo"))
 
 # Files to test — (label, path) tuples
 # Populated dynamically from available directories

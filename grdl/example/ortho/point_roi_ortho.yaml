@@ -2,7 +2,7 @@
 # Edit this file and run: python point_roi_ortho.py
 
 # ── Image ────────────────────────────────────────────────────────────────────
-filepath: /Volumes/PRO-G40/SAR_DATA/SIDD/hamburg/2025-05-25-21-51-59_UMBRA-10_SIDD.nitf
+filepath: /path/to/data/sar/sidd/scene_SIDD.nitf   # input image path -- edit to your local file
 
 # ── Center point ─────────────────────────────────────────────────────────────
 # Use lat/lon OR row/col. lat/lon takes precedence when both are set.
@@ -46,5 +46,5 @@ display_contrast: brighter
 # ── Elevation ─────────────────────────────────────────────────────────────────
 # Terrain height is sampled once at the center point and used as a flat plane
 # for the entire ortho — geographically correct at center, no per-pixel DEM warp.
-dem: /Volumes/PRO-G40/terrain/FABDEM             # DEM path: single GeoTIFF (.tif) or DTED tile directory
-geoid:  /Volumes/PRO-G40/terrain/us_nga_egm08_25.tif           # Geoid model path (.pgm or .tif) for MSL→HAE correction
+dem: /path/to/data/terrain/dem             # DEM path: single GeoTIFF (.tif) or DTED tile directory
+geoid:  /path/to/data/terrain/geoid.tif           # Geoid model path (.pgm or .tif) for MSL→HAE correction

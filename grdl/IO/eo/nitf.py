@@ -30,12 +30,17 @@ Created
 
 Modified
 --------
+2026-06-09  Heterogeneous multi-image NITF support: segment grouping,
+            primary-group auto-selection, ILOC/IALVL placement; never
+            fail loading on mixed-segment files.
 2026-04-17  Parse CSEPHA and RSMGGA TREs (ephemeris + ground grid).
 2026-04-01
 """
 
 # Standard library
+import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,14 +58,36 @@ except ImportError:
 
 # GRDL internal
 from grdl.IO.base import ImageReader
+from grdl.IO.eo._tre_airborne import (
+    parse_acftb_cedata,
+    parse_mensra_cedata,
+    parse_mensrb_cedata,
+    parse_sensrb_cedata,
+)
+from grdl.IO.eo._tre_band import (
+    parse_bandsa_cedata,
+    parse_bandsb_cedata,
+)
+from grdl.IO.eo._tre_rsm_error import (
+    parse_rsmapa_cedata,
+    parse_rsmapb_cedata,
+    parse_rsmdca_cedata,
+    parse_rsmdcb_cedata,
+    parse_rsmeca_cedata,
+    parse_rsmecb_cedata,
+    parse_rsmpia_cedata,
+    summarize_accuracy,
+)
 from grdl.IO.models.eo_nitf import (
     AccuracyInfo,
     BLOCKAMetadata,
+    CSCRNAMetadata,
     CSEPHAMetadata,
     CSEXRAMetadata,
     CollectionInfo,
     EONITFMetadata,
     ICHIPBMetadata,
+    ImageGroupInfo,
     ImageSegmentInfo,
     RPCCoefficients,
     RSMCoefficients,
@@ -75,9 +102,37 @@ from grdl.IO.performance import (
     ReadConfig,
     _ensure_gdal_threads,
     _resolve_workers,
+    apply_gdal_env,
     chunked_parallel_read,
     parallel_band_read,
 )
+
+
+def _normalize_remote_path(filepath: Union[str, Path]) -> Optional[str]:
+    """Translate remote URIs to GDAL virtual-filesystem paths.
+
+    Supports GDAL ``/vsi*`` paths verbatim, plus ``http(s)://`` (via
+    ``/vsicurl/`` HTTP range requests) and ``s3://`` (via ``/vsis3/``).
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path or URI as given by the caller.
+
+    Returns
+    -------
+    str or None
+        GDAL-openable virtual path, or ``None`` when ``filepath`` is
+        an ordinary local path.
+    """
+    s = str(filepath)
+    if s.startswith('/vsi'):
+        return s
+    if s.startswith(('http://', 'https://')):
+        return '/vsicurl/' + s
+    if s.startswith('s3://'):
+        return '/vsis3/' + s[len('s3://'):]
+    return None
 
 
 def _parse_rsmpca_tre(tre_value: str) -> Optional[RSMCoefficients]:
@@ -482,6 +537,55 @@ def _parse_csexra_tre(tre_value: str) -> Optional[CSEXRAMetadata]:
             ground_gsd_row=ground_gsd_row,
             ground_gsd_col=ground_gsd_col,
         )
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_cscrna_tre(tre_value: str) -> Optional[CSCRNAMetadata]:
+    """Parse a CSCRNA TRE CEDATA string.
+
+    Corner Footprint TRE per STDI-0002 (109-byte CEDATA)::
+
+        PREDICT_CORNERS(1)
+        ULCNR_LAT(9) ULCNR_LONG(10) ULCNR_HT(8)
+        URCNR_LAT(9) URCNR_LONG(10) URCNR_HT(8)
+        LRCNR_LAT(9) LRCNR_LONG(10) LRCNR_HT(8)
+        LLCNR_LAT(9) LLCNR_LONG(10) LLCNR_HT(8)
+
+    Parameters
+    ----------
+    tre_value : str
+        Raw CEDATA string from GDAL TRE metadata.
+
+    Returns
+    -------
+    CSCRNAMetadata or None
+        Parsed corner footprint, or None if parsing fails.
+    """
+    try:
+        v = tre_value
+        if len(v) < 109:
+            return None
+
+        pos = 0
+
+        def read_str(n: int) -> str:
+            nonlocal pos
+            s = v[pos:pos + n].strip()
+            pos += n
+            return s
+
+        predict = read_str(1) == 'Y'
+        corners = np.empty((4, 2), dtype=np.float64)
+        heights = np.empty(4, dtype=np.float64)
+        for i in range(4):
+            corners[i, 0] = float(read_str(9))    # *CNR_LAT
+            corners[i, 1] = float(read_str(10))   # *CNR_LONG
+            ht_s = read_str(8)                    # *CNR_HT
+            heights[i] = float(ht_s) if ht_s else 0.0
+
+        return CSCRNAMetadata(
+            predicted=predict, corners=corners, heights=heights)
     except (ValueError, IndexError):
         return None
 
@@ -1114,29 +1218,59 @@ def _build_accuracy_info(
     csexra: Optional[CSEXRAMetadata],
     use00a: Optional[USE00AMetadata],
     rpc: Optional[RPCCoefficients],
+    rsm_dca: Optional[Any] = None,
+    rsm_eca: Optional[Any] = None,
 ) -> Optional[AccuracyInfo]:
     """Build aggregated accuracy from best available TRE source.
 
-    Priority: CSEXRA > USE00A > RPC err_bias.
+    Priority: RSM error covariance (RSMDCA/B then RSMECA/B, the
+    rigorous sensor-model error propagation) > CSEXRA > USE00A >
+    RPC err_bias.
 
     Parameters
     ----------
     csexra : CSEXRAMetadata or None
     use00a : USE00AMetadata or None
     rpc : RPCCoefficients or None
+    rsm_dca : RSMDCAMetadata or None
+        Direct error covariance (A or B variant).
+    rsm_eca : RSMECAMetadata or None
+        Indirect error covariance (A or B variant).
 
     Returns
     -------
     AccuracyInfo or None
     """
-    if csexra and (csexra.ce90 is not None or csexra.le90 is not None):
-        gsd = None
+    # GSD context from whichever TRE carries it; attached to the
+    # winning accuracy source.
+    gsd = None
+    if csexra is not None:
         if csexra.ground_gsd_row is not None and csexra.ground_gsd_col is not None:
             gsd = (csexra.ground_gsd_row + csexra.ground_gsd_col) / 2.0
         elif csexra.ground_gsd_row is not None:
             gsd = csexra.ground_gsd_row
         elif csexra.ground_gsd_col is not None:
             gsd = csexra.ground_gsd_col
+    if gsd is None and use00a is not None:
+        gsd = use00a.mean_gsd
+
+    # RSM error covariance — rigorous CE90/LE90 from the sensor model.
+    if rsm_dca is not None:
+        acc = summarize_accuracy(rsm_dca, None)
+        if acc is not None:
+            variant = getattr(rsm_dca, 'variant', 'A') or 'A'
+            return AccuracyInfo(
+                ce90=acc[0], le90=acc[1],
+                mean_gsd=gsd, source=f'RSMDC{variant}')
+    if rsm_eca is not None:
+        acc = summarize_accuracy(None, rsm_eca)
+        if acc is not None:
+            variant = getattr(rsm_eca, 'variant', 'A') or 'A'
+            return AccuracyInfo(
+                ce90=acc[0], le90=acc[1],
+                mean_gsd=gsd, source=f'RSMEC{variant}')
+
+    if csexra and (csexra.ce90 is not None or csexra.le90 is not None):
         return AccuracyInfo(
             ce90=csexra.ce90, le90=csexra.le90,
             mean_gsd=gsd, source='CSEXRA')
@@ -1225,11 +1359,63 @@ class _OpenSegment:
 
     Owned by ``EONITFReader`` in unified mode; closed in
     ``EONITFReader.close()``.  ``info`` is the public diagnostic record
-    surfaced via ``metadata.image_segments``.
+    surfaced via ``metadata.image_segments``.  ``tres`` caches this
+    segment's parsed TRE bundle (one parse per segment, reused by
+    metadata aggregation); ``tre_source`` records which parser
+    produced it (``'xml:TRE'``, ``'manual'``, or ``'none'``).
     """
 
     info: ImageSegmentInfo
     dataset: Any   # rasterio.DatasetReader; typed Any to avoid hard dep
+    tres: Optional[Dict[str, Any]] = None
+    tre_source: str = 'none'
+
+
+def _decode_imag(imag_str: Optional[str]) -> float:
+    """Decode the NITF IMAG (image magnification) subheader field.
+
+    Per MIL-STD-2500C the 4-character IMAG field is either a decimal
+    magnification (``'1.0 '``) or a reciprocal (``'/2  '`` meaning
+    one-half resolution, used for overview/reduced-resolution image
+    segments).  Returns ``1.0`` for blank or unparseable values.
+
+    Parameters
+    ----------
+    imag_str : str, optional
+        Raw IMAG value from the segment subheader tags.
+
+    Returns
+    -------
+    float
+        Magnification factor (``1.0`` = full resolution, ``0.5`` =
+        half resolution, ...).
+    """
+    if not imag_str:
+        return 1.0
+    s = imag_str.strip()
+    if not s:
+        return 1.0
+    try:
+        if s.startswith('/'):
+            denom = float(s[1:])
+            return 1.0 / denom if denom != 0 else 1.0
+        val = float(s)
+        return val if val > 0 else 1.0
+    except ValueError:
+        return 1.0
+
+
+def _int_tag(tags: Dict[str, Any], *names: str) -> Optional[int]:
+    """Return the first parseable integer among ``tags[name]`` candidates."""
+    for name in names:
+        raw = tags.get(name)
+        if raw is None:
+            continue
+        try:
+            return int(str(raw).strip())
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 def _segment_bbox_from_ichipb(
@@ -1306,6 +1492,15 @@ class EONITFReader(ImageReader):
     Opens EO NITF files via rasterio (GDAL NITF driver) and extracts
     RPC00B and RSM TRE metadata in addition to standard imagery.
 
+    Multi-image NITFs are unified automatically: segments are grouped
+    by compatible imaging characteristics, the primary imagery group
+    is auto-discovered, and ``read_chip`` / geolocation models operate
+    in that group's full-image coordinate space.  Heterogeneous files
+    (overviews, cloud masks, support images alongside the primary
+    imagery) load without error; every segment stays discoverable via
+    ``metadata.image_segments`` / ``metadata.image_groups`` and
+    readable via ``image_index`` pinning.
+
     Parameters
     ----------
     filepath : str or Path
@@ -1376,14 +1571,23 @@ class EONITFReader(ImageReader):
             the legacy path -- useful for A/B comparison.
         image_index : int, optional
             When ``None`` (default), multi-image NITF files are
-            transparently unified into a single full-image grid:
-            ``read_chip`` is routed across segments by ICHIPB,
-            ``metadata.rows``/``cols`` are full-image dims, and
+            transparently unified: segments are grouped by compatible
+            imaging characteristics (bands, dtype, ICHIPB scale
+            factor, IMAG magnification, ICAT), the *primary* group
+            (full-resolution, geolocated, largest) is auto-selected,
+            and ``read_chip`` is routed across that group's segments
+            in full-image coordinates.  ``metadata.rows``/``cols``
+            are the primary group's full-image dims and
             ``metadata.ichipb`` is set to ``None`` (the unified
-            reader has absorbed the chip-to-full transform).  When
-            an integer, opens only the segment at that subdataset
-            index (``NITF_IM:N:``) and behaves as today's
-            single-segment reader.  Useful for diagnostics.
+            reader has absorbed the chip-to-full transform).
+            Heterogeneous files (overviews, cloud masks, support
+            images) never fail to load — non-primary segments are
+            listed in ``metadata.image_segments`` /
+            ``metadata.image_groups`` and remain readable by pinning.
+            When an integer, opens only the segment at that
+            subdataset index (``NITF_IM:N:``) and behaves as a
+            single-segment reader.  Useful for diagnostics and for
+            exploring non-primary segments.
         """
         if not _HAS_RASTERIO:
             raise ImportError(
@@ -1395,7 +1599,24 @@ class EONITFReader(ImageReader):
         self.use_xml_tre = bool(use_xml_tre)
         self._image_index = image_index
         self._segments: List[_OpenSegment] = []
-        super().__init__(filepath)
+        self._primary_segments: List[_OpenSegment] = []
+        self._group_infos: List[ImageGroupInfo] = []
+        apply_gdal_env(self.read_config)
+
+        remote = _normalize_remote_path(filepath)
+        if remote is not None:
+            # Remote NITF via GDAL virtual filesystems (/vsicurl/,
+            # /vsis3/, or any /vsi* path passed verbatim).  Bypass the
+            # base class: Path() would mangle '//' in URLs and the
+            # existence check does not apply to network resources.
+            # GDAL_DISABLE_READDIR_ON_OPEN avoids a directory-listing
+            # round trip per open; user environment wins if already set.
+            os.environ.setdefault(
+                'GDAL_DISABLE_READDIR_ON_OPEN', 'EMPTY_DIR')
+            self.filepath = remote  # GDAL-style string, not a Path
+            self._load_metadata()
+        else:
+            super().__init__(filepath)
 
     def _load_metadata(self) -> None:
         """Open the file, dispatch single/pinned/unified, build metadata.
@@ -1427,12 +1648,18 @@ class EONITFReader(ImageReader):
                 self._build_metadata_single()
                 return
 
-            # Multi-image NITF: discover, open, validate, unify.
+            # Multi-image NITF: discover, group, select, unify.
             parent.close()
             self._open_all_segments(subs)
-            self._validate_segments_uniform()
             self._build_metadata_unified()
         except Exception:
+            for seg in getattr(self, '_segments', []):
+                try:
+                    seg.dataset.close()
+                except Exception:
+                    pass
+            self._segments = []
+            self._primary_segments = []
             try:
                 parent.close()
             except Exception:
@@ -1467,101 +1694,316 @@ class EONITFReader(ImageReader):
         self.dataset = rasterio.open(uri)
 
     def _open_all_segments(self, subs: List[str]) -> None:
-        """Open every subdataset, parse its ICHIPB, compute fi_bbox.
+        """Open every subdataset, group compatible segments, pick primary.
 
-        Populates ``self._segments`` sorted by ``(fi_row_lo, fi_col_lo)``
-        so neighbor lookup in ``_read_chip_unified`` is deterministic.
-        ``self.dataset`` aliases segment 0 for back-compat attribute
-        access; pixel I/O in unified mode goes through ``_segments``.
+        Discovery pipeline (never fails on heterogeneous files):
+
+        1. Open each subdataset; parse its TRE bundle once (cached on
+           the ``_OpenSegment``) and read subheader tags (IID1, ICAT,
+           IREP, IMAG, IDLVL, IALVL, ILOC).
+        2. Group segments by compatible imaging characteristics:
+           ``(bands, dtype, SCALE_FACTOR, IMAG, ICAT)``.  Overviews,
+           cloud masks, and other support images land in their own
+           groups instead of raising.
+        3. Resolve each group's full-image placement: ICHIPB affine
+           when every member carries one; else the ILOC/IALVL
+           attachment chain into the common coordinate system (per
+           MIL-STD-2500C); else sequential row stacking (warns).
+        4. Select the primary group — prefers full resolution
+           (SCALE_FACTOR≈1, IMAG≈1), then RPC/RSM geolocation
+           presence, then total pixel area, then lowest segment index.
+
+        Populates ``self._segments`` (all segments, sorted by group
+        then bbox), ``self._primary_segments`` (unified-read routing
+        list), and ``self._group_infos``.  ``self.dataset`` aliases
+        the first primary segment for back-compat attribute access.
         """
-        running_row_off = 0
-        for idx, uri in enumerate(subs):
-            ds = rasterio.open(uri)
-            ichipb = self._parse_segment_ichipb(ds)
-            bbox = _segment_bbox_from_ichipb(
-                ichipb, ds.height, ds.width,
-                running_row_off, 0,
-            )
+        def _open_one(idx_uri: Tuple[int, str]) -> Optional[Dict[str, Any]]:
+            idx, uri = idx_uri
+            try:
+                ds = rasterio.open(uri)
+            except Exception as exc:  # never fail the whole file
+                warnings.warn(
+                    f"Skipping unreadable image segment {idx} "
+                    f"({uri!r}): {exc}",
+                    RuntimeWarning, stacklevel=2,
+                )
+                return None
+            tres, source = self._parse_segment_tres(ds)
+            ichipb = tres.get('ICHIPB')
+            tags = {}
+            try:
+                tags = ds.tags() or {}
+            except (AttributeError, TypeError):
+                pass
             scale = (ichipb.scale_factor_r
                      if ichipb is not None and ichipb.scale_factor_r
                      else 1.0)
+            has_rpc = False
+            try:
+                has_rpc = ds.rpcs is not None
+            except (AttributeError, TypeError):
+                pass
+            return {
+                'index': idx,
+                'uri': uri,
+                'ds': ds,
+                'tres': tres,
+                'tre_source': source,
+                'ichipb': ichipb,
+                'scale': float(scale),
+                'rows': ds.height,
+                'cols': ds.width,
+                'bands': ds.count,
+                'dtype': str(ds.dtypes[0]),
+                'iid1': tags.get('NITF_IID1', tags.get('IID1')) or None,
+                'icat': tags.get('NITF_ICAT', tags.get('ICAT')) or None,
+                'irep': tags.get('NITF_IREP', tags.get('IREP')) or None,
+                'imag': _decode_imag(
+                    tags.get('NITF_IMAG', tags.get('IMAG'))),
+                'idlvl': _int_tag(tags, 'NITF_IDLVL', 'IDLVL'),
+                'ialvl': _int_tag(tags, 'NITF_IALVL', 'IALVL'),
+                'iloc_row': _int_tag(tags, 'NITF_ILOC_ROW', 'ILOC_ROW'),
+                'iloc_col': _int_tag(
+                    tags, 'NITF_ILOC_COLUMN', 'ILOC_COLUMN'),
+                'has_geo': has_rpc
+                or bool(tres.get('RSMPCA'))
+                or tres.get('RSMIDA') is not None
+                or bool(tres.get('RSMGGA')),
+            }
+
+        # Open + parse segments concurrently when configured: each
+        # subdataset open re-reads the NITF header (and TRE parse is
+        # pure CPU), so many-segment files pay N round trips serially.
+        # rasterio handles are independent objects; opening them on
+        # worker threads is safe.  Order is restored by index.
+        if self.read_config.parallel and len(subs) > 1:
+            workers = min(len(subs), _resolve_workers(self.read_config))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                records = list(pool.map(_open_one, enumerate(subs)))
+        else:
+            records = [_open_one(item) for item in enumerate(subs)]
+        records = [r for r in records if r is not None]
+        if not records:
+            raise ValueError(
+                f"No readable image segments in multi-image NITF "
+                f"{self.filepath!s} ({len(subs)} subdatasets, all "
+                "failed to open)."
+            )
+
+        # Attachment-chain CCS offsets are file-wide (a segment may be
+        # attached to a segment in another group), so resolve before
+        # grouping.
+        self._resolve_ccs_offsets(records)
+
+        # Group by compatible imaging characteristics, in order of
+        # first appearance so group ids are deterministic.
+        groups: List[List[Dict[str, Any]]] = []
+        key_to_gid: Dict[Tuple, int] = {}
+        for rec in records:
+            key = (rec['bands'], rec['dtype'],
+                   round(rec['scale'], 6), round(rec['imag'], 6),
+                   rec['icat'] or '')
+            gid = key_to_gid.get(key)
+            if gid is None:
+                gid = len(groups)
+                key_to_gid[key] = gid
+                groups.append([])
+            rec['group_id'] = gid
+            groups[gid].append(rec)
+
+        for members in groups:
+            self._place_group(members)
+
+        primary_gid = self._select_primary_group(groups)
+
+        self._group_infos = []
+        for gid, members in enumerate(groups):
+            self._group_infos.append(ImageGroupInfo(
+                group_id=gid,
+                segment_indices=[m['index'] for m in members],
+                rows=max(m['fi_bbox'][1] for m in members),
+                cols=max(m['fi_bbox'][3] for m in members),
+                bands=members[0]['bands'],
+                dtype=members[0]['dtype'],
+                scale_factor=members[0]['scale'],
+                imag=members[0]['imag'],
+                icat=members[0]['icat'],
+                is_primary=(gid == primary_gid),
+                placement=members[0]['placement'],
+                has_geolocation=any(m['has_geo'] for m in members),
+            ))
+
+        for rec in records:
+            bbox = rec['fi_bbox']
             info = ImageSegmentInfo(
-                segment_index=idx,
-                uri=uri,
+                segment_index=rec['index'],
+                uri=rec['uri'],
                 fi_row_lo=bbox[0],
                 fi_row_hi=bbox[1],
                 fi_col_lo=bbox[2],
                 fi_col_hi=bbox[3],
-                rows=ds.height,
-                cols=ds.width,
-                ichipb=ichipb,
-                scale_factor=float(scale),
+                rows=rec['rows'],
+                cols=rec['cols'],
+                ichipb=rec['ichipb'],
+                scale_factor=rec['scale'],
+                group_id=rec['group_id'],
+                is_primary=(rec['group_id'] == primary_gid),
+                bands=rec['bands'],
+                dtype=rec['dtype'],
+                iid1=rec['iid1'],
+                icat=rec['icat'],
+                irep=rec['irep'],
+                imag=rec['imag'],
+                idlvl=rec['idlvl'],
+                ialvl=rec['ialvl'],
+                iloc_row=rec['iloc_row'],
+                iloc_col=rec['iloc_col'],
+                placement=rec['placement'],
             )
-            self._segments.append(_OpenSegment(info=info, dataset=ds))
-            running_row_off = bbox[1]
+            self._segments.append(_OpenSegment(
+                info=info, dataset=rec['ds'],
+                tres=rec['tres'], tre_source=rec['tre_source'],
+            ))
 
         self._segments.sort(
-            key=lambda s: (s.info.fi_row_lo, s.info.fi_col_lo))
-        self.dataset = self._segments[0].dataset
+            key=lambda s: (s.info.group_id, s.info.fi_row_lo,
+                           s.info.fi_col_lo, s.info.segment_index))
+        self._primary_segments = [
+            s for s in self._segments if s.info.is_primary]
+        self.dataset = self._primary_segments[0].dataset
 
-    def _parse_segment_ichipb(self, ds) -> Optional[ICHIPBMetadata]:
-        """Extract ICHIPB for one segment via xml:TRE or legacy fallback."""
+    def _parse_segment_tres(self, ds) -> Tuple[Dict[str, Any], str]:
+        """Parse one segment's TRE bundle via xml:TRE, else legacy bytes.
+
+        Returns
+        -------
+        Tuple[Dict[str, Any], str]
+            ``(parsed, source)`` where ``source`` is ``'xml:TRE'``,
+            ``'manual'``, or ``'none'``.
+        """
         if self.use_xml_tre:
             try:
                 from grdl.IO.eo._tre_xml import parse_all_tres
-                parsed = parse_all_tres(ds)
-                ichipb = parsed.get('ICHIPB')
-                if ichipb is not None:
-                    return ichipb
+                parsed = parse_all_tres(ds) or {}
             except Exception:
-                pass
-        # Fallback: walk raw 'TRE' namespaces and dispatch.
-        try:
-            for ns in ds.tag_namespaces():
-                tags = ds.tags(ns=ns)
-                if not tags:
-                    continue
-                for key, val in tags.items():
-                    if 'ICHIPB' in key.upper():
-                        parsed = _parse_ichipb_tre(val)
-                        if parsed is not None:
-                            return parsed
-        except (AttributeError, TypeError):
-            pass
-        return None
+                parsed = {}
+            if any(parsed.values()):
+                return parsed, 'xml:TRE'
+        parsed = self._tres_manual_for_dataset(ds)
+        if any(parsed.values()):
+            return parsed, 'manual'
+        return parsed, 'none'
 
-    def _validate_segments_uniform(self) -> None:
-        """Refuse mixed-resolution / mismatched-band / mismatched-dtype mosaics.
+    @staticmethod
+    def _resolve_ccs_offsets(records: List[Dict[str, Any]]) -> None:
+        """Resolve each segment's common-coordinate-system offset.
 
-        v1 unified mode supports only uniform segments: same band count,
-        same dtype, same SCALE_FACTOR.  Multi-resolution mosaics need
-        resampling decisions outside the reader's scope (per the design
-        plan); refusing is safer than silently producing wrong pixels.
+        Per MIL-STD-2500C, a segment's ILOC is an offset relative to
+        the origin of the segment whose display level (IDLVL) equals
+        this segment's attachment level (IALVL); ``IALVL=0`` means the
+        offset is absolute in the CCS.  Walks the attachment chain
+        (with cycle protection) and stores the absolute offset on
+        ``rec['ccs']`` as ``(row, col)``, or ``None`` when the segment
+        carries no ILOC information.
         """
-        s0 = self._segments[0]
-        bands0 = s0.dataset.count
-        dtype0 = s0.dataset.dtypes[0]
-        scale0 = s0.info.scale_factor
-        for s in self._segments[1:]:
-            if s.dataset.count != bands0:
-                raise ValueError(
-                    f"Segment {s.info.segment_index} has "
-                    f"{s.dataset.count} bands; segment 0 has {bands0}. "
-                    "Mixed-band multi-image NITFs are not supported."
+        by_dlvl = {
+            r['idlvl']: r for r in records if r['idlvl'] is not None}
+        for rec in records:
+            if rec['iloc_row'] is None or rec['iloc_col'] is None:
+                rec['ccs'] = None
+                continue
+            row = rec['iloc_row']
+            col = rec['iloc_col']
+            seen = {rec['idlvl']}
+            cur = rec
+            while cur['ialvl'] not in (None, 0):
+                parent = by_dlvl.get(cur['ialvl'])
+                if (parent is None or parent is rec
+                        or parent['idlvl'] in seen
+                        or parent['iloc_row'] is None):
+                    break
+                row += parent['iloc_row']
+                col += parent['iloc_col'] or 0
+                seen.add(parent['idlvl'])
+                cur = parent
+            rec['ccs'] = (row, col)
+
+    @staticmethod
+    def _place_group(members: List[Dict[str, Any]]) -> None:
+        """Compute each member's full-image bbox and placement mode.
+
+        Priority of placement authorities:
+
+        1. ``'ichipb'`` — every member carries an ICHIPB with a
+           derivable chip→full affine (STDI-0002 App B).  Bboxes are
+           absolute in the original full image.
+        2. ``'iloc'`` — every member resolved an ILOC/IALVL offset
+           into the CCS (MIL-STD-2500C).  Offsets are normalized so
+           the group's grid starts at (0, 0).
+        3. ``'stacked'`` — sequential row stacking, honoring any
+           per-member ICHIPB.  Warns per ICHIPB-less member (existing
+           behavior).
+
+        Stores ``rec['fi_bbox']`` (half-open) and ``rec['placement']``.
+        """
+        all_ichipb = all(
+            m['ichipb'] is not None and m['ichipb'].fi_row_scale
+            for m in members)
+        all_iloc = all(m['ccs'] is not None for m in members)
+
+        if all_ichipb:
+            for m in members:
+                m['fi_bbox'] = _segment_bbox_from_ichipb(
+                    m['ichipb'], m['rows'], m['cols'], 0, 0)
+                m['placement'] = 'ichipb'
+            return
+
+        if all_iloc:
+            min_row = min(m['ccs'][0] for m in members)
+            min_col = min(m['ccs'][1] for m in members)
+            for m in members:
+                r0 = m['ccs'][0] - min_row
+                c0 = m['ccs'][1] - min_col
+                m['fi_bbox'] = (
+                    int(r0), int(r0 + m['rows']),
+                    int(c0), int(c0 + m['cols']),
                 )
-            if s.dataset.dtypes[0] != dtype0:
-                raise ValueError(
-                    f"Segment {s.info.segment_index} has dtype "
-                    f"{s.dataset.dtypes[0]!r}; segment 0 has "
-                    f"{dtype0!r}.  Mixed-dtype mosaics are not supported."
-                )
-            if abs(s.info.scale_factor - scale0) > 1e-6:
-                raise ValueError(
-                    "Multi-resolution mosaics are not supported: "
-                    f"segment {s.info.segment_index} declares "
-                    f"SCALE_FACTOR={s.info.scale_factor} but segment 0 "
-                    f"has SCALE_FACTOR={scale0}."
-                )
+                m['placement'] = 'iloc'
+            return
+
+        running_row_off = 0
+        for m in members:
+            m['fi_bbox'] = _segment_bbox_from_ichipb(
+                m['ichipb'], m['rows'], m['cols'],
+                running_row_off, 0,
+            )
+            m['placement'] = (
+                'ichipb' if m['ichipb'] is not None
+                and m['ichipb'].fi_row_scale else 'stacked')
+            running_row_off = m['fi_bbox'][1]
+
+    @staticmethod
+    def _select_primary_group(
+        groups: List[List[Dict[str, Any]]],
+    ) -> int:
+        """Pick the primary group for the unified full-image view.
+
+        Score, in priority order: full resolution (SCALE_FACTOR≈1 and
+        IMAG≈1), RPC/RSM geolocation presence, total native pixel
+        area, then lowest first-segment index for determinism.
+        """
+        def score(gid_members: Tuple[int, List[Dict[str, Any]]]):
+            _, members = gid_members
+            full_res = int(
+                abs(members[0]['scale'] - 1.0) <= 1e-6
+                and abs(members[0]['imag'] - 1.0) <= 1e-6)
+            has_geo = int(any(m['has_geo'] for m in members))
+            area = sum(m['rows'] * m['cols'] for m in members)
+            first_idx = min(m['index'] for m in members)
+            return (full_res, has_geo, area, -first_idx)
+
+        return max(enumerate(groups), key=score)[0]
 
     def _build_metadata_single(self) -> None:
         """Build ``EONITFMetadata`` from a single open ``self.dataset``.
@@ -1578,19 +2020,20 @@ class EONITFReader(ImageReader):
         except (AttributeError, TypeError):
             pass
 
-        tre_bundle = None
-        self.tre_source = 'manual'
-        if self.use_xml_tre:
-            tre_bundle = self._load_tres_xml()
-            if any(x for x in tre_bundle):
-                self.tre_source = 'xml:TRE'
-            else:
-                tre_bundle = None
-        if tre_bundle is None:
-            tre_bundle = self._load_tres_manual()
-        (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
-         blocka, csepha, rsmgga_list,
-         aimidb, stdidc, piaimc) = tre_bundle
+        parsed, self.tre_source = self._parse_segment_tres(self.dataset)
+        rsm_segments_list = list(parsed.get('RSMPCA') or [])
+        rsm_id = parsed.get('RSMIDA')
+        csexra = parsed.get('CSEXRA')
+        cscrna = parsed.get('CSCRNA')
+        use00a = parsed.get('USE00A')
+        ichipb = parsed.get('ICHIPB')
+        blocka = parsed.get('BLOCKA')
+        csepha = parsed.get('CSEPHA')
+        rsmgga_list = list(parsed.get('RSMGGA') or [])
+        aimidb = parsed.get('AIMIDB')
+        stdidc = parsed.get('STDIDC')
+        piaimc = parsed.get('PIAIMC')
+        extras = self._extract_extra_tres(parsed)
 
         rsm = None
         rsm_segments = None
@@ -1607,7 +2050,9 @@ class EONITFReader(ImageReader):
                 segments=seg_dict,
             )
 
-        accuracy = _build_accuracy_info(csexra, use00a, rpc)
+        accuracy = _build_accuracy_info(
+            csexra, use00a, rpc,
+            rsm_dca=extras['rsm_dca'], rsm_eca=extras['rsm_eca'])
         collection_info = _build_collection_info(aimidb, stdidc, piaimc)
         header = self._extract_header_tags(self.dataset)
 
@@ -1624,6 +2069,7 @@ class EONITFReader(ImageReader):
             rsm_id=rsm_id,
             rsm_segments=rsm_segments,
             csexra=csexra,
+            cscrna=cscrna,
             use00a=use00a,
             ichipb=ichipb,
             blocka=blocka,
@@ -1631,8 +2077,50 @@ class EONITFReader(ImageReader):
             rsmgga=rsmgga_list[0] if rsmgga_list else None,
             collection_info=collection_info,
             accuracy=accuracy,
+            **extras,
             **header,
         )
+
+    @staticmethod
+    def _extract_extra_tres(parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a TRE-name-keyed bundle to extended metadata kwargs.
+
+        Folds B-variant RSM error TREs into the A-variant fields
+        (the dataclasses carry a ``variant`` flag) and derives
+        ``band_names`` / ``wavelengths`` from BANDSB when present.
+        """
+        bandsb = parsed.get('BANDSB')
+        band_names = None
+        wavelengths = None
+        if bandsb is not None:
+            try:
+                band_names = list(bandsb.band_names) or None
+                wavelengths = list(bandsb.wavelengths_um) or None
+            except (AttributeError, TypeError):
+                pass
+        return {
+            'rsm_pia': parsed.get('RSMPIA'),
+            'rsm_dca': parsed.get('RSMDCA') or parsed.get('RSMDCB'),
+            'rsm_eca': parsed.get('RSMECA') or parsed.get('RSMECB'),
+            'rsm_apa': parsed.get('RSMAPA') or parsed.get('RSMAPB'),
+            'bandsb': bandsb,
+            'bandsa': parsed.get('BANDSA'),
+            'sensrb': parsed.get('SENSRB'),
+            'mensrb': parsed.get('MENSRB'),
+            'mensra': parsed.get('MENSRA'),
+            'acftb': parsed.get('ACFTB'),
+            'band_names': band_names,
+            'wavelengths': wavelengths,
+        }
+
+    #: TRE names merged generically (first non-None across segments)
+    #: by :meth:`_aggregate_tres` in unified mode.
+    _EXTRA_TRE_KEYS = (
+        'RSMPIA', 'RSMDCA', 'RSMECA', 'RSMAPA',
+        'RSMDCB', 'RSMECB', 'RSMAPB',
+        'BANDSB', 'BANDSA',
+        'SENSRB', 'MENSRB', 'MENSRA', 'ACFTB',
+    )
 
     @staticmethod
     def _extract_header_tags(dataset) -> Dict[str, Any]:
@@ -1652,23 +2140,30 @@ class EONITFReader(ImageReader):
         }
 
     def _build_metadata_unified(self) -> None:
-        """Build full-image ``EONITFMetadata`` aggregated across segments.
+        """Build full-image ``EONITFMetadata`` for the primary group.
 
-        - Aggregates RSMPCA/RSMGGA across all segments, deduplicated by
+        - Aggregates RSMPCA/RSMGGA across the *primary group's*
+          segments only (a non-primary overview or mask may carry TREs
+          for a different coordinate space), deduplicated by
           ``(rsn, csn)`` / ``(ggrsn, ggcsn)``.
         - Single-instance TREs (RSMIDA, CSEXRA, USE00A, BLOCKA, CSEPHA,
           AIMIDB, STDIDC, PIAIMC) take the first non-``None`` across
-          segments.
+          primary segments.
         - Resolves full-image dimensions in priority RSMIDA.FULLR/FULLC
-          → max ICHIPB.FI_ROW/FI_COL → union of segment fi_row_hi/col_hi.
+          → max ICHIPB.FI_ROW/FI_COL → union of segment fi_row_hi/col_hi,
+          over the primary group.
         - Sets ``metadata.ichipb=None`` so geolocators don't double-apply
           the chip-to-full transform — the unified reader is the full
           image.
+        - ``metadata.image_segments`` lists *all* segments (primary and
+          not) and ``metadata.image_groups`` summarizes every group, so
+          heterogeneous content stays discoverable.
         """
         agg = self._aggregate_tres()
         rsm_segments_list = agg['rsm_segments_list']
         rsm_id = agg['rsm_id']
         csexra = agg['csexra']
+        cscrna = agg['cscrna']
         use00a = agg['use00a']
         blocka = agg['blocka']
         csepha = agg['csepha']
@@ -1676,6 +2171,7 @@ class EONITFReader(ImageReader):
         aimidb = agg['aimidb']
         stdidc = agg['stdidc']
         piaimc = agg['piaimc']
+        extras = self._extract_extra_tres(agg['extra'])
 
         rsm = rsm_segments_list[0] if rsm_segments_list else None
         rsm_segments = None
@@ -1692,22 +2188,25 @@ class EONITFReader(ImageReader):
             )
 
         full_rows, full_cols = self._resolve_full_dims(
-            rsm_id, [s.info for s in self._segments])
+            rsm_id, [s.info for s in self._primary_segments])
 
-        # RPC from segment 0 (typically present once at file level).
+        # RPC from the first primary segment (typically present once).
         rpc = None
         try:
-            rpcs_obj = self._segments[0].dataset.rpcs
+            rpcs_obj = self._primary_segments[0].dataset.rpcs
             if rpcs_obj is not None:
                 rpc = RPCCoefficients.from_rasterio(rpcs_obj)
         except (AttributeError, TypeError):
             pass
 
-        accuracy = _build_accuracy_info(csexra, use00a, rpc)
+        accuracy = _build_accuracy_info(
+            csexra, use00a, rpc,
+            rsm_dca=extras['rsm_dca'], rsm_eca=extras['rsm_eca'])
         collection_info = _build_collection_info(aimidb, stdidc, piaimc)
-        header = self._extract_header_tags(self._segments[0].dataset)
+        header = self._extract_header_tags(
+            self._primary_segments[0].dataset)
 
-        ds0 = self._segments[0].dataset
+        ds0 = self._primary_segments[0].dataset
         self.metadata = EONITFMetadata(
             format='NITF',
             rows=full_rows,
@@ -1721,6 +2220,7 @@ class EONITFReader(ImageReader):
             rsm_id=rsm_id,
             rsm_segments=rsm_segments,
             csexra=csexra,
+            cscrna=cscrna,
             use00a=use00a,
             ichipb=None,
             blocka=blocka,
@@ -1729,43 +2229,38 @@ class EONITFReader(ImageReader):
             collection_info=collection_info,
             accuracy=accuracy,
             image_segments=[s.info for s in self._segments],
+            image_groups=list(self._group_infos),
+            **extras,
             **header,
         )
 
     def _aggregate_tres(self) -> Dict[str, Any]:
-        """Walk every segment's TREs and merge into one bundle.
+        """Merge the primary group's cached per-segment TRE bundles.
 
+        Scoped to ``self._primary_segments`` — TREs on non-primary
+        segments (overviews, masks, other products) describe *their*
+        coordinate space and must not leak into the unified metadata.
         Multi-instance TREs (RSMPCA, RSMGGA) are deduplicated by their
         section keys.  Single-instance TREs take the first non-``None``
         seen.  Sets ``self.tre_source`` to the parser used.
         """
-        from grdl.IO.eo._tre_xml import parse_all_tres
-
         rsm_segments_list: List[RSMCoefficients] = []
         rsmgga_list: List[RSMGGAMetadata] = []
         seen_rsmpca: set = set()
         seen_rsmgga: set = set()
-        rsm_id = csexra = use00a = blocka = csepha = None
+        rsm_id = csexra = cscrna = use00a = blocka = csepha = None
         aimidb = stdidc = piaimc = None
+        extra: Dict[str, Any] = {k: None for k in self._EXTRA_TRE_KEYS}
         any_xml = False
         any_manual = False
 
-        for s in self._segments:
-            ds = s.dataset
-            parsed: Dict[str, Any] = {}
-            if self.use_xml_tre:
-                try:
-                    parsed = parse_all_tres(ds) or {}
-                except Exception:
-                    parsed = {}
-            if parsed:
+        for s in self._primary_segments:
+            # Parsed once during _open_all_segments and cached.
+            parsed = s.tres or {}
+            if s.tre_source == 'xml:TRE':
                 any_xml = True
-            else:
-                # Per-segment legacy fallback — same shape as
-                # _load_tres_manual but scoped to one dataset.
-                parsed = self._tres_manual_for_dataset(ds)
-                if any(parsed.values()):
-                    any_manual = True
+            elif s.tre_source == 'manual':
+                any_manual = True
 
             for r in parsed.get('RSMPCA', []) or []:
                 key = (r.rsn or 1, r.csn or 1)
@@ -1779,12 +2274,16 @@ class EONITFReader(ImageReader):
                     rsmgga_list.append(g)
             rsm_id = rsm_id or parsed.get('RSMIDA')
             csexra = csexra or parsed.get('CSEXRA')
+            cscrna = cscrna or parsed.get('CSCRNA')
             use00a = use00a or parsed.get('USE00A')
             blocka = blocka or parsed.get('BLOCKA')
             csepha = csepha or parsed.get('CSEPHA')
             aimidb = aimidb or parsed.get('AIMIDB')
             stdidc = stdidc or parsed.get('STDIDC')
             piaimc = piaimc or parsed.get('PIAIMC')
+            for k in self._EXTRA_TRE_KEYS:
+                if extra[k] is None:
+                    extra[k] = parsed.get(k)
 
         if any_xml:
             self.tre_source = 'xml:TRE'
@@ -1796,7 +2295,9 @@ class EONITFReader(ImageReader):
         return {
             'rsm_segments_list': rsm_segments_list,
             'rsm_id': rsm_id,
+            'extra': extra,
             'csexra': csexra,
+            'cscrna': cscrna,
             'use00a': use00a,
             'blocka': blocka,
             'csepha': csepha,
@@ -1810,9 +2311,31 @@ class EONITFReader(ImageReader):
         """Legacy byte-offset parsing for one dataset's TRE namespaces."""
         out: Dict[str, Any] = {
             'RSMPCA': [], 'RSMGGA': [],
-            'RSMIDA': None, 'CSEXRA': None, 'USE00A': None,
+            'RSMIDA': None, 'CSEXRA': None, 'CSCRNA': None,
+            'USE00A': None,
             'ICHIPB': None, 'BLOCKA': None, 'CSEPHA': None,
             'AIMIDB': None, 'STDIDC': None, 'PIAIMC': None,
+            'RSMPIA': None, 'RSMDCA': None, 'RSMECA': None,
+            'RSMAPA': None, 'RSMDCB': None, 'RSMECB': None,
+            'RSMAPB': None,
+            'BANDSB': None, 'BANDSA': None,
+            'SENSRB': None, 'MENSRB': None, 'MENSRA': None,
+            'ACFTB': None,
+        }
+        single_parsers = {
+            'RSMPIA': parse_rsmpia_cedata,
+            'RSMDCA': parse_rsmdca_cedata,
+            'RSMECA': parse_rsmeca_cedata,
+            'RSMAPA': parse_rsmapa_cedata,
+            'RSMDCB': parse_rsmdcb_cedata,
+            'RSMECB': parse_rsmecb_cedata,
+            'RSMAPB': parse_rsmapb_cedata,
+            'BANDSB': parse_bandsb_cedata,
+            'BANDSA': parse_bandsa_cedata,
+            'SENSRB': parse_sensrb_cedata,
+            'MENSRB': parse_mensrb_cedata,
+            'MENSRA': parse_mensra_cedata,
+            'ACFTB': parse_acftb_cedata,
         }
         try:
             for ns in ds.tag_namespaces():
@@ -1829,6 +2352,8 @@ class EONITFReader(ImageReader):
                         out['RSMIDA'] = _parse_rsmida_tre(val)
                     elif 'CSEXRA' in ku and out['CSEXRA'] is None:
                         out['CSEXRA'] = _parse_csexra_tre(val)
+                    elif 'CSCRNA' in ku and out['CSCRNA'] is None:
+                        out['CSCRNA'] = _parse_cscrna_tre(val)
                     elif 'USE00A' in ku and out['USE00A'] is None:
                         out['USE00A'] = _parse_use00a_tre(val)
                     elif 'ICHIPB' in ku and out['ICHIPB'] is None:
@@ -1847,6 +2372,11 @@ class EONITFReader(ImageReader):
                         out['STDIDC'] = _parse_stdidc_tre(val)
                     elif 'PIAIMC' in ku and out['PIAIMC'] is None:
                         out['PIAIMC'] = _parse_piaimc_tre(val)
+                    else:
+                        for name, parser in single_parsers.items():
+                            if name in ku and out[name] is None:
+                                out[name] = parser(val)
+                                break
         except (AttributeError, TypeError):
             pass
         return out
@@ -1892,123 +2422,6 @@ class EONITFReader(ImageReader):
                 )
         return chosen[1], chosen[2]
 
-    def _load_tres_manual(
-        self,
-    ) -> Tuple[
-        List[RSMCoefficients],
-        Optional[RSMIdentification],
-        Optional[CSEXRAMetadata],
-        Optional[USE00AMetadata],
-        Optional[ICHIPBMetadata],
-        Optional[BLOCKAMetadata],
-        Optional[CSEPHAMetadata],
-        List[RSMGGAMetadata],
-        Optional[Dict[str, Any]],
-        Optional[Dict[str, Any]],
-        Optional[Dict[str, Any]],
-    ]:
-        """Legacy path: parse TREs from the raw 'TRE' namespace.
-
-        Walks every metadata namespace and dispatches CEDATA strings
-        to the byte-offset parsers in this module.  Retained for
-        backward compatibility and as a fallback comparison target
-        for the xml:TRE path.
-        """
-        rsm_segments_list: List[RSMCoefficients] = []
-        rsm_id = None
-        csexra = None
-        use00a = None
-        ichipb = None
-        blocka = None
-        csepha = None
-        rsmgga_list: List[RSMGGAMetadata] = []
-        aimidb = None
-        stdidc = None
-        piaimc = None
-
-        try:
-            namespaces = self.dataset.tag_namespaces()
-            for ns in namespaces:
-                tags = self.dataset.tags(ns=ns)
-                if not tags:
-                    continue
-                for key, val in tags.items():
-                    key_upper = key.upper()
-                    if 'RSMPCA' in key_upper:
-                        seg = _parse_rsmpca_tre(val)
-                        if seg is not None:
-                            rsm_segments_list.append(seg)
-                    elif 'RSMIDA' in key_upper and rsm_id is None:
-                        rsm_id = _parse_rsmida_tre(val)
-                    elif 'CSEXRA' in key_upper and csexra is None:
-                        csexra = _parse_csexra_tre(val)
-                    elif 'USE00A' in key_upper and use00a is None:
-                        use00a = _parse_use00a_tre(val)
-                    elif 'ICHIPB' in key_upper and ichipb is None:
-                        ichipb = _parse_ichipb_tre(val)
-                    elif 'BLOCKA' in key_upper and blocka is None:
-                        blocka = _parse_blocka_tre(val)
-                    elif 'CSEPHA' in key_upper and csepha is None:
-                        csepha = _parse_csepha_tre(val)
-                    elif 'RSMGGA' in key_upper:
-                        gga = _parse_rsmgga_tre(val)
-                        if gga is not None:
-                            rsmgga_list.append(gga)
-                    elif 'AIMIDB' in key_upper and aimidb is None:
-                        aimidb = _parse_aimidb_tre(val)
-                    elif 'STDIDC' in key_upper and stdidc is None:
-                        stdidc = _parse_stdidc_tre(val)
-                    elif 'PIAIMC' in key_upper and piaimc is None:
-                        piaimc = _parse_piaimc_tre(val)
-        except (AttributeError, TypeError):
-            pass
-
-        return (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
-                blocka, csepha, rsmgga_list, aimidb, stdidc, piaimc)
-
-    def _load_tres_xml(
-        self,
-    ) -> Tuple[
-        List[RSMCoefficients],
-        Optional[RSMIdentification],
-        Optional[CSEXRAMetadata],
-        Optional[USE00AMetadata],
-        Optional[ICHIPBMetadata],
-        Optional[BLOCKAMetadata],
-        Optional[CSEPHAMetadata],
-        List[RSMGGAMetadata],
-        Optional[Dict[str, Any]],
-        Optional[Dict[str, Any]],
-        Optional[Dict[str, Any]],
-    ]:
-        """New path: parse TREs from GDAL's xml:TRE namespace.
-
-        Delegates to :func:`grdl.IO.eo._tre_xml.parse_all_tres`, which
-        walks the parsed-XML tree GDAL emits.  Field access by name
-        rather than byte offset eliminates the off-by-N bugs in the
-        legacy parser, especially for chipped and multi-segment files.
-        """
-        # Imported lazily so the legacy byte-offset path keeps working
-        # when this module's xml dependency tree changes.
-        from grdl.IO.eo._tre_xml import parse_all_tres
-
-        parsed = parse_all_tres(self.dataset)
-
-        rsm_segments_list = list(parsed.get('RSMPCA', []))
-        rsm_id = parsed.get('RSMIDA')
-        csexra = parsed.get('CSEXRA')
-        use00a = parsed.get('USE00A')
-        ichipb = parsed.get('ICHIPB')
-        blocka = parsed.get('BLOCKA')
-        csepha = parsed.get('CSEPHA')
-        rsmgga_list = list(parsed.get('RSMGGA', []))
-        aimidb = parsed.get('AIMIDB')
-        stdidc = parsed.get('STDIDC')
-        piaimc = parsed.get('PIAIMC')
-
-        return (rsm_segments_list, rsm_id, csexra, use00a, ichipb,
-                blocka, csepha, rsmgga_list, aimidb, stdidc, piaimc)
-
     @property
     def has_rpc(self) -> bool:
         """Whether RPC coefficients are available."""
@@ -2026,15 +2439,19 @@ class EONITFReader(ImageReader):
         col_start: int,
         col_end: int,
         bands: Optional[List[int]] = None,
+        decimation: int = 1,
     ) -> np.ndarray:
         """Read a spatial chip from the EO NITF file.
 
         Coordinates are full-image pixel indices.  For multi-image NITFs
         opened in unified mode (default), the request is routed across
-        whichever image segments overlap the bbox; pixels falling in
-        gaps between segments are filled with ``dataset.nodata`` (else
-        ``0``).  For single-image and pinned (``image_index``) modes
-        the request goes directly to the underlying dataset.
+        whichever *primary-group* image segments overlap the bbox;
+        pixels falling in gaps between segments are filled with
+        ``dataset.nodata`` (else ``0``).  Non-primary segments
+        (overviews, masks) are not stitched — reopen with
+        ``image_index=N`` to read them.  For single-image and pinned
+        (``image_index``) modes the request goes directly to the
+        underlying dataset.
 
         Parameters
         ----------
@@ -2048,6 +2465,16 @@ class EONITFReader(ImageReader):
             Ending column index (exclusive).
         bands : Optional[List[int]]
             Band indices to read (0-based). If None, read all bands.
+        decimation : int
+            Read every ``decimation``-th pixel (1 = full resolution).
+            Coordinates stay full-resolution full-image indices; the
+            returned chip has ``ceil(n / decimation)`` rows/cols.
+            Served, in priority order, from: a matching reduced-
+            resolution image segment group (NITF ``IMAG`` overviews —
+            discovered automatically at open), a decimated GDAL read
+            (``out_shape``; exploits embedded overviews and JPEG2000
+            resolution levels) when one dataset covers the request, or
+            a full-resolution read sliced ``[::decimation]``.
 
         Returns
         -------
@@ -2059,8 +2486,16 @@ class EONITFReader(ImageReader):
             raise ValueError("Start indices must be non-negative")
         if row_end > self.metadata.rows or col_end > self.metadata.cols:
             raise ValueError("End indices exceed image dimensions")
+        decimation = int(decimation)
+        if decimation < 1:
+            raise ValueError(
+                f"decimation must be >= 1, got {decimation}")
 
-        if self._image_index is not None or len(self._segments) <= 1:
+        if decimation > 1:
+            return self._read_chip_decimated(
+                row_start, row_end, col_start, col_end, bands,
+                decimation)
+        if self._image_index is not None or not self._segments:
             return self._read_chip_single(
                 row_start, row_end, col_start, col_end, bands)
         return self._read_chip_unified(
@@ -2116,11 +2551,42 @@ class EONITFReader(ImageReader):
         col_end: int,
         bands: Optional[List[int]],
     ) -> np.ndarray:
-        """Stitch a chip from segments overlapping the request bbox.
+        """Stitch a chip from primary-group segments overlapping the bbox.
+
+        Routes only across the primary group — non-primary segments
+        (overviews, masks) live in different pixel grids and are
+        readable via ``image_index`` pinning instead.
+        """
+        return self._read_chip_group(
+            self._primary_segments,
+            row_start, row_end, col_start, col_end, bands)
+
+    def _read_chip_group(
+        self,
+        segments: List[_OpenSegment],
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+        bands: Optional[List[int]],
+    ) -> np.ndarray:
+        """Stitch a chip from the given segments' shared pixel grid.
+
+        Coordinates are indices in the *group's* grid (the primary
+        full-image grid for unified reads; the reduced-resolution grid
+        when serving decimated reads from an overview group).  Pixels
+        not covered by any segment are filled with nodata (else 0) —
+        no bounds requirement on the request bbox.
 
         For ``SCALE_FACTOR=1`` (the v1 supported case) the inverse
         ICHIPB collapses to integer translation, so each per-segment
         read is a plain ``Window`` in that segment's local pixels.
+
+        When the request spans multiple segments and
+        ``read_config.parallel`` is set, per-segment windows are read
+        concurrently on a thread pool (GDAL releases the GIL during
+        I/O and decode); each window writes a disjoint region of the
+        output, so no synchronization is needed.
         """
         n_rows = row_end - row_start
         n_cols = col_end - col_start
@@ -2132,7 +2598,55 @@ class EONITFReader(ImageReader):
         dtype = np.dtype(self.metadata.dtype)
         out = np.full((n_bands, n_rows, n_cols), fill, dtype=dtype)
 
-        for seg in self._segments:
+        jobs = self._plan_segment_jobs(
+            segments, row_start, row_end, col_start, col_end)
+
+        if len(jobs) > 1 and self.read_config.parallel:
+            # Fan segments across threads.  Inner reads stay
+            # single-threaded (plain ds.read) — the segment pool is
+            # the parallelism; nesting chunked reads would
+            # oversubscribe cores.
+            _ensure_gdal_threads(self.read_config)
+            workers = min(len(jobs), _resolve_workers(self.read_config))
+            if bands is None:
+                band_indices = list(range(1, n_bands + 1))
+            else:
+                band_indices = [b + 1 for b in bands]
+
+            def _read_one(job):
+                ds, window, sl = job
+                out[:, sl[0], sl[1]] = ds.read(
+                    band_indices, window=window)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(_read_one, jobs))
+        else:
+            for ds, window, sl in jobs:
+                out[:, sl[0], sl[1]] = self._read_window(
+                    ds, window, bands)
+
+        if n_bands == 1:
+            return out[0]
+        return out
+
+    @staticmethod
+    def _plan_segment_jobs(
+        segments: List[_OpenSegment],
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+    ) -> List[Tuple[Any, 'Window', Tuple[slice, slice]]]:
+        """Plan per-segment read jobs for a group-grid bbox request.
+
+        Returns one ``(dataset, window, (row_slice, col_slice))`` per
+        segment overlapping the request: the segment-local ``Window``
+        to read and the output-array slices it fills.  Shared by pixel
+        reads (:meth:`_read_chip_group`) and validity-mask reads
+        (:meth:`read_mask`).
+        """
+        jobs: List[Tuple[Any, 'Window', Tuple[slice, slice]]] = []
+        for seg in segments:
             info = seg.info
             ov_r0 = max(row_start, info.fi_row_lo)
             ov_r1 = min(row_end, info.fi_row_hi)
@@ -2171,17 +2685,262 @@ class EONITFReader(ImageReader):
                 seg_c0, seg_r0,
                 seg_c1 - seg_c0, seg_r1 - seg_r0,
             )
-            data = self._read_window(seg.dataset, window, bands)
-
             out_r0 = ov_r0 - row_start
-            out_r1 = out_r0 + (seg_r1 - seg_r0)
             out_c0 = ov_c0 - col_start
-            out_c1 = out_c0 + (seg_c1 - seg_c0)
-            out[:, out_r0:out_r1, out_c0:out_c1] = data
+            out_slices = (
+                slice(out_r0, out_r0 + (seg_r1 - seg_r0)),
+                slice(out_c0, out_c0 + (seg_c1 - seg_c0)),
+            )
+            jobs.append((seg.dataset, window, out_slices))
+        return jobs
 
-        if n_bands == 1:
-            return out[0]
-        return out
+    def read_mask(
+        self,
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+        decimation: int = 1,
+    ) -> np.ndarray:
+        """Read the validity mask for a chip region.
+
+        Surfaces GDAL's dataset mask, which reflects NITF pad-pixel /
+        blocked-image masks (``IC=NM``, ``M3``, ``M8`` mask tables)
+        and the nodata value.  In unified multi-segment mode, pixels
+        in gaps between segments are invalid (``0``).
+
+        Parameters
+        ----------
+        row_start, row_end, col_start, col_end : int
+            Full-image bbox, same convention as :meth:`read_chip`.
+        decimation : int
+            Subsample stride applied to the mask (1 = full).
+
+        Returns
+        -------
+        np.ndarray
+            ``uint8`` mask, shape ``(rows, cols)``; ``255`` = valid,
+            ``0`` = invalid or uncovered.
+        """
+        if row_start < 0 or col_start < 0:
+            raise ValueError("Start indices must be non-negative")
+        if row_end > self.metadata.rows or col_end > self.metadata.cols:
+            raise ValueError("End indices exceed image dimensions")
+        decimation = int(decimation)
+        if decimation < 1:
+            raise ValueError(
+                f"decimation must be >= 1, got {decimation}")
+
+        n_rows = row_end - row_start
+        n_cols = col_end - col_start
+
+        def _segment_mask(ds, window: 'Window') -> np.ndarray:
+            try:
+                return ds.read_masks(1, window=window)
+            except (AttributeError, TypeError, NotImplementedError):
+                # No mask support — covered pixels are valid.
+                return np.full(
+                    (int(window.height), int(window.width)),
+                    255, dtype=np.uint8)
+
+        if self._image_index is not None or not self._segments:
+            window = Window(col_start, row_start, n_cols, n_rows)
+            mask = _segment_mask(self.dataset, window)
+        else:
+            mask = np.zeros((n_rows, n_cols), dtype=np.uint8)
+            jobs = self._plan_segment_jobs(
+                self._primary_segments,
+                row_start, row_end, col_start, col_end)
+            for ds, window, sl in jobs:
+                mask[sl[0], sl[1]] = _segment_mask(ds, window)
+
+        if decimation > 1:
+            mask = mask[::decimation, ::decimation]
+        return mask
+
+    def get_lut(self, band: int = 0) -> Optional[np.ndarray]:
+        """Return the NITF look-up table for a band, if any.
+
+        NITF ``IREP=LU`` (and palette/pseudo-color) segments carry a
+        LUT mapping stored pixel indices to display values; GDAL
+        exposes it as a color table.
+
+        Parameters
+        ----------
+        band : int
+            0-based band index.  Default 0.
+
+        Returns
+        -------
+        np.ndarray or None
+            ``uint8`` array of shape ``(N, 3)`` (RGB rows indexed by
+            stored pixel value), or ``None`` when the band carries no
+            LUT.
+        """
+        try:
+            cmap = self.dataset.colormap(band + 1)
+        except (AttributeError, ValueError, TypeError):
+            return None
+        if not cmap:
+            return None
+        n = max(cmap.keys()) + 1
+        lut = np.zeros((n, 3), dtype=np.uint8)
+        for idx, rgba in cmap.items():
+            lut[idx] = rgba[:3]
+        return lut
+
+    def normalize_abpp(self, chip: np.ndarray) -> np.ndarray:
+        """Scale a chip to ``[0, 1]`` float32 honoring ABPP bit depth.
+
+        NITF stores the *actual* bits per pixel (ABPP) separately from
+        the container width (NBPP) — e.g. 11-bit or 12-bit sensor data
+        in a uint16 container.  Naive scaling by the dtype maximum
+        makes such imagery appear 16–32× too dark; this helper divides
+        by ``2**ABPP - 1`` instead, falling back to the dtype width
+        when ABPP is absent.  Floating-point chips are returned as
+        float32 unchanged.
+
+        Parameters
+        ----------
+        chip : np.ndarray
+            Pixel data from :meth:`read_chip`.
+
+        Returns
+        -------
+        np.ndarray
+            float32 array scaled to ``[0, 1]`` (integer inputs).
+        """
+        if np.issubdtype(chip.dtype, np.floating):
+            return chip.astype(np.float32, copy=False)
+        abpp = self.metadata.abpp
+        if abpp is None or abpp <= 0:
+            abpp = np.dtype(self.metadata.dtype).itemsize * 8
+        scale = float(2 ** abpp - 1)
+        return (chip.astype(np.float32) / scale).clip(0.0, 1.0)
+
+    def _find_overview_group(self, decimation: int) -> Optional[ImageGroupInfo]:
+        """Find a reduced-resolution group matching ``1/decimation``.
+
+        A usable overview group has the same band count, dtype, and
+        ICAT as the primary group, full ICHIPB scale, and an IMAG
+        magnification within 0.1% of ``1/decimation``.
+        """
+        if not self._group_infos:
+            return None
+        primary = next(
+            (g for g in self._group_infos if g.is_primary), None)
+        if primary is None:
+            return None
+        target = 1.0 / float(decimation)
+        for g in self._group_infos:
+            if g.is_primary:
+                continue
+            if (g.bands == primary.bands
+                    and g.dtype == primary.dtype
+                    and (g.icat or '') == (primary.icat or '')
+                    and abs(g.scale_factor - 1.0) <= 1e-6
+                    and abs(g.imag - target) <= max(1e-6, 1e-3 * target)):
+                return g
+        return None
+
+    def _read_chip_decimated(
+        self,
+        row_start: int,
+        row_end: int,
+        col_start: int,
+        col_end: int,
+        bands: Optional[List[int]],
+        decimation: int,
+    ) -> np.ndarray:
+        """Serve a decimated chip via the cheapest available source.
+
+        Priority:
+
+        1. A matching reduced-resolution segment group (NITF ``IMAG``
+           overviews) — reads ``1/decimation``-scale pixels directly,
+           never touching full-resolution data.
+        2. A decimated GDAL read (``out_shape``) when a single dataset
+           covers the request — GDAL serves it from embedded overviews
+           or JPEG2000 resolution levels when present.
+        3. Full-resolution read sliced ``[::decimation]`` (correct but
+           no I/O savings) — the universal fallback.
+        """
+        d = decimation
+        out_rows = -(-(row_end - row_start) // d)   # ceil division
+        out_cols = -(-(col_end - col_start) // d)
+
+        # 1. Overview group routing (unified mode only).
+        if self._image_index is None and self._segments:
+            grp = self._find_overview_group(d)
+            if grp is not None:
+                segs = [s for s in self._segments
+                        if s.info.group_id == grp.group_id]
+                g_r0 = int(round(row_start / d))
+                g_c0 = int(round(col_start / d))
+                return self._read_chip_group(
+                    segs,
+                    g_r0, g_r0 + out_rows,
+                    g_c0, g_c0 + out_cols,
+                    bands,
+                )
+
+        # 2. Single covering dataset → decimated GDAL read.
+        ds_direct = None
+        window = None
+        if self._image_index is not None or not self._segments:
+            ds_direct = self.dataset
+            window = Window(
+                col_start, row_start,
+                col_end - col_start, row_end - row_start,
+            )
+        elif len(self._primary_segments) == 1:
+            seg = self._primary_segments[0]
+            info = seg.info
+            ichipb = info.ichipb
+            plain_offset = (
+                ichipb is None
+                or not ichipb.fi_row_scale
+                or (abs(float(ichipb.fi_row_scale) - 1.0) <= 1e-9
+                    and abs(float(ichipb.fi_col_scale) - 1.0) <= 1e-9)
+            )
+            if (plain_offset
+                    and info.fi_row_lo <= row_start
+                    and info.fi_row_hi >= row_end
+                    and info.fi_col_lo <= col_start
+                    and info.fi_col_hi >= col_end):
+                ds_direct = seg.dataset
+                window = Window(
+                    col_start - info.fi_col_lo,
+                    row_start - info.fi_row_lo,
+                    col_end - col_start,
+                    row_end - row_start,
+                )
+        if ds_direct is not None:
+            if bands is None:
+                band_indices = list(range(1, ds_direct.count + 1))
+            else:
+                band_indices = [b + 1 for b in bands]
+            try:
+                data = ds_direct.read(
+                    band_indices, window=window,
+                    out_shape=(len(band_indices), out_rows, out_cols),
+                )
+                if data.shape[0] == 1:
+                    return data[0]
+                return data
+            except TypeError:
+                # Dataset (or test double) without out_shape support —
+                # fall through to the slicing fallback.
+                pass
+
+        # 3. Full-resolution read, sliced.
+        if self._image_index is not None or not self._segments:
+            full = self._read_chip_single(
+                row_start, row_end, col_start, col_end, bands)
+        else:
+            full = self._read_chip_unified(
+                row_start, row_end, col_start, col_end, bands)
+        return full[..., ::d, ::d]
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.
@@ -2217,6 +2976,7 @@ class EONITFReader(ImageReader):
             except Exception:
                 pass
         self._segments = []
+        self._primary_segments = []
 
     @property
     def image_segments(self) -> Optional[List[ImageSegmentInfo]]:
@@ -2227,3 +2987,16 @@ class EONITFReader(ImageReader):
         provided as a property for ergonomic introspection.
         """
         return getattr(self.metadata, 'image_segments', None)
+
+    @property
+    def image_groups(self) -> Optional[List[ImageGroupInfo]]:
+        """Segment-group summaries for heterogeneous multi-image NITFs.
+
+        One entry per group of compatible segments; the entry with
+        ``is_primary=True`` is the group ``read_chip`` and the
+        full-image metadata operate in.  Non-primary groups (overviews,
+        cloud masks, support imagery) are readable by reopening with
+        ``image_index=<segment_index>``.  ``None`` for single-image
+        files and pinned readers.
+        """
+        return getattr(self.metadata, 'image_groups', None)

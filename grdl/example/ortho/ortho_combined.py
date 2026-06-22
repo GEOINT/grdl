@@ -16,7 +16,7 @@ Shows four panels:
 Usage:
   python ortho_combined.py <nitf_file>
   python ortho_combined.py <nitf_file> --chip 2048
-  python ortho_combined.py <nitf_file> --dem /Volumes/PRO-G40/terrain/FABDEM
+  python ortho_combined.py <nitf_file> --dem /path/to/dem
   python ortho_combined.py <nitf_file> --enu 1.0
   python ortho_combined.py --help
 

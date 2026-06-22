@@ -2,12 +2,12 @@
 """
 DTED Elevation Model - Terrain elevation lookup from DTED tiles.
 
-Reads Digital Terrain Elevation Data (DTED) tiles organized in the standard
-directory structure using rasterio/GDAL. Supports DTED Level 0, 1, and 2
-(.dt0, .dt1, .dt2). Tiles are indexed by floor(lat)/floor(lon) and opened
-on demand for efficient batch queries.
+Reads Digital Terrain Elevation Data (DTED) tiles using rasterio/GDAL.
+Supports DTED Level 0, 1, and 2 (.dt0, .dt1, .dt2). Tiles are indexed by
+floor(lat)/floor(lon) and opened on demand for efficient batch queries.
 
-DTED directory structure::
+Two on-disk layouts are supported. The standard layout places longitude
+directories directly under the root::
 
     dted_root/
         e116/
@@ -16,6 +16,25 @@ DTED directory structure::
         w074/
             n40.dt1
             n41.dt1
+
+Nested archive layouts group tiles by resolution under a ``dted``
+directory (the layout NGA ships its archives in)::
+
+    dted_root/
+        dted/
+            dted2/
+                e116/
+                    n34.dt2
+            dted1/
+                e116/
+                    n34.dt1
+            dted0/
+                ...
+
+When a scene ``bbox`` is supplied, tiles are discovered by probing the
+candidate paths for each cell directly (highest resolution first), which
+covers both layouts without a recursive directory walk. Without a bbox,
+a recursive scan discovers tiles at any depth.
 
 Dependencies
 ------------
@@ -39,6 +58,9 @@ Created
 
 Modified
 --------
+2026-06-08  Add bbox-driven discovery of nested DTED archive layouts
+            (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) alongside the
+            standard layout; cache inverse transforms and padded tiles.
 2026-03-27  Add configurable interpolation (bilinear/bicubic/quintic),
             cross-tile boundary stitching, and nodata void handling.
 2026-02-11
@@ -47,8 +69,9 @@ Modified
 # Standard library
 import logging
 import math
+import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -61,6 +84,272 @@ logger = logging.getLogger(__name__)
 
 # DTED file extensions in order of preference (highest resolution first)
 _DTED_EXTENSIONS = ('.dt2', '.dt1', '.dt0')
+
+# Resolution subdirectories used by nested DTED archive layouts, in
+# resolution-priority order. A nested archive stores each tile under
+# ``<root>/dted/dted{2,1,0}/<lon_dir>/<lat_base><ext>``.
+_DTED_RES_DIRS = ('dted2', 'dted1', 'dted0')
+
+
+def _lon_dir_name(lon: int) -> str:
+    """Build a DTED longitude directory name from a longitude floor.
+
+    Parameters
+    ----------
+    lon : int
+        Integer longitude floor in degrees East (negative for West).
+
+    Returns
+    -------
+    str
+        Directory name, e.g. ``116`` → ``'e116'``, ``-74`` → ``'w074'``.
+    """
+    hemi = 'w' if lon < 0 else 'e'
+    return f'{hemi}{abs(int(lon)):03d}'
+
+
+def _lat_base_name(lat: int) -> str:
+    """Build a DTED latitude filename base from a latitude floor.
+
+    Parameters
+    ----------
+    lat : int
+        Integer latitude floor in degrees North (negative for South).
+
+    Returns
+    -------
+    str
+        Filename base without extension, e.g. ``34`` → ``'n34'``,
+        ``-12`` → ``'s12'``.
+    """
+    hemi = 's' if lat < 0 else 'n'
+    return f'{hemi}{abs(int(lat)):02d}'
+
+
+def _dted_candidate_components(
+    lon: int, lat: int
+) -> Iterable[Tuple[str, ...]]:
+    """Yield candidate path-component tuples for a tile cell, in order.
+
+    Extensions are tried highest resolution first (``.dt2 → .dt1 →
+    .dt0``). For each extension, the nested archive layouts precede the
+    standard layout, in this order::
+
+        ('dted', 'dted2', '<lon_dir>', '<lat_base><ext>')
+        ('dted', 'dted1', '<lon_dir>', '<lat_base><ext>')
+        ('dted', 'dted0', '<lon_dir>', '<lat_base><ext>')
+        ('<lon_dir>', '<lat_base><ext>')
+
+    Components are the canonical lowercase DTED names. Case-insensitive
+    resolution against the actual on-disk entries (so uppercase archives
+    on case-sensitive filesystems still match) is the caller's job, via
+    :class:`_CaseInsensitiveDirCache`.
+
+    Parameters
+    ----------
+    lon : int
+        Integer longitude floor in degrees East.
+    lat : int
+        Integer latitude floor in degrees North.
+
+    Yields
+    ------
+    Tuple[str, ...]
+        Relative path components from the archive root, last element the
+        tile filename.
+    """
+    lon_dir = _lon_dir_name(lon)
+    lat_base = _lat_base_name(lat)
+    for ext in _DTED_EXTENSIONS:
+        fname = f'{lat_base}{ext}'
+        for res_dir in _DTED_RES_DIRS:
+            yield ('dted', res_dir, lon_dir, fname)
+        yield (lon_dir, fname)
+
+
+def _dted_candidate_paths(root: Path, lon: int, lat: int) -> Iterable[Path]:
+    """Yield canonical candidate DTED file paths for a tile cell.
+
+    Convenience wrapper over :func:`_dted_candidate_components` that
+    joins each component tuple onto ``root``. Paths use canonical
+    lowercase names and existence is not checked. For OS-independent
+    discovery use :func:`_find_dted_file`, which resolves case
+    differences against the real directory entries.
+
+    Parameters
+    ----------
+    root : Path
+        DTED archive root directory.
+    lon : int
+        Integer longitude floor in degrees East.
+    lat : int
+        Integer latitude floor in degrees North.
+
+    Yields
+    ------
+    Path
+        Candidate tile file path, highest resolution first.
+    """
+    for comps in _dted_candidate_components(lon, lat):
+        yield root.joinpath(*comps)
+
+
+class _CaseInsensitiveDirCache:
+    """Resolve path components case-insensitively, caching directory scans.
+
+    DTED archives may use any casing on case-sensitive filesystems
+    (``e116`` vs ``E116``, ``n34.dt2`` vs ``N34.DT2``, ``dted`` vs
+    ``DTED``). This walks a component sequence from a root, matching each
+    component against the actual directory entries by lowercased name, so
+    discovery is OS-independent.
+
+    Each directory is listed at most once via :func:`os.scandir` and the
+    ``{lowercased_name: actual_name}`` map is cached, so a bbox sweep
+    across many cells that share parent directories does not re-scan
+    them. This keeps discovery fast and free of recursive ``rglob``.
+    """
+
+    def __init__(self) -> None:
+        self._entries: Dict[str, Dict[str, str]] = {}
+
+    def _listing(self, directory: Path) -> Dict[str, str]:
+        """Return the cached ``{lower_name: actual_name}`` map for a dir."""
+        key = str(directory)
+        cached = self._entries.get(key)
+        if cached is None:
+            cached = {}
+            try:
+                with os.scandir(directory) as it:
+                    for entry in it:
+                        cached[entry.name.lower()] = entry.name
+            except OSError:
+                pass
+            self._entries[key] = cached
+        return cached
+
+    def resolve(self, root: Path, components: Tuple[str, ...]) -> Optional[Path]:
+        """Resolve ``root / *components`` case-insensitively.
+
+        Parameters
+        ----------
+        root : Path
+            Starting directory.
+        components : Tuple[str, ...]
+            Canonical (lowercase) relative components to resolve.
+
+        Returns
+        -------
+        Path or None
+            The actual on-disk path if every component matches an entry
+            case-insensitively, else ``None``.
+        """
+        current = root
+        for comp in components:
+            actual = self._listing(current).get(comp.lower())
+            if actual is None:
+                return None
+            current = current / actual
+        return current
+
+
+def _find_dted_file(
+    root: Path,
+    lon: int,
+    lat: int,
+    dir_cache: _CaseInsensitiveDirCache,
+) -> Optional[Path]:
+    """Find the highest-resolution DTED tile for a cell, OS-independently.
+
+    Probes the candidate layouts in priority order
+    (:func:`_dted_candidate_components`) and returns the first existing
+    file, resolving directory and filename case against the real entries
+    via ``dir_cache``.
+
+    Parameters
+    ----------
+    root : Path
+        DTED archive root directory.
+    lon : int
+        Integer longitude floor in degrees East.
+    lat : int
+        Integer latitude floor in degrees North.
+    dir_cache : _CaseInsensitiveDirCache
+        Shared directory-listing cache for the discovery sweep.
+
+    Returns
+    -------
+    Path or None
+        On-disk path of the selected tile, or ``None`` if none exists.
+    """
+    for comps in _dted_candidate_components(lon, lat):
+        resolved = dir_cache.resolve(root, comps)
+        if resolved is not None and resolved.is_file():
+            return resolved
+    return None
+
+
+def _discover_dted_tiles(root: Path) -> Dict[Tuple[int, int], Path]:
+    """Discover DTED tiles under *root* without a bbox, OS-independently.
+
+    Scans the standard layout (``<root>/<lon>/<lat>.dt?``) and the nested
+    archive layout (``<root>/dted/dted{0,1,2}/<lon>/<lat>.dt?``) one
+    directory level deep, selecting the highest-resolution file per cell.
+    Directory and file casing is irrelevant (parsing lowercases). No
+    recursive ``rglob`` is performed — this is the bounded scan used by
+    callers that do not supply a bbox.
+
+    Parameters
+    ----------
+    root : Path
+        DTED archive root directory.
+
+    Returns
+    -------
+    Dict[Tuple[int, int], Path]
+        Mapping of ``(lon_floor, lat_floor)`` to the selected tile path.
+    """
+    chosen_ext: Dict[Tuple[int, int], str] = {}
+    result: Dict[Tuple[int, int], Path] = {}
+
+    def _consider(filepath: Path) -> None:
+        key = _parse_dted_tile_key(filepath)
+        if key is None:
+            return
+        ext = filepath.suffix.lower()
+        if ext not in _DTED_EXTENSIONS:
+            return
+        prev = chosen_ext.get(key)
+        if prev is None or _DTED_EXTENSIONS.index(ext) < _DTED_EXTENSIONS.index(
+            prev
+        ):
+            chosen_ext[key] = ext
+            result[key] = filepath
+
+    def _scan_layout_root(parent: Path) -> None:
+        try:
+            lon_entries = list(os.scandir(parent))
+        except OSError:
+            return
+        for lon_e in lon_entries:
+            if not lon_e.is_dir():
+                continue
+            try:
+                with os.scandir(lon_e.path) as lat_it:
+                    for lat_e in lat_it:
+                        if lat_e.is_file():
+                            _consider(Path(lat_e.path))
+            except OSError:
+                continue
+
+    # Standard layout.
+    _scan_layout_root(root)
+    # Nested archive layout: <root>/dted/dted{0,1,2}/...
+    cache = _CaseInsensitiveDirCache()
+    for res_dir in _DTED_RES_DIRS:
+        nested = cache.resolve(root, ('dted', res_dir))
+        if nested is not None:
+            _scan_layout_root(nested)
+    return result
 
 
 def _parse_dted_tile_key(filepath: Path) -> Optional[Tuple[int, int]]:
@@ -109,16 +398,24 @@ def _parse_dted_tile_key(filepath: Path) -> Optional[Tuple[int, int]]:
 class DTEDElevation(ElevationModel):
     """Elevation model that reads DTED tiles using rasterio/GDAL.
 
-    Scans a directory tree for DTED tiles (.dt0, .dt1, .dt2) at
-    construction time and builds a spatial index mapping integer
-    (lon, lat) tile keys to file paths. Queries are grouped by tile
-    for efficient batch reads.
+    Discovers DTED tiles (.dt0, .dt1, .dt2) at construction time and
+    builds a spatial index mapping integer (lon, lat) tile keys to file
+    paths. Queries are grouped by tile for efficient batch reads.
+
+    Discovery has two modes. When ``bbox`` is supplied, the integer tile
+    cells overlapping the bbox (plus a 1-cell halo for cross-tile
+    interpolation) are enumerated and each candidate path is probed
+    directly in resolution-priority order — covering both the standard
+    layout (``<root>/<lon>/<lat>.dt?``) and nested archive layouts
+    (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) without a recursive
+    directory walk. Without a bbox, the directory tree is scanned
+    recursively, discovering standard-layout tiles at any depth.
 
     Parameters
     ----------
     dem_path : str or Path
         Root directory containing DTED tiles. Must exist and be a
-        directory. Tiles are discovered recursively.
+        directory.
     geoid_path : str or Path, optional
         Path to geoid model file for MSL-to-HAE correction.
     interpolation : int, default=3
@@ -131,6 +428,12 @@ class DTEDElevation(ElevationModel):
         Higher orders produce smoother height fields, eliminating
         the kinks at DEM cell boundaries that cause visible
         distortion in sub-meter orthorectified imagery.
+    bbox : tuple of (min_lon, min_lat, max_lon, max_lat), optional
+        Scene bounding box in degrees. When supplied, only the tile
+        cells intersecting the bbox (plus a 1-cell halo) are indexed,
+        via direct candidate-path probing that also recognizes nested
+        archive layouts. When ``None`` (default), discovery falls back
+        to a recursive scan of the standard layout.
 
     Raises
     ------
@@ -166,6 +469,7 @@ class DTEDElevation(ElevationModel):
         dem_path: str,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> None:
         """Initialize DTED elevation model.
 
@@ -177,6 +481,10 @@ class DTEDElevation(ElevationModel):
             Path to geoid model file for MSL-to-HAE correction.
         interpolation : int, default=3
             Spline interpolation order (1=bilinear, 3=bicubic, 5=quintic).
+        bbox : tuple of (min_lon, min_lat, max_lon, max_lat), optional
+            Scene bounding box in degrees. When supplied, discovery probes
+            candidate tile paths directly (standard and nested archive
+            layouts) instead of a recursive scan.
 
         Raises
         ------
@@ -202,11 +510,19 @@ class DTEDElevation(ElevationModel):
         super().__init__(dem_path=str(dem_path), geoid_path=geoid_path)
 
         self._interp_order = interpolation
+        self._bbox = bbox
 
         # Build spatial index: (lon_floor, lat_floor) -> file path
         # When multiple resolutions exist for the same tile, prefer
         # higher resolution (dt2 > dt1 > dt0).
         self._tile_index: Dict[Tuple[int, int], Path] = {}
+
+        # Caches populated lazily by the sampler:
+        #   _inv_transform_cache: tile key -> ~transform (affine inverse)
+        #   _padded_tile_cache:   tile key -> cross-tile padded data array
+        self._inv_transform_cache: Dict[Tuple[int, int], object] = {}
+        self._padded_tile_cache: Dict[Tuple[int, int], np.ndarray] = {}
+
         self._scan_tiles(dem_path)
 
         # Tile data cache: key -> (data_float64, transform) or None
@@ -215,6 +531,66 @@ class DTEDElevation(ElevationModel):
         ] = {}
 
     def _scan_tiles(self, root: Path) -> None:
+        """Build the tile index using the configured discovery mode.
+
+        With a ``bbox`` (set on the instance), tiles are discovered by
+        probing candidate paths for each overlapping cell — covering both
+        the standard and nested archive layouts. Without a bbox, the
+        directory tree is scanned recursively for the standard layout.
+
+        Parameters
+        ----------
+        root : Path
+            Root directory to scan.
+        """
+        if self._bbox is not None:
+            self._scan_tiles_bbox(root, self._bbox)
+        else:
+            self._scan_tiles_recursive(root)
+
+    def _scan_tiles_bbox(
+        self,
+        root: Path,
+        bbox: Tuple[float, float, float, float],
+    ) -> None:
+        """Index DTED cells overlapping ``bbox`` via direct path probes.
+
+        Enumerates the integer ``(lon, lat)`` cells the bbox overlaps,
+        plus a 1-cell halo so cross-tile interpolation kernels at scene
+        edges still find the neighbouring tile. For each cell, the
+        candidate paths (nested archive layouts then the standard layout,
+        ``.dt2 → .dt1 → .dt0``) are resolved and the first existing file
+        is selected, so the highest available resolution wins.
+
+        Discovery is OS-independent and fast: a shared
+        :class:`_CaseInsensitiveDirCache` matches each path component
+        against the real directory entries (so uppercase archives on
+        case-sensitive filesystems still match) and lists each directory
+        only once across the whole sweep. No recursive directory walk is
+        performed.
+
+        Parameters
+        ----------
+        root : Path
+            DTED archive root directory.
+        bbox : tuple of (min_lon, min_lat, max_lon, max_lat)
+            Scene bounding box in degrees.
+        """
+        min_lon, min_lat, max_lon, max_lat = bbox
+        # 1-cell halo: cross-tile interpolation at an edge query needs the
+        # neighbouring tile to be indexed too.
+        lon_lo = int(math.floor(min_lon)) - 1
+        lon_hi = int(math.floor(max_lon)) + 1
+        lat_lo = int(math.floor(min_lat)) - 1
+        lat_hi = int(math.floor(max_lat)) + 1
+        dir_cache = _CaseInsensitiveDirCache()
+        for lon in range(lon_lo, lon_hi + 1):
+            for lat in range(lat_lo, lat_hi + 1):
+                found = _find_dted_file(root, lon, lat, dir_cache)
+                if found is not None:
+                    self._tile_index[(lon, lat)] = found
+
+    def _scan_tiles_recursive(self, root: Path) -> None:
         """Recursively scan directory for DTED tiles and build index.
 
         Case-insensitive on the extension so archives with
@@ -293,6 +669,8 @@ class DTEDElevation(ElevationModel):
     def clear_cache(self) -> None:
         """Release cached tile data to free memory."""
         self._tile_cache.clear()
+        self._padded_tile_cache.clear()
+        self._inv_transform_cache.clear()
 
     def _read_tile_cached(
         self, key: Tuple[int, int]
@@ -449,6 +827,64 @@ class DTEDElevation(ElevationModel):
 
         return padded
 
+    def _get_inv_transform(
+        self, key: Tuple[int, int], transform: object
+    ) -> object:
+        """Return the cached inverse affine transform for a tile.
+
+        The inverse transform maps geographic coordinates to fractional
+        pixel coordinates and is reused across every batch query that
+        touches the tile, so it is computed once and cached.
+
+        Parameters
+        ----------
+        key : Tuple[int, int]
+            ``(lon_floor, lat_floor)`` tile key.
+        transform : object
+            The tile's forward affine transform (rasterio ``Affine``).
+
+        Returns
+        -------
+        object
+            The inverse affine transform (``~transform``).
+        """
+        inv = self._inv_transform_cache.get(key)
+        if inv is None:
+            inv = ~transform
+            self._inv_transform_cache[key] = inv
+        return inv
+
+    def _get_padded_tile(
+        self, key: Tuple[int, int], data: np.ndarray, margin: int
+    ) -> np.ndarray:
+        """Return the cross-tile padded array for a tile, with caching.
+
+        The interpolation ``margin`` is fixed for the lifetime of the
+        instance (it derives only from the interpolation order), so the
+        padded neighbourhood for a tile is identical across queries and
+        can be cached by tile key.
+
+        Parameters
+        ----------
+        key : Tuple[int, int]
+            ``(lon_floor, lat_floor)`` tile key.
+        data : np.ndarray
+            Primary tile data. Shape ``(nrows, ncols)``.
+        margin : int
+            Number of posts to pad on each side.
+
+        Returns
+        -------
+        np.ndarray
+            Padded array of shape ``(nrows + 2*margin, ncols + 2*margin)``.
+        """
+        cached = self._padded_tile_cache.get(key)
+        if cached is not None:
+            return cached
+        padded = self._build_padded_tile(key, data, margin)
+        self._padded_tile_cache[key] = padded
+        return padded
+
     def _get_elevation_array(
         self, lats: np.ndarray, lons: np.ndarray
     ) -> np.ndarray:
@@ -504,8 +940,8 @@ class DTEDElevation(ElevationModel):
             data, transform = tile
             nrows, ncols = data.shape
 
-            # Fractional pixel coordinates via inverse affine
-            inv_transform = ~transform
+            # Fractional pixel coordinates via inverse affine (cached)
+            inv_transform = self._get_inv_transform(key, transform)
             px_cols, px_rows = inv_transform * (batch_lons, batch_lats)
             px_cols = np.asarray(px_cols, dtype=np.float64)
             px_rows = np.asarray(px_rows, dtype=np.float64)
@@ -518,7 +954,7 @@ class DTEDElevation(ElevationModel):
                 or np.any(px_cols >= ncols - margin)
             )
             if needs_padding:
-                data = self._build_padded_tile(key, data, margin)
+                data = self._get_padded_tile(key, data, margin)
                 px_rows = px_rows + margin
                 px_cols = px_cols + margin
                 nrows, ncols = data.shape

@@ -9,7 +9,11 @@ Roadmap and planned features for the IO module.
 - Base class architecture (`base.py`): `ImageReader`, `ImageWriter`, `CatalogInterface` ABCs
 - SAR readers (`sar/`): `SICDReader`, `CPHDReader`, `CRSDReader`, `SIDDReader`, sarkit/sarpy dual backend, `open_sar()`
 - SAR writers (`sar/`): `SICDWriter` (sarpy), `SIDDWriter` (sarpy)
-- Base format readers: `GeoTIFFReader`, `HDF5Reader`, `NITFReader`, `JP2Reader`, `open_image()`
+- Base format readers: `GeoTIFFReader`, `HDF5Reader`, `NITFReader`, `JP2Reader`
+- Reader factory: `_READER_REGISTRY` (20 formats), `get_reader(format, path)`, `list_reader_formats()`
+- `open_reader(filepath)` — registry-backed auto-detect with `ImportError` fallthrough and `UserWarning` on degraded fallback; replaces `open_image()` (now a deprecated alias)
+- Strict 2-D shape policy: `_enforce_2d = True` + `_assert_2d()` on `SICDReader`, `CPHDReader`, `CRSDReader`
+- `open_any()` `_import_failures` accumulator: consolidated `UserWarning` at GDAL and invasive-probe tiers listing all missing reader libraries
 - Base format writers: `GeoTIFFWriter` (rasterio/COG), `HDF5Writer` (h5py), `NITFWriter` (rasterio), `PNGWriter` (Pillow)
 - BIOMASS: `BIOMASSL1Reader` (quad-pol SCS), `BIOMASSCatalog` (MAAP STAC, OAuth2, download, SQLite)
 - Sensor-specific readers: `Sentinel1SLCReader`, `Sentinel2Reader`, `TerraSARReader`, `NISARReader`

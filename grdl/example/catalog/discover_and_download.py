@@ -51,6 +51,7 @@ Modified
 """
 
 # Standard library
+import os
 import sys
 from pathlib import Path
 
@@ -65,7 +66,7 @@ from grdl.IO import BIOMASSCatalog
 # ---------------------------------------------------------------------------
 
 # Where to store downloads and the catalog database
-DATA_DIR = Path("/Volumes/PRO-G40/SAR_DATA/BIOMASS")
+DATA_DIR = Path(os.environ.get("GRDL_BIOMASS_DATA", "data/sar/biomass"))
 
 # New Norcia, Australia -- ESA BCT calibration transponder site
 # The BCT is at approximately (-31.05, 116.19)

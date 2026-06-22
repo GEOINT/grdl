@@ -22,7 +22,28 @@ result.save_geotiff('ortho.tif')
 
 ### orthorectify() (recommended)
 
-Keyword-argument function that auto-resolves resolution, elevation, and grid bounds. Provide either ``reader`` or ``source_array``.
+Keyword-argument function that auto-resolves resolution, elevation, and grid bounds. Provide either ``reader`` or ``source_array``. Full signature:
+
+```python
+orthorectify(
+    geolocation,                  # required; set geolocation.elevation for terrain
+    *,
+    reader=None,                  # OR source_array=None (mutually exclusive)
+    source_array=None,
+    metadata=None,                # for auto-resolution (SICDMetadata, etc.)
+    output_grid=None,             # explicit grid overrides auto-computation
+    resolution=None,              # (pixel_size_lat, pixel_size_lon) in degrees
+    interpolation='bilinear',     # 'nearest'|'bilinear'|'bicubic'|'lanczos'
+    bands=None,                   # band indices (reader mode)
+    nodata=0.0,
+    margin=0.0,                   # footprint margin in degrees
+    scale_factor=1.0,             # multiplier on auto-computed resolution
+    roi=None,                     # (min_lat, max_lat, min_lon, max_lon)
+    tile_size=None,               # int or (int, int) → tiled processing
+    enu_grid=None,                # dict → ENU output (see ENUGrid below)
+    batch_size=2_000_000,
+) -> OrthoResult
+```
 
 ```python
 from grdl.image_processing.ortho import orthorectify
@@ -61,6 +82,14 @@ result = orthorectify(
 )
 ```
 
+> **The DEM lives on the geolocation, never on the orthorectifier.**
+> Attach terrain to `geo.elevation` and the geolocation uses it
+> internally during its R/Rdot inverse. `orthorectify()` and
+> `Orthorectifier` have **no** `elevation` parameter. If `geo.elevation`
+> is unset, projection falls back to the WGS-84 ellipsoid (height 0) and
+> output is terrain-uncorrected. See the GRDL `CLAUDE.md` "DEM /
+> Elevation Ownership" section.
+
 ### Orthorectifier (direct control)
 
 Low-level class for custom workflows. Compute the mapping once, then resample multiple images or bands.
@@ -75,6 +104,41 @@ ortho.compute_mapping()
 
 band1 = ortho.apply(image_band1, nodata=np.nan)
 band2 = ortho.apply(image_band2, nodata=np.nan)
+```
+
+**`Orthorectifier` API** (`output_grid` accepts any `OutputGridProtocol`):
+
+| Method | Purpose |
+|--------|---------|
+| `Orthorectifier(geolocation, output_grid, interpolation='bilinear')` | Construct; `interpolation` is `'nearest'`/`'bilinear'`/`'bicubic'`/`'lanczos'`. |
+| `compute_mapping()` | Inverse-map every output pixel → source pixel; caches `source_rows`, `source_cols`, `valid_mask`. DEM sampled here (once). |
+| `apply(source, nodata=0.0, backend='auto', source_origin=None)` | Resample a pre-loaded array through the cached mapping. |
+| `apply_from_reader(reader, ...)` | Read only the source chip the mapping needs, then resample (large files). |
+| `get_output_geolocation_metadata()` | CRS, affine transform, bounds, pixel sizes for the output grid. |
+
+The mapping is computed once and reused across `apply()` calls, so
+multiple bands or images on the same grid share the work.
+
+### orthorectify_point_roi() (point-centered chip)
+
+Single-call helper for a fixed-size ground area centered on a geographic
+or pixel point. Handles complex SAR magnitude conversion and DEM lookup.
+
+```python
+from grdl.image_processing.ortho import orthorectify_point_roi
+
+result = orthorectify_point_roi(
+    reader=reader,
+    lat=34.05, lon=-118.25,       # OR row=..., col=...
+    width_m=500, height_m=500,
+    pixel_size_m=0.25,            # None → auto from metadata
+    interpolation='lanczos',
+    band=0,
+    complex_mode='magnitude',     # complex SAR → magnitude before resample
+    elevation=dem,                # optional ElevationModel
+    nodata=float('nan'),
+)
+# Returns PointRoiResult (data + ENU grid + geolocation metadata)
 ```
 
 ## Output Grids
@@ -139,10 +203,10 @@ grid = UTMGrid.from_geolocation(geo, pixel_size_m=1.0)
 
 # Explicit bounds in UTM coordinates
 grid = UTMGrid(
-    zone=18, northern=True,
+    zone=18, north=True,
     min_easting=300000, max_easting=310000,
     min_northing=3990000, max_northing=4000000,
-    pixel_size_easting=1.0, pixel_size_northing=1.0,
+    pixel_size=1.0,
 )
 
 # Same interface as GeographicGrid
@@ -251,7 +315,10 @@ Returned by `orthorectify()`:
 | `geolocation_metadata` | `dict` | CRS, affine transform, bounds |
 | `orthorectifier` | `Orthorectifier` | Cached mapping for reuse |
 
-Properties for ENU grids: `is_enu`, `enu_reference_point`, `pixel_size_meters`, `bounds_meters`.
+Always available: `shape` (`result.data.shape`). ENU-only properties
+(return `None` for non-ENU grids): `is_enu`, `enu_reference_point`
+(`(lat, lon, alt)`), `pixel_size_meters` (`(east_m, north_m)`),
+`bounds_meters` (`(min_east, min_north, max_east, max_north)`).
 
 ```python
 result.save_geotiff('output.tif')  # georeferenced GeoTIFF

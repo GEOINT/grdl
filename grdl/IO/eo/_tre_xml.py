@@ -42,6 +42,7 @@ Created
 
 Modified
 --------
+2026-06-09  Walk xml:DES for TRE_OVERFLOW payloads; add CSCRNA.
 2026-04-28
 """
 
@@ -57,6 +58,7 @@ import numpy as np
 from grdl.IO.models.common import XYZ
 from grdl.IO.models.eo_nitf import (
     BLOCKAMetadata,
+    CSCRNAMetadata,
     CSEPHAMetadata,
     CSEXRAMetadata,
     ICHIPBMetadata,
@@ -81,6 +83,14 @@ def load_xml_tres(dataset: object) -> List[ET.Element]:
     instance.  Multiple instances of the same TRE (e.g., one RSMPCA
     per image section) appear as repeated ``<tre>`` elements.
 
+    TREs longer than the 99,999-byte subheader limit legally overflow
+    into a ``TRE_OVERFLOW`` Data Extension Segment (UDOFL/IXSOFL per
+    MIL-STD-2500C) — common for large RSM payloads (RSMGGA grids,
+    error covariance).  GDAL surfaces parsed DES content in the
+    ``xml:DES`` metadata domain; this helper walks that domain too and
+    collects any embedded ``<tre>`` elements, so overflowed TREs are
+    indistinguishable from subheader TREs to callers.
+
     Parameters
     ----------
     dataset : rasterio.DatasetReader
@@ -90,34 +100,31 @@ def load_xml_tres(dataset: object) -> List[ET.Element]:
     -------
     list of xml.etree.ElementTree.Element
         ``<tre>`` elements.  Empty list when GDAL does not recognize
-        any TREs in the file or the namespace is unavailable.
+        any TREs in the file or the namespaces are unavailable.
 
     Notes
     -----
-    rasterio aggregates the ``xml:TRE`` metadata domain as a dict.
-    GDAL versions differ in whether the dict has a single key holding
-    the whole document or one entry per TRE -- this helper handles
-    both shapes.
+    rasterio aggregates each metadata domain as a dict.  GDAL versions
+    differ in whether the dict has a single key holding the whole
+    document or one entry per TRE -- this helper handles both shapes.
     """
-    try:
-        tags = dataset.tags(ns='xml:TRE') or {}
-    except (AttributeError, TypeError):
-        return []
-    if not tags:
-        return []
-
     elements: List[ET.Element] = []
-    for raw in tags.values():
-        if not raw:
-            continue
+    for namespace in ('xml:TRE', 'xml:DES'):
         try:
-            root = ET.fromstring(raw)
-        except ET.ParseError:
+            tags = dataset.tags(ns=namespace) or {}
+        except (AttributeError, TypeError):
             continue
-        if root.tag == 'tre':
-            elements.append(root)
-        else:
-            elements.extend(root.findall('.//tre'))
+        for raw in tags.values():
+            if not raw:
+                continue
+            try:
+                root = ET.fromstring(raw)
+            except ET.ParseError:
+                continue
+            if root.tag == 'tre':
+                elements.append(root)
+            else:
+                elements.extend(root.findall('.//tre'))
     return elements
 
 
@@ -923,11 +930,56 @@ def parse_piaimc(node: ET.Element) -> Optional[Dict[str, Any]]:
 # means the TRE may legitimately appear more than once (e.g. one
 # RSMPCA per image section); single-instance TREs return only the
 # first parsed record.
+def parse_cscrna(node: ET.Element) -> Optional[CSCRNAMetadata]:
+    """Parse a CSCRNA TRE node into :class:`CSCRNAMetadata`.
+
+    Field layout per STDI-0002 (CSCRNA, 109-byte CEDATA)::
+
+        PREDICT_CORNERS(1)
+        ULCNR_LAT(9) ULCNR_LONG(10) ULCNR_HT(8)
+        URCNR_LAT(9) URCNR_LONG(10) URCNR_HT(8)
+        LRCNR_LAT(9) LRCNR_LONG(10) LRCNR_HT(8)
+        LLCNR_LAT(9) LLCNR_LONG(10) LLCNR_HT(8)
+
+    Parameters
+    ----------
+    node : ET.Element
+        ``<tre name="CSCRNA">`` element.
+
+    Returns
+    -------
+    CSCRNAMetadata or None
+    """
+    try:
+        predict = (_optional_str(node, 'PREDICT_CORNERS') or 'N') == 'Y'
+        corners = np.empty((4, 2), dtype=np.float64)
+        heights = np.empty(4, dtype=np.float64)
+        any_height = False
+        for i, prefix in enumerate(('UL', 'UR', 'LR', 'LL')):
+            corners[i, 0] = _required_float(node, f'{prefix}CNR_LAT')
+            corners[i, 1] = _required_float(
+                node, f'{prefix}CNR_LONG', f'{prefix}CNR_LON')
+            ht = _optional_float(node, f'{prefix}CNR_HT')
+            if ht is not None:
+                any_height = True
+                heights[i] = ht
+            else:
+                heights[i] = 0.0
+        return CSCRNAMetadata(
+            predicted=predict,
+            corners=corners,
+            heights=heights if any_height else None,
+        )
+    except (ValueError, TypeError):
+        return None
+
+
 _PARSERS = {
     'RSMPCA': (parse_rsmpca, True),
     'RSMIDA': (parse_rsmida, False),
     'RSMGGA': (parse_rsmgga, True),
     'CSEXRA': (parse_csexra, False),
+    'CSCRNA': (parse_cscrna, False),
     'USE00A': (parse_use00a, False),
     'ICHIPB': (parse_ichipb, False),
     'BLOCKA': (parse_blocka, False),
@@ -936,6 +988,40 @@ _PARSERS = {
     'STDIDC': (parse_stdidc, False),
     'PIAIMC': (parse_piaimc, False),
 }
+
+_EXTENDED_REGISTERED = False
+
+
+def _register_extended_parsers() -> None:
+    """Register TRE parsers that live in sibling modules.
+
+    The RSM error-model (:mod:`grdl.IO.eo._tre_rsm_error`), band
+    (:mod:`grdl.IO.eo._tre_band`), and airborne
+    (:mod:`grdl.IO.eo._tre_airborne`) parser modules import this
+    module's field helpers, so registering them at import time would
+    be circular.  Registration is deferred to the first
+    :func:`parse_all_tres` call instead.
+    """
+    global _EXTENDED_REGISTERED
+    if _EXTENDED_REGISTERED:
+        return
+    from grdl.IO.eo import _tre_airborne, _tre_band, _tre_rsm_error
+    _PARSERS.update({
+        'RSMPIA': (_tre_rsm_error.parse_rsmpia, False),
+        'RSMDCA': (_tre_rsm_error.parse_rsmdca, False),
+        'RSMECA': (_tre_rsm_error.parse_rsmeca, False),
+        'RSMAPA': (_tre_rsm_error.parse_rsmapa, False),
+        'RSMDCB': (_tre_rsm_error.parse_rsmdcb, False),
+        'RSMECB': (_tre_rsm_error.parse_rsmecb, False),
+        'RSMAPB': (_tre_rsm_error.parse_rsmapb, False),
+        'BANDSB': (_tre_band.parse_bandsb, False),
+        'BANDSA': (_tre_band.parse_bandsa, False),
+        'SENSRB': (_tre_airborne.parse_sensrb, False),
+        'MENSRB': (_tre_airborne.parse_mensrb, False),
+        'MENSRA': (_tre_airborne.parse_mensra, False),
+        'ACFTB': (_tre_airborne.parse_acftb, False),
+    })
+    _EXTENDED_REGISTERED = True
 
 
 def parse_all_tres(dataset: object) -> Dict[str, Any]:
@@ -955,6 +1041,7 @@ def parse_all_tres(dataset: object) -> Dict[str, Any]:
         Values are dataclass instances or, for multi-instance TREs,
         lists of dataclass instances.
     """
+    _register_extended_parsers()
     out: Dict[str, Any] = {}
     for tre in load_xml_tres(dataset):
         name = tre.get('name')

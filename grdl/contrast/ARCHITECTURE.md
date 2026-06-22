@@ -65,7 +65,9 @@ ImageTransform (ABC)                        image_processing/base.py
 │   └── HighContrast    (preset dmin=30, mmult=4)
 │
 ├── GDM (Generalized Density Mapping)       contrast/density.py
+│       graze/slope-aware; weighting='uniform'|'taylor'
 ├── PEDF (Piecewise Extended Density)       contrast/density.py
+│       dmin=30, mmult=40, eps=1e-5
 ├── NRLStretch                              contrast/nrl.py
 │
 ├── GammaCorrection                         contrast/gamma.py
