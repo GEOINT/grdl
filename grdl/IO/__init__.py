@@ -207,6 +207,7 @@ def register_reader(
 def get_reader(
     format: str,
     filepath: Union[str, Path],
+    **kwargs,
 ) -> ImageReader:
     """Create an ImageReader for the given format.
 
@@ -221,6 +222,10 @@ def get_reader(
         Call :func:`list_reader_formats` for all supported keys.
     filepath : str or Path
         Path to the image file or directory.
+    **kwargs
+        Additional keyword arguments passed to the reader constructor.
+        For example, ``frequency='A'`` and ``polarizations='all'``
+        for NISAR readers.
 
     Returns
     -------
@@ -241,6 +246,10 @@ def get_reader(
     >>> from grdl.IO import get_reader
     >>> with get_reader('sicd', 'image.nitf') as reader:
     ...     chip = reader.read_chip(0, 512, 0, 512)
+
+    >>> # NISAR with configuration
+    >>> with get_reader('nisar', 'scene.h5', frequency='A', polarizations='all') as reader:
+    ...     cube = reader.read_full()
 
     >>> reader = get_reader('geotiff', 'scene.tif')
     >>> chip = reader.read_chip(0, 1000, 0, 1000)
@@ -263,7 +272,7 @@ def get_reader(
             "See requirements-optional.txt for install instructions."
         ) from exc
     reader_cls = getattr(module, class_name)
-    return reader_cls(filepath)
+    return reader_cls(filepath, **kwargs)
 
 
 def list_reader_formats() -> List[str]:
