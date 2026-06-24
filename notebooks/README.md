@@ -54,18 +54,54 @@ All notebooks follow a consistent pattern:
 
 ## Learning Path
 
-**New to GRDL?** Start here:
+**Recommended progression for new GRDL users. Follow this tier-based path to build expertise systematically.**
 
-1. [IO/view_sicd.ipynb](IO/view_sicd.ipynb) — Open and inspect SAR imagery
-2. [image_processing/sublook_decomposition.ipynb](image_processing/sublook_decomposition.ipynb) — Sub-aperture splitting
-3. [ortho/sicd_ortho_demo.ipynb](ortho/sicd_ortho_demo.ipynb) — Geometric correction
-4. [image_processing/csi_detection_overlay.ipynb](image_processing/csi_detection_overlay.ipynb) — Full detection pipeline
+### Tier 1: Fundamentals (Start Here)
 
-**Advanced workflows:**
+Master the basics of SAR workflows:
 
-- [image_processing/cphd_to_sicd.ipynb](image_processing/cphd_to_sicd.ipynb) — Phase history → image formation
-- [ortho/ortho_combined.ipynb](ortho/ortho_combined.ipynb) — Multi-format orthorectification
-- [catalog/discover_and_download.ipynb](catalog/discover_and_download.ipynb) — Remote data acquisition
+1. **[IO/view_sicd.ipynb](IO/view_sicd.ipynb)** — SICD reader, metadata inspection, chip extraction. Entry point for SAR workflows.
+2. **[image_processing/sublook_decomposition.ipynb](image_processing/sublook_decomposition.ipynb)** — Sub-aperture splitting. Foundation for detection and coherence workflows.
+3. **[ortho/ortho_sicd.ipynb](ortho/ortho_sicd.ipynb)** — SICD orthorectification with DEM terrain correction. Core geometric correction workflow.
+4. **[image_processing/csi_detection_overlay.ipynb](image_processing/csi_detection_overlay.ipynb)** — Full pipeline: sublook → dominance → threshold → CSI overlay. Complete GRDL workflow composition.
+
+### Tier 2: Image Formation (CPHD → SICD)
+
+Understand SAR image formation from phase history:
+
+5. **[image_processing/pfa_image_formation.ipynb](image_processing/pfa_image_formation.ipynb)** — Polar Format Algorithm for spotlight SAR.
+6. **[image_processing/rda_stripmap.ipynb](image_processing/rda_stripmap.ipynb)** — Range-Doppler Algorithm for stripmap collections.
+7. **[image_processing/cphd_to_sicd.ipynb](image_processing/cphd_to_sicd.ipynb)** — End-to-end CPHD → SICD pipeline with metadata construction and NITF export.
+
+### Tier 3: Advanced SAR Processing
+
+Polarimetric analysis and specialized workflows:
+
+8. **[image_processing/pauli_decomposition.ipynb](image_processing/pauli_decomposition.ipynb)** — Quad-pol Pauli RGB composite. Physical scattering interpretation.
+9. **[image_processing/halpha_decomposition.ipynb](image_processing/halpha_decomposition.ipynb)** — Dual-pol H/Alpha entropy-alpha decomposition.
+10. **[ortho/ortho_sidd.ipynb](ortho/ortho_sidd.ipynb)** — SIDD re-orthorectification (pre-projected vs custom).
+11. **[ortho/ortho_biomass.ipynb](ortho/ortho_biomass.ipynb)** — BIOMASS L1 orthorectification with GCP-based Delaunay geolocation.
+
+### Tier 4: Supporting Modules
+
+Specialized tools and advanced topics:
+
+12. **[shapes/cued_detection.ipynb](shapes/cued_detection.ipynb)** — Geographic ROI-based detection cueing.
+13. **[shapes/error_ellipse_overlay.ipynb](shapes/error_ellipse_overlay.ipynb)** — Error budget propagation via covariance convolution.
+14. **[interpolation/interpolation_methods.ipynb](interpolation/interpolation_methods.ipynb)** — Polyphase vs Kaiser-Sinc vs Lanczos comparison. Essential for SAR image formation.
+
+### Consolidated Workflows (Cross-Format Comparisons)
+
+15. **[catalog/remote_data_access.ipynb](catalog/remote_data_access.ipynb)** — Query → filter → download from remote catalogs (BIOMASS, Sentinel-1/2, NISAR).
+16. **[ortho/multi_format_ortho.ipynb](ortho/multi_format_ortho.ipynb)** — SICD vs SIDD vs BIOMASS orthorectification comparison with metrics.
+17. **[ortho/roi_extraction_and_ortho.ipynb](ortho/roi_extraction_and_ortho.ipynb)** — Ground-extent vs radius-based ROI extraction patterns.
+18. **[image_processing/stripmap_formation_comparison.ipynb](image_processing/stripmap_formation_comparison.ipynb)** — StripmapPFA vs FFBP timing and quality comparison.
+
+### Additional Resources
+
+- **[geolocation/footprint_overlay.ipynb](geolocation/footprint_overlay.ipynb)** — Footprint computation and grid overlay validation
+- **[IO/view_sentinel2.ipynb](IO/view_sentinel2.ipynb)** — Multispectral EO imagery (Sentinel-2)
+- **[IO/rapideye_nitf_rpc.ipynb](IO/rapideye_nitf_rpc.ipynb)** — EO NITF with RPC geolocation
 
 ## Requirements
 
