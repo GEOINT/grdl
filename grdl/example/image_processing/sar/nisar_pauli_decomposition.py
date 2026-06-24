@@ -175,8 +175,8 @@ def main(argv=None):
 
     # Build [0,1] float32 RGB using Pauli's built-in stretch
     # Channel mapping: R=double-bounce, G=volume, B=surface
-    rgb_float = pauli.to_rgb(components, representation='db',
-                             percentile_low=2.0, percentile_high=98.0)
+    rgb_float, rgb_metadata = pauli.to_rgb(components, representation='db',
+                                           percentile_low=2.0, percentile_high=98.0)
     # rgb_float: (3, rows, cols) float32 in [0, 1]
     print(f"  RGB float shape : {rgb_float.shape}")
 
