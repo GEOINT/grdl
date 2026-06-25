@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.6.2] — 2026-06-25
+
 ### Added
 
 - **Robust MAD normalization** (`grdl/data_prep`): `Normalizer` gains a
@@ -23,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StatsResult` gains `median` and `mad` fields and a `mad_std` property
   (``1.4826 * mad``). Both stay ``nan`` unless ``mad=True`` was requested; the
   internal median percentile is not leaked into ``percentiles``.
+
+### Changed
+
+- **Sub-aperture FFT backend** (`grdl/image_processing/sar/sublook.py`):
+  `SublookDecomposition` now selects a multi-tier 1-D FFT backend, preferred
+  ``torch`` > ``scipy`` (multithreaded, ``workers=-1``) > ``numpy``. For numpy
+  input on a multicore CPU this makes the multithreaded `scipy.fft` the default
+  (~17x faster 1-D FFT than single-threaded `numpy.fft`); results are
+  bit-identical. Sub-look extraction also reuses one spectral buffer and clears
+  only the band per look instead of allocating a full-size array per look.
+
+### Removed
+
+- **CPHD PVP-offset repair** (`grdl/IO/sar/cphd.py`): dropped the
+  `_repair_pvp_offsets_sarkit` workaround (and its call in `CPHDReader`) along
+  with `tests/test_io_cphd_pvp_offset.py`.
 
 ---
 
