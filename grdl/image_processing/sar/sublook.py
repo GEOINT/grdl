@@ -18,13 +18,20 @@ mode-adaptive: ``DeltaKCOAPoly`` is ~0 for spotlight (deskew is a no-op) and
 non-trivial for stripmap/ScanSAR, so a single code path covers all modes.
 
 Accepts numpy arrays, CuPy arrays, and PyTorch tensors as input. Returns
-the same array type as the input for numpy and CuPy; the PyTorch path
-always returns a numpy array. Both the CuPy and torch paths support
-GPU-accelerated FFTs for large images.
+the same array type as the input for CuPy; numpy and torch inputs return a
+numpy array. Both the CuPy and torch paths support GPU-accelerated FFTs for
+large images.
+
+The 1-D sub-aperture FFTs use a multi-tier backend, preferred in the order
+``torch`` > ``scipy`` (multithreaded, ``workers=-1``) > ``numpy``. For numpy
+input on a multicore CPU this makes the scipy tier the default and avoids the
+single-threaded ``numpy.fft`` path; passing a torch tensor (or installing
+torch) selects the torch tier.
 
 Dependencies
 ------------
-torch (optional, for GPU-accelerated FFT path)
+scipy (multithreaded scipy.fft tier; a core dependency)
+torch (optional, for the torch FFT tier / GPU path)
 
 Author
 ------
@@ -43,7 +50,7 @@ Created
 
 Modified
 --------
-2026-06-02
+2026-06-25
 """
 
 # Standard library
@@ -53,6 +60,12 @@ from typing import Annotated, Any, Optional, Tuple, TYPE_CHECKING, Union
 
 # Third-party
 import numpy as np
+
+try:
+    import scipy.fft as _scipy_fft
+    _HAS_SCIPY_FFT = True
+except ImportError:  # scipy is a core dependency; guard only for robustness
+    _HAS_SCIPY_FFT = False
 
 from grdl._torch_optional import torch, HAS_TORCH as _HAS_TORCH
 
@@ -139,6 +152,82 @@ def _validate_complex_2d_torch(tensor: 'torch.Tensor') -> None:
             f"tensor must be 2D (rows, cols), got {tensor.ndim}D "
             f"with shape {tuple(tensor.shape)}"
         )
+
+
+# ===================================================================
+# FFT backend -- multi-tier: PyTorch > SciPy (multithreaded) > NumPy
+# ===================================================================
+
+def _cpu_fft_backend() -> str:
+    """Name of the preferred CPU FFT backend for the numpy input path.
+
+    Resolution order is ``torch`` > ``scipy`` > ``numpy``. The torch tier is
+    applied whole-image (and device-aware) in
+    :meth:`SublookDecomposition.decompose`; the scipy / numpy tiers are applied
+    per-axis inside :func:`_fft_along` / :func:`_ifft_along`.
+
+    Returns
+    -------
+    str
+        ``'torch'``, ``'scipy'``, or ``'numpy'``.
+    """
+    if _HAS_TORCH:
+        return 'torch'
+    if _HAS_SCIPY_FFT:
+        return 'scipy'
+    return 'numpy'
+
+
+def _fft_along(a: np.ndarray, axis: int, xp) -> np.ndarray:
+    """Forward 1-D FFT along *axis*.
+
+    For numpy (CPU) arrays this uses multithreaded ``scipy.fft`` (``workers=-1``)
+    when available, which is markedly faster than the single-threaded
+    ``numpy.fft``; cupy arrays use ``cupy.fft`` via ``xp``. The PyTorch tier is
+    handled upstream in :meth:`SublookDecomposition.decompose`.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Complex array (numpy or cupy).
+    axis : int
+        Axis along which to transform.
+    xp : module
+        ``numpy`` or ``cupy`` -- the array's array-module.
+
+    Returns
+    -------
+    np.ndarray
+        Complex FFT along *axis*, same dtype and array type as *a*.
+    """
+    if xp is np and _HAS_SCIPY_FFT:
+        return _scipy_fft.fft(a, axis=axis, workers=-1)
+    return xp.fft.fft(a, axis=axis)
+
+
+def _ifft_along(a: np.ndarray, axis: int, xp) -> np.ndarray:
+    """Inverse 1-D FFT along *axis*.
+
+    Mirror of :func:`_fft_along`: multithreaded ``scipy.fft.ifft`` for numpy
+    arrays, ``cupy.fft.ifft`` (via ``xp``) for cupy.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Complex array (numpy or cupy).
+    axis : int
+        Axis along which to transform.
+    xp : module
+        ``numpy`` or ``cupy``.
+
+    Returns
+    -------
+    np.ndarray
+        Complex inverse FFT along *axis*, same dtype and array type as *a*.
+    """
+    if xp is np and _HAS_SCIPY_FFT:
+        return _scipy_fft.ifft(a, axis=axis, workers=-1)
+    return xp.fft.ifft(a, axis=axis)
 
 
 # ===================================================================
@@ -629,11 +718,19 @@ class SublookDecomposition(ImageProcessor):
     ) -> np.ndarray:
         """Decompose a complex SAR image into sub-aperture looks.
 
-        Dispatches to the appropriate backend based on input type:
+        Dispatches to the fastest available backend. Array type fixes the
+        device; for CPU numpy input the FFT backend follows the multi-tier
+        preference ``torch`` > ``scipy`` (multithreaded) > ``numpy``:
 
-        - ``torch.Tensor`` → ``_decompose_torch`` (PyTorch CUDA / CPU)
-        - ``cupy.ndarray`` → ``_decompose_numpy`` with ``xp = cupy``
-        - ``numpy.ndarray`` → ``_decompose_numpy`` with ``xp = numpy``
+        - ``torch.Tensor`` → ``_decompose_torch`` (caller's device: CUDA / CPU)
+        - ``cupy.ndarray`` → ``_decompose_numpy`` with ``xp = cupy`` (GPU)
+        - ``numpy.ndarray`` and torch installed → ``_decompose_torch`` on a
+          CPU tensor (torch's multithreaded / GPU-capable FFT)
+        - ``numpy.ndarray`` otherwise → ``_decompose_numpy``, whose 1-D FFTs
+          use multithreaded ``scipy.fft`` when available, else ``numpy.fft``
+
+        All paths return a ``numpy.ndarray`` except CuPy input, which returns a
+        ``cupy.ndarray``.
 
         Parameters
         ----------
@@ -644,8 +741,6 @@ class SublookDecomposition(ImageProcessor):
         -------
         np.ndarray or cupy.ndarray
             Complex sub-look stack, shape ``(num_looks, rows, cols)``.
-            Returns ``np.ndarray`` for numpy or torch input;
-            ``cupy.ndarray`` for CuPy input.
 
         Raises
         ------
@@ -655,15 +750,30 @@ class SublookDecomposition(ImageProcessor):
         ValueError
             If *image* is not 2D.
         """
+        # Explicit torch tensor: caller already chose the device (CUDA / CPU).
         if _HAS_TORCH and isinstance(image, torch.Tensor):
             logger.info(
                 "Sublook decomposition: backend=torch, num_looks=%d",
                 self._num_looks,
             )
             return self._decompose_torch(image)
+        # CuPy array stays on the GPU through the xp path.
+        if _HAS_CUPY and isinstance(image, cp.ndarray):
+            logger.info(
+                "Sublook decomposition: backend=cupy, num_looks=%d",
+                self._num_looks,
+            )
+            return self._decompose_numpy(image)
+        # NumPy (CPU) input: prefer torch, then scipy (multithreaded), then numpy.
+        if _HAS_TORCH:
+            logger.info(
+                "Sublook decomposition: backend=torch (from numpy), num_looks=%d",
+                self._num_looks,
+            )
+            return self._decompose_torch(torch.from_numpy(image))
         logger.info(
-            "Sublook decomposition: backend=numpy, num_looks=%d",
-            self._num_looks,
+            "Sublook decomposition: backend=%s, num_looks=%d",
+            'scipy' if _HAS_SCIPY_FFT else 'numpy', self._num_looks,
         )
         return self._decompose_numpy(image)
 
@@ -708,8 +818,10 @@ class SublookDecomposition(ImageProcessor):
             n_samples, centered=deskew_phase is not None
         )
 
-        # FFT along decomposition axis, then shift DC to center
-        spectrum = xp.fft.fftshift(xp.fft.fft(image, axis=axis), axes=axis)
+        # FFT along decomposition axis, then shift DC to center. The 1-D FFT
+        # uses multithreaded scipy.fft for numpy arrays (cupy via xp); the
+        # cheap shift stays on xp.
+        spectrum = xp.fft.fftshift(_fft_along(image, axis, xp), axes=axis)
 
         # Deweight within signal support
         support_start = starts[0]
@@ -732,24 +844,30 @@ class SublookDecomposition(ImageProcessor):
                 -1j * self._sgn * 2.0 * np.pi * xp.asarray(deskew_phase)
             ).astype(image.dtype)
 
-        # Extract sub-looks
+        # Extract sub-looks. Reuse one spectral buffer and clear only the band
+        # region after each look (mask in place) instead of allocating a fresh
+        # full-size zero array per look. Each iteration writes exactly the band
+        # it later clears, so this is correct for overlapping sub-bands too.
         result = xp.zeros(
             (self._num_looks, rows, cols), dtype=image.dtype
         )
+        sub_spectrum = xp.zeros_like(spectrum)
+        slices = [slice(None), slice(None)]
 
         for i in range(self._num_looks):
-            sub_spectrum = xp.zeros_like(spectrum)
-            slices = [slice(None), slice(None)]
             slices[axis] = slice(starts[i], stops[i])
-            sub_spectrum[tuple(slices)] = spectrum[tuple(slices)]
+            band = tuple(slices)
+            sub_spectrum[band] = spectrum[band]          # mask in: copy band
 
-            # Shift back and inverse FFT
-            look = xp.fft.ifft(
-                xp.fft.ifftshift(sub_spectrum, axes=axis), axis=axis
+            # Shift back and inverse FFT (multithreaded scipy.fft for numpy)
+            look = _ifft_along(
+                xp.fft.ifftshift(sub_spectrum, axes=axis), axis, xp
             )
             if reskew is not None:
                 look = look * reskew
             result[i] = look
+
+            sub_spectrum[band] = 0                        # mask out: clear band
 
         return result
 
