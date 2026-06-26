@@ -31,6 +31,7 @@ Created
 
 Modified
 --------
+2026-06-26  Multi-band support for .SAFE directories (band cataloging, resolution parameter).
 2026-03-27  Full PSD-based XML parsing for SAFE archives.
 """
 
@@ -198,6 +199,45 @@ def _resolve_jp2_from_safe(safe_dir: Path) -> Optional[Path]:
 
     fallback = sorted(safe_dir.rglob('*.jp2'))
     return fallback[0] if fallback else None
+
+
+def _catalog_safe_bands(safe_dir: Path, resolution: int = 10) -> List[Path]:
+    """Catalog all band files at a specific resolution from a SAFE directory.
+    
+    Parameters
+    ----------
+    safe_dir : Path
+        Path to .SAFE directory.
+    resolution : int
+        Target resolution in meters (10, 20, or 60).
+        
+    Returns
+    -------
+    List[Path]
+        Sorted list of band JP2 files at the target resolution.
+    """
+    res_dir = f'R{resolution}m'
+    
+    # L2A structure: GRANULE/*/IMG_DATA/R10m/
+    candidates = sorted(safe_dir.rglob(
+        f'GRANULE/*/IMG_DATA/{res_dir}/T*_B*.jp2'
+    ))
+    if candidates:
+        return candidates
+    
+    # L1C structure: GRANULE/*/IMG_DATA/ (no resolution subdirs)
+    # Filter by band ID and known resolution
+    candidates = sorted(safe_dir.rglob('GRANULE/*/IMG_DATA/T*_B*.jp2'))
+    filtered = []
+    for path in candidates:
+        # Extract band ID from filename (e.g., T15RTP_20260204T170409_B02.jp2)
+        match = re.search(r'_B(\d{2}[A-Z]?)\.jp2$', path.name)
+        if match:
+            band_id = f'B{match.group(1)}'
+            if BAND_RESOLUTIONS.get(band_id) == resolution:
+                filtered.append(path)
+    
+    return filtered
 
 
 def _find_safe_dir(filepath: Path) -> Optional[Path]:
@@ -599,6 +639,10 @@ class Sentinel2Reader(ImageReader):
     Wraps JP2Reader for pixel access and extracts Sentinel-2-specific
     metadata from filename patterns, JPEG2000 tags, and SAFE archive XML
     into a typed ``Sentinel2Metadata`` dataclass.
+    
+    When initialized with a .SAFE directory, catalogs all band files at
+    the target resolution and supports multi-band reading via the ``bands``
+    parameter.
 
     Parameters
     ----------
@@ -606,71 +650,116 @@ class Sentinel2Reader(ImageReader):
         Path to a Sentinel-2 JP2 file, or a ``.SAFE`` directory.
     backend : str, optional
         JP2 backend (``'rasterio'``, ``'glymur'``, ``'auto'``).
+    resolution : int, optional
+        Target resolution in meters when reading from .SAFE directory.
+        Valid values: 10, 20, 60. Default is 10.
 
     Attributes
     ----------
     filepath : Path
-        Path to the JP2 file.
+        Path to the JP2 file or .SAFE directory.
     metadata : Sentinel2Metadata
         Typed Sentinel-2 metadata.
-    jp2_reader : JP2Reader
-        Wrapped JP2Reader for pixel access.
+    jp2_reader : JP2Reader or None
+        Single-band reader (when initialized with a JP2 file).
+    band_readers : List[JP2Reader] or None
+        Multi-band readers (when initialized with a .SAFE directory).
 
     Examples
     --------
-    >>> with Sentinel2Reader('product.SAFE') as reader:
-    ...     print(reader.metadata.satellite)
-    ...     print(reader.metadata.quality.cloud_coverage_assessment)
-    ...     print(reader.metadata.mean_angles.sun_zenith)
+    >>> # Single-band JP2 file
+    >>> with Sentinel2Reader('T15RTP_20260204T170409_B04.jp2') as reader:
     ...     chip = reader.read_chip(0, 1000, 0, 1000)
+    
+    >>> # Multi-band .SAFE directory
+    >>> with Sentinel2Reader('product.SAFE', resolution=10) as reader:
+    ...     # Read RGB bands (B02, B03, B04 at 10m resolution)
+    ...     rgb = reader.read_chip(0, 2048, 0, 2048, bands=[0, 1, 2])
+    ...     print(rgb.shape)  # (2048, 2048, 3)
     """
 
     def __init__(
         self,
         filepath: Union[str, Path],
         backend: str = 'auto',
+        resolution: int = 10,
     ) -> None:
         self._backend = backend
+        self._resolution = resolution
         self.jp2_reader: Optional[JP2Reader] = None
+        self.band_readers: Optional[List[JP2Reader]] = None
+        self._band_files: Optional[List[Path]] = None
 
         resolved = Path(filepath)
         self._safe_dir: Optional[Path] = None
+        self._is_safe_mode = False
 
         if resolved.is_dir() and resolved.suffix == '.SAFE':
             self._safe_dir = resolved
-            jp2 = _resolve_jp2_from_safe(resolved)
-            if jp2 is None:
+            self._is_safe_mode = True
+            
+            # Catalog all bands at target resolution
+            band_files = _catalog_safe_bands(resolved, resolution=resolution)
+            if not band_files:
                 raise ValueError(
-                    f"No JP2 band files found in SAFE directory: {resolved}"
+                    f"No {resolution}m resolution band files found in SAFE directory: {resolved}"
                 )
-            logger.info("Resolved SAFE directory to band file: %s", jp2.name)
-            filepath = jp2
+            
+            self._band_files = band_files
+            logger.info(
+                f"Cataloged {len(band_files)} bands at {resolution}m resolution from {resolved.name}"
+            )
+            
+            # Use first band for metadata extraction
+            filepath = band_files[0]
 
         super().__init__(filepath)
 
     def _load_metadata(self) -> None:
         """Load metadata from JP2, filename, and SAFE XML."""
-        # Open JP2
-        try:
-            self.jp2_reader = JP2Reader(self.filepath, backend=self._backend)
-        except Exception as e:
-            raise ValueError(
-                f"Failed to open Sentinel-2 JP2: {self.filepath}: {e}"
-            ) from e
+        # Open JP2 reader(s)
+        if self._is_safe_mode:
+            # Multi-band mode: open all band files
+            self.band_readers = []
+            for band_file in self._band_files:
+                try:
+                    reader = JP2Reader(band_file, backend=self._backend)
+                    self.band_readers.append(reader)
+                except Exception as e:
+                    logger.warning(f"Failed to open band {band_file.name}: {e}")
+            
+            if not self.band_readers:
+                raise ValueError(
+                    f"Failed to open any band files from {self._safe_dir}"
+                )
+            
+            # Use first band for metadata
+            ref_reader = self.band_readers[0]
+            num_bands = len(self.band_readers)
+        else:
+            # Single-band mode
+            try:
+                self.jp2_reader = JP2Reader(self.filepath, backend=self._backend)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to open Sentinel-2 JP2: {self.filepath}: {e}"
+                ) from e
+            
+            ref_reader = self.jp2_reader
+            num_bands = 1
 
-        jp2_meta = self.jp2_reader.metadata
+        jp2_meta = ref_reader.metadata
         rows = jp2_meta['rows']
         cols = jp2_meta['cols']
         dtype = jp2_meta['dtype']
-        bands = jp2_meta.get('bands', 1)
 
         # ── Filename parsing ──────────────────────────────────────
         parsed = _parse_sentinel2_filename(self.filepath)
 
         # CRS from rasterio
         crs_str = None
-        if hasattr(self.jp2_reader, 'dataset') and self.jp2_reader.dataset:
-            ds = self.jp2_reader.dataset
+        if hasattr(ref_reader, 'dataset') and ref_reader.dataset:
+            ds = ref_reader.dataset
             if hasattr(ds, 'crs') and ds.crs:
                 crs_str = str(ds.crs)
 
@@ -697,8 +786,8 @@ class Sentinel2Reader(ImageReader):
         transform = None
         bounds = None
         pixel_resolution = None
-        if hasattr(self.jp2_reader, 'dataset') and self.jp2_reader.dataset:
-            ds = self.jp2_reader.dataset
+        if hasattr(ref_reader, 'dataset') and ref_reader.dataset:
+            ds = ref_reader.dataset
             if hasattr(ds, 'transform'):
                 transform = ds.transform
             if hasattr(ds, 'bounds'):
@@ -747,7 +836,7 @@ class Sentinel2Reader(ImageReader):
             rows=rows,
             cols=cols,
             dtype=dtype,
-            bands=bands,
+            bands=num_bands,
             crs=crs_str,
             nodata=0,
             extras=extras,
@@ -792,24 +881,133 @@ class Sentinel2Reader(ImageReader):
         col_end: int,
         bands: Optional[List[int]] = None,
     ) -> np.ndarray:
-        """Read a spatial chip from the Sentinel-2 JP2 file."""
-        return self.jp2_reader.read_chip(
-            row_start, row_end, col_start, col_end, bands=bands
-        )
+        """Read a spatial chip from the Sentinel-2 product.
+        
+        Parameters
+        ----------
+        row_start : int
+            Starting row index.
+        row_end : int
+            Ending row index (exclusive).
+        col_start : int
+            Starting column index.
+        col_end : int
+            Ending column index (exclusive).
+        bands : List[int], optional
+            Band indices to read (0-based). If None, reads all bands.
+            
+        Returns
+        -------
+        np.ndarray
+            Chip with shape (rows, cols) for single band or
+            (rows, cols, n_bands) for multiple bands.
+        """
+        if self._is_safe_mode:
+            # Multi-band mode
+            if bands is None:
+                bands = list(range(len(self.band_readers)))
+            
+            if not bands:
+                raise ValueError("At least one band must be specified")
+            
+            chips = []
+            for band_idx in bands:
+                if band_idx < 0 or band_idx >= len(self.band_readers):
+                    raise IndexError(
+                        f"Band index {band_idx} out of range [0, {len(self.band_readers)})"
+                    )
+                chip = self.band_readers[band_idx].read_chip(
+                    row_start, row_end, col_start, col_end
+                )
+                # Ensure 2D (squeeze out band dimension if present)
+                if chip.ndim == 3 and chip.shape[0] == 1:
+                    chip = chip[0]
+                chips.append(chip)
+            
+            if len(chips) == 1:
+                return chips[0]
+            else:
+                return np.stack(chips, axis=-1)
+        else:
+            # Single-band mode
+            return self.jp2_reader.read_chip(
+                row_start, row_end, col_start, col_end, bands=bands
+            )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
-        """Read the entire Sentinel-2 image."""
-        return self.jp2_reader.read_full(bands=bands)
+        """Read the entire Sentinel-2 image.
+        
+        Parameters
+        ----------
+        bands : List[int], optional
+            Band indices to read (0-based). If None, reads all bands.
+            
+        Returns
+        -------
+        np.ndarray
+            Full image with shape (rows, cols) for single band or
+            (rows, cols, n_bands) for multiple bands.
+        """
+        if self._is_safe_mode:
+            # Multi-band mode
+            if bands is None:
+                bands = list(range(len(self.band_readers)))
+            
+            if not bands:
+                raise ValueError("At least one band must be specified")
+            
+            full_images = []
+            for band_idx in bands:
+                if band_idx < 0 or band_idx >= len(self.band_readers):
+                    raise IndexError(
+                        f"Band index {band_idx} out of range [0, {len(self.band_readers)})"
+                    )
+                img = self.band_readers[band_idx].read_full()
+                # Ensure 2D (squeeze out band dimension if present)
+                if img.ndim == 3 and img.shape[0] == 1:
+                    img = img[0]
+                full_images.append(img)
+            
+            if len(full_images) == 1:
+                return full_images[0]
+            else:
+                return np.stack(full_images, axis=-1)
+        else:
+            # Single-band mode
+            return self.jp2_reader.read_full(bands=bands)
 
     def get_shape(self) -> Tuple[int, ...]:
-        """Get image dimensions."""
-        return self.jp2_reader.get_shape()
+        """Get image dimensions.
+        
+        Returns
+        -------
+        Tuple[int, ...]
+            Shape tuple: (rows, cols) for single-band mode,
+            (rows, cols, n_bands) for multi-band mode.
+        """
+        if self._is_safe_mode:
+            ref_shape = self.band_readers[0].get_shape()
+            if len(self.band_readers) == 1:
+                return ref_shape[:2]  # (rows, cols)
+            else:
+                return (*ref_shape[:2], len(self.band_readers))  # (rows, cols, n_bands)
+        else:
+            return self.jp2_reader.get_shape()
 
     def get_dtype(self) -> np.dtype:
         """Get the data type."""
-        return self.jp2_reader.get_dtype()
+        if self._is_safe_mode:
+            return self.band_readers[0].get_dtype()
+        else:
+            return self.jp2_reader.get_dtype()
 
     def close(self) -> None:
-        """Close the wrapped JP2Reader."""
+        """Close the wrapped JP2Reader(s)."""
+        if self.band_readers is not None:
+            for reader in self.band_readers:
+                reader.close()
+            self.band_readers = None
+        
         if self.jp2_reader is not None:
             self.jp2_reader.close()
+            self.jp2_reader = None
