@@ -973,6 +973,7 @@ class Orthorectifier(ImageTransform):
               (origin_lon, pixel_size_lon, 0, origin_lat, 0, -pixel_size_lat)
         """
         from grdl.image_processing.ortho.enu_grid import ENUGrid
+        from grdl.image_processing.ortho.utm_grid import UTMGrid
 
         grid = self.output_grid
 
@@ -997,6 +998,28 @@ class Orthorectifier(ImageTransform):
                     grid.max_north,
                     0.0,
                     -grid.pixel_size_north,
+                ),
+            }
+
+        if isinstance(grid, UTMGrid):
+            return {
+                'crs': f'EPSG:{grid.epsg}',
+                'utm_zone': grid.zone,
+                'hemisphere': 'N' if grid.north else 'S',
+                'bounds_utm': (
+                    grid.min_easting, grid.min_northing,
+                    grid.max_easting, grid.max_northing,
+                ),
+                'pixel_size': grid.pixel_size,
+                'rows': grid.rows,
+                'cols': grid.cols,
+                'transform': (
+                    grid.min_easting,
+                    grid.pixel_size,
+                    0.0,
+                    grid.max_northing,
+                    0.0,
+                    -grid.pixel_size,
                 ),
             }
 
