@@ -48,7 +48,7 @@ import numpy as np
 from scipy.ndimage import uniform_filter
 
 # GRDL internal
-from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.decomposition.h_a_alpha_base import HAalphaBase
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 
 @processor_version('1.0.0')
 @processor_tags(modalities=[ImageModality.SAR])
-class DualPolHAlpha(PolarimetricDecomposition):
+class DualPolHAlpha(HAalphaBase):
     """Dual-pol H/Alpha eigenvalue decomposition.
 
     Decomposes dual-polarization SAR data (one co-pol + one cross-pol
@@ -307,27 +307,27 @@ class DualPolHAlpha(PolarimetricDecomposition):
         -------
         list[ChannelMetadata]
             Three entries in R/G/B band order:
-            ``[span_db, entropy, alpha_norm]``.
+            ``[entropy, alpha_norm, span_db]``.
         """
         from grdl.IO.models.base import ChannelMetadata
 
         return [
             ChannelMetadata(
-                index=0, name='span_db', role='decomposition',
-                extras={'halpha_component': 'span',
-                        'formula': '10\u00b7log10(span)',
+                index=0, name='entropy', role='decomposition',
+                extras={'halpha_component': 'entropy',
+                        'formula': 'H \u2208 [0, 1]',
                         'display': 'Red'},
             ),
             ChannelMetadata(
-                index=1, name='entropy', role='decomposition',
-                extras={'halpha_component': 'entropy',
-                        'formula': 'H \u2208 [0, 1]',
+                index=1, name='alpha_norm', role='decomposition',
+                extras={'halpha_component': 'alpha',
+                        'formula': '\u03b1 / 90 \u2208 [0, 1]',
                         'display': 'Green'},
             ),
             ChannelMetadata(
-                index=2, name='alpha_norm', role='decomposition',
-                extras={'halpha_component': 'alpha',
-                        'formula': '\u03b1 / 90 \u2208 [0, 1]',
+                index=2, name='span_db', role='decomposition',
+                extras={'halpha_component': 'span',
+                        'formula': '10\u00b7log10(span), 5-95% stretch',
                         'display': 'Blue'},
             ),
         ]
@@ -376,16 +376,16 @@ class DualPolHAlpha(PolarimetricDecomposition):
                 f"Expected keys from decompose(): {required}"
             )
 
-        # Red: Span in dB, percentile-stretched
+        # Red: Entropy already in [0, 1]
+        r = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
+
+        # Green: Alpha normalised to [0, 1] (0-90 degrees)
+        g = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
+
+        # Blue: Span in dB, percentile-stretched (5-95%)
         span = components['span']
         span_db = 10.0 * np.log10(np.maximum(span, np.finfo(np.float64).tiny))
-        r = self._percentile_stretch(span_db, percentile_low, percentile_high)
-
-        # Green: Entropy already in [0, 1]
-        g = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
-
-        # Blue: Alpha normalised to [0, 1] (0-90 degrees)
-        b = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
+        b = self._percentile_stretch(span_db, percentile_low, percentile_high)
 
         rgb = np.stack([r, g, b], axis=0)  # (3, rows, cols) float32
         metadata = ImageMetadata(

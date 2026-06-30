@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`EnhancedLeeFilter`** (`grdl/image_processing/filters`): New adaptive
+  speckle filter implementing Lopes et al. (1990).  Each pixel is classified
+  into one of three regimes based on the local amplitude coefficient of
+  variation ``ci = std_local(|z|) / mean_local(|z|)`` relative to hard
+  thresholds ``cu = 1/sqrt(ENL)`` (homogeneous) and
+  ``cmax = sqrt(1 + 2/ENL)`` (point target).  In the mixed regime a
+  spatially varying weight ``W = exp(-damp*(ci-cu)/(cmax-ci))`` blends the
+  local mean and the original pixel, providing sharper point-target
+  protection and cleaner homogeneous regions than the standard MMSE Lee
+  filter.  Supports real and complex SLC input (phase-preserving).
+  Parameters: ``kernel_size`` (3–31, odd), ``enl`` (0 = auto), ``damp``
+  (≥ 0, default 1.0).  ``__gpu_compatible__ = True``.
+
+- **`LeeSigmaFilter`** (`grdl/image_processing/filters`): New sigma-interval
+  adaptive speckle filter (Lee 1983).  For each pixel, only those neighbours
+  whose intensity falls within the ``(1-sigma)/2``–``(1+sigma)/2`` quantiles of
+  the ``Gamma(ENL, 1/ENL)`` speckle distribution are used to estimate local
+  statistics.  An MMSE Lee weight is then applied from these sigma-selected
+  pixels.  Supports real-valued intensity/amplitude images and complex SLC
+  (phase-preserving).  Parameters: ``kernel_size`` (3–31, odd), ``enl`` (0 =
+  auto), ``sigma`` (0–1, default 0.9), ``min_valid`` (fallback threshold).
+  ``__gpu_compatible__ = False`` (Python loop over kernel offsets).
+
+### Fixed
+
+- **`LeeSigmaFilter`** complex-input fix: sigma-selected neighbours and MMSE
+  statistics are now accumulated in the **amplitude** domain (``|z|``)
+  instead of the complex domain.  Previously, summing complex values caused
+  near-zero means (random phase cancels), collapsing ENL.  The phase of
+  each pixel is now preserved exactly.  ``|LeeSigmaFilter(z)| ==
+  LeeSigmaFilter(|z|)`` for identical parameters (verified by test).
+
+- **`LeeFilter`** now raises ``ValidationError`` for complex input instead of
+  silently discarding the imaginary part (``ComplexWarning``).  Use
+  ``ComplexLeeFilter`` for complex SLC data.
+
+- **`ComplexLeeFilter`** algorithm changed twice this release.  Final
+  algorithm: **amplitude-domain MMSE + phase preservation**
+  ``(z_out = (E[a] + W*(a-E[a])) * exp(j·angle(z)))`` where
+  ``a = |z|`` and ``Ci² = var_local(a)/E_local[a]²``.  Working in the
+  amplitude domain (as ``LeeFilter`` does) produces smoother MMSE weights
+  than the intensity domain, eliminating blocky edge-boundary artifacts.
+  The output amplitude is now **numerically identical** to
+  ``LeeFilter(np.abs(slc))``, with the original pixel phase attached.
+  The previous intensity-domain implementation
+  ``(z_out = sqrt(MMSE(|z|²)) * exp(j·angle(z)))`` caused small
+  high-variance blobs at kernel boundaries because ``Ci²`` from intensity
+  has larger variance than from amplitude, creating sharper weight
+  transitions.
+
 ---
 
 ## [0.6.2] — 2026-06-25

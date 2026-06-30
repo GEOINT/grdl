@@ -168,6 +168,28 @@ result = (
 - Validate inputs early. Raise clear exceptions before doing work with bad data.
 - Never silently coerce types or swallow errors.
 
+### Polarimetric Decomposition: Pre-Computed Matrix Interface
+
+Every polarimetric decomposition that operates on a covariance [C3] or coherency [T3] matrix **must** provide a method to accept a pre-computed matrix directly, in addition to the channel-level `decompose(shh, shv, svh, svv)` entry point. This enables non-boxcar speckle filters (Refined Lee, NL-SAR, etc.) to be applied to the matrix before decomposition.
+
+**Convention:**
+- `decompose(shh, shv, svh, svv)` — builds the matrix internally with boxcar averaging, then delegates to the matrix method.
+- `decompose_from_c3(c3)` — accepts a pre-computed `(3, 3, rows, cols)` covariance matrix. Used by covariance-domain decompositions (e.g. `FreemanDurden3C`).
+- `decompose_from_t3(t3)` — accepts a pre-computed `(3, 3, rows, cols)` coherency matrix. Used by coherency-domain decompositions (e.g. `FullPolHAalpha`).
+
+```python
+# Standard flow: boxcar averaging built in
+fd = FreemanDurden3C(window_size=7)
+components = fd.decompose(shh, shv, svh, svv)
+
+# Advanced flow: apply Refined Lee filter before decomposition
+c3 = CovarianceMatrix(window_size=1).compute(channels)
+c3_filtered = RefinedLeeFilter(kernel_size=7).filter_matrix(c3)
+components = fd.decompose_from_c3(c3_filtered)
+```
+
+**Why:** Boxcar averaging is a simple but lossy spatial filter. Edge-preserving filters like Refined Lee produce dramatically better decomposition results near boundaries. Separating matrix construction from decomposition makes this pipeline composable.
+
 ### Abstract Base Classes
 
 Each domain directory defines its contracts via ABCs in a `base.py` file:
@@ -444,8 +466,13 @@ GRDL/
         resolution.py        # compute_output_resolution (auto pixel spacing from metadata)
       decomposition/         # Polarimetric decomposition
         base.py              # PolarimetricDecomposition ABC
+        pol_matrix.py        # CovarianceMatrix, CoherencyMatrix (C3/T3 builders)
         pauli.py             # PauliDecomposition (quad-pol)
+        h_a_alpha_base.py    # HAalphaBase (shared entropy/alpha math)
+        h_a_alpha_fp.py      # FullPolHAalpha (quad-pol Cloude-Pottier)
         dual_pol.py          # DualPolHAlpha (dual-pol H/Alpha)
+        freeman_durden.py    # FreemanDurden3C (3-component power decomposition)
+        model_free.py        # ModelFree3C (MF3CF), ModelFree4C (MF4CF)
       detection/             # Target detection
         base.py              # ImageDetector ABC
         models.py            # Detection, DetectionSet
