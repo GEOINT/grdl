@@ -3,8 +3,8 @@
 Lee Sigma Filter - Sigma-interval adaptive speckle filter for SAR imagery.
 
 The Lee Sigma filter (Lee 1983) selects only those neighboring pixels whose
-intensity falls within a probability-based confidence interval around the
-center pixel intensity, avoiding contamination from edge-adjacent pixels
+amplitude falls within a probability-based confidence interval around the
+center pixel amplitude, avoiding contamination from edge-adjacent pixels
 when estimating local statistics.  The MMSE Lee weighting is then applied
 using only the selected pixels.
 
@@ -12,10 +12,10 @@ Selection interval ``[c_lo * I, c_hi * I]``
 where ``c_lo`` and ``c_hi`` are the ``(1-sigma)/2`` and ``(1+sigma)/2``
 quantiles of the ``Gamma(ENL, 1/ENL)`` single-look speckle distribution.
 For example, ``sigma=0.9`` selects pixels within the 5th–95th percentile
-range of the expected speckle distribution for the observed intensity.
+range of the expected speckle distribution for the observed amplitude.
 
-For complex SLC input the selection criterion is applied to intensity
-``|z|²`` while the adaptive weight is applied in the complex domain,
+For complex SLC input the selection criterion is applied to amplitude
+``|z|`` while the adaptive weight is applied in the complex domain,
 preserving interferometric phase.
 
 References
@@ -75,7 +75,7 @@ class LeeSigmaFilter(BandwiseTransformMixin, SARFilter):
     """Lee Sigma adaptive speckle filter for SAR imagery.
 
     Reduces speckle contamination from edge-adjacent pixels by selecting
-    only those neighbors whose intensity falls within a probability-based
+    only those neighbors whose amplitude falls within a probability-based
     confidence interval around the center pixel::
 
         c_lo, c_hi = Gamma(ENL, 1/ENL).ppf([(1-sigma)/2, (1+sigma)/2])
@@ -92,8 +92,8 @@ class LeeSigmaFilter(BandwiseTransformMixin, SARFilter):
     When fewer than ``min_valid`` neighbors pass the sigma test, the
     full-kernel mean is used as the fallback reference.
 
-    For **complex SLC** input the selection criterion uses intensity
-    ``|z|²`` while the adaptive weight is applied in the complex domain,
+    For **complex SLC** input the selection criterion uses amplitude
+    ``|z|`` while the adaptive weight is applied in the complex domain,
     preserving interferometric phase (identical to ``ComplexLeeFilter``
     but with sigma-based neighbour selection).
 
@@ -117,7 +117,7 @@ class LeeSigmaFilter(BandwiseTransformMixin, SARFilter):
 
     Examples
     --------
-    Filter a real-valued intensity image:
+    Filter a real-valued amplitude image:
 
     >>> from grdl.image_processing.filters import LeeSigmaFilter
     >>> lsf = LeeSigmaFilter(kernel_size=7, sigma=0.9)
@@ -225,7 +225,7 @@ class LeeSigmaFilter(BandwiseTransformMixin, SARFilter):
             logger.debug("LeeSigmaFilter: user-provided ENL=%.2f", enl_est)
 
         # -- Sigma selection bounds from Gamma(ENL, 1/ENL) distribution --
-        # These bounds are applied to I_select (intensity for complex, amplitude for real).
+        # These bounds are applied to I_select (amplitude in both branches).
         alpha = (1.0 - sigma) / 2.0
         c_lo = float(_gamma_dist.ppf(alpha, a=enl_est, scale=1.0 / enl_est))
         c_hi = float(_gamma_dist.ppf(1.0 - alpha, a=enl_est, scale=1.0 / enl_est))

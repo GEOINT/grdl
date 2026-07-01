@@ -117,6 +117,26 @@ def test_internal_matrix_build_rejects_window_size_one(quad_pol, decomp):
         decomp.decompose(*quad_pol)
 
 
+def test_full_pol_halpha_alpha_uses_first_component_of_each_eigenvector():
+    """Regression: alpha must use |e_i[0]| across eigenvector columns."""
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((3, 3)) + 1j * rng.standard_normal((3, 3))
+    q, _ = np.linalg.qr(a)
+    lambdas = np.array([4.0, 2.0, 1.0], dtype=np.float64)
+
+    t = q @ np.diag(lambdas) @ q.conj().T
+    t3 = t[:, :, np.newaxis, np.newaxis]
+
+    comp = FullPolHAalpha(window_size=1).decompose_from_t3(t3)
+
+    p = lambdas / np.sum(lambdas)
+    cos_alpha = np.abs(q[0, :])
+    alpha_i = np.degrees(np.arccos(np.clip(cos_alpha, -1.0, 1.0)))
+    expected_alpha = np.sum(p * alpha_i)
+
+    np.testing.assert_allclose(comp['alpha'][0, 0], expected_alpha, atol=1e-10)
+
+
 # ---------------------------------------------------------------------------
 # DegreeOfPolarization
 # ---------------------------------------------------------------------------

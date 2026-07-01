@@ -363,6 +363,11 @@ class RefinedLeeFilter(SARFilter):
             raise ValidationError(
                 f"kernel_size must be odd and in [3, 31], got {kernel_size}"
             )
+        nlook = float(nlook)
+        if nlook <= 0.0:
+            raise ValidationError(
+                f"nlook must be > 0, got {nlook}"
+            )
         super().__init__(kernel_size=kernel_size, enl=nlook)
         self.nlook = nlook
 
@@ -424,9 +429,9 @@ class RefinedLeeFilter(SARFilter):
         for i in range(n):
             span += np.real(matrix[i, i])
 
-        # Pad span with zeros
+        # Reflect padding avoids low-power border bias from artificial zeros.
         span_padded = np.pad(span, ((half, half + 1), (half, half + 1)),
-                             mode='constant', constant_values=0)
+                     mode='reflect')
 
         # Build directional masks
         masks = _build_masks(ks)
@@ -447,7 +452,7 @@ class RefinedLeeFilter(SARFilter):
                 # Pad element
                 elem_padded = np.pad(
                     element, ((half, half + 1), (half, half + 1)),
-                    mode='constant', constant_values=0,
+                    mode='reflect',
                 )
                 # Compute directional mean
                 dir_mean = _compute_masked_means(

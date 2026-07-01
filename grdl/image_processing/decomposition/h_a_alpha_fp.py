@@ -219,9 +219,9 @@ class FullPolHAalpha(HAalphaBase):
         entropy = self._entropy(p)
 
         # Alpha: cos(alpha_i) = |e_i[0]| (first component of each eigenvector)
-        # eigenvectors shape: (rows, cols, 3, 3) — last axis is eigenvector
-        # components, second-to-last is which eigenvector
-        cos_alpha = np.abs(eigenvectors[..., 0])  # (rows, cols, 3)
+        # eigenvectors shape: (rows, cols, 3, 3)
+        # axis -2: component index, axis -1: eigenvector index
+        cos_alpha = np.abs(eigenvectors[..., 0, :])  # (rows, cols, 3)
         alpha = self._alpha_mean(p, cos_alpha)
 
         # Anisotropy: A = (lambda_2 - lambda_3) / (lambda_2 + lambda_3)
