@@ -2,7 +2,7 @@
 
 Technical design documentation for the IO module.
 
-Modified: 2026-03-29
+Modified: 2026-06-16
 
 ## Design Philosophy
 
@@ -19,8 +19,12 @@ grdl/
 ├── exceptions.py            # Custom exception hierarchy (GrdlError, DependencyError, etc.)
 ├── py.typed                 # PEP 561 type stub marker
 ├── IO/
-│   ├── __init__.py          # Public API exports + open_image(), get_writer(), write()
+│   ├── __init__.py          # Public API + reader/writer factories: get_reader(),
+│   │                        #   open_reader(), get_writer(), write(),
+│   │                        #   register_reader(), register_writer(),
+│   │                        #   list_reader_formats(), open_image() (deprecated)
 │   ├── base.py              # Abstract base classes (ABCs)
+│   ├── performance.py       # ReadConfig + parallel read helpers (chunked/band)
 │   ├── models/              # Typed metadata dataclasses
 │   │   ├── __init__.py      # Re-exports all metadata classes
 │   │   ├── base.py          # ImageMetadata (base dataclass)
@@ -35,7 +39,8 @@ grdl/
 │   │   ├── sentinel1_slc.py # Sentinel1SLCMetadata + burst/orbit/calibration dataclasses
 │   │   ├── terrasar.py      # TerraSARMetadata + product/scene/radar dataclasses
 │   │   ├── nisar.py         # NISARMetadata + identification/orbit/swath dataclasses
-│   │   └── eo_nitf.py       # EONITFMetadata + RPCCoefficients + RSMCoefficients
+│   │   ├── eo_nitf.py       # EONITFMetadata + RPCCoefficients + RSMCoefficients
+│   │   └── stanag4607.py    # STANAG4607Metadata + dwell/target dataclasses
 │   ├── geotiff.py           # GeoTIFFReader, GeoTIFFWriter (rasterio)
 │   ├── hdf5.py              # HDF5Reader, HDF5Writer (h5py)
 │   ├── jpeg2000.py          # JP2Reader (glymur/rasterio)
@@ -48,7 +53,13 @@ grdl/
 │   │   ├── __init__.py      # EO exports + open_eo()
 │   │   ├── _backend.py      # rasterio/glymur availability detection
 │   │   ├── sentinel2.py     # Sentinel2Reader (wraps JP2Reader)
-│   │   └── nitf.py          # EONITFReader (RPC/RSM extraction)
+│   │   ├── nitf.py          # EONITFReader (multi-segment unification, RPC/RSM,
+│   │   │                    #   decimation, read_mask/get_lut/normalize_abpp)
+│   │   ├── nitf_writer.py   # write_chip() (geolocation-preserving NITF chip-out)
+│   │   ├── _tre_xml.py      # xml:TRE / xml:DES parser
+│   │   ├── _tre_rsm_error.py # RSM error TRE parsers + summarize_accuracy()
+│   │   ├── _tre_band.py     # BANDSB / BANDSA parsers
+│   │   └── _tre_airborne.py # SENSRB / MENSRB / MENSRA / ACFTB parsers
 │   ├── ir/                  # IR/thermal readers
 │   │   ├── __init__.py      # IR exports + open_ir()
 │   │   ├── _backend.py      # rasterio/h5py availability detection
@@ -60,19 +71,40 @@ grdl/
 │   ├── sar/                 # SAR-specific format readers
 │   │   ├── __init__.py      # SAR exports + open_sar()
 │   │   ├── _backend.py      # sarkit/sarpy availability detection
-│   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback)
+│   │   ├── sicd.py          # SICDReader (sarkit primary, sarpy fallback) — _enforce_2d=True
 │   │   ├── sicd_writer.py   # SICDWriter
-│   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback)
-│   │   ├── crsd.py          # CRSDReader (sarkit-only)
+│   │   ├── sicd_collection.py # SICDCollectionReader + open_sicd_collection()
+│   │   ├── cphd.py          # CPHDReader (sarkit primary, sarpy fallback) — _enforce_2d=True
+│   │   ├── crsd.py          # CRSDReader (sarkit-only) — _enforce_2d=True
 │   │   ├── sidd.py          # SIDDReader (sarkit-only)
 │   │   ├── sidd_writer.py   # SIDDWriter
 │   │   ├── biomass.py       # BIOMASSL1Reader (rasterio) + open_biomass()
-│   │   ├── biomass_catalog.py  # BIOMASSCatalog + load_credentials
 │   │   ├── sentinel1_slc.py # Sentinel1SLCReader (rasterio)
+│   │   ├── sentinel1_l0/    # Sentinel1L0Reader (raw L0), open_safe_product,
+│   │   │                    #   ReaderConfig, CRSD conversion + verification
 │   │   ├── terrasar.py      # TerraSARReader + open_terrasar()
 │   │   └── nisar.py         # NISARReader + open_nisar()
+│   ├── gmti/                # STANAG 4607 GMTI
+│   │   ├── __init__.py      # GMTI exports + open_gmti()
+│   │   ├── stanag4607.py    # STANAG4607Reader (editions 2/3/4)
+│   │   ├── stanag4607_writer.py # STANAG4607Writer
+│   │   ├── helpers.py       # dwell_footprint_polygon, ground_relative_velocity,
+│   │   │                    #   filter_target_reports, summarize
+│   │   └── cphd_steering.py # build_steering_matrix_from_cphd_metadata
+│   ├── catalog/             # Remote query, download & SQLite cataloging
+│   │   ├── __init__.py      # Catalog exports + credential helpers
+│   │   ├── remote_utils.py  # load_credentials, get_cdse_token,
+│   │   │                    #   get_earthdata_token, download_file
+│   │   ├── biomass_catalog.py     # BIOMASSCatalog (ESA MAAP STAC)
+│   │   ├── sentinel1_catalog.py   # Sentinel1SLCCatalog (CDSE OData)
+│   │   ├── sentinel2_catalog.py   # Sentinel2Catalog (CDSE OData)
+│   │   ├── nisar_catalog.py       # NISARCatalog (NASA Earthdata)
+│   │   ├── terrasar_catalog.py    # TerraSARCatalog (local)
+│   │   ├── aster_catalog.py       # ASTERCatalog (local)
+│   │   └── viirs_catalog.py       # VIIRSCatalog (local)
 │   ├── README.md            # User documentation
 │   ├── ARCHITECTURE.md      # This file
+│   ├── PATTERNS.md          # Recurring implementation patterns
 │   └── TODO.md              # Roadmap and planned features
 ├── image_processing/
 │   ├── base.py              # ImageProcessor, ImageTransform, BandwiseTransformMixin
@@ -110,11 +142,17 @@ The root abstract class for all imagery readers.
 | Method | Purpose | When to Use |
 |--------|---------|------------|
 | `_load_metadata()` | Abstract - load format metadata | Constructor calls this |
-| `read_chip()` | Read spatial subset | Default - memory efficient |
-| `read_full()` | Read entire image | Small images or full processing |
-| `get_shape()` | Image dimensions | Planning memory allocation |
-| `get_dtype()` | Pixel data type | Buffer allocation |
-| `get_geolocation()` | Georeferencing | Coordinate transforms |
+| `read_chip()` | Abstract - read spatial subset | Default - memory efficient |
+| `get_shape()` | Abstract - image dimensions | Planning memory allocation |
+| `get_dtype()` | Abstract - pixel data type | Buffer allocation |
+| `read_full()` | Concrete - delegates to `read_chip` over full extent | Small images or full processing |
+| `read_band(index)` | Concrete - single band, always 2-D | Per-band processing regardless of axis order |
+| `close()` | Concrete (no-op default) | Override when handles need cleanup |
+
+Static shape-contract helpers callable from concrete readers: `_ensure_2d(arr)`
+(squeeze singleton band axis), `_assert_2d(data, context, strict)` (strict
+single-channel validation; see §"Strict 2-D Shape Policy"), and
+`_validate_single_pol(arr, context)` (raise unless strictly 2-D).
 
 **Metadata Contract:**
 
@@ -141,6 +179,8 @@ Format-specific metadata is provided via typed subclasses:
 | TerraSAR-X | `TerraSARMetadata(ImageMetadata)` | Product, scene, radar params, orbit, calibration |
 | NISAR | `NISARMetadata(ImageMetadata)` | Identification, orbit, attitude, swath, geolocation grid |
 | EO NITF | `EONITFMetadata(ImageMetadata)` | RPC/RSM coefficients, sensor ID, target geometry |
+| Sentinel-1 L0 | `Sentinel1L0Metadata(ImageMetadata)` | Burst index, swath/polarization tables, orbit/attitude |
+| STANAG 4607 (GMTI) | `STANAG4607Metadata` | Edition + dwell/target dataclasses (not an `ImageReader`) |
 
 All metadata classes support dict-like `[]` access for backward compatibility (`meta['format']`, `'rows' in meta`, `meta.keys()`) alongside native attribute access (`meta.format`, `meta.collection_info.radar_mode.mode_type`)
 
@@ -160,7 +200,9 @@ Abstract class for writing imagery.
   - Maintains sensor-specific annotations
   - Format conversion without information loss
 
-**Implementations:** `GeoTIFFWriter`, `HDF5Writer`, `NITFWriter`, `SICDWriter`, `SIDDWriter`, `PngWriter`, `NumpyWriter`. Factory access via `get_writer(format, path)` or the convenience `write(data, path)` function.
+**Implementations:** `GeoTIFFWriter`, `HDF5Writer`, `NITFWriter`, `SICDWriter`, `SIDDWriter`, `PngWriter`, `NumpyWriter`, plus the EO NITF chip-out `write_chip()` and `STANAG4607Writer`. Registry-based factory access (`get_writer(format, path)` / convenience `write(data, path)`) covers `geotiff`, `numpy`, `png`, `hdf5`, `nitf`; `SICDWriter`, `SIDDWriter`, and `STANAG4607Writer` are used directly because they take typed metadata containers rather than the `write(ndarray)` contract.
+
+**Reader factory:** `get_reader(format, path)` mirrors `get_writer` for the read side — same registry pattern, lazy imports, and `ImportError` with install guidance. `register_reader()` / `register_writer()` extend the registries at runtime; `list_reader_formats()` enumerates all registered reader keys.
 
 ### CatalogInterface (ABC)
 
@@ -305,6 +347,49 @@ Unlike SICD (formed imagery), CPHD doesn't have fixed rows/cols. Instead:
 
 3. **Band indexing**: Users provide 0-based indices; internally converts to rasterio's 1-based indexing
 
+### Reader / Writer Factory
+
+The headline IO feature is a symmetric, registry-backed factory for both
+readers and writers. Entry points for opening imagery:
+
+| Function | When to use |
+|----------|-------------|
+| `get_reader(format, path)` | You know the format. Fast, unambiguous, best for pipelines. |
+| `open_reader(path)` | Unknown or mixed-format file set. Auto-detects via extension map then `open_any()`. **Primary entry point.** |
+| `open_any(path)` | Ambiguous files with uninformative extensions — runs the full cascade directly. |
+| `open_sar(path)` | SAR-only auto-detection (modality-specific cascade). |
+| `open_image(path)` | **Deprecated** alias for `open_reader()`; emits `DeprecationWarning`. |
+
+**Registry design.** `get_reader` and `get_writer` are symmetric: both use a
+module-level registry (`_READER_REGISTRY` with 20 entries / `_WRITER_REGISTRY`
+with 5 entries) mapping a lowercase format key to a `(module_path, class_name)`
+tuple. `importlib.import_module` loads the module lazily on first use, so an
+optional dependency (`sarpy`, `rasterio`, `h5py`, ...) is only imported when its
+reader is actually requested — `import grdl.IO` itself never pulls them in.
+
+- Reader keys are normalized via `_normalize_reader_key()` (lowercase, `_`→`-`),
+  so `'sentinel1-slc'` and `'sentinel1_slc'` are equivalent.
+- `get_reader` raises `ValueError` for an unknown key and `ImportError` (naming
+  the missing package, referencing `requirements-optional.txt`) when the
+  optional dependency is absent.
+- `list_reader_formats()` returns all registered keys.
+- `register_reader(format, module_path, class_name, overwrite=False)` and
+  `register_writer(...)` extend the registries at runtime (e.g. third-party
+  readers); `overwrite=False` guards against clobbering an existing key.
+
+The 20 registered reader keys: `geotiff`, `nitf`, `hdf5`, `jpeg2000`, `sicd`,
+`cphd`, `crsd`, `sidd`, `biomass`, `sentinel1-slc`, `sentinel1-l0`, `terrasar`,
+`nisar`, `sentinel2`, `eo-nitf`, `aster`, `viirs`, `stanag4607`, `gdal`,
+`probe`. Writer keys: `geotiff`, `numpy`, `png`, `hdf5`, `nitf`.
+
+**`open_reader()` cascade.** It extends the writer-side factory pattern to the
+reader side:
+1. Looks up the file extension in `_READER_EXTENSION_MAP` → calls `get_reader(fmt, path)`
+2. If an `ImportError` fires (missing library), saves the message and falls through
+3. If a `ValueError` fires (format mismatch from a specialized reader), falls through
+4. Delegates to `open_any()` for NITF sniffing, modality cascades, GDAL fallback, and invasive probing
+5. Emits a `UserWarning` naming the missing package when a fallback reader is used (richer metadata / stricter validation would have been available with the package installed)
+
 ### open_sar() Auto-Detection
 
 Convenience function that tries readers in order:
@@ -312,16 +397,31 @@ Convenience function that tries readers in order:
 2. CPHDReader
 3. CRSDReader (sarkit-only)
 4. SIDDReader
-5. Sentinel1SLCReader (SAFE directories)
-6. TerraSARReader (TSX/TDX directories)
-7. NISARReader (HDF5)
-8. GeoTIFFReader (fallback for GRD products)
+5. Sentinel-1 SAFE directories — dispatches by product identifier in the
+   directory name: `Sentinel1L0Reader` when the name contains `RAW`, otherwise
+   `Sentinel1SLCReader`
+6. TerraSARReader (TSX1_/TDX1_ directories or any dir with a TSX/TDX annotation XML)
+7. NISARReader (`.h5` / `.hdf5`)
+8. GeoTIFFReader (`.tif` / `.tiff` fallback for GRD products)
+
+(`SICDCollectionReader` is opened explicitly via `open_sicd_collection()`, not
+through this cascade.)
 
 **Trade-offs:**
 - **Pro**: User-friendly for unknown files; enables format-agnostic batch processing
 - **Con**: Slower than direct reader (multiple open attempts); may misidentify ambiguous formats
 
-Best for interactive exploration and prototyping. Use specific readers in performance-critical pipelines.
+Best for interactive exploration and prototyping. Use `get_reader(format, path)` in performance-critical pipelines.
+
+### Strict 2-D Shape Policy (`_enforce_2d`)
+
+Single-channel SAR readers (SICD, CPHD, CRSD) set the `_enforce_2d = True` class attribute. `ImageReader.read_chip()` and `read_full()` wrap their return arrays in `_assert_2d(data, context, strict)`:
+
+- Returns the array unchanged if already `(rows, cols)`
+- Raises `ValueError` in strict mode if a singleton band axis is present (e.g., `(1, R, C)` from a backend version change) — catches reader implementation defects immediately at read time rather than silently propagating bad shapes into processing code
+- Non-strict (default on all other readers): silently squeezes `(1, R, C)` → `(R, C)`
+
+To apply the policy to a new single-channel reader, set `_enforce_2d = True` on the class and call `self._assert_2d(data, context=f'{type(self).__name__}.read_chip', strict=self._enforce_2d)` before returning.
 
 ## Metadata Architecture
 
@@ -343,7 +443,8 @@ Metadata is organized as a Python package at `grdl/IO/models/`:
 | `sentinel1_slc.py` | `Sentinel1SLCMetadata` + burst, orbit, Doppler, calibration/noise dataclasses |
 | `terrasar.py` | `TerraSARMetadata` + product, scene, radar, orbit, calibration dataclasses |
 | `nisar.py` | `NISARMetadata` + identification, orbit, attitude, swath, geolocation dataclasses |
-| `eo_nitf.py` | `EONITFMetadata` -- RPC/RSM coefficients for EO NITF imagery |
+| `eo_nitf.py` | `EONITFMetadata` -- RPC/RSM coefficients + full commercial TRE dataclasses |
+| `stanag4607.py` | `STANAG4607Metadata` + dwell/target-report dataclasses (GMTI) |
 | `__init__.py` | Re-exports everything; preserves `from grdl.IO.models import ...` paths |
 
 ### Design Decisions
@@ -390,6 +491,94 @@ Metadata is organized as a Python package at `grdl/IO/models/`:
 5. **SQLite Database**: Unified local/remote product tracking with indexed query fields
 
 Design chose mission-specific catalog over generic `ImageCatalog` because BIOMASS has unique naming conventions, API endpoints, and metadata schema. SQLite chosen for zero-config portability. Credentials follow XDG convention and are repo-agnostic.
+
+### Catalog Family & Credential Handling
+
+The same `CatalogInterface` ABC is implemented by seven catalogs:
+`BIOMASSCatalog` (ESA MAAP STAC), `Sentinel1SLCCatalog` and `Sentinel2Catalog`
+(CDSE OData), `NISARCatalog` (NASA Earthdata), and `TerraSARCatalog`,
+`ASTERCatalog`, `VIIRSCatalog` (local discovery only). Remote credential and
+download logic is consolidated in `catalog/remote_utils.py`:
+
+- `load_credentials(provider)` reads `~/.config/geoint/credentials.json` with
+  env-var fallbacks (`COPERNICUS_*`, `EARTHDATA_*`, `ESA_MAAP_OFFLINE_TOKEN`).
+- `get_cdse_token()` / `get_earthdata_token()` perform the provider OAuth2 flow.
+- `download_file()` is a shared streaming downloader with resume support.
+- SQLite catalog databases default to `~/.config/geoint/catalogs/`.
+
+Centralizing auth in `remote_utils` keeps each catalog focused on its
+provider-specific query schema and naming conventions.
+
+## EO NITF Reader (`eo/nitf.py`)
+
+`EONITFReader` is the most capable reader in the module and warrants its own
+design notes.
+
+**Multi-segment unification.** Commercial NITFs frequently store one logical
+image across many image segments, plus overviews and masks. The reader groups
+heterogeneous segments and auto-selects a *primary group*; `read_chip()` routes
+a full-image bbox request across whichever primary segments overlap it, filling
+inter-segment gaps with `nodata` (else 0). Overviews/masks never break loading
+and are reachable by reopening with `image_index=N` to pin a single segment.
+
+**TRE suite.** Image subheaders and TRE_OVERFLOW DES are scanned for the full
+commercial TRE set — geolocation (RPC00B, RSMPCA/RSMIDA/RSMGGA), RSM error
+model (RSMPIA, RSMDCA/B, RSMECA/B, RSMAPA/B), exploitation (CSEXRA, CSCRNA,
+CSEPHA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC), band characterization
+(BANDSB/BANDSA → `band_names`/`wavelengths`), and airborne (SENSRB, MENSRB,
+MENSRA, ACFTB). Parsers live in `_tre_*.py` modules. Multi-section RSMPCA is
+collected into an `RSMSegmentGrid` (see PATTERNS §6).
+
+**Pixel domain.** `read_chip(decimation=)` exploits embedded overviews and
+JPEG2000 reduced-resolution levels (GDAL `out_shape`) rather than reading at
+full resolution then slicing. `read_mask()`, `get_lut()`, and `normalize_abpp()`
+(stretch to actual bits-per-pixel) round out the pixel API. Remote `https://`,
+`s3://`, and `/vsi*` URIs are passed straight to GDAL.
+
+**Chip-out writer.** `eo/nitf_writer.write_chip()` writes a new NITF that
+geolocates identically to the parent: ICHIPB (composed with the parent's own
+ICHIPB when present) plus RPC00B and serialized RSMIDA/RSMPCA. Multi-section RSM
+grids collapse to the section covering the chip center (GDAL cannot repeat a TRE
+name).
+
+## GMTI Reader (`gmti/`)
+
+`STANAG4607Reader` parses STANAG 4607 packets into typed segment dataclasses
+(editions 2, 3, and 4 auto-detected from the 2-char ASCII version field). It is
+a pure-Python (`struct`) reader and does *not* inherit `ImageReader` — GMTI is a
+moving-target report stream, not raster imagery.
+
+- Iteration: `iter_packets()`, `iter_dwells()`, `iter_target_reports()` yield
+  `(dwell, target)` tuples.
+- `to_detection_set(confidence_field='gmti.snr_db', snr_normalization=40.0)`
+  bridges target reports into the GRDL detection ecosystem: each target becomes
+  a `Detection` with a WGS84 `shapely.Point`, `gmti.*` properties, and a
+  confidence derived from SNR (dB) / `snr_normalization`, clamped to `[0, 1]`.
+- Geometry/analysis helpers (`helpers.py`): `dwell_footprint_polygon`,
+  `ground_relative_velocity`, `filter_target_reports`, `summarize`.
+- `cphd_steering.build_steering_matrix_from_cphd_metadata()` derives a scene-
+  projected per-channel steering matrix from a CPHD `Antenna` section (returns
+  `CPHDMetadataSteering`), for metadata-driven STAP detection.
+
+`STANAG4607Writer` is deliberately kept out of `_WRITER_REGISTRY`: it serializes
+typed segment dataclasses, not the `write(ndarray)` contract that `get_writer`
+assumes.
+
+## Sentinel-1 Level 0 Reader (`sar/sentinel1_l0/`)
+
+`Sentinel1L0Reader` reads raw (unfocused) Sentinel-1 L0 SAFE products. Unlike
+the focused readers, its native API is burst-centric: `read_burst()`,
+`iter_bursts()`, `read_swath()` (with a `read_chip()` shim over the currently
+selected burst). `ReaderConfig` tunes SAFE validation, annotation parsing, POE
+orbit loading, and burst-boundary detection. `open_safe_product()` is the
+convenience factory.
+
+The FDBAQ decoder backend (`sentinel1decoder>=2.0`) is an optional dependency
+behind the `grdl[s1_l0]` extra. Optional CRSD conversion
+(`Sentinel1L0ToCRSD`, `convert_s1_l0_to_crsd`) and verification
+(`verify_crsd_split_gates`) are guarded by a `try/except ImportError` in the
+subpackage `__init__` that swaps in stub callables raising a clear `ImportError`
+when the dependency is absent.
 
 ## EO / IR / Multispectral Submodules
 

@@ -63,6 +63,27 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Jupyter Notebook outputs (keep notebooks, ignore execution artifacts)
+# Prevent large binary files from executed notebooks
+**/notebooks/**/*.png
+**/notebooks/**/*.jpg
+**/notebooks/**/*.jpeg
+**/notebooks/**/*.gif
+**/notebooks/**/*.pdf
+**/notebooks/**/*.h5
+**/notebooks/**/*.hdf5
+**/notebooks/**/*.tif
+**/notebooks/**/*.tiff
+**/notebooks/**/*.nitf
+**/notebooks/**/*.cphd
+**/notebooks/**/*.npz
+**/notebooks/**/*.npy
+# But allow small documentation images
+!docs/images/*.png
+!docs/images/*.jpg
+!example_images/*.png
+!example_images/*.jpg
+
 # IPython
 profile_default/
 ipython_config.py

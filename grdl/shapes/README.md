@@ -8,7 +8,7 @@ Geographic shapes (circles, ellipses, polygons, arcs) as first-class analysis pr
 
 ```python
 import numpy as np
-from grdl.shapes import Circle, Ellipse, overlay_shape
+from grdl.shapes import Circle, Ellipse, Arc, overlay_shape
 
 # Circular ROI (1 km radius) on an image
 roi = Circle(center_lat=34.05, center_lon=-118.15, radius_m=1000.0)
@@ -19,6 +19,14 @@ err = Ellipse(
     center_lat=34.05, center_lon=-118.15,
     semi_major_m=1000.0, semi_minor_m=250.0,
     rotation_deg=0.0,
+)
+
+# Open arc — a 1 km range ring swept 45 deg -> 135 deg, clockwise from
+# true north. Arc.is_closed is False, so rasterize() draws the polyline
+# only (no fill); contains() is meaningless for an open shape.
+ring = Arc(
+    center_lat=34.05, center_lon=-118.15, radius_m=1000.0,
+    bearing_start_deg=45.0, bearing_end_deg=135.0,
 )
 
 # Overlay on a matplotlib axes
@@ -68,7 +76,7 @@ Every stage is vectorized. `to_pixels` issues one batched `latlon_to_image` call
 `perimeter_latlon`, `to_pixels`, and `overlay_shape` accept an optional `height` parameter:
 
 - `height=None` (default): sample the DEM attached to the geolocation at every vertex.
-- `height=<float>`: use a constant HAE (metres) for every vertex; DEM sampling skipped.
+- `height=<float>`: use a constant HAE (meters) for every vertex; DEM sampling skipped.
 
 For a ground shape rendered on slant-range SAR imagery over steep terrain, per-vertex DEM variation causes layover-driven self-intersection of the projected perimeter. Pass `height=<shape-center HAE>` to render a clean oval. On orthorectified imagery (flat affine grid), heights are irrelevant — either mode works.
 
@@ -84,9 +92,17 @@ For a ground shape rendered on slant-range SAR imagery over steep terrain, per-v
 | `GeoPolygon` | user-defined | Arbitrary regions; supports geodesic, rhumb, or straight edges |
 | `Arc` | geodesic | Open curves, bearing-limited arcs, range rings |
 
+`GeodesicEllipse` is the true locus of points whose summed geodesic
+distance to two foci equals a constant. For each of `n` bearings around
+the geodesic midpoint of the foci, `_bisect_radial_distance` runs a
+bisection (default tolerance 1 mm, ≤64 iterations) on the radial
+distance until `geod.inv(F1, P) + geod.inv(F2, P)` matches the target
+sum — yielding a perimeter that is exact on the WGS-84 ellipsoid at any
+scale or latitude, at the cost of one bisection per perimeter vertex.
+
 ### Ellipse ↔ Covariance
 
-`Ellipse` exposes the 2×2 covariance matrix (local ENU frame at the centre) via `.covariance`, and `Ellipse.from_covariance(center, cov)` inverts the mapping. The error-propagation routines in [combine.py](combine.py) use this directly — no shape rasterization needed for Gaussian arithmetic.
+`Ellipse` exposes the 2×2 covariance matrix (local ENU frame at the center) via `.covariance`, and `Ellipse.from_covariance(center, cov)` inverts the mapping. The error-propagation routines in [combine.py](combine.py) use this directly — no shape rasterization needed for Gaussian arithmetic.
 
 ### Edge modes (`GeoPolygon`)
 
@@ -109,7 +125,7 @@ GeoPolygon(vertices, edge_mode='straight')  # linear in lat/lon (fast, small-sha
 | `minkowski_sum(a, b)` | Convex hull of vertex sums in ENU | `GeoPolygon` — set-valued worst case |
 | `union_shapes([...])` / `intersect_shapes([...])` | shapely unary_union / intersection | `GeoPolygon` |
 
-Covariance combination parallel-transports each input into a shared ENU frame via a 2D rotation for meridian convergence; `convolve_ellipses` warns when centres are more than 50 km apart (tangent-plane assumption no longer holds — use `GeodesicEllipse` or the Minkowski sum instead).
+Covariance combination parallel-transports each input into a shared ENU frame via a 2D rotation for meridian convergence; `convolve_ellipses` warns when centers are more than 50 km apart (tangent-plane assumption no longer holds — use `GeodesicEllipse` or the Minkowski sum instead).
 
 Example — three independent 1-σ error sources:
 
@@ -207,7 +223,7 @@ shapes/
   __init__.py         Public re-exports and the advertised API surface.
   base.py             GeographicShape ABC, perimeter_latlon, to_pixels,
                       rasterize, contains, _sample_dem_heights helper.
-  circle.py           Circle — geodesic forward from centre on n bearings.
+  circle.py           Circle — geodesic forward from center on n bearings.
   arc.py              Arc — open perimeter, bearing-range-limited.
   ellipse.py          Ellipse (tangent-plane) + GeodesicEllipse (two-foci,
                       per-bearing bisection on WGS-84).

@@ -3,8 +3,10 @@
 Boolean mask rasterization for projected shape polygons.
 
 Converts an ``(N, 2)`` pixel-space vertex list into a boolean mask of a
-target image shape. Uses scikit-image scan conversion for interior fill
-(O(filled-pixels) via horizontal sweep) and for perimeter drawing.
+target image shape. Interior fill uses a vectorized even-odd scanline sweep
+that writes contiguous row spans (orders of magnitude faster than per-pixel
+grid testing on large polygons), unioned with the scikit-image perimeter so
+boundary pixels are included (inclusive integer-vertex convention).
 
 Outline thickness greater than one pixel is implemented via
 ``scipy.ndimage.binary_dilation`` with a disk structuring element. All
@@ -33,7 +35,7 @@ Created
 
 Modified
 --------
-2026-04-18
+2026-06-07
 """
 
 # Standard library
@@ -42,7 +44,6 @@ from typing import Tuple
 # Third-party
 import numpy as np
 from scipy.ndimage import binary_dilation
-from skimage.draw import polygon as _sk_polygon
 from skimage.draw import polygon_perimeter as _sk_polygon_perimeter
 from skimage.draw import line as _sk_line
 
@@ -103,8 +104,7 @@ def rasterize_polygon(
     cols = pixels[:, 1]
 
     if fill and closed and len(pixels) >= 3:
-        rr, cc = _sk_polygon(rows, cols, shape=image_shape)
-        mask[rr, cc] = True
+        _scanline_fill(rows, cols, mask)
 
     draw_outline = outline or not closed
     if draw_outline and len(pixels) >= 2:
@@ -139,6 +139,62 @@ def rasterize_polygon(
             mask = binary_dilation(mask, structure=struct)
 
     return mask
+
+
+def _scanline_fill(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    mask: np.ndarray,
+) -> None:
+    """Fill a closed polygon interior into ``mask`` via even-odd scanline.
+
+    Writes contiguous column spans per row, then unions the perimeter so
+    boundary pixels are included (matching the inclusive integer-vertex
+    convention of ``skimage.draw.polygon`` while avoiding its per-pixel grid
+    test, which is orders of magnitude slower on large polygons).
+
+    Parameters
+    ----------
+    rows, cols : np.ndarray
+        Polygon vertex coordinates (``row`` and ``col``); the polygon is
+        implicitly closed (last vertex connects to first).
+    mask : np.ndarray of bool
+        Output mask, modified in place. Its shape bounds the fill.
+    """
+    h, w = mask.shape
+    r = np.asarray(rows, dtype=np.float64)
+    c = np.asarray(cols, dtype=np.float64)
+    r2 = np.roll(r, -1)
+    c2 = np.roll(c, -1)
+    lower = np.minimum(r, r2)
+    upper = np.maximum(r, r2)
+
+    y0 = max(0, int(np.floor(r.min())))
+    y1 = min(h - 1, int(np.ceil(r.max())))
+    for y in range(y0, y1 + 1):
+        # Edges straddling this scanline (half-open avoids double-counting
+        # shared vertices); horizontal edges (lower == upper) never qualify,
+        # so the intersection division below never sees a zero denominator.
+        cond = (lower <= y) & (y < upper)
+        if not cond.any():
+            continue
+        rr = r[cond]
+        x = c[cond] + (y - rr) * (c2[cond] - c[cond]) / (r2[cond] - rr)
+        x.sort()
+        for k in range(0, len(x) - 1, 2):
+            xa = max(int(np.ceil(x[k])), 0)
+            xb = min(int(np.floor(x[k + 1])), w - 1)
+            if xb >= xa:
+                mask[y, xa:xb + 1] = True
+
+    # Union the perimeter for boundary-inclusive fill.
+    try:
+        pr, pc = _sk_polygon_perimeter(r, c, shape=mask.shape, clip=True)
+        mask[pr, pc] = True
+    except IndexError:
+        # Sutherland-Hodgman clip produced no surviving polygon (shape
+        # grazes the boundary); the interior fill already stands.
+        pass
 
 
 def _disk(radius: int) -> np.ndarray:

@@ -212,3 +212,48 @@ class TestTilerInheritance:
         tiler = Tiler(nrows=100, ncols=100, tile_size=32)
         region = tiler._snap_region(-5, -5, 50, 50)
         assert region == ChipRegion(0, 0, 50, 50)
+
+
+class TestPartitionPositions:
+    """Non-overlapping exact-cover partition (each pixel visited once)."""
+
+    def _coverage(self, nrows, ncols, tile):
+        regions = Tiler(nrows, ncols, tile_size=tile).partition_positions()
+        cover = np.zeros((nrows, ncols), dtype=int)
+        for r in regions:
+            cover[r.row_start:r.row_end, r.col_start:r.col_end] += 1
+        return regions, cover
+
+    def test_even_division_exact_cover(self):
+        regions, cover = self._coverage(100, 100, 50)
+        assert len(regions) == 4
+        assert cover.min() == 1 and cover.max() == 1  # no gaps, no overlap
+
+    def test_uneven_division_clips_edges_no_overlap(self):
+        regions, cover = self._coverage(100, 70, 32)
+        # 4 row bands x 3 col bands
+        assert len(regions) == 12
+        assert cover.min() == 1 and cover.max() == 1
+        assert cover.sum() == 100 * 70
+
+    def test_edge_tiles_are_smaller(self):
+        regions = Tiler(100, 100, tile_size=64).partition_positions()
+        assert regions[-1] == ChipRegion(64, 64, 100, 100)
+
+    def test_tile_larger_than_image(self):
+        regions, cover = self._coverage(40, 40, 64)
+        assert len(regions) == 1
+        assert regions[0] == ChipRegion(0, 0, 40, 40)
+        assert cover.max() == 1
+
+    def test_returns_chip_region_type(self):
+        regions = Tiler(50, 50, tile_size=16).partition_positions()
+        assert all(isinstance(r, ChipRegion) for r in regions)
+
+    def test_stride_ignored(self):
+        # A small stride would overlap in tile_positions; partition never does.
+        regions, cover = self._coverage(100, 100, 32)
+        t = Tiler(100, 100, tile_size=32, stride=8)
+        regions2 = t.partition_positions()
+        assert regions == regions2
+        assert cover.max() == 1

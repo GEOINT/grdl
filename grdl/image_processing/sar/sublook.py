@@ -9,14 +9,29 @@ configurable overlap between adjacent sub-bands. Optionally removes the
 original apodization window before splitting so sub-looks are not shaped
 by the collection window.
 
+For stripmap and ScanSAR/TOPS collections the center-of-aperture (COA)
+spatial frequency varies across the image, so a global spectral cut would
+slice a different sub-aperture for every pixel. The decomposition therefore
+deskews (centers) the phase history using the SICD ``DeltaKCOAPoly`` before
+cutting the sub-bands and re-skews each look afterward. This is automatically
+mode-adaptive: ``DeltaKCOAPoly`` is ~0 for spotlight (deskew is a no-op) and
+non-trivial for stripmap/ScanSAR, so a single code path covers all modes.
+
 Accepts numpy arrays, CuPy arrays, and PyTorch tensors as input. Returns
-the same array type as the input for numpy and CuPy; the PyTorch path
-always returns a numpy array. Both the CuPy and torch paths support
-GPU-accelerated FFTs for large images.
+the same array type as the input for CuPy; numpy and torch inputs return a
+numpy array. Both the CuPy and torch paths support GPU-accelerated FFTs for
+large images.
+
+The 1-D sub-aperture FFTs use a multi-tier backend, preferred in the order
+``torch`` > ``scipy`` (multithreaded, ``workers=-1``) > ``numpy``. For numpy
+input on a multicore CPU this makes the scipy tier the default and avoids the
+single-threaded ``numpy.fft`` path; passing a torch tensor (or installing
+torch) selects the torch tier.
 
 Dependencies
 ------------
-torch (optional, for GPU-accelerated FFT path)
+scipy (multithreaded scipy.fft tier; a core dependency)
+torch (optional, for the torch FFT tier / GPU path)
 
 Author
 ------
@@ -35,7 +50,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-06-25
 """
 
 # Standard library
@@ -45,6 +60,12 @@ from typing import Annotated, Any, Optional, Tuple, TYPE_CHECKING, Union
 
 # Third-party
 import numpy as np
+
+try:
+    import scipy.fft as _scipy_fft
+    _HAS_SCIPY_FFT = True
+except ImportError:  # scipy is a core dependency; guard only for robustness
+    _HAS_SCIPY_FFT = False
 
 from grdl._torch_optional import torch, HAS_TORCH as _HAS_TORCH
 
@@ -60,6 +81,7 @@ from grdl.image_processing.params import Desc, Options, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality
 from grdl.IO.models import SICDMetadata
+from grdl.IO.models.common import Poly2D
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
@@ -133,6 +155,82 @@ def _validate_complex_2d_torch(tensor: 'torch.Tensor') -> None:
 
 
 # ===================================================================
+# FFT backend -- multi-tier: PyTorch > SciPy (multithreaded) > NumPy
+# ===================================================================
+
+def _cpu_fft_backend() -> str:
+    """Name of the preferred CPU FFT backend for the numpy input path.
+
+    Resolution order is ``torch`` > ``scipy`` > ``numpy``. The torch tier is
+    applied whole-image (and device-aware) in
+    :meth:`SublookDecomposition.decompose`; the scipy / numpy tiers are applied
+    per-axis inside :func:`_fft_along` / :func:`_ifft_along`.
+
+    Returns
+    -------
+    str
+        ``'torch'``, ``'scipy'``, or ``'numpy'``.
+    """
+    if _HAS_TORCH:
+        return 'torch'
+    if _HAS_SCIPY_FFT:
+        return 'scipy'
+    return 'numpy'
+
+
+def _fft_along(a: np.ndarray, axis: int, xp) -> np.ndarray:
+    """Forward 1-D FFT along *axis*.
+
+    For numpy (CPU) arrays this uses multithreaded ``scipy.fft`` (``workers=-1``)
+    when available, which is markedly faster than the single-threaded
+    ``numpy.fft``; cupy arrays use ``cupy.fft`` via ``xp``. The PyTorch tier is
+    handled upstream in :meth:`SublookDecomposition.decompose`.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Complex array (numpy or cupy).
+    axis : int
+        Axis along which to transform.
+    xp : module
+        ``numpy`` or ``cupy`` -- the array's array-module.
+
+    Returns
+    -------
+    np.ndarray
+        Complex FFT along *axis*, same dtype and array type as *a*.
+    """
+    if xp is np and _HAS_SCIPY_FFT:
+        return _scipy_fft.fft(a, axis=axis, workers=-1)
+    return xp.fft.fft(a, axis=axis)
+
+
+def _ifft_along(a: np.ndarray, axis: int, xp) -> np.ndarray:
+    """Inverse 1-D FFT along *axis*.
+
+    Mirror of :func:`_fft_along`: multithreaded ``scipy.fft.ifft`` for numpy
+    arrays, ``cupy.fft.ifft`` (via ``xp``) for cupy.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Complex array (numpy or cupy).
+    axis : int
+        Axis along which to transform.
+    xp : module
+        ``numpy`` or ``cupy``.
+
+    Returns
+    -------
+    np.ndarray
+        Complex inverse FFT along *axis*, same dtype and array type as *a*.
+    """
+    if xp is np and _HAS_SCIPY_FFT:
+        return _scipy_fft.ifft(a, axis=axis, workers=-1)
+    return xp.fft.ifft(a, axis=axis)
+
+
+# ===================================================================
 # SublookDecomposition
 # ===================================================================
 
@@ -176,6 +274,13 @@ class SublookDecomposition(ImageProcessor):
         divide the spectrum by the original apodization window before
         splitting. This ensures sub-looks are not shaped by the
         collection window (e.g., Taylor, Hamming). Default is True.
+    deskew : bool
+        If True and ``DeltaKCOAPoly`` is available in the metadata,
+        center (deskew) the phase history before cutting the sub-bands
+        and re-skew each look afterward. Required for correct sub-aperture
+        cuts in stripmap and ScanSAR/TOPS where the center-of-aperture
+        frequency varies across the image. A near no-op for spotlight
+        (``DeltaKCOAPoly`` ~ 0). Default is True.
 
     Raises
     ------
@@ -203,6 +308,7 @@ class SublookDecomposition(ImageProcessor):
     dimension: Annotated[str, Options('azimuth', 'range'), Desc('Split dimension (azimuth or range)')] = 'azimuth'
     overlap: Annotated[float, Range(min=0.0, max=0.99), Desc('Fractional overlap between sublooks')] = 0.0
     deweight: Annotated[bool, Desc('Apply deweighting before decomposition')] = True
+    deskew: Annotated[bool, Desc('Center the phase history (DeltaKCOA) before cutting')] = True
 
     def __init__(
         self,
@@ -211,6 +317,7 @@ class SublookDecomposition(ImageProcessor):
         dimension: str = 'azimuth',
         overlap: float = 0.0,
         deweight: bool = True,
+        deskew: bool = True,
     ) -> None:
         # ---- validate dimension ----
         if dimension not in ('azimuth', 'range'):
@@ -258,6 +365,7 @@ class SublookDecomposition(ImageProcessor):
         self._dimension = dimension
         self._overlap = overlap
         self._deweight = deweight
+        self._deskew = deskew
         self._axis = 1 if dimension == 'azimuth' else 0
 
         # Frequency domain parameters
@@ -267,6 +375,56 @@ class SublookDecomposition(ImageProcessor):
         self._delta_k1: Optional[float] = dir_param.delta_k1
         self._delta_k2: Optional[float] = dir_param.delta_k2
         self._wgt_funct: Optional[np.ndarray] = dir_param.wgt_funct
+
+        # ---- deskew (phase-history centering) parameters ----
+        # Collection mode is informational only; the DeltaKCOAPoly drives
+        # the math (~0 for spotlight, non-trivial for stripmap / ScanSAR).
+        self._mode_type: Optional[str] = None
+        if (metadata.collection_info is not None
+                and metadata.collection_info.radar_mode is not None):
+            self._mode_type = metadata.collection_info.radar_mode.mode_type
+
+        self._sgn: int = dir_param.sgn if dir_param.sgn is not None else -1
+        self._delta_k_coa_poly = dir_param.delta_k_coa_poly
+
+        # Pixel-to-meters mapping relative to the SCP. Needed to evaluate
+        # the DeltaKCOAPoly (which is a polynomial in row/col meters).
+        self._row_ss: Optional[float] = (
+            metadata.grid.row.ss if metadata.grid.row is not None else None
+        )
+        self._col_ss: Optional[float] = (
+            metadata.grid.col.ss if metadata.grid.col is not None else None
+        )
+        self._scp_row: Optional[float] = None
+        self._scp_col: Optional[float] = None
+        self._first_row: int = 0
+        self._first_col: int = 0
+        image_data = metadata.image_data
+        if image_data is not None:
+            self._first_row = int(image_data.first_row)
+            self._first_col = int(image_data.first_col)
+            if image_data.scp_pixel is not None:
+                self._scp_row = float(image_data.scp_pixel.row)
+                self._scp_col = float(image_data.scp_pixel.col)
+
+        # Whether a usable deskew is actually possible with this metadata.
+        self._can_deskew: bool = (
+            self._deskew
+            and self._delta_k_coa_poly is not None
+            and self._delta_k_coa_poly.coefs is not None
+            and self._scp_row is not None
+            and self._scp_col is not None
+            and self._row_ss is not None
+            and self._col_ss is not None
+        )
+        if self._deskew and not self._can_deskew:
+            logger.info(
+                "Sublook deskew requested but DeltaKCOAPoly / SCP geometry "
+                "is unavailable (mode=%s); falling back to global spectral "
+                "cut. This is correct for spotlight but may be inaccurate "
+                "for stripmap / ScanSAR.",
+                self._mode_type,
+            )
 
     # ------------------------------------------------------------------
     # Properties
@@ -287,12 +445,17 @@ class SublookDecomposition(ImageProcessor):
         """Fractional overlap between adjacent sub-bands."""
         return self._overlap
 
+    @property
+    def deskew(self) -> bool:
+        """Whether phase-history centering (DeltaKCOA deskew) is enabled."""
+        return self._deskew
+
     # ------------------------------------------------------------------
     # Sub-band geometry (pre-computed on first call)
     # ------------------------------------------------------------------
 
     def _compute_subband_bins(
-        self, n_samples: int
+        self, n_samples: int, centered: bool = False
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         """Compute sub-band start/stop bin indices for *n_samples* FFT.
 
@@ -300,6 +463,11 @@ class SublookDecomposition(ImageProcessor):
         ----------
         n_samples : int
             Number of samples along the decomposition axis.
+        centered : bool
+            If True, the phase history has been deskewed so the signal
+            support is symmetric about DC; ignore the metadata
+            ``delta_k1``/``delta_k2`` (which describe the *skewed* support)
+            and place the support symmetrically. Default is False.
 
         Returns
         -------
@@ -321,7 +489,9 @@ class SublookDecomposition(ImageProcessor):
 
         # Support boundaries in bin indices (centered at DC = bin 0 after
         # fftshift, but we work in fftshift coordinates then convert back)
-        if self._delta_k1 is not None and self._delta_k2 is not None:
+        if (not centered
+                and self._delta_k1 is not None
+                and self._delta_k2 is not None):
             # Exact support from metadata (cycles/meter → bins)
             bin_per_k = n_samples * self._ss  # bins per (cycles/meter)
             support_start_bin = self._delta_k1 * bin_per_k
@@ -362,6 +532,100 @@ class SublookDecomposition(ImageProcessor):
         np.clip(stops_int, 0, n_samples, out=stops_int)
 
         return starts_int, stops_int, osr
+
+    @staticmethod
+    def _polyint_coefs(coefs: np.ndarray, axis: int) -> np.ndarray:
+        """Integrate a 2-D polynomial's coefficients along *axis*.
+
+        For ``coefs[i, j]`` (coefficient of ``x**i * y**j``), integration
+        with respect to ``x`` (axis 0) maps ``coefs[i, j]`` to
+        ``coefs[i, j] / (i + 1)`` at power ``i + 1``; integration with
+        respect to ``y`` (axis 1) maps it to ``coefs[i, j] / (j + 1)`` at
+        power ``j + 1``. The integration constant is zero.
+
+        Parameters
+        ----------
+        coefs : np.ndarray
+            2-D coefficient array, shape ``(order_x + 1, order_y + 1)``.
+        axis : int
+            ``0`` to integrate in the row (x) coordinate, ``1`` for col (y).
+
+        Returns
+        -------
+        np.ndarray
+            Integrated coefficient array with one extra order on *axis*.
+        """
+        c = np.asarray(coefs, dtype=np.float64)
+        if axis == 0:
+            out = np.zeros((c.shape[0] + 1, c.shape[1]), dtype=np.float64)
+            divisors = np.arange(1, c.shape[0] + 1).reshape(-1, 1)
+            out[1:, :] = c / divisors
+        else:
+            out = np.zeros((c.shape[0], c.shape[1] + 1), dtype=np.float64)
+            divisors = np.arange(1, c.shape[1] + 1).reshape(1, -1)
+            out[:, 1:] = c / divisors
+        return out
+
+    def _compute_deskew_phase(
+        self, rows: int, cols: int
+    ) -> Optional[np.ndarray]:
+        """Compute the deskew phase ramp that centers the phase history.
+
+        Integrates ``DeltaKCOAPoly`` along the decomposition axis and
+        evaluates it over the image grid (coordinates in meters relative to
+        the SCP). The returned array ``phase`` is applied as
+        ``image * exp(1j * sgn * 2*pi * phase)`` to drag every pixel's
+        center-of-aperture frequency to DC, and its conjugate re-skews the
+        looks afterward.
+
+        Returns ``None`` when deskewing is disabled or the required
+        metadata (``DeltaKCOAPoly``, SCP pixel, sample spacings) is missing,
+        in which case the global spectral cut is used unchanged.
+
+        Notes
+        -----
+        The integral deramp handles the smooth (linear / low-order)
+        center-of-aperture variation that covers spotlight, stripmap, and
+        normal ScanSAR. For extreme TOPS azimuth steering the per-pixel COA
+        frequency can exceed the sampling rate and alias; the SICD standard
+        (NGA.STND.0024-1, Sec. 4.4) notes that ``KCOA`` computed from the
+        polynomial "may need to be adjusted by an integer multiple of
+        ``1 / SS``" to recover the effective COA. This wrap is *not* undone
+        here -- it is a burst-domain concern resolved at focusing / mosaic
+        time, not in sub-aperture splitting. Inputs that already alias will
+        not deskew correctly.
+
+        Parameters
+        ----------
+        rows : int
+            Number of image rows.
+        cols : int
+            Number of image columns.
+
+        Returns
+        -------
+        np.ndarray or None
+            Deskew phase, shape ``(rows, cols)``, float64, or ``None``.
+        """
+        if not self._can_deskew:
+            return None
+
+        # Pixel indices -> meters relative to the SCP (full-image indices
+        # account for chip offsets via first_row / first_col).
+        row_m = (
+            (np.arange(rows, dtype=np.float64) + self._first_row - self._scp_row)
+            * self._row_ss
+        ).reshape(-1, 1)
+        col_m = (
+            (np.arange(cols, dtype=np.float64) + self._first_col - self._scp_col)
+            * self._col_ss
+        ).reshape(1, -1)
+
+        # Integrate DeltaKCOAPoly along the decomposition axis:
+        # axis 0 (range) -> integrate in row (x); axis 1 (azimuth) -> col (y).
+        int_coefs = self._polyint_coefs(self._delta_k_coa_poly.coefs, self._axis)
+        phase = Poly2D(coefs=int_coefs)(row_m, col_m)
+        return np.broadcast_to(phase, (rows, cols)).astype(np.float64)
 
     def _build_deweight_array(
         self, n_support_bins: int
@@ -454,11 +718,19 @@ class SublookDecomposition(ImageProcessor):
     ) -> np.ndarray:
         """Decompose a complex SAR image into sub-aperture looks.
 
-        Dispatches to the appropriate backend based on input type:
+        Dispatches to the fastest available backend. Array type fixes the
+        device; for CPU numpy input the FFT backend follows the multi-tier
+        preference ``torch`` > ``scipy`` (multithreaded) > ``numpy``:
 
-        - ``torch.Tensor`` → ``_decompose_torch`` (PyTorch CUDA / CPU)
-        - ``cupy.ndarray`` → ``_decompose_numpy`` with ``xp = cupy``
-        - ``numpy.ndarray`` → ``_decompose_numpy`` with ``xp = numpy``
+        - ``torch.Tensor`` → ``_decompose_torch`` (caller's device: CUDA / CPU)
+        - ``cupy.ndarray`` → ``_decompose_numpy`` with ``xp = cupy`` (GPU)
+        - ``numpy.ndarray`` and torch installed → ``_decompose_torch`` on a
+          CPU tensor (torch's multithreaded / GPU-capable FFT)
+        - ``numpy.ndarray`` otherwise → ``_decompose_numpy``, whose 1-D FFTs
+          use multithreaded ``scipy.fft`` when available, else ``numpy.fft``
+
+        All paths return a ``numpy.ndarray`` except CuPy input, which returns a
+        ``cupy.ndarray``.
 
         Parameters
         ----------
@@ -469,8 +741,6 @@ class SublookDecomposition(ImageProcessor):
         -------
         np.ndarray or cupy.ndarray
             Complex sub-look stack, shape ``(num_looks, rows, cols)``.
-            Returns ``np.ndarray`` for numpy or torch input;
-            ``cupy.ndarray`` for CuPy input.
 
         Raises
         ------
@@ -480,15 +750,30 @@ class SublookDecomposition(ImageProcessor):
         ValueError
             If *image* is not 2D.
         """
+        # Explicit torch tensor: caller already chose the device (CUDA / CPU).
         if _HAS_TORCH and isinstance(image, torch.Tensor):
             logger.info(
                 "Sublook decomposition: backend=torch, num_looks=%d",
                 self._num_looks,
             )
             return self._decompose_torch(image)
+        # CuPy array stays on the GPU through the xp path.
+        if _HAS_CUPY and isinstance(image, cp.ndarray):
+            logger.info(
+                "Sublook decomposition: backend=cupy, num_looks=%d",
+                self._num_looks,
+            )
+            return self._decompose_numpy(image)
+        # NumPy (CPU) input: prefer torch, then scipy (multithreaded), then numpy.
+        if _HAS_TORCH:
+            logger.info(
+                "Sublook decomposition: backend=torch (from numpy), num_looks=%d",
+                self._num_looks,
+            )
+            return self._decompose_torch(torch.from_numpy(image))
         logger.info(
-            "Sublook decomposition: backend=numpy, num_looks=%d",
-            self._num_looks,
+            "Sublook decomposition: backend=%s, num_looks=%d",
+            'scipy' if _HAS_SCIPY_FFT else 'numpy', self._num_looks,
         )
         return self._decompose_numpy(image)
 
@@ -516,12 +801,27 @@ class SublookDecomposition(ImageProcessor):
         xp = cp if (_HAS_CUPY and isinstance(image, cp.ndarray)) else np
         _validate_complex_2d(image)
         axis = self._axis
+        rows, cols = image.shape
         n_samples = image.shape[axis]
 
-        starts, stops, osr = self._compute_subband_bins(n_samples)
+        # Center the phase history (deskew) so the COA frequency lands at DC
+        # uniformly across the image. A no-op for spotlight; required for
+        # stripmap / ScanSAR where DeltaKCOA varies across the scene.
+        deskew_phase = self._compute_deskew_phase(rows, cols)
+        if deskew_phase is not None:
+            ramp = xp.exp(
+                1j * self._sgn * 2.0 * np.pi * xp.asarray(deskew_phase)
+            ).astype(image.dtype)
+            image = image * ramp
 
-        # FFT along decomposition axis, then shift DC to center
-        spectrum = xp.fft.fftshift(xp.fft.fft(image, axis=axis), axes=axis)
+        starts, stops, osr = self._compute_subband_bins(
+            n_samples, centered=deskew_phase is not None
+        )
+
+        # FFT along decomposition axis, then shift DC to center. The 1-D FFT
+        # uses multithreaded scipy.fft for numpy arrays (cupy via xp); the
+        # cheap shift stays on xp.
+        spectrum = xp.fft.fftshift(_fft_along(image, axis, xp), axes=axis)
 
         # Deweight within signal support
         support_start = starts[0]
@@ -537,22 +837,37 @@ class SublookDecomposition(ImageProcessor):
             slices[axis] = slice(support_start, support_stop)
             spectrum[tuple(slices)] = spectrum[tuple(slices)] * dw
 
-        # Extract sub-looks
-        rows, cols = image.shape
+        # Re-skew ramp restores each look to the original image geometry.
+        reskew = None
+        if deskew_phase is not None:
+            reskew = xp.exp(
+                -1j * self._sgn * 2.0 * np.pi * xp.asarray(deskew_phase)
+            ).astype(image.dtype)
+
+        # Extract sub-looks. Reuse one spectral buffer and clear only the band
+        # region after each look (mask in place) instead of allocating a fresh
+        # full-size zero array per look. Each iteration writes exactly the band
+        # it later clears, so this is correct for overlapping sub-bands too.
         result = xp.zeros(
             (self._num_looks, rows, cols), dtype=image.dtype
         )
+        sub_spectrum = xp.zeros_like(spectrum)
+        slices = [slice(None), slice(None)]
 
         for i in range(self._num_looks):
-            sub_spectrum = xp.zeros_like(spectrum)
-            slices = [slice(None), slice(None)]
             slices[axis] = slice(starts[i], stops[i])
-            sub_spectrum[tuple(slices)] = spectrum[tuple(slices)]
+            band = tuple(slices)
+            sub_spectrum[band] = spectrum[band]          # mask in: copy band
 
-            # Shift back and inverse FFT
-            result[i] = xp.fft.ifft(
-                xp.fft.ifftshift(sub_spectrum, axes=axis), axis=axis
+            # Shift back and inverse FFT (multithreaded scipy.fft for numpy)
+            look = _ifft_along(
+                xp.fft.ifftshift(sub_spectrum, axes=axis), axis, xp
             )
+            if reskew is not None:
+                look = look * reskew
+            result[i] = look
+
+            sub_spectrum[band] = 0                        # mask out: clear band
 
         return result
 
@@ -576,9 +891,25 @@ class SublookDecomposition(ImageProcessor):
 
         _validate_complex_2d_torch(tensor)
         dim = self._axis
+        rows, cols = tensor.shape
         n_samples = tensor.shape[dim]
 
-        starts, stops, osr = self._compute_subband_bins(n_samples)
+        # Center the phase history (deskew) before cutting; no-op for
+        # spotlight, required for stripmap / ScanSAR.
+        deskew_phase = self._compute_deskew_phase(rows, cols)
+        reskew = None
+        if deskew_phase is not None:
+            phase_t = torch.from_numpy(deskew_phase).to(
+                device=tensor.device, dtype=tensor.real.dtype
+            )
+            two_pi_sgn = self._sgn * 2.0 * np.pi
+            ramp = torch.exp(1j * two_pi_sgn * phase_t).to(tensor.dtype)
+            reskew = torch.exp(-1j * two_pi_sgn * phase_t).to(tensor.dtype)
+            tensor = tensor * ramp
+
+        starts, stops, osr = self._compute_subband_bins(
+            n_samples, centered=deskew_phase is not None
+        )
 
         # FFT along decomposition axis, then shift DC to center
         spectrum = torch.fft.fftshift(torch.fft.fft(tensor, dim=dim), dim=dim)
@@ -600,7 +931,6 @@ class SublookDecomposition(ImageProcessor):
             spectrum[tuple(slices)] = spectrum[tuple(slices)] * dw_tensor
 
         # Extract sub-looks
-        rows, cols = tensor.shape
         results = []
 
         for i in range(self._num_looks):
@@ -613,6 +943,8 @@ class SublookDecomposition(ImageProcessor):
             look = torch.fft.ifft(
                 torch.fft.ifftshift(sub_spectrum, dim=dim), dim=dim
             )
+            if reskew is not None:
+                look = look * reskew
             results.append(look)
 
         stack = torch.stack(results, dim=0)

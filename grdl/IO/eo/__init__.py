@@ -155,9 +155,13 @@ from grdl.IO.eo.sentinel2 import Sentinel2Reader
 # EO NITF reader
 from grdl.IO.eo.nitf import EONITFReader
 
+# EO NITF chip writer
+from grdl.IO.eo.nitf_writer import write_chip
+
 
 __all__ = [
     'open_eo',
     'Sentinel2Reader',
     'EONITFReader',
+    'write_chip',
 ]

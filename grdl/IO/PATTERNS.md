@@ -26,6 +26,7 @@ __init__(filepath)          # validates path, calls _load_metadata()
 - Validate bounds in `read_chip()` before backend call; raise `ValueError` for OOB
 - All readers support context managers (`with Reader(...) as r:`)
 - Single-band output is squeezed to 2D `(rows, cols)`; multi-band is `(bands, rows, cols)`
+- Single-channel SAR readers (SICD, CPHD, CRSD) set `_enforce_2d = True` — call `self._assert_2d(data, context=..., strict=self._enforce_2d)` before returning to guarantee the contract and catch backend shape regressions early
 
 ---
 
@@ -351,28 +352,170 @@ def _extract_product_info(root: ET.Element) -> ProductInfo:
 
 ---
 
-## 11. Writer Factory Registry
+## 11. Reader / Writer Factory Registry
 
 **File:** `__init__.py`
 
-Writers are registered in a module-level dict for lazy loading.
+Both readers and writers use symmetric module-level registries for lazy loading. Registering a new reader or writer in the appropriate dict (or via `register_reader()` / `register_writer()` at runtime) is sufficient — no other code changes are needed. The reader registry has 20 entries; the writer registry has 5.
 
 ```python
-_WRITER_REGISTRY = {
-    'geotiff': ('grdl.IO.geotiff', 'GeoTIFFWriter'),
-    'numpy':   ('grdl.IO.numpy_io', 'NumpyWriter'),
+# Reader registry (20 entries)
+_READER_REGISTRY: Dict[str, tuple] = {
+    'sicd':    ('grdl.IO.sar.sicd',   'SICDReader'),
+    'geotiff': ('grdl.IO.geotiff',    'GeoTIFFReader'),
+    # ... geotiff, nitf, hdf5, jpeg2000, sicd, cphd, crsd, sidd, biomass,
+    #     sentinel1-slc, sentinel1-l0, terrasar, nisar, sentinel2, eo-nitf,
+    #     aster, viirs, stanag4607, gdal, probe
 }
 
+# Writer registry
+_WRITER_REGISTRY: Dict[str, tuple] = {
+    'geotiff': ('grdl.IO.geotiff',    'GeoTIFFWriter'),
+    'numpy':   ('grdl.IO.numpy_io',   'NumpyWriter'),
+    # ...
+}
+
+def get_reader(format: str, filepath) -> ImageReader:
+    key = _normalize_reader_key(format)   # lowercase, strip, '_' → '-'
+    if key not in _READER_REGISTRY:
+        raise ValueError(f"Unknown reader format: {format!r}. "
+                         f"Supported formats: {sorted(_READER_REGISTRY.keys())}.")
+    module_path, class_name = _READER_REGISTRY[key]
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise ImportError(
+            f"Reader '{format}' requires optional dependencies that are "
+            f"not installed: {exc}. See requirements-optional.txt."
+        ) from exc
+    return getattr(module, class_name)(filepath)
+
 def get_writer(format: str, filepath, metadata=None) -> ImageWriter:
-    if format not in _WRITER_REGISTRY:
-        raise ValueError(f"Unknown format '{format}'. Supported: {list(_WRITER_REGISTRY)}")
-    module_path, class_name = _WRITER_REGISTRY[format]
-    mod = importlib.import_module(module_path)
-    cls = getattr(mod, class_name)
-    return cls(filepath, metadata)
+    key = format.strip().lower()
+    if key not in _WRITER_REGISTRY:
+        raise ValueError(f"Unknown writer format: {format!r}. "
+                         f"Supported formats: {sorted(_WRITER_REGISTRY.keys())}")
+    module_path, class_name = _WRITER_REGISTRY[key]
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)(filepath, metadata=metadata)
+```
+
+**Runtime registration** — extend either registry without editing the library:
+
+```python
+def register_reader(format, module_path, class_name, overwrite=False):
+    key = _normalize_reader_key(format)
+    if not overwrite and key in _READER_REGISTRY:
+        raise ValueError(f"Reader format {format!r} is already registered. "
+                         "Use overwrite=True to replace it.")
+    _READER_REGISTRY[key] = (module_path, class_name)
+# register_writer() is identical against _WRITER_REGISTRY
 ```
 
 **Rules:**
-- Writers are not imported until requested (lazy loading)
-- Extension auto-detection via `_EXTENSION_MAP` (case-insensitive)
-- Convenience `write()` function handles lifecycle (open, write, close)
+- Both registries use `(module_path, ClassName)` tuples — imports are deferred until the factory is called
+- Reader keys are normalized (`lowercase`, `_` → `-`) so `'sentinel1-slc'` == `'sentinel1_slc'`; writer keys are only lowercased
+- `get_reader` raises `ImportError` with a `requirements-optional.txt` reference for missing optional libraries
+- Reader extension auto-detection via `_READER_EXTENSION_MAP`; writer extension via `_EXTENSION_MAP`
+- `register_reader()` / `register_writer()` add or (with `overwrite=True`) replace entries at runtime; default `overwrite=False` guards against clobbering
+- Use `list_reader_formats()` to enumerate registered reader keys at runtime
+- Convenience `write()` handles the writer lifecycle (open, write, close)
+- `open_reader()` wraps `get_reader` with extension-based dispatch and `open_any()` fallback; on `ImportError`/`ValueError` from a specialized reader it falls through and emits a `UserWarning` if a fallback reader handles the file
+- `open_image()` is a deprecated alias for `open_reader()` (emits `DeprecationWarning`) — use `open_reader()` in new code
+- Writers that take a typed metadata container instead of an ndarray (`SICDWriter`, `SIDDWriter`, `STANAG4607Writer`) are **not** registered — call them directly
+
+## 12. Strict 2-D Shape Enforcement (`_enforce_2d`)
+
+**Files:** `base.py`, `sar/sicd.py`, `sar/cphd.py`, `sar/crsd.py`
+
+Single-channel SAR readers guarantee a `(rows, cols)` return shape and catch backend regressions at read time.
+
+```python
+class MySinglePolReader(ImageReader):
+    _enforce_2d: bool = True   # guarantees (rows, cols) output
+
+    def read_chip(self, row_start, row_end, col_start, col_end, bands=None):
+        # ... backend call ...
+        data = backend.read(...)          # may return (1, R, C) depending on version
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,      # True → ValueError on singleton axis
+        )
+```
+
+`ImageReader._assert_2d(data, context, strict)` behavior:
+
+| Input shape | `strict=False` | `strict=True` |
+|-------------|----------------|---------------|
+| `(R, C)` | returned as-is | returned as-is |
+| `(1, R, C)` | squeezed → `(R, C)` | `ValueError` with context |
+| `(R, C, 1)` | squeezed → `(R, C)` | `ValueError` with context |
+| `(N, R, C)` N>1 | `ValueError` | `ValueError` |
+
+**Rules:**
+- Set `_enforce_2d = True` on every new single-pol/single-channel reader
+- Always pass `context=f'{type(self).__name__}.read_chip'` so error messages identify the exact reader
+- Do **not** set `_enforce_2d = True` on multi-band readers (GeoTIFFReader, VIIRSReader, etc.)
+- `_enforce_2d = False` on the base class — existing readers are unaffected by default
+
+## 13. Optional-Feature Stub Fallback
+
+**File:** `sar/sentinel1_l0/__init__.py`
+
+When a *subset* of a subpackage depends on a heavier optional dependency, guard
+only that subset at import time and swap in stub callables that raise a clear
+`ImportError` when actually invoked. The core reader stays importable.
+
+```python
+from grdl.IO.sar.sentinel1_l0.reader import (
+    ReaderConfig, Sentinel1L0Reader, open_safe_product,  # always available
+)
+
+try:
+    from grdl.IO.sar.sentinel1_l0.crsd_converter import (
+        Sentinel1L0ToCRSD, convert_s1_l0_to_crsd,
+    )
+except ImportError as _err:
+    _MSG = ("CRSD conversion dependencies are not installed. "
+            "Install the optional dependencies to use this feature.")
+
+    def convert_s1_l0_to_crsd(*args, **kwargs):
+        raise ImportError(_MSG) from _err
+    # ... same stub for Sentinel1L0ToCRSD, verify_crsd_split_gates ...
+```
+
+**Rules:**
+- Guard only the optional-feature imports, never the core reader
+- Each stub re-raises the original `ImportError` via `from _err` so the root cause is preserved
+- Keep the public name in `__all__` so `import` succeeds and the failure surfaces only on call
+- Differs from §2 (whole-module backend guard) — here the module imports fine and only the optional capability is degraded
+
+## 14. Non-Raster Reader (Report Streams)
+
+**Files:** `gmti/stanag4607.py`
+
+Some formats are not raster imagery and should **not** inherit `ImageReader`.
+STANAG 4607 GMTI is a stream of dwell/target reports, so `STANAG4607Reader` is a
+plain class with iterator methods and a bridge into the GRDL detection model.
+
+```python
+class STANAG4607Reader:
+    def iter_packets(self): ...
+    def iter_dwells(self): ...
+    def iter_target_reports(self):     # yields (dwell, target)
+        for dwell in self.metadata.dwells:
+            for target in dwell.target_reports:
+                yield dwell, target
+
+    def to_detection_set(self, confidence_field='gmti.snr_db',
+                         snr_normalization=40.0) -> 'DetectionSet':
+        # each target → Detection(geo_geometry=Point(lon, lat), ...)
+        ...
+```
+
+**Rules:**
+- Do not force the `read_chip`/`get_shape` raster contract onto non-raster data
+- Still register it (`stanag4607` key) so `get_reader` / `open_reader` can dispatch by extension
+- Provide a typed-metadata writer used directly (not via `get_writer`, which assumes the `write(ndarray)` contract)
+- Bridge into the shared GRDL model (`DetectionSet`) rather than inventing a parallel one

@@ -282,6 +282,19 @@ catalog = LocalCatalog()                                      # in-memory only
 
 catalog.add(result)
 catalog.add_batch(results)
+```
+
+When constructed with a `db_path`, the catalog persists every `add` /
+`add_batch` to SQLite (one row per `filepath`, JSON-serialized via
+`ScanResult.to_json()`) and reloads it on the next construction with the
+same path — so a catalog survives across sessions. Persistence is
+JSON-only: the typed `metadata_ref` object (with its callable `Poly1D` /
+`Poly2D` / `XYZPoly` polynomials) is **not** persisted, so reloaded
+results expose `metadata_dict` and the geospatial features but have
+`metadata_ref = None`. Re-scan the file if you need the live metadata
+object back (e.g. for `compute_beam_footprint`).
+
+```python
 
 # Filter (all parameters optional, combined with AND)
 items = catalog.filter(

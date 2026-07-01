@@ -351,6 +351,8 @@ class CPHDReader(ImageReader):
     ...     data = reader.read_chip(0, 100, 0, 200)
     """
 
+    _enforce_2d: bool = True  # CPHD is always single-channel phase history
+
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('CPHD')
         logger.info("CPHD backend selected: %s", self.backend)
@@ -853,6 +855,52 @@ class CPHDReader(ImageReader):
     # ------------------------------------------------------------------
     # 6. PVP — array load (signal block) and definition table
     # ------------------------------------------------------------------
+
+    def read_pvp(self, channel: Union[int, str] = 0) -> CPHDPVP:
+        """Read the per-vector parameters (PVP) for a single channel.
+
+        This is the public, backend-dispatching accessor for per-channel
+        PVP data. The ``metadata.pvp`` attribute holds only the first
+        channel; multi-channel processing (e.g. STAP) should call this
+        method for each channel.
+
+        Parameters
+        ----------
+        channel : int or str
+            Channel index (0-based) or channel identifier string.
+            Default is 0 (the first channel).
+
+        Returns
+        -------
+        CPHDPVP
+            Per-vector parameter arrays for the requested channel.
+
+        Raises
+        ------
+        ValueError
+            If ``channel`` is a string that does not match any channel
+            identifier, or an index outside the channel range.
+        """
+        channels = self.metadata.channels
+        if isinstance(channel, str):
+            ids = [c.identifier for c in channels]
+            if channel not in ids:
+                raise ValueError(
+                    f"Unknown channel identifier {channel!r}; "
+                    f"available: {ids}"
+                )
+            index = ids.index(channel)
+        else:
+            index = int(channel)
+            if index < 0 or index >= len(channels):
+                raise ValueError(
+                    f"Channel index {index} out of range "
+                    f"(0..{len(channels) - 1})"
+                )
+
+        if self.backend == 'sarkit':
+            return self._load_pvp_sarkit(channels[index].identifier)
+        return self._load_pvp_sarpy(index)
 
     def _load_pvp_sarkit(self, channel_id: str) -> CPHDPVP:
         """Read PVP arrays for a channel via the sarkit signal reader."""
@@ -1923,13 +1971,22 @@ class CPHDReader(ImageReader):
 
         if self.backend == 'sarkit':
             ch_id = self.metadata.channels[channel].identifier
-            return self._reader.read_signal(
+            data = self._reader.read_signal(
                 ch_id,
                 start_vector=row_start,
                 stop_vector=row_end,
             )[:, col_start:col_end]
         else:
-            return self._reader[row_start:row_end, col_start:col_end, channel]
+            data = self._reader.read_chip(
+                index=channel,
+                dim1_range=(row_start, row_end),
+                dim2_range=(col_start, col_end),
+            )
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read full phase history data.
@@ -1948,9 +2005,14 @@ class CPHDReader(ImageReader):
 
         if self.backend == 'sarkit':
             ch_id = self.metadata.channels[channel].identifier
-            return self._reader.read_signal(ch_id)
+            data = self._reader.read_signal(ch_id)
         else:
-            return self._reader.read(index=channel)
+            data = self._reader.read(index=channel)
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_full',
+            strict=self._enforce_2d,
+        )
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get phase history dimensions for first channel."""

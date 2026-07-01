@@ -23,7 +23,7 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-06-07
 """
 
 import pytest
@@ -32,7 +32,10 @@ import numpy as np
 from grdl.IO.models import ChannelMetadata
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.IO.models import SICDMetadata
-from grdl.IO.models.sicd import SICDGrid, SICDDirParam, SICDWgtType
+from grdl.IO.models.sicd import (
+    SICDGrid, SICDDirParam, SICDWgtType, SICDImageData,
+)
+from grdl.IO.models.common import Poly2D, RowCol
 
 
 # ===================================================================
@@ -99,6 +102,49 @@ def _synthetic_complex_image(
         rng.standard_normal((rows, cols))
         + 1j * rng.standard_normal((rows, cols))
     ).astype(np.complex64)
+
+
+def _make_deskew_metadata(
+    rows: int = 64,
+    cols: int = 128,
+    sweep_frac: float = 0.3,
+    ss: float = 0.5,
+    imp_resp_bw: float = 1.0,
+    sgn: int = -1,
+) -> tuple:
+    """Build SICDMetadata with an order-1 azimuth ``DeltaKCOAPoly``.
+
+    Models a stripmap-like collect whose azimuth center-of-aperture
+    frequency ramps linearly with range (row). Populates the SCP pixel and
+    sample spacings the deskew needs, and returns the coefficient so the
+    test can reproduce the imposed skew.
+
+    Returns
+    -------
+    tuple[SICDMetadata, float]
+        ``(metadata, c10)`` where the azimuth ``DeltaKCOAPoly`` equals
+        ``c10 * row_m`` (cycles/meter, row in meters relative to the SCP).
+    """
+    scp_row = rows / 2.0
+    # Sweep the azimuth COA across sweep_frac of the bandwidth over the
+    # full range extent, using the same origin convention as the deskew.
+    row_m = (np.arange(rows) - scp_row) * ss
+    c10 = (sweep_frac * imp_resp_bw) / (row_m[-1] - row_m[0])
+
+    col = SICDDirParam(
+        ss=ss, imp_resp_bw=imp_resp_bw, k_ctr=0.0, sgn=sgn,
+        delta_k_coa_poly=Poly2D(coefs=np.array([[0.0], [c10]])),
+    )
+    row = SICDDirParam(ss=ss, imp_resp_bw=imp_resp_bw, k_ctr=0.0, sgn=sgn)
+    meta = SICDMetadata(
+        format='SICD', rows=rows, cols=cols, dtype='complex64',
+        grid=SICDGrid(row=row, col=col),
+        image_data=SICDImageData(
+            first_row=0, first_col=0,
+            scp_pixel=RowCol(row=scp_row, col=cols / 2.0),
+        ),
+    )
+    return meta, c10
 
 
 # ===================================================================
@@ -414,6 +460,108 @@ class TestVersioning:
         from grdl.vocabulary import ImageModality
         tags = SublookDecomposition.__processor_tags__
         assert ImageModality.SAR in tags['modalities']
+
+
+# ===================================================================
+# Deskew (DeltaKCOA phase-history centering)
+# ===================================================================
+
+class TestDeskew:
+    """Verify the stripmap / ScanSAR sub-aperture deskew.
+
+    A correct deskew centers the phase history (using ``DeltaKCOAPoly``)
+    before cutting the sub-bands and re-skews each look afterward, so the
+    sub-band cut isolates the same relative sub-aperture at every range. We
+    impose a known range-varying azimuth Doppler centroid on a synthetic
+    image and check that ``deskew=True`` reproduces an independently
+    computed ground truth while ``deskew=False`` does not.
+    """
+
+    @staticmethod
+    def _ground_truth(sd, image, phase, num_looks):
+        """Centered sub-band cut on the un-skewed image, then re-skewed.
+
+        This is, by construction, what ``deskew=True`` must produce on the
+        skewed image: center -> cut centered sub-bands -> re-skew.
+        """
+        starts, stops, _ = sd._compute_subband_bins(
+            image.shape[1], centered=True
+        )
+        spec = np.fft.fftshift(np.fft.fft(image, axis=1), axes=1)
+        reskew = np.exp(-1j * sd._sgn * 2.0 * np.pi * phase).astype(
+            image.dtype
+        )
+        ref = np.zeros((num_looks,) + image.shape, dtype=image.dtype)
+        for i in range(num_looks):
+            sub = np.zeros_like(spec)
+            sub[:, starts[i]:stops[i]] = spec[:, starts[i]:stops[i]]
+            ref[i] = np.fft.ifft(
+                np.fft.ifftshift(sub, axes=1), axis=1
+            ) * reskew
+        return ref
+
+    def test_can_deskew_flag_set(self):
+        """Deskew activates when DeltaKCOAPoly and SCP geometry are present."""
+        meta, _ = _make_deskew_metadata()
+        sd = SublookDecomposition(meta, num_looks=3, deskew=True)
+        assert sd._can_deskew is True
+
+    def test_can_deskew_false_without_scp(self):
+        """No SCP pixel -> deskew cannot run, falls back to global cut."""
+        meta = _make_metadata()  # no image_data / scp_pixel
+        sd = SublookDecomposition(meta, num_looks=3, deskew=True)
+        assert sd._can_deskew is False
+
+    @pytest.mark.parametrize("num_looks", [2, 3])
+    def test_deskew_matches_ground_truth(self, num_looks):
+        """deskew=True reproduces the centered-cut ground truth; OFF does not."""
+        rows, cols = 64, 128
+        meta, _ = _make_deskew_metadata(rows=rows, cols=cols, sweep_frac=0.4)
+        image = _synthetic_complex_image(rows=rows, cols=cols)
+
+        sd_on = SublookDecomposition(
+            meta, num_looks=num_looks, deweight=False, deskew=True
+        )
+        sd_off = SublookDecomposition(
+            meta, num_looks=num_looks, deweight=False, deskew=False
+        )
+
+        # Impose the COA using the class's own phase so deskew inverts exactly.
+        phase = sd_on._compute_deskew_phase(rows, cols)
+        skewed = (
+            image * np.exp(-1j * sd_on._sgn * 2.0 * np.pi * phase)
+        ).astype(np.complex64)
+
+        ref = self._ground_truth(sd_on, image, phase, num_looks)
+        looks_on = sd_on.decompose(skewed)
+        looks_off = sd_off.decompose(skewed)
+
+        # deskew=True is correct to numerical precision.
+        np.testing.assert_allclose(looks_on, ref, rtol=1e-4, atol=1e-4)
+
+        # deskew=False is grossly wrong when the COA varies across range.
+        off_err = np.linalg.norm(looks_off - ref) / np.linalg.norm(ref)
+        assert off_err > 0.5, (
+            f"deskew=False unexpectedly close to truth (err={off_err:.3f}); "
+            f"the imposed COA tilt should corrupt the global cut"
+        )
+
+    def test_deskew_noop_for_constant_coa(self):
+        """A constant (order-0) DeltaKCOA is spotlight-like: deskew ~ no-op."""
+        rows, cols = 64, 128
+        meta, _ = _make_deskew_metadata(rows=rows, cols=cols)
+        # Replace the order-1 poly with a pure constant -> no range variation.
+        meta.grid.col.delta_k_coa_poly = Poly2D(coefs=np.array([[0.0]]))
+        image = _synthetic_complex_image(rows=rows, cols=cols)
+
+        sd_on = SublookDecomposition(meta, num_looks=3, deweight=False,
+                                     deskew=True)
+        sd_off = SublookDecomposition(meta, num_looks=3, deweight=False,
+                                      deskew=False)
+        np.testing.assert_allclose(
+            sd_on.decompose(image), sd_off.decompose(image),
+            rtol=1e-5, atol=1e-5,
+        )
 
 
 # ===================================================================

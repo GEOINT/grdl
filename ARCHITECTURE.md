@@ -20,19 +20,21 @@ the application wires them together.
 ## Module Map
 
 ```
-grdl/                            ~60k lines, 152 files
+grdl/                            ~110k lines, ~240 files (excluding examples)
 │
 ├── IO/                          Input/Output — format readers and writers
 │   ├── base.py                    ImageReader, ImageWriter, CatalogInterface ABCs
 │   ├── models/                    Typed metadata dataclasses (SICD, SIDD, CPHD, ...)
 │   ├── sar/                       SAR readers (SICD, CPHD, CRSD, SIDD, Sentinel-1, BIOMASS, ...)
-│   ├── eo/                        EO readers (Sentinel-2, NITF RPC/RSM)
+│   ├── eo/                        EO readers (Sentinel-2, NITF: multi-segment, RPC/RSM + error model, band/airborne TREs, chip-out writer)
 │   ├── ir/                        IR/thermal readers (ASTER)
 │   ├── multispectral/             MSI readers (VIIRS)
-│   ├── catalog/                   Remote query, download, SQLite cataloging
+│   ├── gmti/                      STANAG 4607 GMTI reader/writer + helpers + CPHD steering
+│   ├── catalog/                   Remote query, download, SQLite cataloging (7 catalogs)
 │   ├── geotiff.py                 GeoTIFF reader/writer
 │   ├── hdf5.py                    HDF5 reader/writer
 │   ├── generic.py                 GDAL fallback reader, open_any()
+│   ├── __init__.py                Reader/writer factory (open_reader, get_reader, register_reader)
 │   └── probe.py                   Format sniffing
 │
 ├── geolocation/                 Pixel ↔ geographic coordinate transforms
@@ -42,7 +44,9 @@ grdl/                            ~60k lines, 152 files
 │   ├── utils.py                   Footprint, bounds, distance helpers
 │   ├── sar/                       SAR geolocation (SICD, SIDD, Sentinel-1, NISAR, GCP)
 │   ├── eo/                        EO geolocation (Affine, RPC, RSM)
-│   └── elevation/                 Terrain models (DTED, GeoTIFF DEM, geoid, constant)
+│   ├── elevation/                 Terrain models (DTED, tiled DTED, GeoTIFF DEM, tiled GeoTIFF, geoid, constant)
+│   ├── chip.py                    ChipGeolocation (row/col offset wrapper)
+│   └── __init__.py                create_geolocation() auto-detect factory
 │
 ├── image_processing/            Image transforms, detection, formation
 │   ├── base.py                    ImageProcessor, ImageTransform, BandwiseTransformMixin
@@ -77,7 +81,13 @@ grdl/                            ~60k lines, 152 files
 │   └── [percentile.py, decibel.py re-exports]
 │
 ├── vector/                      Geo-registered feature data, spatial operators
-│   └── [Feature, FeatureSet, BufferOperator, IntersectionOperator, ...]
+│   └── [Feature, FeatureSet, FieldSchema, 8 spatial operators, CoordSet, RasterToPoints/Rasterize]
+│
+├── shapes/                      Geographic analysis primitives (project through geolocation)
+│   └── [Circle, Ellipse, GeodesicEllipse, GeoPolygon, Arc; combine, cueing, rasterize, backend]
+│
+├── discovery/                   Metadata scanning, in-memory catalog, beam footprints
+│   └── [MetadataScanner, LocalCatalog, DiscoveryPlugin/PluginRegistry, compute_beam_footprint]
 │
 ├── transforms/                  Detection geometry transforms
 │
@@ -116,6 +126,7 @@ Geolocation (ABC)                              geolocation/base.py
 ├── AffineGeolocation                             Affine + CRS reprojection
 ├── RPCGeolocation                                RPC00B rational polynomials
 ├── RSMGeolocation                                RSM variable-order polynomials
+├── CornerGeolocation                             CSCRNA/BLOCKA/IGEOLO corners (approximate fallback)
 └── NoGeolocation                                 Fallback (raises)
 
 ElevationModel (ABC)                           geolocation/elevation/base.py
@@ -173,8 +184,23 @@ VectorProcessor (ABC)                          vector/base.py
 ├── BufferOperator, IntersectionOperator
 ├── UnionOperator, DissolveOperator
 ├── SpatialJoinOperator, ClipOperator
-├── CentroidOperator, ConvexHullOperator
-└── RasterToPoints, Rasterize                  raster ↔ vector conversion
+└── CentroidOperator, ConvexHullOperator
+    (RasterToPoints / Rasterize are plain converters, not VectorProcessors)
+
+GeographicShape (ABC)                          shapes/base.py
+├── Circle, Arc (open, is_closed=False)
+├── Ellipse, GeodesicEllipse
+└── GeoPolygon
+    (perimeter_latlon → DEM sample → to_pixels → rasterize through any Geolocation)
+
+DiscoveryPlugin (ABC)                          discovery/base.py
+└── GRDLCatalogPlugin                          (registered in PluginRegistry)
+
+The contrast operators, vector operators, detectors, and decompositions
+all build on the `ImageProcessor` / processor-metadata machinery;
+`GeographicShape` and `DiscoveryPlugin` are independent ABCs. Image-formation
+algorithms (PFA/RDA/FFBP/StripmapPFA) form a separate `ImageFormationAlgorithm`
+ABC and are not yet registered in the processor-metadata catalog.
 ```
 
 ---
@@ -327,7 +353,7 @@ Sensor models:
 | `SIDDMetadata` | Detected SAR | Measurement, display, geographic data |
 | `CPHDMetadata` | Phase history | Channel, dwell, antenna patterns |
 | `BIOMASSMetadata` | ESA BIOMASS | GCPs, orbit, polarizations |
-| `EONITFMetadata` | EO NITF | `RPCCoefficients`, `RSMCoefficients` |
+| `EONITFMetadata` | EO NITF | `RPCCoefficients`, `RSMCoefficients`, RSM error model, `ImageSegmentInfo`/`ImageGroupInfo`, BANDSB/SENSRB families |
 | `Sentinel1SLCMetadata` | Sentinel-1 | Annotation, calibration, orbit state |
 | `NISARMetadata` | NISAR | RSLC/GSLC geolocation grids |
 
@@ -344,9 +370,16 @@ Sensor models:
 | `geolocation` | pyproj | geolocation/eo, geolocation/elevation |
 | `coregistration` | opencv-python-headless | coregistration/feature_match |
 | `contrast` | scikit-image | contrast/histogram (CLAHE) |
+| `ir` | rasterio, h5py | IO/ir (ASTER) |
+| `biomass` | rasterio, requests | IO/sar/biomass + catalog |
+| `s1_l0` | sentinel1decoder | IO/sar/sentinel1_l0 (raw + CRSD conversion) |
+| `remote` | requests | catalog downloads |
+| `detection` | shapely | detection geometry, transforms, vector |
+| `gmti` | shapely | IO/gmti (STANAG 4607) |
+| `examples` | matplotlib, PySide6 | example scripts |
 | `all` | everything above | full installation |
 
-Core (always required): `numpy>=1.20.0`, `scipy>=1.7.0`
+Core (always required): `numpy>=1.20.0`, `scipy>=1.7.0`. Python `>=3.11`.
 
 ---
 

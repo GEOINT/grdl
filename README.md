@@ -24,9 +24,11 @@ GRDL modules are purpose-built. Each one owns a specific responsibility. **Use t
 |------|--------|----------|
 | Load imagery from any format | `grdl.IO` (`SICDReader`, `NISARReader`, `VIIRSReader`, `Sentinel2Reader`, `EONITFReader`, ...) | Raw `rasterio.open()` / `h5py.File()` calls |
 | Write imagery to disk | `grdl.IO` (`GeoTIFFWriter`, `SICDWriter`, `SIDDWriter`, `NumpyWriter`, `PngWriter`) | Raw `rasterio` / `h5py` write calls |
-| Open any supported format | `grdl.IO.generic.open_any()` | Manual format detection |
+| Open any supported format | `grdl.IO.open_reader()` (auto-detect; `open_any()` for ambiguous files) | Manual format detection |
 | Plan chip regions or tile an image | `grdl.data_prep` (`ChipExtractor`, `Tiler`) | Hand-rolled `for r in range(0, rows, chunk):` loops |
+| Partition an image into non-overlapping tiles (per-pixel aggregation) | `grdl.data_prep.Tiler.partition_positions()` | Overlapping `tile_positions()` / `chip_positions()` (double-counts edges) |
 | Normalize pixel values for ML | `grdl.data_prep.Normalizer` | Inline `(x - x.min()) / (x.max() - x.min())` |
+| Full-image stats baseline (mean/std/percentiles, valid-masked, tiled/parallel) | `grdl.data_prep.compute_image_statistics` / `Normalizer.fit_streaming` | Loading the whole image for `arr.mean()` / `np.percentile` |
 | Transform pixel to lat/lon | `grdl.geolocation` (`AffineGeolocation`, `SICDGeolocation`, `RPCGeolocation`, `RSMGeolocation`, ...) | Manual interpolation of GCPs or affine math |
 | Coordinate system conversion | `grdl.geolocation.coordinates` (geodetic/ECEF/ENU) | Manual WGS84 math |
 | Terrain elevation lookup | `grdl.geolocation.elevation` (`DTEDElevation`, `GeoTIFFDEM`) | Raw `rasterio.open()` on DEM tiles |
@@ -130,17 +132,24 @@ result.save_geotiff('savannah_ortho.tif')
 | | SAR: SICD, CPHD, CRSD, SIDD, BIOMASS, Sentinel-1 SLC, TerraSAR-X, NISAR | |
 | | IR: ASTER (L1T, GDEM) | |
 | | Multispectral: VIIRS (nightlights, vegetation, surface reflectance) | |
-| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial; full TRE suite: RPC00B, RSMPCA multi-segment, RSMIDA, CSEXRA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC) | |
-| | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG | |
-| | Generic: `GDALFallbackReader` (`open_any()`), `InvasiveProbeReader` | |
-| | Parallel I/O: `ReadConfig` opt-in multi-threaded reads for rasterio-based readers | |
+| | GMTI: STANAG 4607 (editions 2/3/4) reader/writer, dwell/target helpers, `to_detection_set()`, CPHD steering-matrix builder | |
+| | SAR L0: Sentinel-1 Level-0 raw (`Sentinel1L0Reader`, burst access, optional CRSD conversion/verification; `grdl[s1_l0]`) | |
+| | EO: Sentinel-2, EO NITF (WorldView, GeoEye, Pleiades, aerial; full TRE suite: RPC00B, RSMPCA multi-segment, RSMIDA, RSMGGA, RSMPIA, RSM error covariance (RSMDCA/B, RSMECA/B, RSMAPA/B), CSEXRA, CSCRNA, CSEPHA, USE00A, ICHIPB, BLOCKA, AIMIDB, STDIDC, PIAIMC, BANDSB/BANDSA, SENSRB, MENSRB/A, ACFTB; TRE_OVERFLOW DES) | |
+| | EO NITF multi-image: heterogeneous segment grouping (overviews, masks, support images never fail loading), primary-group auto-selection, ICHIPB / ILOC-IALVL / stacked placement, `image_index` pinning | |
+| | EO NITF pixel domain: `read_chip(decimation=)` (overview-group / GDAL out_shape served), `read_mask()` (pad/block masks), `get_lut()`, `normalize_abpp()`, remote `https://`/`s3://`/`/vsi*` URIs | |
+| | Writers: SICD, SIDD, GeoTIFF, HDF5, NITF, NumPy, PNG, EO NITF chip-out (`write_chip()`: ICHIPB + RPC00B + RSM propagation) | |
+| | Generic: `GDALFallbackReader` (`open_any()` with SICD/SIDD/EO NITF auto-dispatch), `InvasiveProbeReader` | |
+| | Reader/writer factory: `open_reader()` (primary auto-detect), `get_reader()`/`get_writer()`, `register_reader()`/`register_writer()`, `list_reader_formats()` (lazy-import registry) | |
+| | Parallel I/O: `ReadConfig` opt-in multi-threaded reads, parallel segment opening/stitching, `gdal_env` tuning | |
 | **Geolocation** | Image-to-geographic coordinate transforms with DEM integration | Implemented |
 | | EO: `AffineGeolocation` (geocoded rasters via affine + pyproj) | |
 | | SAR: `SICDGeolocation` (native R/Rdot + sarpy), `SIDDGeolocation`, `GCPGeolocation`, `NISARGeolocation`, `Sentinel1SLCGeolocation` | |
-| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B + ICHIPB), `RSMGeolocation` (RSMPCA multi-segment + ICHIPB) | |
+| | EO: `AffineGeolocation`, `RPCGeolocation` (RPC00B + ICHIPB), `RSMGeolocation` (RSMPCA multi-segment + ICHIPB), `CornerGeolocation` (CSCRNA/BLOCKA/IGEOLO fallback incl. MGRS) | |
 | | Projection: `COAProjection` (native R/Rdot engine), `image_to_ground_hae`, `image_to_ground_dem`, `ground_to_image` | |
-| | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `ConstantElevation`, `GeoidCorrection` | |
-| | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic` | |
+| | SAR: `Sentinel1SLCGeolocation`; chip wrapper `ChipGeolocation`; auto-detect factory `create_geolocation(reader, dem_path=..., ...)` | |
+| | Elevation: `ElevationModel` ABC, `DTEDElevation`, `GeoTIFFDEM`, `TiledGeoTIFFDEM` (FABDEM/Copernicus tile dirs), `TiledGeoDTED`, `ConstantElevation`, `GeoidCorrection` | |
+| | DEM ownership: the DEM lives on `geo.elevation`; all `from_reader()` factories accept explicit `dem_path`/`geoid_path`/`interpolation` kwargs | |
+| | Coordinates: `geodetic_to_ecef`, `ecef_to_geodetic`, `geodetic_to_enu`, `enu_to_geodetic`, `wgs84_norm` | |
 | **Image Processing** | Orthorectification, polarimetric decomposition, SAR sublook, CSI, dominance features, detection models, CFAR detectors, image formation, processor versioning & metadata | Implemented |
 | | Ortho: `Orthorectifier`, `GeographicGrid`, `ENUGrid`, `UTMGrid`, `WebMercatorGrid`, accelerated resampling | |
 | | SAR: `SublookDecomposition`, `CSIProcessor`, `DominanceFeatures`, `compute_dominance`, `compute_sublook_entropy` | |
@@ -156,7 +165,10 @@ result.save_geotiff('savannah_ortho.tif')
 | | SAR (sarpy ports): `MangisDensity`, `Brighter`, `Darker`, `HighContrast`, `GDM`, `PEDF`, `NRLStretch`, `LogStretch`, `ToDecibels` | |
 | | Generic: `LinearStretch`, `PercentileStretch`, `GammaCorrection`, `SigmoidStretch`, `HistogramEqualization`, `CLAHE` | |
 | | Auto-selection: `auto_select(metadata)` picks per modality (SAR → `Brighter`, EO NITF → `gamma`, MSI → `percentile`) | |
-| **Vector** | Geo-registered feature data, spatial operators, raster ↔ vector conversion | Implemented |
+| **Shapes** | Geographic analysis primitives (`Circle`, `Ellipse`, `GeodesicEllipse`, `GeoPolygon`, `Arc`) that project through any geolocation with per-vertex DEM sampling; boolean masks, overlays, ROI-cued detection, covariance algebra; GPU/numba backends | Implemented |
+| | Combine: `convolve_ellipses`, `combine_evidence`, `minkowski_sum`, `union_shapes`, `intersect_shapes`; rasterize/overlay/`cued_detect` | |
+| **Vector** | Generic geo-registered features (`Feature`, `FeatureSet`, `FieldSchema`), 8 shapely-backed spatial operators (buffer, intersection, union, dissolve, spatial-join, clip, centroid, convex-hull), raster ↔ vector conversion, GeoJSON I/O (+ optional geopandas), coordinate-only fast path (`CoordSet`) | Implemented |
+| **Discovery** | Fast metadata scanning (`MetadataScanner`), in-memory catalog with spatial/temporal queries (`LocalCatalog`), beam-footprint computation, plugin registry, synthetic data | Implemented |
 | **Sensor Processing** | Sensor-specific operations (SAR phase history, EO radiometry, MSI band math) | Planned |
 | **ML/AI Utilities** | Feature extraction, annotation tools, dataset builders, and model integration helpers | Planned |
 
@@ -166,6 +178,7 @@ result.save_geotiff('savannah_ortho.tif')
 GRDL/
 ├── grdl/                            # Library source
 │   ├── exceptions.py                # Custom exception hierarchy (GrdlError, ValidationError, etc.)
+│   ├── vocabulary.py                # Enums (ImageModality, ProcessorCategory, DetectionType, ...)
 │   ├── py.typed                     # PEP 561 type stub marker
 │   ├── IO/                          # Input/Output module
 │   │   ├── base.py                  #   ImageReader / ImageWriter / CatalogInterface ABCs
@@ -184,6 +197,9 @@ GRDL/
 │   │   │   ├── sicd.py              #     SICDMetadata (~35 nested dataclasses)
 │   │   │   ├── sidd.py              #     SIDDMetadata (~25 nested dataclasses)
 │   │   │   ├── cphd.py              #     CPHDMetadata
+│   │   │   ├── crsd.py              #     CRSDMetadata
+│   │   │   ├── sentinel1_l0.py      #     Sentinel1L0Metadata (mission/mode/pol enums)
+│   │   │   ├── stanag4607.py        #     STANAG4607Metadata (GMTI dwell/target segments)
 │   │   │   ├── biomass.py           #     BIOMASSMetadata (flat typed fields)
 │   │   │   ├── viirs.py             #     VIIRSMetadata (flat typed fields)
 │   │   │   ├── aster.py             #     ASTERMetadata (flat typed fields)
@@ -191,7 +207,10 @@ GRDL/
 │   │   │   ├── sentinel2.py         #     Sentinel2Metadata
 │   │   │   ├── terrasar.py          #     TerraSARMetadata
 │   │   │   ├── nisar.py             #     NISARMetadata
-│   │   │   └── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients, RSMSegmentGrid, ICHIPBMetadata, CSEXRAMetadata, USE00AMetadata, BLOCKAMetadata, CollectionInfo, AccuracyInfo
+│   │   │   ├── eo_nitf.py           #     EONITFMetadata, RPCCoefficients, RSMCoefficients, RSMSegmentGrid, ICHIPBMetadata, CSEXRAMetadata, CSCRNAMetadata, USE00AMetadata, BLOCKAMetadata, ImageSegmentInfo, ImageGroupInfo, CollectionInfo, AccuracyInfo
+│   │   │   ├── rsm_error.py         #     RSMPIAMetadata, RSMDCAMetadata, RSMECAMetadata, RSMAPAMetadata (A/B variants)
+│   │   │   ├── eo_band.py           #     BANDSBMetadata, BANDSAMetadata (band characterization)
+│   │   │   └── eo_airborne.py       #     SENSRBMetadata, MENSRBMetadata, MENSRAMetadata, ACFTBMetadata
 │   │   ├── sar/                     #   SAR-specific formats
 │   │   │   ├── _backend.py          #     sarkit/sarpy availability detection
 │   │   │   ├── sicd.py              #     SICDReader (sarkit primary, sarpy fallback)
@@ -203,6 +222,8 @@ GRDL/
 │   │   │   ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
 │   │   │   ├── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
 │   │   │   ├── sentinel1_slc.py     #     Sentinel1SLCReader
+│   │   │   ├── sentinel1_l0/         #     Sentinel1L0Reader, open_safe_product(), CRSD conversion/verification
+│   │   │   ├── sicd_collection.py   #     SICDCollectionReader, open_sicd_collection()
 │   │   │   ├── terrasar.py          #     TerraSARReader, open_terrasar()
 │   │   │   └── nisar.py             #     NISARReader, open_nisar()
 │   │   ├── ir/                      #   IR/thermal readers
@@ -214,16 +235,32 @@ GRDL/
 │   │   └── eo/                      #   EO readers
 │   │       ├── _backend.py          #     rasterio/glymur availability detection
 │   │       ├── sentinel2.py         #     Sentinel2Reader
-│   │       └── nitf.py              #     EONITFReader (RPC/RSM extraction)
+│   │       ├── nitf.py              #     EONITFReader (multi-segment unification, decimation, masks, remote URIs)
+│   │       ├── nitf_writer.py       #     write_chip() (geolocation-preserving chip-out)
+│   │       ├── _tre_xml.py          #     xml:TRE / xml:DES (TRE_OVERFLOW) field-by-name parsing
+│   │       ├── _tre_rsm_error.py    #     RSM error TRE parsers + summarize_accuracy()
+│   │       ├── _tre_band.py         #     BANDSB/BANDSA parsers
+│   │       └── _tre_airborne.py     #     SENSRB/MENSRB/MENSRA/ACFTB parsers
+│   │   ├── gmti/                    #   STANAG 4607 GMTI (vector moving-target reports)
+│   │   │   ├── stanag4607.py        #     STANAG4607Reader/Writer, open_gmti(), to_detection_set()
+│   │   │   ├── helpers.py           #     dwell_footprint_polygon, ground_relative_velocity, filter_target_reports, summarize
+│   │   │   └── cphd_steering.py     #     build_steering_matrix_from_cphd_metadata()
 │   │   └── catalog/                 #   Remote query, download & cataloging
-│   │       ├── remote_utils.py      #     Shared credentials, token auth
+│   │       ├── remote_utils.py      #     Credentials (~/.config/geoint), CDSE/Earthdata tokens, download_file()
 │   │       ├── biomass_catalog.py   #     BIOMASSCatalog (ESA MAAP STAC)
-│   │       └── sentinel1_catalog.py #     Sentinel1SLCCatalog (CDSE OData)
+│   │       ├── sentinel1_catalog.py #     Sentinel1SLCCatalog (CDSE OData)
+│   │       ├── sentinel2_catalog.py #     Sentinel2Catalog (CDSE OData)
+│   │       ├── nisar_catalog.py     #     NISARCatalog (NASA Earthdata / ASF)
+│   │       ├── aster_catalog.py     #     ASTERCatalog (NASA Earthdata / LP DAAC)
+│   │       ├── viirs_catalog.py     #     VIIRSCatalog (NASA Earthdata / LAADS)
+│   │       └── terrasar_catalog.py  #     TerraSARCatalog (local discovery)
 │   ├── geolocation/                 # Coordinate transform module
 │   │   ├── base.py                  #   Geolocation ABC, NoGeolocation
 │   │   ├── utils.py                 #   Footprint, bounds, distance helpers
 │   │   ├── coordinates.py           #   geodetic_to_ecef, ecef_to_geodetic, geodetic_to_enu, enu_to_geodetic
-│   │   ├── projection.py            #   COAProjection, image_to_ground_hae/dem, ground_to_image
+│   │   ├── projection.py            #   COAProjection, image_to_ground_hae/dem, ground_to_image, wgs84_norm
+│   │   ├── chip.py                  #   ChipGeolocation (row/col offset wrapper for chipped images)
+│   │   ├── __init__.py              #   create_geolocation() auto-detect factory + re-exports
 │   │   ├── sar/
 │   │   │   ├── gcp.py               #   GCPGeolocation (Delaunay interpolation)
 │   │   │   ├── sicd.py              #   SICDGeolocation (SICD imagery via sarpy/sarkit)
@@ -233,13 +270,17 @@ GRDL/
 │   │   ├── eo/
 │   │   │   ├── affine.py            #   AffineGeolocation (geocoded rasters, affine + pyproj)
 │   │   │   ├── rpc.py               #   RPCGeolocation (RPC00B rational polynomials)
-│   │   │   └── rsm.py               #   RSMGeolocation (RSMPCA replacement sensor model)
+│   │   │   ├── rsm.py               #   RSMGeolocation (RSMPCA replacement sensor model)
+│   │   │   └── corner.py            #   CornerGeolocation (CSCRNA/BLOCKA/IGEOLO fallback, MGRS decode)
 │   │   └── elevation/               #   Terrain elevation models
 │   │       ├── base.py              #   ElevationModel ABC
 │   │       ├── constant.py          #   ConstantElevation (fixed-height fallback)
 │   │       ├── dted.py              #   DTEDElevation (DTED tiles, bicubic, cross-tile stitching)
-│   │       ├── geotiff_dem.py       #   GeoTIFFDEM (GeoTIFF DEM via rasterio)
-│   │       └── geoid.py             #   GeoidCorrection (EGM96 geoid undulation)
+│   │       ├── tiled_geotiff_dted.py#   TiledGeoDTED (high-performance DTED backend)
+│   │       ├── geotiff_dem.py       #   GeoTIFFDEM (single GeoTIFF DEM via rasterio)
+│   │       ├── tiled_geotiff_dem.py #   TiledGeoTIFFDEM (FABDEM/Copernicus tile dirs, LRU cache)
+│   │       ├── open_elevation.py    #   open_elevation() auto-detect DEM factory
+│   │       └── geoid.py             #   GeoidCorrection (EGM96/EGM2008 geoid undulation)
 │   ├── image_processing/            # Image transforms module
 │   │   ├── base.py                  #   ImageProcessor, ImageTransform, BandwiseTransformMixin ABCs
 │   │   ├── params.py                #   Range, Options, Desc, ParamSpec (Annotated constraint markers)
@@ -288,9 +329,10 @@ GRDL/
 │   │   └── detection.py             #   transform_pixel_geometry, transform_detection, transform_detection_set
 │   ├── data_prep/                   # Data preparation for ML/AI pipelines
 │   │   ├── base.py                  #   ChipBase ABC, ChipRegion NamedTuple, shared helpers
-│   │   ├── tiler.py                 #   Tiler (stride-based tile region computation)
+│   │   ├── tiler.py                 #   Tiler (overlapping tiles + non-overlapping partition_positions)
 │   │   ├── chip_extractor.py        #   ChipExtractor (point-centered and whole-image chip regions)
-│   │   └── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm)
+│   │   ├── normalizer.py            #   Normalizer (minmax, zscore, percentile, unit_norm, mad; fit_streaming)
+│   │   └── streaming_stats.py       #   StreamingStats, compute_image_statistics, build_valid_mask
 │   ├── coregistration/              # Image alignment and registration
 │   │   ├── base.py                  #   Base coregistration classes
 │   │   ├── affine.py                #   Affine transform alignment
@@ -312,9 +354,27 @@ GRDL/
 │   ├── vector/                      # Geo-registered feature data and operators
 │   │   ├── models.py                #   Feature, FieldSchema, FeatureSet
 │   │   ├── base.py                  #   VectorProcessor ABC
-│   │   ├── spatial.py               #   Buffer, intersection, union, dissolve, ...
+│   │   ├── spatial.py               #   Buffer, intersection, union, dissolve, spatial-join, clip, centroid, convex-hull
 │   │   ├── conversion.py            #   RasterToPoints, Rasterize
+│   │   ├── coords.py                #   CoordSet, read_coords, coords_from_geojson (coordinate-only fast path)
 │   │   └── io.py                    #   VectorReader, VectorWriter
+│   ├── shapes/                      # Geographic analysis primitives (project through geolocation)
+│   │   ├── base.py                  #   GeographicShape ABC (perimeter → DEM → to_pixels → rasterize)
+│   │   ├── circle.py                #   Circle (geodesic)
+│   │   ├── ellipse.py               #   Ellipse, GeodesicEllipse
+│   │   ├── polygon.py               #   GeoPolygon
+│   │   ├── arc.py                   #   Arc (open shape, is_closed=False)
+│   │   ├── combine.py               #   convolve_ellipses, combine_evidence, minkowski_sum, union/intersect_shapes
+│   │   ├── cueing.py                #   cued_detect (ROI-cued detection)
+│   │   ├── display.py               #   overlay_shape(s), burn_shape
+│   │   ├── rasterize.py             #   rasterize_polygon, rasterize_batch, to_pixels_batch
+│   │   └── backend.py               #   ComputeBackend (CuPy/numba/thread/process dispatch)
+│   ├── discovery/                   # Metadata scanning, in-memory catalog, beam footprints
+│   │   ├── base.py                  #   DiscoveryPlugin ABC, PluginRegistry
+│   │   ├── scanner.py               #   MetadataScanner, ScanResult, compute_beam_footprint
+│   │   ├── catalog.py               #   LocalCatalog (spatial/temporal queries, optional SQLite)
+│   │   ├── synthesizer.py           #   DataSynthesizer (synthetic test imagery)
+│   │   └── plugins.py               #   GRDLCatalogPlugin (bridge GRDL catalogs to plugin system)
 │   └── example/                     # Example scripts
 │       ├── catalog/
 │       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
@@ -669,6 +729,37 @@ with EONITFReader('worldview.ntf') as reader:
         lat, lon, h = geo.image_to_latlon(2048, 2048)
 ```
 
+Multi-image NITFs unify automatically: segments group by imaging
+characteristics, the primary imagery group is auto-discovered, and
+geolocation + `read_chip` share its full-image coordinate space.
+Heterogeneous files (overviews, cloud masks, support images) never
+fail to load:
+
+```python
+from grdl.IO.eo import EONITFReader, write_chip
+from grdl.geolocation import create_geolocation
+
+with EONITFReader('multi_segment.ntf') as reader:    # or https:// / s3:// URI
+    for grp in reader.image_groups or []:            # explore everything
+        print(grp.group_id, grp.rows, grp.cols, grp.is_primary, grp.placement)
+
+    geo = create_geolocation(reader)   # RSM > RPC > corner fallback (CSCRNA/BLOCKA/IGEOLO)
+    row, col = geo.latlon_to_image(38.89, -77.03)
+
+    chip = reader.read_chip(0, 4096, 0, 4096)              # stitched across segments
+    quicklook = reader.read_chip(0, 4096, 0, 4096, decimation=8)  # overview-served
+    valid = reader.read_mask(0, 4096, 0, 4096)             # pad/block-mask aware
+    display = reader.normalize_abpp(chip)                  # true ABPP bit depth
+
+    # Geolocation-preserving chip-out: ICHIPB + RPC/RSM carried forward
+    write_chip(reader, 1000, 2024, 1000, 2024, 'chip.ntf')
+
+# Accuracy provenance: RSM error covariance > CSEXRA > USE00A > RPC
+with EONITFReader('multi_segment.ntf') as reader:
+    if reader.metadata.accuracy:
+        print(reader.metadata.accuracy.source, reader.metadata.accuracy.ce90)
+```
+
 ### Native R/Rdot Projection Engine
 
 Pure-numpy SICD Volume 3 projection — no sarpy required:
@@ -735,11 +826,11 @@ extraction, complex-mode preprocessing, and ENU orthorectification — into
 a single call that works across every GRDL modality.
 
 ```python
-from grdl.IO.generic import open_any
+from grdl.IO import open_reader
 from grdl.geolocation.elevation import open_elevation
 from grdl.image_processing.ortho import orthorectify_point_roi
 
-reader = open_any('/data/scene.nitf')
+reader = open_reader('/data/scene.nitf')
 elev   = open_elevation('/data/FABDEM/', location=(34.05, -118.25))
 
 result = orthorectify_point_roi(
@@ -933,9 +1024,37 @@ with GeoTIFFReader('large_scene.tif') as reader:
 tiler = Tiler(nrows=1000, ncols=2000, tile_size=256, stride=128)
 tile_regions = tiler.tile_positions()
 
+# -- Non-overlapping exact cover (use for per-pixel aggregation; no overlap) --
+partition = Tiler(1000, 2000, tile_size=256).partition_positions()
+
 # -- Normalize to [0, 1] range --
 norm = Normalizer(method='minmax')
 normalized = norm.normalize(image)
+```
+
+For a full-image normalization baseline over imagery too large (or too slow) to
+load whole, `compute_image_statistics` streams any reader tile-by-tile -- exact
+mean/std/min/max (Chan merge) plus histogram percentiles, with valid-pixel
+masking and an automatic serial-or-parallel policy. `Normalizer.fit_streaming`
+wires it into the fit/transform API:
+
+```python
+from grdl.data_prep import compute_image_statistics, Normalizer
+
+# -- Direct full-image statistics over valid pixels --
+stats = compute_image_statistics(
+    'scene.nitf',
+    transform='auto',        # magnitude for complex, passthrough for real
+    mask='metadata',         # sensor valid-data polygon (or 'nonzero_finite')
+    percentiles=[1, 99],
+    parallel='auto',         # fork only when the image is large enough to pay off
+)
+print(stats.mean, stats.std, stats.percentiles[99])
+
+# -- Fit a normalizer straight from disk, then apply to chips --
+norm = Normalizer(method='zscore').fit_streaming('scene.nitf',
+                                                 mask='nonzero_finite')
+chip_norm = norm.transform(chip)
 ```
 
 ### Querying Processor Metadata at Runtime
@@ -974,6 +1093,20 @@ except ValidationError as e:
 except ProcessorError as e:
     print(f"Processing failed: {e}")
 ```
+
+## Deprecations
+
+The following symbols are deprecated but still functional. They will be
+removed in a future major release — migrate when convenient.
+
+| Deprecated | Replacement | Notes |
+|------------|-------------|-------|
+| `grdl.IO.open_image(path)` | `grdl.IO.open_reader(path)` | Emits `DeprecationWarning`; identical behavior. |
+| `grdl.image_processing.ortho.OutputGrid` | `GeographicGrid` | Back-compat alias; same class. |
+| `Orthorectifier(elevation=...)` | `geo.elevation = dem` | The orthorectifier no longer takes an `elevation` parameter — the DEM lives on the geolocation object. |
+| `PolarGrid(scene_sizing='toa')` | `scene_sizing='full'` (now default) | `'toa'` (receive-window sizing) still works but under-sizes long-swath space-based collections. |
+| CPHD/CRSD legacy single-value accessors (`tx_waveform`, `rcv_parameters`, `antenna_pattern`, `channels`, `num_channels`) | List fields (`*_list`, `data.channels`) | Single-instance projections of the first list element, kept for back-compat. |
+| `MENSRA` TRE metadata | `MENSRB` | Legacy fixed-width airborne mensuration variant. |
 
 ## Installation
 

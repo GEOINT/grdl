@@ -7,9 +7,11 @@ to open any GDAL-supported raster format and extract all available
 metadata.  Classifies the data modality (SAR, EO, IR, MSI, HSI) using
 GDAL header clues such as NITF ICAT, data type, and band count.
 
-Also provides ``open_any()``, a universal entry point that tries all
-specialized GRDL readers first, falls back to GDAL, and finally
-delegates to ``InvasiveProbeReader`` for truly unknown formats.
+Also provides ``open_any()``, a universal entry point that sniffs
+NITF files for SICD/SIDD XML (routing to the SAR readers) versus EO
+content (routing to ``EONITFReader``), tries all specialized GRDL
+readers, falls back to GDAL, and finally delegates to
+``InvasiveProbeReader`` for truly unknown formats.
 
 Dependencies
 ------------
@@ -32,6 +34,8 @@ Created
 
 Modified
 --------
+2026-06-16  Warn on DependencyError in open_any() opener cascade.
+2026-06-09  NITF auto-dispatch: sniff SICD/SIDD XML DES vs EO NITF.
 2026-04-01
 """
 
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 # Standard library
 import importlib
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -652,13 +657,146 @@ def _retry_identified_reader(
 
 
 # ===================================================================
+# NITF sniffing and dispatch
+# ===================================================================
+
+_NITF_EXTENSIONS = frozenset({'.ntf', '.nitf', '.nsf'})
+
+
+def _sniff_nitf_kind(filepath: Path) -> Optional[str]:
+    """Cheaply classify a NITF file as SICD, SIDD, EO, or unknown.
+
+    A NITF container can hold a SAR product (SICD/SIDD — an XML Data
+    Extension Segment whose root namespace/name contains ``'SICD'``
+    or ``'SIDD'``) or EO imagery.  This sniff avoids any hard
+    sarpy/sarkit dependency:
+
+    1. Scan the first ~64 KB of raw bytes for ``b'<SICD'`` /
+       ``b'<SIDD'`` markers (catches files GDAL cannot open).
+    2. Open with rasterio and inspect the ``xml:DES`` metadata domain
+       for SICD/SIDD XML.
+    3. If rasterio opened a NITF with no SAR XML DES and the ICAT
+       header does not indicate SAR, classify as EO.
+
+    Parameters
+    ----------
+    filepath : Path
+        Path to the candidate NITF file.
+
+    Returns
+    -------
+    str or None
+        ``'SICD'``, ``'SIDD'``, ``'EO'``, or ``None`` when the file
+        cannot be classified (caller falls through to the generic
+        opener cascade).
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            head = f.read(65536)
+    except OSError:
+        head = b''
+    if b'<SICD' in head:
+        return 'SICD'
+    if b'<SIDD' in head:
+        return 'SIDD'
+
+    if not _HAS_RASTERIO:
+        return None
+
+    try:
+        with rasterio.open(str(filepath)) as ds:
+            try:
+                des_tags = ds.tags(ns='xml:DES') or {}
+            except Exception:
+                des_tags = {}
+            blob = ' '.join(
+                list(des_tags.keys())
+                + [str(v) for v in des_tags.values()]
+            )
+            if 'SICD' in blob:
+                return 'SICD'
+            if 'SIDD' in blob:
+                return 'SIDD'
+
+            if ds.driver != 'NITF':
+                return None
+
+            # SAR NITF without SICD/SIDD XML (e.g. legacy SAR
+            # products) — leave it to the open_sar cascade.
+            icat = (ds.tags() or {}).get(
+                'NITF_ICAT', '').upper().strip()
+            if icat and (icat in _SAR_KEYWORDS or any(
+                    kw in icat for kw in _SAR_KEYWORDS)):
+                return None
+            return 'EO'
+    except Exception:
+        pass
+    return None
+
+
+def _dispatch_nitf(filepath: Path) -> Optional[ImageReader]:
+    """Open a NITF with the reader matching its sniffed kind.
+
+    SICD → ``grdl.IO.sar.SICDReader``; SIDD →
+    ``grdl.IO.sar.SIDDReader``; EO → ``grdl.IO.eo.nitf.EONITFReader``.
+    Imports are lazy so missing optional dependencies (sarpy/sarkit)
+    degrade to the generic cascade with a warning instead of failing.
+
+    Parameters
+    ----------
+    filepath : Path
+        Path to the NITF file.
+
+    Returns
+    -------
+    ImageReader or None
+        Opened reader, or ``None`` to fall through to the generic
+        opener cascade.
+    """
+    kind = _sniff_nitf_kind(filepath)
+
+    if kind in ('SICD', 'SIDD'):
+        cls_name = 'SICDReader' if kind == 'SICD' else 'SIDDReader'
+        try:
+            mod = importlib.import_module('grdl.IO.sar')
+            return getattr(mod, cls_name)(filepath)
+        except Exception as e:
+            warnings.warn(
+                f"NITF sniffed as {kind} but {cls_name} could not "
+                f"open it ({e}); falling back to the generic opener "
+                "cascade.",
+                RuntimeWarning, stacklevel=3,
+            )
+            return None
+
+    if kind == 'EO':
+        try:
+            mod = importlib.import_module('grdl.IO.eo.nitf')
+            return mod.EONITFReader(filepath)
+        except Exception as e:
+            warnings.warn(
+                f"NITF sniffed as EO but EONITFReader could not open "
+                f"it ({e}); falling back to the generic opener "
+                "cascade.",
+                RuntimeWarning, stacklevel=3,
+            )
+            return None
+
+    return None
+
+
+# ===================================================================
 # open_any — universal entry point
 # ===================================================================
 
 def open_any(filepath: Union[str, Path]) -> ImageReader:
     """Open any supported imagery file.
 
-    Tries all specialized GRDL readers first (SAR, EO, IR,
+    NITF files (``.ntf`` / ``.nitf`` / ``.nsf``) are sniffed first: a
+    SICD or SIDD XML Data Extension Segment routes to the SAR readers
+    (``SICDReader`` / ``SIDDReader``), otherwise EO NITF content
+    routes to ``EONITFReader``.  Then tries all specialized GRDL
+    readers (SAR, EO, IR,
     multispectral, and base format readers).  If none succeed, falls
     back to GDAL to read the file, classifies the data modality, and
     retries the correct specialized reader.  If GDAL also fails,
@@ -696,6 +834,18 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
     """
     filepath = Path(filepath)
 
+    # Accumulates ImportError / DependencyError messages from every
+    # specialized reader that fails due to a missing library.  Emitted
+    # as a single consolidated UserWarning when execution reaches the
+    # GDAL fallback (Phase 3) or invasive-probe (Phase 5) tiers.
+    _import_failures: List[str] = []
+
+    # --- Phase 0: NITF dispatch (SICD / SIDD / EO sniff) ---
+    if filepath.suffix.lower() in _NITF_EXTENSIONS:
+        reader = _dispatch_nitf(filepath)
+        if reader is not None:
+            return reader
+
     # --- Phase 1: Try modality-specific openers ---
     _openers = [
         ('grdl.IO.sar', 'open_sar'),
@@ -709,7 +859,11 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
             mod = importlib.import_module(mod_path)
             opener = getattr(mod, func_name)
             return opener(filepath)
-        except (ValueError, ImportError, Exception):
+        except (DependencyError, ImportError) as exc:
+            _import_failures.append(
+                f"{func_name}(): {exc}"
+            )
+        except Exception:
             pass
 
     # --- Phase 2: Try base format readers directly ---
@@ -725,13 +879,42 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
             mod = importlib.import_module(mod_path)
             reader_cls = getattr(mod, cls_name)
             return reader_cls(filepath)
-        except (ValueError, ImportError, Exception):
+        except (DependencyError, ImportError) as exc:
+            _import_failures.append(
+                f"{cls_name}: {exc}"
+            )
+        except Exception:
             pass
 
     # --- Phase 3: GDAL fallback with classification ---
+    # Emit a consolidated warning listing every missing library before
+    # degrading to the GDAL tier, so the user knows exactly what to fix.
+    if _import_failures:
+        _failure_lines = "\n".join(f"  • {m}" for m in _import_failures)
+        warnings.warn(
+            f"open_any: no specialized reader could open "
+            f"'{filepath.name}' — falling back to GDALFallbackReader.\n"
+            f"The following reader dependencies were not installed:\n"
+            f"{_failure_lines}\n"
+            "Install the missing packages (see requirements-optional.txt) "
+            "for richer metadata and stricter format validation.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     try:
         fallback = GDALFallbackReader(filepath)
-    except (ImportError, ValueError):
+    except (DependencyError, ImportError) as exc:
+        warnings.warn(
+            f"open_any: GDALFallbackReader is also unavailable for "
+            f"'{filepath.name}' ({exc}). "
+            "Falling back to invasive file probing. "
+            "Install rasterio for broad format support: pip install rasterio",
+            UserWarning,
+            stacklevel=2,
+        )
+        fallback = None
+    except (ValueError, OSError):
         fallback = None
 
     if fallback is not None:
@@ -743,6 +926,19 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
         return fallback
 
     # --- Phase 5: Invasive probe (non-cooperative) ---
+    # Warn again if we reach the probe tier (GDAL also failed).
+    if _import_failures:
+        _failure_lines = "\n".join(f"  • {m}" for m in _import_failures)
+        warnings.warn(
+            f"open_any: both specialized readers and GDALFallbackReader "
+            f"failed for '{filepath.name}' — falling back to "
+            f"InvasiveProbeReader (non-cooperative probing).\n"
+            f"Missing reader dependencies:\n"
+            f"{_failure_lines}\n"
+            "Resolve the missing packages for reliable format support.",
+            UserWarning,
+            stacklevel=2,
+        )
     try:
         return InvasiveProbeReader(filepath)
     except (ValueError, ImportError):

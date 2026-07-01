@@ -41,7 +41,7 @@ Created
 
 Modified
 --------
-2026-04-16
+2026-06-01
 """
 
 # Standard library
@@ -73,11 +73,18 @@ logger = logging.getLogger(__name__)
 try:
     import pandas as pd
     from sentinel1decoder import Level0Decoder as _Level0Decoder
+    try:
+        # ``Level0File`` (high-level API + onboard ephemeris) was added
+        # in sentinel1decoder 2.0; absent in the 1.x integer-column era.
+        from sentinel1decoder import Level0File as _Level0File
+    except ImportError:
+        _Level0File = None
     _HAS_S1_DECODER = True
 except ImportError:
     _HAS_S1_DECODER = False
     pd = None
     _Level0Decoder = None
+    _Level0File = None
 
 
 def check_decoder_available() -> bool:
@@ -548,3 +555,47 @@ def get_packet_count(
     """
     with Sentinel1Decoder(measurement_file) as decoder:
         return decoder.num_packets
+
+
+def level0file_available() -> bool:
+    """Return whether the ``Level0File`` API (sentinel1decoder >= 2.0)
+    is importable.  ``Level0File`` exposes onboard GPS ephemeris and
+    attitude reconstructed from the ISP sub-commutated ancillary data."""
+    return _Level0File is not None
+
+
+def read_packet_ephemeris(
+    measurement_file: Union[str, Path],
+) -> Optional["pd.DataFrame"]:
+    """Reconstruct onboard GPS ephemeris from ISP sub-commutated data.
+
+    Sentinel-1 L0 packets carry the spacecraft's own GPS-derived state
+    (ECEF position + velocity) and attitude (quaternions) in the
+    sub-commutated ancillary data words.  This lets the reader populate
+    orbit state vectors **without an external POE/RESORB file**.
+
+    Requires ``sentinel1decoder >= 2.0`` (the ``Level0File`` API).
+
+    Parameters
+    ----------
+    measurement_file : str or Path
+        Path to a ``.dat`` measurement file.
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        Ephemeris table with columns ``X/Y/Z-axis position ECEF``,
+        ``X/Y/Z-axis velocity ECEF``, ``POD Solution Data Timestamp``
+        (seconds since GPS epoch), and attitude quaternions; or ``None``
+        if ``Level0File`` is unavailable or the read fails.
+    """
+    if _Level0File is None:
+        return None
+    try:
+        return _Level0File(str(measurement_file)).ephemeris
+    except Exception as e:
+        logger.warning(
+            "Packet ephemeris read failed for %s: %s",
+            measurement_file, e,
+        )
+        return None

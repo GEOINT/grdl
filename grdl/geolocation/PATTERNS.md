@@ -84,9 +84,21 @@ self._fill_nan_heights(dem_h, height)
 hae = float(height) if height != 0.0 else self._get_scp_hae()  # don't do this
 ```
 
+**`default_hae` by subclass:**
+
+| Geolocation | `default_hae` | Source |
+|-------------|---------------|--------|
+| `SICDGeolocation` | SCP HAE | `geo_data.scp` (LLH HAE, or derived from SCP ECF) |
+| `SIDDGeolocation` | measurement reference point HAE | plane-projection reference point / SRP |
+| `CornerGeolocation` | construction `height` (default 0.0) | the `height=` constructor arg |
+| `RPCGeolocation` | 0.0 | base-class default (not overridden) |
+| `RSMGeolocation` | 0.0 | base-class default (not overridden) |
+| `AffineGeolocation` | 0.0 | base-class default (not overridden) |
+| `NISARGeolocation`, `Sentinel1SLCGeolocation`, `GCPGeolocation` | 0.0 | grid/GCP heights are intrinsic; base-class default |
+
 **Rules:**
 - **Never** reimplement height resolution inline
-- Override `default_hae` property in your subclass to return the sensor-specific default
+- Override `default_hae` property in your subclass when the sensor model carries a meaningful scene reference height (SCP, reference point); grid- and polynomial-based models that already encode height leave it at the base default of 0.0
 
 ---
 
@@ -231,11 +243,17 @@ Image -> Ground (_image_to_latlon_array)
 
 ## 8. from_reader() Factory
 
-Every geolocation subclass provides a `from_reader()` classmethod that extracts metadata from a reader.
+Every geolocation subclass provides a `from_reader()` classmethod that extracts metadata from a reader. The DEM-related parameters are declared as **explicit named keyword arguments** (not `**kwargs`) and forwarded to the constructor by name — so editors and type checkers see them and callers get clear errors.
 
 ```python
 @classmethod
-def from_reader(cls, reader: object, **kwargs) -> 'MyGeolocation':
+def from_reader(
+    cls,
+    reader: object,
+    dem_path: Optional[str] = None,
+    geoid_path: Optional[str] = None,
+    interpolation: int = 3,
+) -> 'MyGeolocation':
     meta = reader.metadata
     if meta.<required_field> is None:
         raise ValueError("Reader metadata has no <required_field>.")
@@ -244,14 +262,38 @@ def from_reader(cls, reader: object, **kwargs) -> 'MyGeolocation':
         coefficients=meta.<coefficients>,
         ichipb=getattr(meta, 'ichipb', None),
         shape=shape,
-        **kwargs,  # dem_path, geoid_path, interpolation, etc.
+        dem_path=dem_path,
+        geoid_path=geoid_path,
+        interpolation=interpolation,
     )
 ```
+
+**The `dem_path` / `geoid_path` / `interpolation` contract (recent change):**
+Every `from_reader()` factory now accepts these three explicitly and forwards
+them to the constructor, which calls `open_elevation()` to populate
+`geo.elevation`. This makes the one-line `Class.from_reader(reader,
+dem_path=..., interpolation=...)` form equivalent to constructing and then
+assigning `geo.elevation`.
+
+| Geolocation | `dem_path`/`geoid_path`/`interpolation` in `from_reader`? | Extra params |
+|-------------|-----------------------------------------------------------|--------------|
+| `SICDGeolocation` | Yes | `backend`, `delta_arp`, `delta_varp`, `range_bias`, `per_point_normal` |
+| `SIDDGeolocation` | Yes | `refine`, `per_point_normal` |
+| `NISARGeolocation` | Yes | — (GSLC dispatches to `AffineGeolocation`) |
+| `Sentinel1SLCGeolocation` | Yes | — |
+| `AffineGeolocation` | Yes | — |
+| `RPCGeolocation` | Yes | (ichipb pulled from metadata) |
+| `RSMGeolocation` | Yes | (ichipb, rsm_id, rsm_segments pulled from metadata) |
+| `CornerGeolocation` | Yes | `height` |
+| `GCPGeolocation` | **No** — only `crs` | heights come from the GCPs themselves |
+
+> Gotcha: `SICDGeolocation.from_reader` defaults `per_point_normal=False`,
+> while the `SICDGeolocation` constructor defaults it to `True`.
 
 **Rules:**
 - Validate required metadata fields; raise `ValueError` with clear message
 - Use `getattr(meta, 'field', None)` for optional fields (not all metadata types have all fields)
-- Forward `**kwargs` to the constructor for DEM/geoid/interpolation parameters
+- Declare `dem_path`/`geoid_path`/`interpolation` as explicit named parameters and forward them by name (do not hide them behind `**kwargs`)
 - Extract shape from `reader.get_shape()`, not from metadata directly
 
 ---
@@ -269,30 +311,39 @@ def create_geolocation(reader, **kwargs) -> Geolocation:
     try:
         from grdl.IO.models.eo_nitf import EONITFMetadata
         if isinstance(meta, EONITFMetadata):
-            if meta.rpc is not None:
-                return RPCGeolocation.from_reader(reader, **kwargs)
-            if meta.rsm is not None:
+            # RSM preferred over RPC per STDI-0002 (higher-fidelity geometry)
+            if getattr(meta, 'rsm', None) is not None:
                 return RSMGeolocation.from_reader(reader, **kwargs)
+            if getattr(meta, 'rpc', None) is not None:
+                return RPCGeolocation.from_reader(reader, **kwargs)
+            # Corner fallback; ValueError/TypeError fall through
+            try:
+                return CornerGeolocation.from_reader(reader, **kwargs)
+            except (ValueError, TypeError):
+                pass
     except ImportError:
         pass
     # ... more isinstance checks ...
     raise TypeError(f"Cannot determine geolocation for {type(meta).__name__}")
 ```
 
-**Dispatch priority:**
+**Dispatch priority (first match wins):**
 1. SICD -> SICDGeolocation
 2. SIDD -> SIDDGeolocation
-3. NISAR -> NISARGeolocation
+3. NISAR -> NISARGeolocation (GSLC products -> AffineGeolocation)
 4. Sentinel-1 SLC -> Sentinel1SLCGeolocation
-5. EO NITF with RPC -> RPCGeolocation (RPC preferred over RSM)
-6. EO NITF with RSM -> RSMGeolocation
-7. BIOMASS with GCPs -> GCPGeolocation
-8. Any reader with affine transform + CRS -> AffineGeolocation
-9. Any metadata with GCPs -> GCPGeolocation
+5. EO NITF with RSM -> RSMGeolocation (**RSM preferred over RPC** per STDI-0002)
+6. EO NITF with RPC -> RPCGeolocation
+7. EO NITF without RPC/RSM -> CornerGeolocation (corner-coordinate fallback)
+8. BIOMASS with GCPs -> GCPGeolocation
+9. Any reader with affine transform + CRS -> AffineGeolocation
+10. Any metadata with GCPs -> GCPGeolocation
 
 **Rules:**
 - Use lazy imports (`try/except ImportError`) to avoid circular deps and allow partial install
 - Forward all `**kwargs` to `from_reader()`
+- RSM is chosen over RPC whenever both TREs are present
+- The corner fallback is wrapped in `try/except (ValueError, TypeError)` so a missing corner source falls through to the affine/GCP fallbacks
 - When adding a new sensor: add an `isinstance` check in priority order
 
 ---
@@ -352,6 +403,19 @@ ElevationModel (ABC)
 - Groups query points by tile, batch-reads per tile
 - Configurable interpolation: 1 (bilinear), 3 (bicubic, default), 5 (quintic)
 - Cross-tile boundary handling loads adjacent tiles as needed
+- `.dt2` > `.dt1` > `.dt0` priority; discovery covers the standard
+  `<root>/<lon>/<lat>.dt?` layout and nested archive layouts
+  `<root>/dted/dted{2,1,0}/...`; supports `bbox`-bounded discovery
+
+**Tiled backends (recommended for large coverage):**
+
+| Class | File | Use when |
+|-------|------|----------|
+| `TiledGeoTIFFDEM` | `tiled_geotiff_dem.py` | Directory of GeoTIFF tiles (FABDEM, SRTM, Copernicus). LRU handle cache (`max_open_tiles`), cross-tile interpolation, tile-name auto-parse (`N43E004`, `Copernicus_DSM_...`, etc.). |
+| `TiledGeoDTED` | `tiled_geotiff_dted.py` | DTED archive. bbox-aware, pickle-light path-only index, LRU handles — preferred by `open_elevation()` over `DTEDElevation`. |
+
+Both expose a `tile_count` attribute and the same `(N,)` interpolation-kernel
+margin logic (bilinear 1 px, bicubic 2 px, quintic 3 px) for cross-tile reads.
 
 ---
 
@@ -362,18 +426,37 @@ ElevationModel (ABC)
 Stateless vectorized functions for geodetic/ECEF/ENU conversions. All use the stacked `(N, 3)` convention.
 
 ```python
-# All accept (3,) scalar or (N, 3) batch
+# All accept (3,) scalar or (N, 3) batch.
+# The ENU reference is a single (3,) [lat, lon, alt] array — NOT three
+# separate scalars.
 ecef = geodetic_to_ecef(np.array([lat_deg, lon_deg, h_meters]))
 geo  = ecef_to_geodetic(np.array([X, Y, Z]))
-enu  = geodetic_to_enu(points_Nx3, ref_lat, ref_lon, ref_h)
-geo  = enu_to_geodetic(enu_Nx3, ref_lat, ref_lon, ref_h)
+
+ref  = np.array([ref_lat, ref_lon, ref_h])     # (3,)
+enu  = geodetic_to_enu(points_Nx3, ref)         # (N, 3) [east, north, up]
+geo  = enu_to_geodetic(enu_Nx3, ref)            # (N, 3) [lat, lon, alt]
+
+m_lat, m_lon = meters_per_degree(34.05)         # (2,) ellipsoidal m/deg
 ```
 
+**Exact signatures:**
+
+| Function | Signature |
+|----------|-----------|
+| `geodetic_to_ecef` | `geodetic_to_ecef(points)` |
+| `ecef_to_geodetic` | `ecef_to_geodetic(points, max_iter=10, tol=1e-12)` |
+| `geodetic_to_enu` | `geodetic_to_enu(points, ref)` |
+| `enu_to_geodetic` | `enu_to_geodetic(points, ref)` |
+| `meters_per_degree` | `meters_per_degree(lat)` |
+
 **Rules:**
-- WGS-84 constants defined at module level (`WGS84_A`, `WGS84_E1_SQ`, etc.)
+- WGS-84 constants defined at module level (`WGS84_A`, `WGS84_B`, `WGS84_F`, `WGS84_E1_SQ`, `WGS84_E2_SQ`)
 - `ecef_to_geodetic` uses iterative Bowring's method (1e-12 tolerance, 10 max iterations)
+- `meters_per_degree` uses the meridional (M) and prime-vertical (N) radii of curvature — not the spherical 111320 m/deg approximation
+- The ENU `ref` is a single `(3,)` array; do not pass separate `ref_lat`/`ref_lon`/`ref_h` scalars
 - Shape-preserving: scalar input -> scalar output, batch -> batch
 - All angles in degrees at the public API; radians only inside implementations
+- `wgs84_norm(ecf)` (the WGS-84 surface normal) lives in `projection.py`, not `coordinates.py`
 
 ---
 

@@ -178,6 +178,76 @@ def _xml_rowcol(elem: Optional[ET.Element], path: str) -> Optional[RowCol]:
     return RowCol(row=row, col=col or 0.0)
 
 
+def _xml_image_corners(geo: Optional[ET.Element]) -> Optional[List[LatLon]]:
+    """Extract GeoData/ImageCorners ICP vertices, ordered by index.
+
+    Corners are ``<ICP index="1:FRFC"><Lat/><Lon/></ICP>`` and are returned
+    sorted by the numeric index prefix (FRFC, FRLC, LRLC, LRFC).
+    """
+    if geo is None:
+        return None
+    ic = geo.find('{*}ImageCorners')
+    if ic is None:
+        return None
+    icps = ic.findall('{*}ICP')
+    if not icps:
+        return None
+
+    def _order(el: ET.Element) -> int:
+        idx = el.get('index', '0')
+        return int(idx.split(':', 1)[0]) if idx else 0
+
+    corners: List[LatLon] = []
+    for icp in sorted(icps, key=_order):
+        lat = _xml_float(icp, '{*}Lat')
+        lon = _xml_float(icp, '{*}Lon')
+        if lat is not None:
+            corners.append(LatLon(lat=lat, lon=lon or 0.0))
+    return corners or None
+
+
+def _xml_valid_vertices_latlon(
+    parent: Optional[ET.Element],
+) -> Optional[List[LatLon]]:
+    """Extract a ValidData lat/lon polygon, ordered by Vertex index."""
+    if parent is None:
+        return None
+    vd = parent.find('{*}ValidData')
+    if vd is None:
+        return None
+    verts = vd.findall('{*}Vertex')
+    if not verts:
+        return None
+    out: List[LatLon] = []
+    for v in sorted(verts, key=lambda e: int(e.get('index', '0'))):
+        lat = _xml_float(v, '{*}Lat')
+        lon = _xml_float(v, '{*}Lon')
+        if lat is not None:
+            out.append(LatLon(lat=lat, lon=lon or 0.0))
+    return out or None
+
+
+def _xml_valid_vertices_rowcol(
+    parent: Optional[ET.Element],
+) -> Optional[List[RowCol]]:
+    """Extract a ValidData pixel polygon, ordered by Vertex index."""
+    if parent is None:
+        return None
+    vd = parent.find('{*}ValidData')
+    if vd is None:
+        return None
+    verts = vd.findall('{*}Vertex')
+    if not verts:
+        return None
+    out: List[RowCol] = []
+    for v in sorted(verts, key=lambda e: int(e.get('index', '0'))):
+        row = _xml_float(v, '{*}Row')
+        col = _xml_float(v, '{*}Col')
+        if row is not None:
+            out.append(RowCol(row=row, col=col or 0.0))
+    return out or None
+
+
 def _xml_poly1d(elem: Optional[ET.Element]) -> Optional[Poly1D]:
     """Extract Poly1D from XML element with Coef children."""
     if elem is None:
@@ -300,6 +370,42 @@ def _sarpy_rowcol(obj: Any) -> Optional[RowCol]:
     )
 
 
+def _sarpy_valid_latlon(vd: Any) -> Optional[List[LatLon]]:
+    """Convert a sarpy ValidDataType (lat/lon vertices) to List[LatLon]."""
+    if vd is None:
+        return None
+    verts = getattr(vd, 'Vertices', None)
+    if verts is None:
+        verts = vd
+    out: List[LatLon] = []
+    try:
+        for v in verts:
+            ll = _sarpy_latlon(v)
+            if ll is not None:
+                out.append(ll)
+    except TypeError:
+        return None
+    return out or None
+
+
+def _sarpy_valid_rowcol(vd: Any) -> Optional[List[RowCol]]:
+    """Convert a sarpy ValidDataType (row/col vertices) to List[RowCol]."""
+    if vd is None:
+        return None
+    verts = getattr(vd, 'Vertices', None)
+    if verts is None:
+        verts = vd
+    out: List[RowCol] = []
+    try:
+        for v in verts:
+            rc = _sarpy_rowcol(v)
+            if rc is not None:
+                out.append(rc)
+    except TypeError:
+        return None
+    return out or None
+
+
 def _sarpy_poly1d(obj: Any) -> Optional[Poly1D]:
     """Convert sarpy Poly1DType to Poly1D."""
     if obj is None:
@@ -404,6 +510,7 @@ def _extract_image_data_xml(xml: ET.Element) -> Optional[SICDImageData]:
         first_col=_xml_int(idata, '{*}FirstCol') or 0,
         full_image=full_image,
         scp_pixel=_xml_rowcol(idata, '{*}SCPPixel'),
+        valid_data=_xml_valid_vertices_rowcol(idata),
     )
 
 
@@ -421,22 +528,11 @@ def _extract_geo_data_xml(xml: ET.Element) -> Optional[SICDGeoData]:
             llh=_xml_latlonhae(scp_elem, '{*}LLH'),
         )
 
-    corners = None
-    ic = geo.find('{*}ImageCorners')
-    if ic is not None:
-        corners = []
-        for label in ('FRFC', 'FRLC', 'LRLC', 'LRFC'):
-            c = ic.find('{*}' + label)
-            if c is not None:
-                lat = _xml_float(c, '{*}Lat')
-                lon = _xml_float(c, '{*}Lon')
-                if lat is not None:
-                    corners.append(LatLon(lat=lat, lon=lon or 0.0))
-
     return SICDGeoData(
         earth_model=_xml_str(geo, '{*}EarthModel') or 'WGS_84',
         scp=scp,
-        image_corners=corners if corners else None,
+        image_corners=_xml_image_corners(geo),
+        valid_data=_xml_valid_vertices_latlon(geo),
     )
 
 
@@ -1041,6 +1137,7 @@ def _extract_image_data_sarpy(sm: Any) -> Optional[SICDImageData]:
             if _safe_get(idata, 'AmpTable') is not None
             else None
         ),
+        valid_data=_sarpy_valid_rowcol(_safe_get(idata, 'ValidData')),
     )
 
 
@@ -1071,6 +1168,7 @@ def _extract_geo_data_sarpy(sm: Any) -> Optional[SICDGeoData]:
         earth_model=_safe_get(geo, 'EarthModel') or 'WGS_84',
         scp=scp,
         image_corners=corners if corners else None,
+        valid_data=_sarpy_valid_latlon(_safe_get(geo, 'ValidData')),
     )
 
 
@@ -1383,6 +1481,8 @@ class SICDReader(ImageReader):
     SICD data is complex-valued (I/Q). Use ``abs()`` for magnitude images.
     """
 
+    _enforce_2d: bool = True  # SICD is always single-pol complex
+
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('SICD')
         logger.info("SICD backend selected: %s", self.backend)
@@ -1551,9 +1651,14 @@ class SICDReader(ImageReader):
             data, _ = self._reader.read_sub_image(
                 row_start, col_start, row_end, col_end,
             )
-            return self._to_complex(data)
+            data = self._to_complex(data)
         else:
-            return self._reader[row_start:row_end, col_start:col_end]
+            data = self._reader[row_start:row_end, col_start:col_end]
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_chip',
+            strict=self._enforce_2d,
+        )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire SICD image.
@@ -1574,9 +1679,14 @@ class SICDReader(ImageReader):
         instead.
         """
         if self.backend == 'sarkit':
-            return self._to_complex(self._reader.read_image())
+            data = self._to_complex(self._reader.read_image())
         else:
-            return self._reader[:, :]
+            data = self._reader[:, :]
+        return self._assert_2d(
+            data,
+            context=f'{type(self).__name__}.read_full',
+            strict=self._enforce_2d,
+        )
 
     def get_shape(self) -> Tuple[int, ...]:
         """Get image dimensions.

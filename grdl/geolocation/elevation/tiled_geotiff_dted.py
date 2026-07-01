@@ -56,16 +56,17 @@ Created
 
 Modified
 --------
+2026-06-08  Share DTED discovery with DTEDElevation: nested archive
+            layouts and OS-independent, cached case-insensitive probing
+            for both the bbox and no-bbox paths.
 2026-05-26
 """
 
 # Standard library
 import logging
-import os
-import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Dict, NamedTuple, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -73,16 +74,13 @@ import numpy as np
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
 from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.dted import (
+    _CaseInsensitiveDirCache,
+    _discover_dted_tiles,
+    _find_dted_file,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# DTED extensions in resolution-preference order (dt2 = 1 arc-sec).
-_DTED_EXTENSIONS = ('.dt2', '.dt1', '.dt0')
-
-# Regex used by the no-bbox fallback scan to recognise DTED filenames.
-_LON_DIR_RE = re.compile(r'^([eEwW])(\d{3})$')
-_LAT_FILE_RE = re.compile(r'^([nNsS])(\d{2})\.(dt[012]|DT[012])$')
 
 
 class _DTEDTileMeta(NamedTuple):
@@ -103,43 +101,6 @@ def _hemi_lon(lon: int) -> str:
 def _hemi_lat(lat: int) -> str:
     """Hemisphere prefix for a latitude floor."""
     return 's' if lat < 0 else 'n'
-
-
-def _candidate_paths(
-    root: Path, lon: int, lat: int,
-) -> Iterable[Tuple[str, Path]]:
-    """Yield ``(ext, path)`` candidates for a single DTED tile cell.
-
-    Generates both lowercase and uppercase spellings in resolution
-    order (``.dt2 → .dt1 → .dt0``).  Order matters: the caller picks
-    the first existing candidate.
-    """
-    lon_abs = abs(int(lon))
-    lat_abs = abs(int(lat))
-    for ext in _DTED_EXTENSIONS:
-        for lon_case in (str.lower, str.upper):
-            lon_dir = lon_case(f"{_hemi_lon(lon)}{lon_abs:03d}")
-            for lat_case in (str.lower, str.upper):
-                lat_name = lat_case(f"{_hemi_lat(lat)}{lat_abs:02d}")
-                for ext_case in (ext, ext.upper()):
-                    yield ext, root / lon_dir / f"{lat_name}{ext_case}"
-
-
-def _parse_dted_dir_lon(name: str) -> Optional[int]:
-    """Parse signed longitude from a DTED parent directory name."""
-    m = _LON_DIR_RE.match(name)
-    if not m:
-        return None
-    return int(m.group(2)) * (-1 if m.group(1).lower() == 'w' else 1)
-
-
-def _parse_dted_file_lat(name: str) -> Optional[Tuple[int, str]]:
-    """Parse signed latitude and (lowercased) extension from a DTED filename."""
-    m = _LAT_FILE_RE.match(name)
-    if not m:
-        return None
-    lat = int(m.group(2)) * (-1 if m.group(1).lower() == 's' else 1)
-    return lat, '.' + m.group(3).lower()
 
 
 class TiledGeoDTED(ElevationModel):
@@ -232,62 +193,38 @@ class TiledGeoDTED(ElevationModel):
     ) -> None:
         """Index DTED cells overlapping ``bbox`` (with 1-cell halo).
 
-        No ``rglob``; ``Path.exists()`` per candidate.  Order is
-        ``.dt2 → .dt1 → .dt0`` and the first hit wins so highest
-        resolution prevails.
+        Discovery is shared with :class:`DTEDElevation`: a cached,
+        case-insensitive resolver (:func:`_find_dted_file`) probes both
+        the standard layout and nested archive layouts
+        (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) in resolution order
+        (``.dt2 → .dt1 → .dt0``), first hit wins. No ``rglob``; each
+        directory is listed at most once across the whole sweep, so the
+        probe is fast and OS-independent.
         """
         min_lon, min_lat, max_lon, max_lat = bbox
         lon_lo = int(np.floor(min_lon)) - 1
         lon_hi = int(np.floor(max_lon)) + 1
         lat_lo = int(np.floor(min_lat)) - 1
         lat_hi = int(np.floor(max_lat)) + 1
+        dir_cache = _CaseInsensitiveDirCache()
         for lon in range(lon_lo, lon_hi + 1):
             for lat in range(lat_lo, lat_hi + 1):
-                self._probe_cell(root, lon, lat)
+                found = _find_dted_file(root, lon, lat, dir_cache)
+                if found is not None:
+                    self._index_tile(lon, lat, found)
 
     def _index_by_scan(self, root: Path) -> None:
-        """Single-level scan: ``root/<lon_dir>/<lat_file>``.
+        """Bounded scan of both the standard and nested archive layouts.
 
-        No recursive descent into archive subdirectories; this is the
-        documented slow path and is reserved for legacy callers that do
-        not pass a bbox.
+        Shares :func:`_discover_dted_tiles` with :class:`DTEDElevation`'s
+        non-bbox path: a one-level, OS-independent scan of
+        ``<root>/<lon>/<lat>.dt?`` and
+        ``<root>/dted/dted{0,1,2}/<lon>/<lat>.dt?``, highest resolution
+        per cell. No recursive descent into deeper subdirectories; this
+        is the documented slow path for callers that do not pass a bbox.
         """
-        try:
-            entries = list(os.scandir(root))
-        except OSError:
-            return
-        for entry in entries:
-            if not entry.is_dir():
-                continue
-            lon = _parse_dted_dir_lon(entry.name)
-            if lon is None:
-                continue
-            try:
-                lat_entries = list(os.scandir(entry.path))
-            except OSError:
-                continue
-            best: Dict[int, Tuple[str, Path]] = {}
-            for lat_entry in lat_entries:
-                if not lat_entry.is_file():
-                    continue
-                parsed = _parse_dted_file_lat(lat_entry.name)
-                if parsed is None:
-                    continue
-                lat, ext = parsed
-                cur = best.get(lat)
-                if cur is None or _DTED_EXTENSIONS.index(ext) < (
-                    _DTED_EXTENSIONS.index(cur[0])
-                ):
-                    best[lat] = (ext, Path(lat_entry.path))
-            for lat, (_ext, fpath) in best.items():
-                self._index_tile(lon, lat, fpath)
-
-    def _probe_cell(self, root: Path, lon: int, lat: int) -> None:
-        """Pick the highest-resolution DTED file for a cell, if any."""
-        for _ext, candidate in _candidate_paths(root, lon, lat):
-            if candidate.is_file():
-                self._index_tile(lon, lat, candidate)
-                return
+        for (lon, lat), fpath in _discover_dted_tiles(root).items():
+            self._index_tile(lon, lat, fpath)
 
     def _index_tile(self, lon: int, lat: int, filepath: Path) -> None:
         """Open a tile once to capture transform + dims, then close."""

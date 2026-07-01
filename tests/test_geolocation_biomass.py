@@ -33,6 +33,7 @@ Modified
 """
 
 import pytest
+import os
 from pathlib import Path
 import sys
 
@@ -61,10 +62,9 @@ from grdl.IO import BIOMASSL1Reader
 from grdl.geolocation.sar.gcp import GCPGeolocation
 
 
-# Path to test data
+# Path to test data - set the GRDL_BIOMASS_DATA env var to your local path.
 TEST_DATA_PATH = Path(
-    "/Volumes/PRO-G40/SAR_DATA/BIOMASS/"
-    "BIO_S1_SCS__1S_20251121T045325_20251121T045346_T_G01_M01_C01_T003_F290_01_DJUPJI"
+    os.environ.get("GRDL_BIOMASS_DATA", "data/sar/biomass/sample_product")
 )
 
 # Skip all tests if data is not available

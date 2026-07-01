@@ -27,6 +27,8 @@ Created
 
 Modified
 --------
+2026-06-09  Add ImageGroupInfo + heterogeneous-segment fields on
+            ImageSegmentInfo (group_id, IMAG, ILOC/IALVL, placement).
 2026-04-17  Add CSEPHA, RSMGGA dataclasses and RSMSegmentGrid helper.
 2026-04-01
 """
@@ -42,6 +44,19 @@ import numpy as np
 # GRDL internal
 from grdl.IO.models.base import ImageMetadata
 from grdl.IO.models.common import XYZ
+from grdl.IO.models.eo_airborne import (
+    ACFTBMetadata,
+    MENSRAMetadata,
+    MENSRBMetadata,
+    SENSRBMetadata,
+)
+from grdl.IO.models.eo_band import BANDSAMetadata, BANDSBMetadata
+from grdl.IO.models.rsm_error import (
+    RSMAPAMetadata,
+    RSMDCAMetadata,
+    RSMECAMetadata,
+    RSMPIAMetadata,
+)
 
 
 # ===================================================================
@@ -919,9 +934,10 @@ class ImageSegmentInfo:
     Populated by :class:`grdl.IO.eo.nitf.EONITFReader` when a NITF file
     contains multiple physical image segments (GDAL subdatasets accessed
     via ``NITF_IM:N:/path/file.ntf``).  Each segment occupies a
-    rectangular region of the unified full-image grid; the bbox here is
+    rectangular region of its group's full-image grid; the bbox here is
     in full-image pixel coordinates derived from that segment's ICHIPB
-    TRE (per STDI-0002 Vol 1 App G).
+    TRE (per STDI-0002 Vol 1 App G), its ILOC/IALVL attachment chain
+    (per MIL-STD-2500C), or sequential stacking as a last resort.
 
     Parameters
     ----------
@@ -939,13 +955,41 @@ class ImageSegmentInfo:
         reports for this subdataset).
     ichipb : ICHIPBMetadata, optional
         The segment's original ICHIPB TRE.  ``None`` when the segment
-        carries no ICHIPB and the bbox was assigned by sequential
-        stacking.
+        carries no ICHIPB.
     scale_factor : float
         ICHIPB ``SCALE_FACTOR`` for this segment, or ``1.0`` when
-        absent.  All segments in a unified mosaic must share the same
-        scale factor; mismatched values are refused at reader
-        construction time.
+        absent.  Segments with differing scale factors are placed in
+        separate groups; the unified view covers one group only.
+    group_id : int
+        Index of the segment group this segment belongs to.  Segments
+        are grouped by compatible imaging characteristics (band count,
+        dtype, ICHIPB scale factor, IMAG magnification, ICAT).
+    is_primary : bool
+        ``True`` when this segment belongs to the primary group — the
+        group the unified reader exposes for ``read_chip`` and that
+        geolocation models operate in.
+    bands : int
+        Number of bands in this segment.
+    dtype : str
+        Pixel dtype string for this segment (e.g. ``'uint16'``).
+    iid1 : str, optional
+        NITF IID1 image identifier from the segment subheader.
+    icat : str, optional
+        NITF ICAT image category (``'VIS'``, ``'MS'``, ``'CLOUD'``...).
+    irep : str, optional
+        NITF IREP image representation (``'MONO'``, ``'MULTI'``...).
+    imag : float
+        Decoded NITF IMAG magnification (``'/2'`` → ``0.5``).  ``1.0``
+        when absent — full resolution.
+    idlvl, ialvl : int, optional
+        NITF display / attachment level from the segment subheader.
+    iloc_row, iloc_col : int, optional
+        NITF ILOC offsets from the segment subheader (relative to the
+        attached-to segment per MIL-STD-2500C).
+    placement : str
+        How the bbox was derived: ``'ichipb'``, ``'iloc'`` (attachment
+        chain into the common coordinate system), or ``'stacked'``
+        (sequential row stacking fallback).
     """
 
     segment_index: int
@@ -958,6 +1002,107 @@ class ImageSegmentInfo:
     cols: int
     ichipb: Optional[ICHIPBMetadata] = None
     scale_factor: float = 1.0
+    group_id: int = 0
+    is_primary: bool = True
+    bands: int = 1
+    dtype: str = ''
+    iid1: Optional[str] = None
+    icat: Optional[str] = None
+    irep: Optional[str] = None
+    imag: float = 1.0
+    idlvl: Optional[int] = None
+    ialvl: Optional[int] = None
+    iloc_row: Optional[int] = None
+    iloc_col: Optional[int] = None
+    placement: str = 'ichipb'
+
+
+@dataclass
+class ImageGroupInfo:
+    """Summary of one segment group in a multi-image NITF.
+
+    A *group* is a set of image segments with compatible imaging
+    characteristics (band count, dtype, ICHIPB scale factor, IMAG
+    magnification, ICAT) that unify into a single full-image pixel
+    grid.  A heterogeneous NITF (primary imagery plus overviews,
+    cloud masks, or other support images) yields several groups; the
+    reader unifies the *primary* group and leaves the rest accessible
+    via ``image_index`` pinning.
+
+    Parameters
+    ----------
+    group_id : int
+        Index of this group (matches ``ImageSegmentInfo.group_id``).
+    segment_indices : List[int]
+        Subdataset indices of the member segments.
+    rows, cols : int
+        Unified full-image dimensions of this group (union of member
+        bboxes).
+    bands : int
+        Band count shared by all member segments.
+    dtype : str
+        Pixel dtype shared by all member segments.
+    scale_factor : float
+        ICHIPB ``SCALE_FACTOR`` shared by all member segments.
+    imag : float
+        Decoded IMAG magnification shared by all member segments.
+    icat : str, optional
+        NITF ICAT category shared by all member segments.
+    is_primary : bool
+        Whether this is the group the unified reader exposes.
+    placement : str
+        Placement mode used for member bboxes: ``'ichipb'``,
+        ``'iloc'``, or ``'stacked'``.
+    has_geolocation : bool
+        Whether any member segment carries RPC or RSM geolocation.
+    """
+
+    group_id: int
+    segment_indices: List[int]
+    rows: int
+    cols: int
+    bands: int
+    dtype: str
+    scale_factor: float = 1.0
+    imag: float = 1.0
+    icat: Optional[str] = None
+    is_primary: bool = False
+    placement: str = 'ichipb'
+    has_geolocation: bool = False
+
+
+@dataclass
+class CSCRNAMetadata:
+    """CSCRNA TRE -- image corner footprint with per-corner heights.
+
+    Corner Footprint TRE per STDI-0002 (109-byte CEDATA): a predicted
+    or measured geographic footprint of the image with WGS84 lat/lon
+    and height at each corner.  Preferred over IGEOLO (which is
+    truncated to arc-second-level precision) when present.
+
+    Parameters
+    ----------
+    predicted : bool
+        ``True`` when corners are predicted (``PREDICT_CORNERS='Y'``)
+        rather than measured.
+    corners : np.ndarray
+        Corner lat/lon in degrees, shape ``(4, 2)`` ordered
+        ``[UL, UR, LR, LL]`` with columns ``[lat, lon]``.
+    heights : np.ndarray, optional
+        Corner heights (meters, HAE), shape ``(4,)`` in the same
+        corner order.  ``None`` when absent.
+    """
+
+    predicted: bool
+    corners: np.ndarray
+    heights: Optional[np.ndarray] = None
+
+    @property
+    def mean_height(self) -> Optional[float]:
+        """Mean corner height in meters, or ``None`` when unavailable."""
+        if self.heights is None:
+            return None
+        return float(np.mean(self.heights))
 
 
 @dataclass
@@ -1053,6 +1198,33 @@ class EONITFMetadata(ImageMetadata):
     rsmgga : RSMGGAMetadata, optional
         RSM volumetric ground-to-image grid (RSMGGA TRE) — faster /
         non-iterative ground→image projection than RSMPCA alone.
+    rsm_pia : RSMPIAMetadata, optional
+        RSM polynomial identification (RSMPIA TRE) — low-order
+        polynomials + section layout for multi-section RSM.
+    rsm_dca : RSMDCAMetadata, optional
+        RSM direct error covariance (RSMDCA/RSMDCB TRE); the
+        ``variant`` field distinguishes A/B layouts.
+    rsm_eca : RSMECAMetadata, optional
+        RSM indirect error covariance (RSMECA/RSMECB TRE).
+    rsm_apa : RSMAPAMetadata, optional
+        RSM adjustable parameters (RSMAPA/RSMAPB TRE) — bundle
+        adjustment hook.
+    bandsb : BANDSBMetadata, optional
+        Multispectral band characterization (BANDSB TRE); also feeds
+        ``band_names`` / ``wavelengths``.
+    bandsa : BANDSAMetadata, optional
+        Band parameters (BANDSA TRE).
+    sensrb : SENSRBMetadata, optional
+        Airborne sensor model (SENSRB TRE).
+    mensrb : MENSRBMetadata, optional
+        Airborne mensuration data (MENSRB TRE).
+    mensra : MENSRAMetadata, optional
+        Airborne mensuration data, legacy variant (MENSRA TRE).
+    acftb : ACFTBMetadata, optional
+        Aircraft information (ACFTB TRE).
+    cscrna : CSCRNAMetadata, optional
+        Corner footprint with per-corner heights (CSCRNA TRE) —
+        preferred over IGEOLO for corner-based fallback geolocation.
     collection_info : CollectionInfo, optional
         Aggregated collection context from AIMIDB/STDIDC/PIAIMC.
     accuracy : AccuracyInfo, optional
@@ -1089,6 +1261,12 @@ class EONITFMetadata(ImageMetadata):
         unified reader has already absorbed the chip-to-full
         transform), and each entry locates one segment in the unified
         grid for diagnostics.
+    image_groups : List[ImageGroupInfo], optional
+        Per-group summary for heterogeneous multi-image NITFs.  Each
+        group is a set of compatible segments unifying into one pixel
+        grid; the entry with ``is_primary=True`` is the group ``rows``
+        / ``cols`` and ``read_chip`` operate in.  ``None`` for
+        single-segment files and pinned readers.
 
     Examples
     --------
@@ -1107,10 +1285,21 @@ class EONITFMetadata(ImageMetadata):
     rsm_segments: Optional[RSMSegmentGrid] = None
     csexra: Optional[CSEXRAMetadata] = None
     use00a: Optional[USE00AMetadata] = None
+    cscrna: Optional[CSCRNAMetadata] = None
     ichipb: Optional[ICHIPBMetadata] = None
     blocka: Optional[BLOCKAMetadata] = None
     csepha: Optional[CSEPHAMetadata] = None
     rsmgga: Optional[RSMGGAMetadata] = None
+    rsm_pia: Optional[RSMPIAMetadata] = None
+    rsm_dca: Optional[RSMDCAMetadata] = None
+    rsm_eca: Optional[RSMECAMetadata] = None
+    rsm_apa: Optional[RSMAPAMetadata] = None
+    bandsb: Optional[BANDSBMetadata] = None
+    bandsa: Optional[BANDSAMetadata] = None
+    sensrb: Optional[SENSRBMetadata] = None
+    mensrb: Optional[MENSRBMetadata] = None
+    mensra: Optional[MENSRAMetadata] = None
+    acftb: Optional[ACFTBMetadata] = None
     collection_info: Optional[CollectionInfo] = None
     accuracy: Optional[AccuracyInfo] = None
     iid1: Optional[str] = None
@@ -1125,3 +1314,4 @@ class EONITFMetadata(ImageMetadata):
     band_names: Optional[List[str]] = None
     wavelengths: Optional[List[float]] = None
     image_segments: Optional[List[ImageSegmentInfo]] = None
+    image_groups: Optional[List[ImageGroupInfo]] = None
