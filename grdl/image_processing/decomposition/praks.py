@@ -116,7 +116,7 @@ class PraksParameters(PolarimetricDecomposition):
 
     __gpu_compatible__ = False
 
-    window_size: Annotated[int, Range(min=3, max=31),
+    window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
 
     # ------------------------------------------------------------------
@@ -155,6 +155,7 @@ class PraksParameters(PolarimetricDecomposition):
             Seven real float64 arrays; see class docstring for keys.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        self._validate_internal_matrix_window_size('decompose_from_c3')
         channels = np.stack([shh, shv, svh, svv], axis=0)
         c3 = CovarianceMatrix(window_size=self.window_size).compute(channels)
         return self.decompose_from_c3(c3)

@@ -28,6 +28,12 @@ pyproj>=3.4.0
 # ----------------------------------------------------
 opencv-python-headless>=4.5.0
 
+# PolSAR decomposition acceleration (grdl.image_processing.decomposition)
+# ------------------------------------------------------------------------
+# Required for JIT-compiled Yamaguchi4C pixel loop; falls back to pure Python
+# without this dependency.
+numba>=0.57.0
+
 # Catalog / Remote Downloads (grdl.IO.sar.biomass_catalog)
 # ---------------------------------------------------------
 requests>=2.25.0

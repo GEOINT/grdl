@@ -20,6 +20,10 @@ import numpy as np
 import pytest
 
 from grdl.image_processing.decomposition import (
+    FullPolHAalpha,
+    FreemanDurden3C,
+    ModelFree3C,
+    ModelFree4C,
     DegreeOfPolarization,
     ShannonEntropy,
     NeumannDecomposition,
@@ -67,6 +71,50 @@ def c3_precomputed(quad_pol):
     shh, shv, svh, svv = quad_pol
     channels = np.stack([shh, shv, svh, svv], axis=0)
     return CovarianceMatrix(window_size=7).compute(channels)
+
+
+@pytest.mark.parametrize(
+    ('factory', 'method_name', 'matrix_fixture'),
+    [
+        (lambda: FullPolHAalpha(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: FreemanDurden3C(window_size=1), 'decompose_from_c3', 'c3_precomputed'),
+        (lambda: ModelFree3C(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: ModelFree4C(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: DegreeOfPolarization(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: ShannonEntropy(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: NeumannDecomposition(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: PraksParameters(window_size=1), 'decompose_from_c3', 'c3_precomputed'),
+        (lambda: TouziDecomposition(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+        (lambda: Yamaguchi4C(window_size=1), 'decompose_from_t3', 't3_precomputed'),
+    ],
+)
+def test_precomputed_matrix_workflows_allow_window_size_one(
+    request, factory, method_name, matrix_fixture
+):
+    decomp = factory()
+    matrix = request.getfixturevalue(matrix_fixture)
+    components = getattr(decomp, method_name)(matrix)
+    assert components
+
+
+@pytest.mark.parametrize(
+    'decomp',
+    [
+        FullPolHAalpha(window_size=1),
+        FreemanDurden3C(window_size=1),
+        ModelFree3C(window_size=1),
+        ModelFree4C(window_size=1),
+        DegreeOfPolarization(window_size=1),
+        ShannonEntropy(window_size=1),
+        NeumannDecomposition(window_size=1),
+        PraksParameters(window_size=1),
+        TouziDecomposition(window_size=1),
+        Yamaguchi4C(window_size=1),
+    ],
+)
+def test_internal_matrix_build_rejects_window_size_one(quad_pol, decomp):
+    with pytest.raises(ValueError, match='window_size >= 3'):
+        decomp.decompose(*quad_pol)
 
 
 # ---------------------------------------------------------------------------

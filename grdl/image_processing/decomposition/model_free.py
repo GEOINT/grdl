@@ -107,7 +107,7 @@ class ModelFree3C(PolarimetricDecomposition):
     >>> components = mf3.decompose_from_t3(t3)
     """
 
-    window_size: Annotated[int, Range(min=3, max=31),
+    window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
 
     # ------------------------------------------------------------------
@@ -144,6 +144,7 @@ class ModelFree3C(PolarimetricDecomposition):
             All real-valued float64 arrays.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        self._validate_internal_matrix_window_size('decompose_from_t3')
 
         # Build [T3] via CoherencyMatrix
         channels = np.stack([shh, shv, svh, svv], axis=0)
@@ -442,7 +443,7 @@ class ModelFree4C(PolarimetricDecomposition):
     >>> components = mf4.decompose_from_t3(t3)
     """
 
-    window_size: Annotated[int, Range(min=3, max=31),
+    window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
 
     # ------------------------------------------------------------------
@@ -480,6 +481,7 @@ class ModelFree4C(PolarimetricDecomposition):
             All real-valued float64 arrays.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        self._validate_internal_matrix_window_size('decompose_from_t3')
 
         # Build [T3] via CoherencyMatrix
         channels = np.stack([shh, shv, svh, svv], axis=0)

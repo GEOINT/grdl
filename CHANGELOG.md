@@ -34,6 +34,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto), ``sigma`` (0–1, default 0.9), ``min_valid`` (fallback threshold).
   ``__gpu_compatible__ = False`` (Python loop over kernel offsets).
 
+- **`DegreeOfPolarization`** (`grdl/image_processing/decomposition`): New
+  full-pol polarimetric decomposition implementing the Barakat (1977) scalar
+  degree of polarisation: ``m = sqrt(max(1 - 27·det(T3)/tr(T3)³, 0))``.
+  Returns a single ``dop`` component in [0, 1] per pixel.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Barakat, R. (1977). Optica Acta.)*
+
+- **`ShannonEntropy`** (`grdl/image_processing/decomposition`): New full-pol
+  polarimetric decomposition implementing the Shannon entropy of the
+  coherency matrix (Morio et al. 2009).  Decomposes total entropy into
+  intensity (``H_intensity``) and polarimetric (``H_polarimetric``) parts;
+  total entropy ``H_total`` is their ``nansum`` (robust to degenerate pixels).
+  ``__gpu_compatible__ = False``.
+  *(Reference: Morio, J. et al. (2009). IEEE Geosci. Remote Sens. Lett.)*
+
+- **`NeumannDecomposition`** (`grdl/image_processing/decomposition`): New
+  full-pol decomposition based on the de-orientation coherency matrix approach
+  (Neumann et al. 2010).  Extracts orientation angle ``psi`` (±45°), coherence
+  magnitude ``delta_mod``, coherence phase ``delta_pha``, and depolarisation
+  factor ``tau``.  ``__gpu_compatible__ = False``.
+  *(Reference: Neumann, M. et al. (2010). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`PraksParameters`** (`grdl/image_processing/decomposition`): New full-pol
+  decomposition extracting seven target-scattering parameters from the
+  normalised covariance matrix [C3] (Praks et al. 2009): Frobenius norm,
+  scattering predominance, scattering diversity, degree of purity, depolarisation
+  index, alpha angle, and polarimetric entropy.  Operates on [C3]; ``decompose``
+  and ``decompose_from_c3`` are the primary entry points.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Praks, J. et al. (2009). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`TouziDecomposition`** (`grdl/image_processing/decomposition`): New
+  full-pol decomposition implementing the three-component TSVM (Target
+  Scattering Vector Model) framework (Touzi 2007).  Extracts, per eigenvector,
+  the TSVM parameters ``alpha_k`` (scattering type, 0–90°),
+  ``phi_k`` (scattering phase), ``tau_k`` (helicity), ``psi_k`` (orientation)
+  plus probability-weighted means.  Outputs 16 real float64 images.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Touzi, R. (2007). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`Yamaguchi4C`** (`grdl/image_processing/decomposition`): New full-pol
+  four-component scattering power decomposition separating total backscatter
+  into surface (Ps), double-bounce (Pd), volume (Pv), and helix (Pc) powers.
+  Supports three variants via the ``model`` parameter: ``'y4o'`` (original
+  Yamaguchi 2005), ``'y4r'`` (rotation-corrected Yamaguchi 2011), and
+  ``'y4s'`` (extended volume model).  The per-pixel decision loop is
+  JIT-compiled with numba when ``grdl[polsar]`` is installed, with a pure
+  Python fallback otherwise.  ``__gpu_compatible__ = False``.
+  *(References: Yamaguchi et al. 2005, 2011. IEEE Trans. Geosci. Remote Sens.)*
+
+- **`polsar` extras group** (`pyproject.toml`): New optional dependency group
+  ``grdl[polsar]`` installing ``numba>=0.57.0`` for JIT-accelerated
+  ``Yamaguchi4C`` pixel loops.  Also added to the ``all`` extras aggregator.
+
 ### Fixed
 
 - **`LeeSigmaFilter`** complex-input fix: sigma-selected neighbours and MMSE

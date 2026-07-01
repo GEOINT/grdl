@@ -32,6 +32,7 @@ import pytest
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
+from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix, CovarianceMatrix
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,7 @@ class TestABCContract:
         assert set(names) == {'surface', 'double_bounce', 'volume'}
 
     def test_repr(self, pauli):
-        assert repr(pauli) == "PauliDecomposition()"
+        assert repr(pauli) == "PauliDecomposition(window_size=1)"
 
     def test_execute_sets_pauli_lineage(self, pauli):
         meta = ImageMetadata(
@@ -224,6 +225,40 @@ class TestDecompose:
         c = pauli.decompose(shh, shv, svh, svv)
         expected_volume = np.sqrt(2.0) * shv
         np.testing.assert_allclose(c['volume'], expected_volume, rtol=1e-10)
+
+    def test_window_size_boxcar_runs(self, quad_pol_random):
+        pauli = PauliDecomposition(window_size=7)
+        c = pauli.decompose(*quad_pol_random)
+        assert set(c.keys()) == {'surface', 'double_bounce', 'volume'}
+        assert c['surface'].shape == quad_pol_random[0].shape
+
+    def test_invalid_window_size_raises(self):
+        with pytest.raises(ValueError, match=r'odd integer in \[1, 31\]'):
+            PauliDecomposition(window_size=2)
+
+    def test_decompose_from_t3_returns_real_magnitude(self, quad_pol_random):
+        shh, shv, svh, svv = quad_pol_random
+        t3 = CoherencyMatrix(window_size=7).compute(
+            np.stack([shh, shv, svh, svv], axis=0)
+        )
+
+        c = PauliDecomposition().decompose_from_t3(t3)
+        assert set(c.keys()) == {'surface', 'double_bounce', 'volume'}
+        for name in c:
+            assert not np.iscomplexobj(c[name])
+            assert np.nanmin(c[name]) >= 0.0
+
+    def test_decompose_from_c3_returns_real_magnitude(self, quad_pol_random):
+        shh, shv, svh, svv = quad_pol_random
+        c3 = CovarianceMatrix(window_size=7).compute(
+            np.stack([shh, shv, svh, svv], axis=0)
+        )
+
+        c = PauliDecomposition().decompose_from_c3(c3)
+        assert set(c.keys()) == {'surface', 'double_bounce', 'volume'}
+        for name in c:
+            assert not np.iscomplexobj(c[name])
+            assert np.nanmin(c[name]) >= 0.0
 
 
 # ---------------------------------------------------------------------------

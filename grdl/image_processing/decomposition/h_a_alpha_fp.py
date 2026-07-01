@@ -100,7 +100,7 @@ class FullPolHAalpha(HAalphaBase):
     >>> rgb, meta = decomp.to_rgb(components)
     """
 
-    window_size: Annotated[int, Range(min=3, max=31),
+    window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
 
     # ------------------------------------------------------------------
@@ -141,6 +141,7 @@ class FullPolHAalpha(HAalphaBase):
             All real-valued float64 arrays with same spatial shape.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        self._validate_internal_matrix_window_size('decompose_from_t3')
 
         # -- 1. Build spatially-averaged [T3] coherency matrix --
         # CoherencyMatrix expects CYX (4, rows, cols) input

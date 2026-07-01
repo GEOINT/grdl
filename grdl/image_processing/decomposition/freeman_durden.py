@@ -109,7 +109,7 @@ class FreemanDurden3C(PolarimetricDecomposition):
     >>> components = fd.decompose_from_c3(c3)
     """
 
-    window_size: Annotated[int, Range(min=3, max=31),
+    window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
 
     # ------------------------------------------------------------------
@@ -145,6 +145,7 @@ class FreemanDurden3C(PolarimetricDecomposition):
             ``'span'``.  All real-valued float64 arrays.
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
+        self._validate_internal_matrix_window_size('decompose_from_c3')
 
         # Build [C3] via CovarianceMatrix
         channels = np.stack([shh, shv, svh, svv], axis=0)
