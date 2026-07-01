@@ -1009,10 +1009,14 @@ class StokesVector(ImageProcessor):
                     self.window_size,
                 )
         else:
-            e_x = kwargs.pop('e_x', kwargs.pop('e_h', None))
-            e_y = kwargs.pop('e_y', kwargs.pop('e_v', None))
+            if e_y is None:
+                raise ValueError('Both e_x and e_y must be provided when bypassing extraction.')
             if _log.isEnabledFor(logging.INFO):
-                _log.info('%s execute: using explicit e_x/e_y window_size=%d', self.__class__.__name__, self.window_size)
+                _log.info(
+                    '%s execute: using explicit e_x/e_y window_size=%d',
+                    self.__class__.__name__,
+                    self.window_size,
+                )
 
         result = self.compute(e_x, e_y)  # (4, rows, cols)
         rows, cols = result.shape[1], result.shape[2]
