@@ -312,9 +312,9 @@ def _extract_channels(
         r = _norm_role(role)
         if not r:
             return None
-        if r in {'copol', 'co_pol', 'parallelpol', 'parallel_pol'}:
+        if r in {'copol', 'co_pol', 'co_pol_a', 'co_pol_b', 'parallelpol', 'parallel_pol'}:
             return 'co'
-        if r in {'crosspol', 'cross_pol', 'xpol', 'x_pol'}:
+        if r in {'crosspol', 'cross_pol', 'cross_pol_2', 'xpol', 'x_pol'}:
             return 'cross'
         return None
 
