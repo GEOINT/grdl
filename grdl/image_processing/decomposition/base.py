@@ -314,6 +314,20 @@ class PolarimetricDecomposition(ImageProcessor):
                     f"shh has shape {shape}, but {name} has shape {arr.shape}"
                 )
 
+    def _validate_internal_matrix_window_size(
+        self,
+        precomputed_method: str,
+    ) -> None:
+        """Reject ``decompose()`` calls that try to build a 1x1 averaged matrix."""
+        window_size = getattr(self, 'window_size', None)
+        if window_size is not None and window_size < 3:
+            raise ValueError(
+                f"{type(self).__name__}.decompose() requires window_size >= 3 "
+                f"when building the averaging matrix internally; got "
+                f"window_size={window_size}. Use {precomputed_method}(...) "
+                f"with a precomputed matrix if you need window_size=1."
+            )
+
     # ------------------------------------------------------------------
     # Conversion methods (concrete)
     # ------------------------------------------------------------------

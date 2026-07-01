@@ -41,14 +41,17 @@ Modified
 
 # Standard library
 import logging
-from typing import Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
+from scipy.ndimage import uniform_filter
 
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix
 from grdl.image_processing.versioning import processor_version, processor_tags
+from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
 
 logger = logging.getLogger(__name__)
@@ -57,7 +60,7 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
-@processor_version('0.1.0')
+@processor_version('0.2.0')
 @processor_tags(modalities=[ImageModality.SAR])
 class PauliDecomposition(PolarimetricDecomposition):
     """
@@ -88,7 +91,9 @@ class PauliDecomposition(PolarimetricDecomposition):
 
     Parameters
     ----------
-    None. The Pauli decomposition has no tunable parameters.
+    window_size : int
+        Boxcar averaging window size (odd integer >= 1). Default is 1.
+        If ``window_size == 1`` no spatial averaging is applied.
 
     Examples
     --------
@@ -148,6 +153,16 @@ class PauliDecomposition(PolarimetricDecomposition):
             ),
         ]
 
+    window_size: Annotated[int, Range(min=1, max=31),
+                           Desc('Boxcar averaging window size')] = 1
+
+    def __init__(self, window_size: int = 1) -> None:
+        if window_size < 1 or window_size > 31 or window_size % 2 == 0:
+            raise ValueError(
+                f"window_size must be an odd integer in [1, 31], got {window_size}"
+            )
+        self.window_size = window_size
+
     def decompose(
         self,
         shh: np.ndarray,
@@ -180,6 +195,9 @@ class PauliDecomposition(PolarimetricDecomposition):
             Complex S_VH channel. Shape (rows, cols).
         svv : np.ndarray
             Complex S_VV channel. Shape (rows, cols).
+        Spatial averaging is applied only when ``self.window_size > 1``.
+        The averaging is boxcar and is performed independently on real/imag
+        parts of each channel before the Pauli mixing equations.
 
         Returns
         -------
@@ -197,9 +215,15 @@ class PauliDecomposition(PolarimetricDecomposition):
         """
         self._validate_scattering_matrix(shh, shv, svh, svv)
         logger.info(
-            "Pauli decomposition: shape %s, 4 channels, dtype %s",
-            shh.shape, shh.dtype,
+            "Pauli decomposition: shape %s, 4 channels, dtype %s, window_size=%d",
+            shh.shape, shh.dtype, self.window_size,
         )
+
+        if self.window_size > 1:
+            shh = self._boxcar_complex(shh, self.window_size)
+            shv = self._boxcar_complex(shv, self.window_size)
+            svh = self._boxcar_complex(svh, self.window_size)
+            svv = self._boxcar_complex(svv, self.window_size)
 
         # Normalization constant in matching precision to avoid
         # silent upcast from complex64 to complex128.
@@ -213,6 +237,7 @@ class PauliDecomposition(PolarimetricDecomposition):
             'double_bounce': (shh - svv) * norm,
             'volume': (shv + svh) * norm,
         }
+
         logger.debug(
             "Pauli magnitudes: surface=[%.4f, %.4f], "
             "double_bounce=[%.4f, %.4f], volume=[%.4f, %.4f]",
@@ -224,6 +249,77 @@ class PauliDecomposition(PolarimetricDecomposition):
             float(np.max(np.abs(result['volume']))),
         )
         return result
+
+    @staticmethod
+    def _boxcar_complex(arr: np.ndarray, window_size: int) -> np.ndarray:
+        re = uniform_filter(np.real(arr), size=window_size, mode='reflect')
+        im = uniform_filter(np.imag(arr), size=window_size, mode='reflect')
+        return (re + 1j * im).astype(arr.dtype, copy=False)
+
+    def decompose_from_t3(self, t3: np.ndarray) -> Dict[str, np.ndarray]:
+        """Decompose from a precomputed coherency matrix [T3].
+
+        This interface returns **magnitude** components only (real-valued),
+        derived from the diagonal powers of [T3]:
+
+            |surface|       = sqrt(max(real(T11), 0))
+            |double_bounce| = sqrt(max(real(T22), 0))
+            |volume|        = sqrt(max(real(T33), 0))
+
+        Phase is not recoverable from [T3] diagonal-only mapping, and is
+        intentionally not reconstructed in this method.
+
+        Parameters
+        ----------
+        t3 : np.ndarray
+            Coherency matrix with shape ``(3, 3, rows, cols)``.
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Real-valued magnitude components with keys
+            ``'surface'``, ``'double_bounce'``, ``'volume'``.
+        """
+        if t3.ndim != 4 or t3.shape[:2] != (3, 3):
+            raise ValueError(
+                f"Expected t3 shape (3, 3, rows, cols), got {t3.shape}"
+            )
+
+        return {
+            'surface': np.sqrt(np.maximum(np.real(t3[0, 0]), 0.0)),
+            'double_bounce': np.sqrt(np.maximum(np.real(t3[1, 1]), 0.0)),
+            'volume': np.sqrt(np.maximum(np.real(t3[2, 2]), 0.0)),
+        }
+
+    def decompose_from_c3(self, c3: np.ndarray) -> Dict[str, np.ndarray]:
+        """Decompose from a precomputed covariance matrix [C3].
+
+        Converts [C3] to [T3] using the Pauli basis transform, then returns
+        magnitude-only Pauli components via ``decompose_from_t3``.
+
+        Parameters
+        ----------
+        c3 : np.ndarray
+            Covariance matrix with shape ``(3, 3, rows, cols)``.
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Real-valued magnitude components with keys
+            ``'surface'``, ``'double_bounce'``, ``'volume'``.
+        """
+        if c3.ndim != 4 or c3.shape[:2] != (3, 3):
+            raise ValueError(
+                f"Expected c3 shape (3, 3, rows, cols), got {c3.shape}"
+            )
+
+        D = (1.0 / np.sqrt(2.0)) * np.array(
+            [[1, 0, 1], [1, 0, -1], [0, np.sqrt(2), 0]], dtype=np.complex128
+        )
+        c3_yx = c3.transpose(2, 3, 0, 1)       # (rows, cols, 3, 3)
+        t3_yx = D @ c3_yx @ D.T                 # (rows, cols, 3, 3)
+        t3 = t3_yx.transpose(2, 3, 0, 1)        # (3, 3, rows, cols)
+        return self.decompose_from_t3(t3)
 
     @classmethod
     def rgb_channel_metadata(cls) -> list:
@@ -350,4 +446,4 @@ class PauliDecomposition(PolarimetricDecomposition):
         return rgb, metadata
 
     def __repr__(self) -> str:
-        return "PauliDecomposition()"
+        return f"PauliDecomposition(window_size={self.window_size})"

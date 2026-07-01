@@ -2,29 +2,29 @@
 """
 Spatial Filters - Statistical, rank, and adaptive spatial image filters.
 
-Provides general-purpose spatial image filters operating on single-band or
-multi-band raster arrays. All filters inherit from ``BandwiseTransformMixin``
-and ``ImageTransform``, automatically handling 3D ``(bands, rows, cols)``
-band stacks by applying the 2D filter to each band independently.
+Provides general-purpose and SAR-specific spatial image filters.
 
-Linear Filters
-    ``MeanFilter`` — box/uniform averaging (separable, O(N) per pixel)
-    ``GaussianFilter`` — Gaussian smoothing (separable, O(N) per pixel)
+General Filters (scalar, band-independent)
+    Linear
+        ``MeanFilter`` — box/uniform averaging (separable, O(N) per pixel)
+        ``GaussianFilter`` — Gaussian smoothing (separable, O(N) per pixel)
+    Rank
+        ``MedianFilter`` — rank-based median (edge-preserving denoising)
+        ``MinFilter`` — local minimum (morphological erosion)
+        ``MaxFilter`` — local maximum (morphological dilation)
+    Statistical
+        ``StdDevFilter`` — local standard deviation via variance decomposition
 
-Rank Filters
-    ``MedianFilter`` — rank-based median (edge-preserving denoising)
-    ``MinFilter`` — local minimum (morphological erosion)
-    ``MaxFilter`` — local maximum (morphological dilation)
-
-Statistical Filters
-    ``StdDevFilter`` — local standard deviation via variance decomposition
-
-Adaptive Filters
-    ``LeeFilter`` — SAR speckle filter for real-valued intensity
-    ``ComplexLeeFilter`` — SAR speckle filter for complex SLC data
+SAR Scalar Filters (per-band; inherit ``BandwiseTransformMixin + SARFilter``)
+    ``LeeFilter`` — Lee adaptive speckle filter for real-valued intensity
+    ``ComplexLeeFilter`` — Lee adaptive speckle filter for complex SLC data
+    ``LeeSigmaFilter`` — Lee Sigma filter with probability-based neighbour selection
 
 Phase Filters
     ``PhaseGradientFilter`` — windowed phase gradient for complex SAR data
+
+SAR Polarimetric Filters (matrix-aware; inherit ``SARFilter`` directly)
+    (future: further polarimetric filters)
 
 Dependencies
 ------------
@@ -53,7 +53,11 @@ Modified
 from grdl.image_processing.filters.linear import GaussianFilter, MeanFilter
 from grdl.image_processing.filters.rank import MaxFilter, MedianFilter, MinFilter
 from grdl.image_processing.filters.statistical import StdDevFilter
-from grdl.image_processing.filters.speckle import ComplexLeeFilter, LeeFilter
+from grdl.image_processing.filters.sar_base import SARFilter
+from grdl.image_processing.filters.standard_lee import ComplexLeeFilter, LeeFilter
+from grdl.image_processing.filters.enhanced_lee import EnhancedLeeFilter
+from grdl.image_processing.filters.lee_sigma import LeeSigmaFilter
+from grdl.image_processing.filters.refined_lee import RefinedLeeFilter
 from grdl.image_processing.filters.phase import PhaseGradientFilter
 
 __all__ = [
@@ -63,7 +67,11 @@ __all__ = [
     'MinFilter',
     'MaxFilter',
     'StdDevFilter',
+    'SARFilter',
     'LeeFilter',
     'ComplexLeeFilter',
+    'EnhancedLeeFilter',
+    'LeeSigmaFilter',
+    'RefinedLeeFilter',
     'PhaseGradientFilter',
 ]

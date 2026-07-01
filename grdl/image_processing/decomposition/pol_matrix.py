@@ -3,6 +3,9 @@
 Polarimetric Matrix Products - Spatially-averaged covariance and coherency
 matrices for multi-polarization SAR data.
 
+The implementation is basis-agnostic for orthogonal polarization pairs
+(for example H/V, X/Y, or R/L) while preserving co-pol vs cross-pol role.
+
 Two classes are provided:
 
 ``CovarianceMatrix``
@@ -48,9 +51,26 @@ Dependencies
 ------------
 scipy (for uniform_filter spatial averaging)
 
+References
+----------
+[1] Lee, J. S., and Pottier, E. (2009), Polarimetric Radar Imaging:
+    From Basics to Applications, CRC Press.
+[2] Cloude, S. R., and Pottier, E. (1997), "An entropy based classification
+    scheme for land applications of polarimetric SAR," IEEE TGRS.
+[3] Boerner, W.-M. et al. (1998), "Polarimetry in radar remote sensing:
+    basic and applied concepts," in Polarimetric Radar Imaging.
+[4] Huynen, J. R. (1970), Phenomenological Theory of Radar Targets,
+    PhD thesis, TU Delft.
+
+Future Work
+-----------
+Hybrid/compact-pol transmit configurations (for example pi/4 and circular
+transmit modes) are intentionally deferred and will be added in future
+algorithms that build on these matrix products.
+
 Author
 ------
-Duane Smalley, PhD / Viplob Banerjee
+Duane Smalley, PhD / Viplob Banerjee / Jason Fritz, PhD
 geoint.org
 
 License
@@ -65,6 +85,7 @@ Created
 
 # Standard library
 import dataclasses
+import logging
 from typing import Annotated, Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
@@ -90,6 +111,9 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
+_log = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -112,50 +136,51 @@ def _smooth(arr: np.ndarray, ws: int, is_gpu: bool) -> np.ndarray:
     return ndi(arr, size=ws)
 
 
-def _build_target_vector_c(
-    shh: np.ndarray,
-    shv: np.ndarray,
-    svh: Optional[np.ndarray],
-    svv: Optional[np.ndarray],
-    dual: bool,
-) -> list:
+def _build_target_vector_c(channels: np.ndarray) -> list:
     """Lexicographic target vector components.
 
     Dual-pol:  [s_co, s_cross]
-    Quad-pol:  [shh, sqrt(2)*mean(shv,svh), svv]  (reciprocal)
+    Quad-pol:  [sxx, sqrt(2)*mean(sxy,syx), syy]  (reciprocal)
     """
-    if dual:
-        return [shh, shv]
-    xp = cp if (_HAS_CUPY and isinstance(shh, cp.ndarray)) else np
-    cross = shv if svh is None else (shv + svh) * xp.float32(0.5)
+    n = channels.shape[0]
+    if n == 2:
+        return [channels[0], channels[1]]
+    xp = cp if (_HAS_CUPY and isinstance(channels, cp.ndarray)) else np
+    if n == 3:
+        cross = channels[1]
+        return [channels[0], xp.float32(np.sqrt(2.0)) * cross, channels[2]]
+    cross = (channels[1] + channels[2]) * xp.float32(0.5)
     norm = xp.float32(np.sqrt(2.0))
-    return [shh, norm * cross, svv]
+    return [channels[0], norm * cross, channels[3]]
 
 
-def _build_target_vector_t(
-    shh: np.ndarray,
-    shv: np.ndarray,
-    svh: Optional[np.ndarray],
-    svv: Optional[np.ndarray],
-    dual: bool,
-) -> list:
+def _build_target_vector_t(channels: np.ndarray) -> list:
     """Pauli target vector components (1/sqrt(2) factor included).
 
     Dual-pol:  [(s_co + s_cross), (s_co - s_cross)] / sqrt(2)
-    Quad-pol:  [(shh + svv), (shh - svv), 2*mean(shv,svh)] / sqrt(2)
+    Quad-pol:  [(sxx + syy), (sxx - syy), 2*mean(sxy,syx)] / sqrt(2)
     """
-    xp = cp if (_HAS_CUPY and isinstance(shh, cp.ndarray)) else np
+    xp = cp if (_HAS_CUPY and isinstance(channels, cp.ndarray)) else np
     norm = xp.float32(1.0 / np.sqrt(2.0))
-    if dual:
+    n = channels.shape[0]
+    if n == 2:
         return [
-            (shh + shv) * norm,
-            (shh - shv) * norm,
+            (channels[0] + channels[1]) * norm,
+            (channels[0] - channels[1]) * norm,
         ]
-    cross = shv if svh is None else (shv + svh) * xp.float32(0.5)
+    if n == 3:
+        cross = channels[1]
+        two_cross = cross * xp.float32(2.0)
+        return [
+            (channels[0] + channels[2]) * norm,
+            (channels[0] - channels[2]) * norm,
+            two_cross * norm,
+        ]
+    cross = (channels[1] + channels[2]) * xp.float32(0.5)
     two_cross = cross * xp.float32(2.0)
     return [
-        (shh + svv) * norm,
-        (shh - svv) * norm,
+        (channels[0] + channels[3]) * norm,
+        (channels[0] - channels[3]) * norm,
         two_cross * norm,
     ]
 
@@ -197,14 +222,31 @@ def _compute_matrix(
     return mat
 
 
+def _stack_channels(*channels: Optional[np.ndarray]) -> np.ndarray:
+    """Stack non-None channels into shape (n, rows, cols)."""
+    valid = [c for c in channels if c is not None]
+    if not valid:
+        return np.array([])
+    xp = cp if (_HAS_CUPY and isinstance(valid[0], cp.ndarray)) else np
+    return xp.stack(valid, axis=0)
+
+
 def _extract_channels(
     source: np.ndarray,
     metadata: 'ImageMetadata',
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray],
-           Optional[np.ndarray], Optional[np.ndarray]]:
-    """Extract HH, HV, VH, VV in that order from a CYX source."""
+) -> np.ndarray:
+    """Extract polarimetric channels as a stacked ndarray.
+
+    Returns a stacked ndarray of shape (n, rows, cols) where n is the number
+    of channels extracted (2, 3, or 4 for dual, reciprocal, or full quad).
+    Channel order: [co_pol_a, cross_pol, cross_pol_2, co_pol_b].
+
+    Preferred extraction uses channel metadata roles/names so the method remains
+    agnostic to specific orthogonal bases (H/V, X/Y, R/L). If channel names
+    are unavailable or ambiguous, index-based fallback is used.
+    """
     if source.ndim != 3:
-        return None, None, None, None
+        return np.array([])  # Empty array signals extraction failure
 
     axis_order = getattr(metadata, 'axis_order', None)
     channel_metadata = getattr(metadata, 'channel_metadata', None)
@@ -220,16 +262,258 @@ def _extract_channels(
 
     n = source.shape[0] if chs_first else source.shape[-1]
     if n < 2:
-        return None, None, None, None
+        return np.array([])  # Empty array signals extraction failure
+
+    def _input_descriptors() -> list:
+        desc: list = []
+        for i in range(n):
+            if channel_metadata and len(channel_metadata) > i:
+                cm = channel_metadata[i]
+                name = getattr(cm, 'name', None)
+                pol = getattr(cm, 'polarization', None)
+                tx_pol = getattr(cm, 'tx_polarization', None)
+                rx_pol = getattr(cm, 'rcv_polarization', None)
+                role = getattr(cm, 'role', None)
+                parts = [f'idx={i}']
+                if name:
+                    parts.append(f'name={name}')
+                if pol:
+                    parts.append(f'pol={pol}')
+                elif tx_pol and rx_pol:
+                    parts.append(f'pol={tx_pol}{rx_pol}')
+                if role:
+                    parts.append(f'role={role}')
+                desc.append(' '.join(parts))
+            else:
+                desc.append(f'idx={i}')
+        return desc
+
+    def _log_resolved(strategy: str, resolved: list) -> None:
+        if not _log.isEnabledFor(logging.INFO):
+            return
+        _log.info(
+            'pol_matrix channel extraction: strategy=%s axis_order=%s n=%d input=%s resolved=%s',
+            strategy,
+            axis_order,
+            n,
+            _input_descriptors(),
+            resolved,
+        )
 
     def ch(i):
         return source[i] if chs_first else source[..., i]
 
+    def _norm_role(role: Optional[str]) -> str:
+        if not role:
+            return ''
+        return ''.join(c for c in role.lower() if c.isalnum() or c == '_')
+
+    def _role_kind(role: Optional[str]) -> Optional[str]:
+        r = _norm_role(role)
+        if not r:
+            return None
+        if r in {'copol', 'co_pol', 'co_pol_a', 'co_pol_b', 'parallelpol', 'parallel_pol'}:
+            return 'co'
+        if r in {'crosspol', 'cross_pol', 'cross_pol_2', 'xpol', 'x_pol'}:
+            return 'cross'
+        return None
+
+    def _norm_token(name: str) -> Optional[str]:
+        if not name:
+            return None
+        up = ''.join(c for c in name.upper() if c.isalnum())
+        for tok in (
+            'HH', 'HV', 'VH', 'VV',
+            'XX', 'XY', 'YX', 'YY',
+            'RR', 'RL', 'LR', 'LL',
+        ):
+            if tok in up:
+                return tok
+        return None
+
+    def _is_co(token: str) -> bool:
+        return len(token) == 2 and token[0] == token[1]
+
+    def _is_cross(token: str) -> bool:
+        return len(token) == 2 and token[0] != token[1]
+
+    if channel_metadata and len(channel_metadata) >= n:
+        role_co: list = []
+        role_cross: list = []
+
+        for i in range(n):
+            cm = channel_metadata[i]
+            extras = getattr(cm, 'extras', None) or {}
+            role_candidates = [
+                getattr(cm, 'role', None),
+                extras.get('polarimetric_role'),
+                extras.get('pol_role'),
+                extras.get('role'),
+            ]
+            kind = next((_role_kind(r) for r in role_candidates if _role_kind(r)), None)
+            if kind == 'co':
+                role_co.append((i, ch(i)))
+            elif kind == 'cross':
+                role_cross.append((i, ch(i)))
+
+        if len(role_co) >= 2 and len(role_cross) >= 1:
+            c0_idx, c0 = role_co[0]
+            c1_idx, c1 = role_co[1]
+            x0_idx, x0 = role_cross[0]
+            x1_idx, x1 = role_cross[1] if len(role_cross) > 1 else (None, None)
+            _log_resolved(
+                'metadata_role',
+                [
+                    f'co_pol_a<-idx={c0_idx}',
+                    f'cross_pol<-idx={x0_idx}',
+                    f'cross_pol_2<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
+                    f'co_pol_b<-idx={c1_idx}',
+                ],
+            )
+            return _stack_channels(c0, x0, x1, c1)
+        if len(role_co) >= 1 and len(role_cross) >= 1:
+            c0_idx, c0 = role_co[0]
+            x0_idx, x0 = role_cross[0]
+            x1_idx, x1 = role_cross[1] if len(role_cross) > 1 else (None, None)
+            _log_resolved(
+                'metadata_role',
+                [
+                    f'co_pol_a<-idx={c0_idx}',
+                    f'cross_pol<-idx={x0_idx}',
+                    f'cross_pol_2<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
+                ],
+            )
+            return _stack_channels(c0, x0, x1)
+
+        by_token: Dict[str, Tuple[int, np.ndarray]] = {}
+        for i in range(n):
+            cm = channel_metadata[i]
+            name = getattr(cm, 'name', None)
+            pol = getattr(cm, 'polarization', None)
+            tx_pol = getattr(cm, 'tx_polarization', None)
+            rx_pol = getattr(cm, 'rcv_polarization', None)
+            tok = (
+                _norm_token(name or '')
+                or _norm_token(pol or '')
+                or _norm_token(f'{tx_pol}{rx_pol}' if tx_pol and rx_pol else '')
+            )
+            if tok and tok not in by_token:
+                by_token[tok] = (i, ch(i))
+
+        # Prefer canonical orthogonal bases with explicit co/cross roles.
+        for co_a, co_b, cross_pref in (
+            ('HH', 'VV', ('HV', 'VH')),
+            ('XX', 'YY', ('XY', 'YX')),
+            ('RR', 'LL', ('RL', 'LR')),
+        ):
+            if co_a in by_token and co_b in by_token:
+                x1 = next((by_token[t] for t in cross_pref if t in by_token), None)
+                x2 = next((by_token[t] for t in cross_pref[::-1] if t in by_token), None)
+                if x1 is not None:
+                    if x2 is x1:
+                        x2 = None
+                    c0_idx, c0 = by_token[co_a]
+                    c1_idx, c1 = by_token[co_b]
+                    x0_idx, x0 = x1
+                    if x2 is not None:
+                        x1_idx, x1_arr = x2
+                    else:
+                        x1_idx, x1_arr = (None, None)
+                    _log_resolved(
+                        'token_canonical',
+                        [
+                            f'co_pol_a({co_a})<-idx={c0_idx}',
+                            f'cross_pol<-idx={x0_idx}',
+                            f'cross_pol_2<-idx={x1_idx}' if x1_arr is not None else 'cross_pol_2<-None',
+                            f'co_pol_b({co_b})<-idx={c1_idx}',
+                        ],
+                    )
+                    return _stack_channels(c0, x0, x1_arr, c1)
+
+        co_tokens = [t for t in by_token if _is_co(t)]
+        cross_tokens = [t for t in by_token if _is_cross(t)]
+        co_tokens.sort()
+        cross_tokens.sort()
+        if len(co_tokens) >= 2 and len(cross_tokens) >= 1:
+            c0_idx, c0 = by_token[co_tokens[0]]
+            c1_idx, c1 = by_token[co_tokens[1]]
+            x0_idx, x0 = by_token[cross_tokens[0]]
+            if len(cross_tokens) > 1:
+                x1_idx, x1 = by_token[cross_tokens[1]]
+            else:
+                x1_idx, x1 = (None, None)
+            _log_resolved(
+                'token_generic',
+                [
+                    f'co_pol_a({co_tokens[0]})<-idx={c0_idx}',
+                    f'cross_pol({cross_tokens[0]})<-idx={x0_idx}',
+                    f'cross_pol_2({cross_tokens[1]})<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
+                    f'co_pol_b({co_tokens[1]})<-idx={c1_idx}',
+                ],
+            )
+            return _stack_channels(c0, x0, x1, c1)
+        if len(co_tokens) >= 1 and len(cross_tokens) >= 1:
+            c0_idx, c0 = by_token[co_tokens[0]]
+            x0_idx, x0 = by_token[cross_tokens[0]]
+            if len(cross_tokens) > 1:
+                x1_idx, x1 = by_token[cross_tokens[1]]
+            else:
+                x1_idx, x1 = (None, None)
+            _log_resolved(
+                'token_generic',
+                [
+                    f'co_pol_a({co_tokens[0]})<-idx={c0_idx}',
+                    f'cross_pol({cross_tokens[0]})<-idx={x0_idx}',
+                    f'cross_pol_2({cross_tokens[1]})<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
+                ],
+            )
+            return _stack_channels(c0, x0, x1)
+
+    # Index-based fallback
     if n >= 4:
-        return ch(0), ch(1), ch(2), ch(3)
+        _log_resolved(
+            'index_fallback',
+            ['co_pol_a<-idx=0', 'cross_pol<-idx=1', 'cross_pol_2<-idx=2', 'co_pol_b<-idx=3'],
+        )
+        return _stack_channels(ch(0), ch(1), ch(2), ch(3))
+    if n == 3:
+        # Common cube layout for reciprocal quad-pol products:
+        # [co_pol_a, cross_pol, co_pol_b] with one cross-pol channel.
+        _log_resolved(
+            'index_fallback',
+            ['co_pol_a<-idx=0', 'cross_pol<-idx=1', 'co_pol_b<-idx=2'],
+        )
+        return _stack_channels(ch(0), ch(1), ch(2))
     if n == 2:
-        return ch(0), ch(1), None, None
-    return None, None, None, None
+        _log_resolved(
+            'index_fallback',
+            ['co_pol_a<-idx=0', 'cross_pol<-idx=1'],
+        )
+        return _stack_channels(ch(0), ch(1))
+    return np.array([])
+
+
+def _pop_channel_stack(kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
+    """Pop explicit channel kwargs and return a stacked channel ndarray."""
+    sxx = kwargs.pop('sxx', kwargs.pop('shh', kwargs.pop('co_pol_a', kwargs.pop('co_pol', None))))
+    if sxx is None:
+        return None
+    sxy = kwargs.pop('sxy', kwargs.pop('shv', kwargs.pop('cross_pol', None)))
+    syx = kwargs.pop('syx', kwargs.pop('svh', kwargs.pop('cross_pol_2', None)))
+    syy = kwargs.pop('syy', kwargs.pop('svv', kwargs.pop('co_pol_b', None)))
+    if sxy is None:
+        raise ValueError('At least one co-pol and one cross-pol channel are required.')
+    if _log.isEnabledFor(logging.INFO):
+        _log.info(
+            'pol_matrix explicit channels: resolved=%s',
+            [
+                'co_pol_a<-provided',
+                'cross_pol<-provided',
+                'cross_pol_2<-provided' if syx is not None else 'cross_pol_2<-None',
+                'co_pol_b<-provided' if syy is not None else 'co_pol_b<-None',
+            ],
+        )
+    return _stack_channels(sxx, sxy, syx, syy)
 
 
 def _make_matrix_channel_metadata(n: int, kind: str) -> list:
@@ -274,7 +558,7 @@ class CovarianceMatrix(ImageProcessor):
         C2 = <k * k^H>
 
     **Quad-pol [C3]** (3×3, reciprocal):
-        k = [S_HH, sqrt(2) * S_HV, S_VV]^T
+        k = [S_xx, sqrt(2) * S_xy, S_yy]^T
         C3 = <k * k^H>
 
     The averaging operator ``<.>`` is a square boxcar filter of
@@ -284,8 +568,8 @@ class CovarianceMatrix(ImageProcessor):
     Parameters
     ----------
     window_size : int
-        Spatial averaging window side length (pixels, odd, >= 3).
-        Default 7.
+        Spatial averaging window side length (pixels, odd, >= 1).
+        Default 1 (no spatial averaging).
 
     Returns
     -------
@@ -308,44 +592,36 @@ class CovarianceMatrix(ImageProcessor):
     __gpu_compatible__ = True
 
     window_size: Annotated[
-        int, Range(min=3, max=63), Desc('Boxcar averaging window size')
-    ] = 7
+        int, Range(min=1, max=63), Desc('Boxcar averaging window size')
+    ] = 1
 
-    def __init__(self, window_size: int = 7) -> None:
-        if window_size < 3 or window_size % 2 == 0:
+    def __init__(self, window_size: int = 1) -> None:
+        if window_size < 1 or window_size % 2 == 0:
             raise ValueError(
-                f"window_size must be an odd integer >= 3, got {window_size}"
+                f"window_size must be an odd integer >= 1, got {window_size}"
             )
         self.window_size = window_size
 
-    def compute(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: Optional[np.ndarray] = None,
-        svv: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+    def compute(self, channels: np.ndarray) -> np.ndarray:
         """Compute the covariance matrix directly from channel arrays.
 
         Parameters
         ----------
-        shh : np.ndarray
-            HH channel (or co-pol for dual-pol). Shape ``(rows, cols)``.
-        shv : np.ndarray
-            HV channel (or cross-pol for dual-pol). Shape ``(rows, cols)``.
-        svh : np.ndarray, optional
-            VH channel. If None, HV is used as the cross-pol (reciprocal).
-        svv : np.ndarray, optional
-            VV channel. If None, dual-pol [C2] is computed.
+        channels : np.ndarray
+            Complex stacked channels, shape ``(n, rows, cols)``, where n is
+            2 (dual-pol), 3 (reciprocal with single cross-pol), or 4 (full).
 
         Returns
         -------
         np.ndarray
             Complex array, shape ``(N, N, rows, cols)``.
         """
-        is_gpu = _HAS_CUPY and isinstance(shh, cp.ndarray)
-        dual = svv is None
-        components = _build_target_vector_c(shh, shv, svh, svv, dual)
+        if channels.ndim != 3 or channels.shape[0] not in (2, 3, 4):
+            raise ValueError(
+                'channels must have shape (n, rows, cols) with n in {2,3,4}.'
+            )
+        is_gpu = _HAS_CUPY and isinstance(channels, cp.ndarray)
+        components = _build_target_vector_c(channels)
         return _compute_matrix(components, self.window_size, is_gpu)
 
     def execute(
@@ -370,16 +646,25 @@ class CovarianceMatrix(ImageProcessor):
         """
         self._metadata = metadata
 
-        shh = kwargs.pop('shh', None)
-        shv = kwargs.pop('shv', None)
-        svh = kwargs.pop('svh', None)
-        svv = kwargs.pop('svv', None)
+        channels = _pop_channel_stack(kwargs)
+        if channels is None:
+            channels = _extract_channels(source, metadata)
+        if channels.size == 0:
+            raise ValueError('Channel extraction failed; provide explicit channels')
 
-        if shh is None:
-            shh, shv, svh, svv = _extract_channels(source, metadata)
+        if _log.isEnabledFor(logging.INFO):
+            _log.info(
+                '%s execute: input_channels=%d window_size=%d',
+                self.__class__.__name__,
+                int(channels.shape[0]),
+                self.window_size,
+            )
 
-        result = self.compute(shh, shv, svh, svv)
+        result = self.compute(channels)
         n = result.shape[0]
+
+        if _log.isEnabledFor(logging.INFO):
+            _log.info('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
 
         updated = dataclasses.replace(
             metadata,
@@ -415,7 +700,7 @@ class CoherencyMatrix(ImageProcessor):
         T2  = <k_P * k_P^H>
 
     **Quad-pol [T3]** (3×3, reciprocal):
-        k_P = [(S_HH + S_VV), (S_HH - S_VV), 2 * S_HV]^T / sqrt(2)
+        k_P = [(S_xx + S_yy), (S_xx - S_yy), 2 * S_xy]^T / sqrt(2)
         T3  = <k_P * k_P^H>
 
     The Pauli basis is unitary: under monostatic reciprocity ``trace(T3)
@@ -425,8 +710,8 @@ class CoherencyMatrix(ImageProcessor):
     Parameters
     ----------
     window_size : int
-        Spatial averaging window side length (pixels, odd, >= 3).
-        Default 7.
+        Spatial averaging window side length (pixels, odd, >= 1).
+        Default 1 (no spatial averaging).
 
     Returns
     -------
@@ -443,52 +728,44 @@ class CoherencyMatrix(ImageProcessor):
     ...     cube = reader.read_full()
     ...     tmat = CoherencyMatrix(window_size=9)
     ...     T3, meta = tmat.execute(reader.metadata, cube)
-    ...     # T3.diagonal: T3[0,0] = <|shh+svv|^2>/2 (odd-bounce power)
-    ...     #              T3[1,1] = <|shh-svv|^2>/2 (even-bounce power)
-    ...     #              T3[2,2] = 2*<|shv|^2>     (volume power)
+    ...     # T3.diagonal: T3[0,0] = <|sxx+syy|^2>/2 (odd-bounce power)
+    ...     #              T3[1,1] = <|sxx-syy|^2>/2 (even-bounce power)
+    ...     #              T3[2,2] = 2*<|sxy|^2>     (volume power)
     """
 
     __gpu_compatible__ = True
 
     window_size: Annotated[
-        int, Range(min=3, max=63), Desc('Boxcar averaging window size')
-    ] = 7
+        int, Range(min=1, max=63), Desc('Boxcar averaging window size')
+    ] = 1
 
-    def __init__(self, window_size: int = 7) -> None:
-        if window_size < 3 or window_size % 2 == 0:
+    def __init__(self, window_size: int = 1) -> None:
+        if window_size < 1 or window_size % 2 == 0:
             raise ValueError(
-                f"window_size must be an odd integer >= 3, got {window_size}"
+                f"window_size must be an odd integer >= 1, got {window_size}"
             )
         self.window_size = window_size
 
-    def compute(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: Optional[np.ndarray] = None,
-        svv: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+    def compute(self, channels: np.ndarray) -> np.ndarray:
         """Compute the coherency matrix directly from channel arrays.
 
         Parameters
         ----------
-        shh : np.ndarray
-            HH channel (or co-pol). Shape ``(rows, cols)``.
-        shv : np.ndarray
-            HV channel (or cross-pol). Shape ``(rows, cols)``.
-        svh : np.ndarray, optional
-            VH channel. If None, HV is used (reciprocity assumed).
-        svv : np.ndarray, optional
-            VV channel. If None, dual-pol [T2] is computed.
+        channels : np.ndarray
+            Complex stacked channels, shape ``(n, rows, cols)``, where n is
+            2 (dual-pol), 3 (reciprocal with single cross-pol), or 4 (full).
 
         Returns
         -------
         np.ndarray
             Complex array, shape ``(N, N, rows, cols)``.
         """
-        is_gpu = _HAS_CUPY and isinstance(shh, cp.ndarray)
-        dual = svv is None
-        components = _build_target_vector_t(shh, shv, svh, svv, dual)
+        if channels.ndim != 3 or channels.shape[0] not in (2, 3, 4):
+            raise ValueError(
+                'channels must have shape (n, rows, cols) with n in {2,3,4}.'
+            )
+        is_gpu = _HAS_CUPY and isinstance(channels, cp.ndarray)
+        components = _build_target_vector_t(channels)
         return _compute_matrix(components, self.window_size, is_gpu)
 
     def execute(
@@ -499,8 +776,8 @@ class CoherencyMatrix(ImageProcessor):
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Execute via the universal protocol.
 
-        Channels may be passed as kwargs (``shh``, ``shv``, ``svh``,
-        ``svv``) or extracted automatically from a CYX/YXC source cube.
+        Channels may be passed as kwargs (``sxx``, ``sxy``, ``syx``,
+        ``syy``) or extracted automatically from a CYX/YXC source cube.
         With only 2 channels, [T2] is computed; with 4 channels, [T3].
 
         Returns
@@ -512,16 +789,25 @@ class CoherencyMatrix(ImageProcessor):
         """
         self._metadata = metadata
 
-        shh = kwargs.pop('shh', None)
-        shv = kwargs.pop('shv', None)
-        svh = kwargs.pop('svh', None)
-        svv = kwargs.pop('svv', None)
+        channels = _pop_channel_stack(kwargs)
+        if channels is None:
+            channels = _extract_channels(source, metadata)
+        if channels.size == 0:
+            raise ValueError('Channel extraction failed; provide explicit channels')
 
-        if shh is None:
-            shh, shv, svh, svv = _extract_channels(source, metadata)
+        if _log.isEnabledFor(logging.INFO):
+            _log.info(
+                '%s execute: input_channels=%d window_size=%d',
+                self.__class__.__name__,
+                int(channels.shape[0]),
+                self.window_size,
+            )
 
-        result = self.compute(shh, shv, svh, svv)
+        result = self.compute(channels)
         n = result.shape[0]
+
+        if _log.isEnabledFor(logging.INFO):
+            _log.info('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
 
         updated = dataclasses.replace(
             metadata,
@@ -591,7 +877,7 @@ class StokesVector(ImageProcessor):
     Parameters
     ----------
     window_size : int
-        Boxcar averaging window (pixels, odd, >= 3).  Default ``7``.
+        Boxcar averaging window (pixels, odd, >= 1).  Default ``1``.
 
     Returns
     -------
@@ -602,20 +888,20 @@ class StokesVector(ImageProcessor):
     Examples
     --------
     >>> sv = StokesVector(window_size=9)
-    >>> stokes = sv.compute(shh, svv)
+    >>> stokes = sv.compute(sxx, syy)
     >>> dop = sv.degree_of_polarization(stokes)
     """
 
     __gpu_compatible__ = True
 
     window_size: Annotated[
-        int, Range(min=3, max=63), Desc('Boxcar averaging window size (pixels, odd)')
-    ] = 7
+        int, Range(min=1, max=63), Desc('Boxcar averaging window size (pixels, odd)')
+    ] = 1
 
-    def __init__(self, window_size: int = 7) -> None:
-        if window_size < 3 or window_size % 2 == 0:
+    def __init__(self, window_size: int = 1) -> None:
+        if window_size < 1 or window_size % 2 == 0:
             raise ValueError(
-                f"window_size must be an odd integer >= 3, got {window_size}"
+                f"window_size must be an odd integer >= 1, got {window_size}"
             )
         self.window_size = window_size
 
@@ -623,28 +909,28 @@ class StokesVector(ImageProcessor):
     # Core computation
     # ------------------------------------------------------------------
 
-    def compute(self, e_h: np.ndarray, e_v: np.ndarray) -> np.ndarray:
+    def compute(self, e_x: np.ndarray, e_y: np.ndarray) -> np.ndarray:
         """Compute spatially-averaged Stokes parameters.
 
         Parameters
         ----------
-        e_h : np.ndarray
-            Horizontal complex field component, shape ``(rows, cols)``.
-        e_v : np.ndarray
-            Vertical complex field component, shape ``(rows, cols)``.
+        e_x : np.ndarray
+            Co-pol (or first component) complex field, shape ``(rows, cols)``.
+        e_y : np.ndarray
+            Cross-pol (or second component) complex field, shape ``(rows, cols)``.
 
         Returns
         -------
         np.ndarray
             Float32 array, shape ``(4, rows, cols)``.
         """
-        is_gpu = _HAS_CUPY and isinstance(e_h, cp.ndarray)
+        is_gpu = _HAS_CUPY and isinstance(e_x, cp.ndarray)
         xp = cp if is_gpu else np
         ws = self.window_size
 
-        cross = e_h * xp.conj(e_v)
-        S0 = _smooth(xp.abs(e_h) ** 2 + xp.abs(e_v) ** 2,      ws, is_gpu)
-        S1 = _smooth(xp.abs(e_h) ** 2 - xp.abs(e_v) ** 2,      ws, is_gpu)
+        cross = e_x * xp.conj(e_y)
+        S0 = _smooth(xp.abs(e_x) ** 2 + xp.abs(e_y) ** 2,      ws, is_gpu)
+        S1 = _smooth(xp.abs(e_x) ** 2 - xp.abs(e_y) ** 2,      ws, is_gpu)
         S2 = _smooth(2.0 * xp.real(cross),                       ws, is_gpu)
         S3 = _smooth(-2.0 * xp.imag(cross),                      ws, is_gpu)
 
@@ -698,17 +984,41 @@ class StokesVector(ImageProcessor):
         """
         self._metadata = metadata
 
-        e_h = kwargs.pop('e_h', None)
-        e_v = kwargs.pop('e_v', None)
+        e_x = kwargs.pop('e_x', kwargs.pop('e_h', None))
+        e_y = kwargs.pop('e_y', kwargs.pop('e_v', None))
 
-        if e_h is None:
-            shh, shv, svh, svv = _extract_channels(source, metadata)
-            if svv is not None:
-                e_h, e_v = shh, svv   # quad-pol: co-pol pair
+        if e_x is None:
+            extracted = _extract_channels(source, metadata)
+            if extracted.size == 0:
+                raise ValueError('Channel extraction failed; provide explicit e_x/e_y')
+            # Unstack: extracted has shape (n, rows, cols)
+            n = extracted.shape[0]
+            if n >= 4:
+                e_x, e_y = extracted[0], extracted[3]  # quad-pol: co-pol pair
+            elif n == 3:
+                e_x, e_y = extracted[0], extracted[2]  # reciprocal: co-pol pair
+            elif n == 2:
+                e_x, e_y = extracted[0], extracted[1]  # dual-pol
             else:
-                e_h, e_v = shh, shv   # dual-pol
+                raise ValueError(f'Invalid number of channels extracted: {n}')
+            if _log.isEnabledFor(logging.INFO):
+                _log.info(
+                    '%s execute: extracted_channels=%d window_size=%d',
+                    self.__class__.__name__,
+                    int(n),
+                    self.window_size,
+                )
+        else:
+            if e_y is None:
+                raise ValueError('Both e_x and e_y must be provided when bypassing extraction.')
+            if _log.isEnabledFor(logging.INFO):
+                _log.info(
+                    '%s execute: using explicit e_x/e_y window_size=%d',
+                    self.__class__.__name__,
+                    self.window_size,
+                )
 
-        result = self.compute(e_h, e_v)  # (4, rows, cols)
+        result = self.compute(e_x, e_y)  # (4, rows, cols)
         rows, cols = result.shape[1], result.shape[2]
 
         from grdl.IO.models.base import ChannelMetadata as _CM
@@ -755,7 +1065,7 @@ class KennaughMatrix(ImageProcessor):
 
     Derivation::
 
-        C4  = < [SHH, SHV, SVH, SVV]^T [...]^H >   4×4 lex. covariance
+        C4  = < [S_xx, S_xy, S_yx, S_yy]^T [...]^H >   4×4 lex. covariance
         M   =  A · C4 · A^H                          Mueller matrix
         K   =  (1/2) · Re(M)                         Kennaugh matrix
 
@@ -768,7 +1078,7 @@ class KennaughMatrix(ImageProcessor):
 
     and A is unitary (A · A^H = I).
 
-    Under monostatic reciprocity (SHV ≈ SVH) the 4th row/column of K is
+    Under monostatic reciprocity (S_xy ≈ S_yx) the 4th row/column of K is
     effectively zero, reducing the active degrees of freedom to the upper-left
     3×3 sub-matrix.
 
@@ -782,7 +1092,7 @@ class KennaughMatrix(ImageProcessor):
     Parameters
     ----------
     window_size : int
-        Boxcar averaging window (pixels, odd, >= 3).  Default ``7``.
+        Boxcar averaging window (pixels, odd, >= 1).  Default ``1``.
 
     Returns
     -------
@@ -799,13 +1109,13 @@ class KennaughMatrix(ImageProcessor):
     __gpu_compatible__ = False   # np.einsum complex path; cupy not yet verified
 
     window_size: Annotated[
-        int, Range(min=3, max=63), Desc('Boxcar averaging window size (pixels, odd)')
-    ] = 7
+        int, Range(min=1, max=63), Desc('Boxcar averaging window size (pixels, odd)')
+    ] = 1
 
-    def __init__(self, window_size: int = 7) -> None:
-        if window_size < 3 or window_size % 2 == 0:
+    def __init__(self, window_size: int = 1) -> None:
+        if window_size < 1 or window_size % 2 == 0:
             raise ValueError(
-                f"window_size must be an odd integer >= 3, got {window_size}"
+                f"window_size must be an odd integer >= 1, got {window_size}"
             )
         self.window_size = window_size
 
@@ -813,42 +1123,34 @@ class KennaughMatrix(ImageProcessor):
     # Core computation
     # ------------------------------------------------------------------
 
-    def compute(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: Optional[np.ndarray] = None,
-        svv: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+    def compute(self, channels: np.ndarray) -> np.ndarray:
         """Compute the spatially-averaged Kennaugh matrix.
 
         Parameters
         ----------
-        shh : np.ndarray
-            Complex HH channel, shape ``(rows, cols)``.
-        shv : np.ndarray
-            Complex HV channel.
-        svh : np.ndarray, optional
-            VH channel.  If ``None``, SHV is reused (reciprocity assumed).
-        svv : np.ndarray
-            Complex VV channel.  Required.
+        channels : np.ndarray
+            Complex stacked channels, shape ``(n, rows, cols)`` with n in
+            {3,4}. For n=3, channels are interpreted as [co, cross, co]
+            and reciprocity is assumed.
 
         Returns
         -------
         np.ndarray
             Float32, shape ``(4, 4, rows, cols)``.
         """
-        if svh is None:
-            svh = shv
-        if svv is None:
+        if channels.ndim != 3 or channels.shape[0] not in (3, 4):
             raise ValueError(
-                "svv is required for KennaughMatrix; it cannot be inferred."
+                'channels must have shape (n, rows, cols) with n in {3,4}.'
             )
 
-        is_gpu = _HAS_CUPY and isinstance(shh, cp.ndarray)
+        is_gpu = _HAS_CUPY and isinstance(channels, cp.ndarray)
+        if channels.shape[0] == 3:
+            c4_channels = [channels[0], channels[1], channels[1], channels[2]]
+        else:
+            c4_channels = [channels[0], channels[1], channels[2], channels[3]]
 
-        # Build 4×4 lexicographic covariance C4 (from all 4 channels, no √2 rescaling)
-        C4 = _compute_matrix([shh, shv, svh, svv], self.window_size, is_gpu)
+        # Build 4×4 lexicographic covariance C4 (from 4 channels, no √2 rescaling)
+        C4 = _compute_matrix(c4_channels, self.window_size, is_gpu)
         # C4: (4, 4, rows, cols)  complex64
 
         # Promote to complex128 for numerical precision in the basis change
@@ -885,16 +1187,25 @@ class KennaughMatrix(ImageProcessor):
         """
         self._metadata = metadata
 
-        shh = kwargs.pop('shh', None)
-        shv = kwargs.pop('shv', None)
-        svh = kwargs.pop('svh', None)
-        svv = kwargs.pop('svv', None)
+        channels = _pop_channel_stack(kwargs)
+        if channels is None:
+            channels = _extract_channels(source, metadata)
+        if channels.size == 0:
+            raise ValueError('Channel extraction failed; provide explicit channels')
 
-        if shh is None:
-            shh, shv, svh, svv = _extract_channels(source, metadata)
+        if _log.isEnabledFor(logging.INFO):
+            _log.info(
+                '%s execute: input_channels=%d window_size=%d',
+                self.__class__.__name__,
+                int(channels.shape[0]),
+                self.window_size,
+            )
 
-        result = self.compute(shh, shv, svh, svv)  # (4, 4, rows, cols)
+        result = self.compute(channels)  # (4, 4, rows, cols)
         rows, cols = result.shape[2], result.shape[3]
+
+        if _log.isEnabledFor(logging.INFO):
+            _log.info('%s execute: output_matrix=4x4 axis_order=KKYX', self.__class__.__name__)
 
         updated = dataclasses.replace(
             metadata,

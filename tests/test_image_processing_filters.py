@@ -36,8 +36,10 @@ import numpy as np
 from grdl.exceptions import ValidationError
 from grdl.image_processing.filters import (
     ComplexLeeFilter,
+    EnhancedLeeFilter,
     GaussianFilter,
     LeeFilter,
+    LeeSigmaFilter,
     MaxFilter,
     MeanFilter,
     MedianFilter,
@@ -415,9 +417,11 @@ class TestLeeFilter:
         with pytest.raises(ValidationError):
             LeeFilter(kernel_size=4)
 
-
-# ---------------------------------------------------------------------------
-# ComplexLeeFilter tests
+    def test_rejects_complex_input(self):
+        """Complex input raises ValidationError (use ComplexLeeFilter instead)."""
+        f = LeeFilter(kernel_size=7)
+        with pytest.raises(ValidationError, match="ComplexLeeFilter"):
+            f.apply(np.ones((20, 20), dtype=np.complex64))
 # ---------------------------------------------------------------------------
 
 class TestComplexLeeFilter:
@@ -463,19 +467,34 @@ class TestComplexLeeFilter:
         assert np.var(np.abs(result)) < np.var(np.abs(z))
 
     def test_preserves_phase_on_constant_amplitude(self):
-        """Phase is preserved when amplitude is constant (no variance)."""
+        """Phase is preserved exactly for constant-amplitude input."""
         rows, cols = 40, 40
         phase = np.linspace(0, 2 * np.pi, rows * cols).reshape(rows, cols)
         z = 10.0 * np.exp(1j * phase)
         f = ComplexLeeFilter(kernel_size=5, enl=4.0)
         result = f.apply(z)
-        # With constant amplitude, Ci² ≈ 0 → weight ≈ 0 → output = local_mean
-        # Phase should still be close in interior
+        # Phase-preserving algorithm: output = sqrt(I_filtered) * exp(j*angle(z))
+        # Phase should be preserved exactly.
         np.testing.assert_allclose(
-            np.angle(result[10:-10, 10:-10]),
-            np.angle(z[10:-10, 10:-10]),
-            atol=0.3,
+            np.angle(result),
+            np.angle(z),
+            atol=1e-10,
         )
+
+    def test_random_phase_slc_enl_improves(self):
+        """ENL increases for single-pol SLC with random (incoherent) phase."""
+        rng = np.random.RandomState(42)
+        # Rayleigh amplitude (single-look speckle) + random phase
+        amp = rng.rayleigh(scale=5.0, size=(100, 100))
+        phase = rng.uniform(-np.pi, np.pi, (100, 100))
+        z = amp * np.exp(1j * phase)
+        f = ComplexLeeFilter(kernel_size=7, enl=1.0)
+        result = f.apply(z)
+        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
+        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
+            np.var(np.abs(result) ** 2), 1e-12
+        )
+        assert enl_after > enl_before
 
     def test_bandwise_3d(self):
         """3D (bands, rows, cols) complex arrays are processed per-band."""
@@ -499,9 +518,277 @@ class TestComplexLeeFilter:
         with pytest.raises(ValidationError):
             ComplexLeeFilter(kernel_size=4)
 
+    def test_amplitude_identical_to_lee_filter(self):
+        """Output amplitude must equal LeeFilter applied to np.abs(slc)."""
+        rng = np.random.RandomState(7)
+        amp = rng.rayleigh(scale=5.0, size=(60, 60))
+        phase = rng.uniform(-np.pi, np.pi, (60, 60))
+        z = amp * np.exp(1j * phase)
+        enl = 1.0
+        ks = 7
+        lee_amp = LeeFilter(kernel_size=ks, enl=enl).apply(amp)
+        clf_amp = np.abs(ComplexLeeFilter(kernel_size=ks, enl=enl).apply(z))
+        np.testing.assert_allclose(lee_amp, clf_amp, rtol=1e-10)
+
     def test_gpu_compatible_true(self):
         """ComplexLeeFilter dispatches to cupyx when given a cupy array."""
         assert ComplexLeeFilter.__gpu_compatible__ is True
+
+
+# ---------------------------------------------------------------------------
+# EnhancedLeeFilter tests
+# ---------------------------------------------------------------------------
+
+class TestEnhancedLeeFilter:
+    """Test EnhancedLeeFilter correctness and parameters."""
+
+    def test_constant_image_unchanged(self, flat_image):
+        """Constant image is a fixed point — ci=0 <= cu, output = mean = input."""
+        f = EnhancedLeeFilter(kernel_size=7, enl=4.0)
+        result = f.apply(flat_image)
+        np.testing.assert_allclose(result, flat_image, atol=1e-8)
+
+    def test_reduces_variance(self):
+        """Filter reduces variance of homogeneous noisy data."""
+        rng = np.random.RandomState(0)
+        noisy = np.full((100, 100), 100.0) * (1.0 + rng.randn(100, 100) * 0.2)
+        f = EnhancedLeeFilter(kernel_size=7, enl=1.0)
+        result = f.apply(noisy)
+        assert np.var(result) < np.var(noisy)
+
+    def test_preserves_shape_2d(self, random_image):
+        """Output shape matches input for 2D real images."""
+        f = EnhancedLeeFilter(kernel_size=7)
+        assert f.apply(random_image).shape == random_image.shape
+
+    def test_bandwise_3d(self):
+        """3D (bands, rows, cols) arrays are processed per-band."""
+        image_3d = np.random.rand(3, 40, 40) * 100
+        result = EnhancedLeeFilter(kernel_size=5).apply(image_3d)
+        assert result.shape == (3, 40, 40)
+
+    def test_point_target_preserved(self):
+        """Point target (ci >= cmax) passes through unchanged."""
+        image = np.full((30, 30), 10.0)
+        image[15, 15] = 10000.0
+        f = EnhancedLeeFilter(kernel_size=7, enl=1.0)
+        result = f.apply(image)
+        # Center pixel should be preserved (ci >> cmax for isolated bright target)
+        np.testing.assert_allclose(result[15, 15], 10000.0, rtol=0.01)
+
+    def test_complex_output_is_complex(self):
+        """Complex SLC input produces complex output."""
+        rng = np.random.RandomState(1)
+        z = rng.randn(30, 30) + 1j * rng.randn(30, 30)
+        result = EnhancedLeeFilter(kernel_size=5, enl=1.0).apply(z)
+        assert np.iscomplexobj(result)
+        assert result.shape == z.shape
+
+    def test_complex_phase_preserved_exactly(self):
+        """Phase is preserved exactly for constant-amplitude complex input."""
+        rng = np.random.RandomState(2)
+        phase = rng.uniform(-np.pi, np.pi, (30, 30))
+        z = 10.0 * np.exp(1j * phase)
+        result = EnhancedLeeFilter(kernel_size=5, enl=4.0).apply(z)
+        np.testing.assert_allclose(np.angle(result), np.angle(z), atol=1e-10)
+
+    def test_random_phase_slc_enl_improves(self):
+        """ENL increases for single-pol SLC with random phase."""
+        rng = np.random.RandomState(3)
+        amp = rng.rayleigh(scale=5.0, size=(100, 100))
+        z = amp * np.exp(1j * rng.uniform(-np.pi, np.pi, (100, 100)))
+        result = EnhancedLeeFilter(kernel_size=7, enl=1.0).apply(z)
+        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
+        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
+            np.var(np.abs(result) ** 2), 1e-12
+        )
+        assert enl_after > enl_before
+
+    def test_auto_enl_estimation(self):
+        """Auto ENL estimation (enl=0.0) produces valid output."""
+        rng = np.random.RandomState(4)
+        noisy = np.full((50, 50), 50.0) + rng.randn(50, 50) * 10.0
+        result = EnhancedLeeFilter(kernel_size=7, enl=0.0).apply(noisy)
+        assert result.shape == noisy.shape
+        assert np.all(np.isfinite(result))
+
+    def test_high_damp_more_smoothing_in_mixed_region(self):
+        """Lower damp → W closer to 1 → more smoothing → lower output variance.
+
+        With ENL=100: cu=0.1, cmax≈1.01.  Rayleigh amplitude has ci≈0.52,
+        placing most pixels firmly in the mixed regime where damp matters.
+        """
+        rng = np.random.RandomState(5)
+        noisy = rng.rayleigh(scale=10.0, size=(80, 80))
+        # ENL=100 → cu=0.1, cmax≈1.01; Rayleigh ci≈0.52 is in (cu, cmax)
+        r_low  = EnhancedLeeFilter(kernel_size=7, enl=100.0, damp=0.1).apply(noisy)
+        r_high = EnhancedLeeFilter(kernel_size=7, enl=100.0, damp=5.0).apply(noisy)
+        # damp=0.1: W → 1 → output → mean → lower variance
+        # damp=5.0: W → 0 → output → pixel → higher variance
+        assert np.var(r_low) < np.var(r_high)
+
+    def test_invalid_damp_raises(self):
+        """Negative damp raises ValidationError."""
+        with pytest.raises(ValidationError):
+            EnhancedLeeFilter(damp=-0.1)
+
+    def test_even_kernel_raises(self):
+        """Even kernel size raises ValidationError."""
+        with pytest.raises(ValidationError):
+            EnhancedLeeFilter(kernel_size=4)
+
+    def test_gpu_compatible_true(self):
+        """EnhancedLeeFilter uses vectorised xp ops — GPU-compatible."""
+        assert EnhancedLeeFilter.__gpu_compatible__ is True
+
+
+# ---------------------------------------------------------------------------
+# LeeSigmaFilter tests
+# ---------------------------------------------------------------------------
+
+class TestLeeSigmaFilter:
+    """Test LeeSigmaFilter correctness and parameters."""
+
+    def test_constant_image_unchanged(self, flat_image):
+        """Constant image is a fixed point of Lee Sigma filtering."""
+        f = LeeSigmaFilter(kernel_size=7, enl=4.0, sigma=0.9)
+        result = f.apply(flat_image)
+        np.testing.assert_allclose(result, flat_image, atol=1e-8)
+
+    def test_reduces_variance(self):
+        """Lee Sigma filter reduces variance of noisy data."""
+        rng = np.random.RandomState(0)
+        noisy = np.full((100, 100), 100.0) * (1.0 + rng.randn(100, 100) * 0.3)
+        f = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.9)
+        result = f.apply(noisy)
+        assert np.var(result) < np.var(noisy)
+
+    def test_preserves_shape_2d(self, random_image):
+        """Output shape matches input for 2D real images."""
+        f = LeeSigmaFilter(kernel_size=7)
+        result = f.apply(random_image)
+        assert result.shape == random_image.shape
+
+    def test_output_real_for_real_input(self, random_image):
+        """Real input produces real output."""
+        f = LeeSigmaFilter(kernel_size=5)
+        result = f.apply(random_image)
+        assert not np.iscomplexobj(result)
+
+    def test_bandwise_3d(self):
+        """3D (bands, rows, cols) arrays are processed per-band."""
+        image_3d = np.random.rand(3, 40, 40) * 100
+        f = LeeSigmaFilter(kernel_size=5)
+        result = f.apply(image_3d)
+        assert result.shape == (3, 40, 40)
+
+    def test_complex_input_output_is_complex(self):
+        """Complex SLC input produces complex output."""
+        rng = np.random.RandomState(1)
+        z = rng.randn(30, 30) + 1j * rng.randn(30, 30)
+        f = LeeSigmaFilter(kernel_size=5, enl=1.0)
+        result = f.apply(z)
+        assert np.iscomplexobj(result)
+        assert result.shape == z.shape
+
+    def test_complex_reduces_speckle(self):
+        """Complex input: filtered intensity has lower variance than noisy input."""
+        rng = np.random.RandomState(2)
+        phase = rng.uniform(-np.pi, np.pi, (80, 80))
+        amplitude = 5.0 + rng.exponential(scale=5.0, size=(80, 80))
+        z = amplitude * np.exp(1j * phase)
+        f = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.9)
+        result = f.apply(z)
+        assert np.var(np.abs(result)) < np.var(np.abs(z))
+
+    def test_auto_enl_estimation(self):
+        """Auto ENL estimation (enl=0.0) produces valid output."""
+        rng = np.random.RandomState(3)
+        noisy = np.full((50, 50), 50.0) + rng.randn(50, 50) * 10.0
+        f = LeeSigmaFilter(kernel_size=7, enl=0.0)
+        result = f.apply(noisy)
+        assert result.shape == noisy.shape
+        assert np.all(np.isfinite(result))
+
+    def test_higher_sigma_more_smoothing(self):
+        """Higher sigma selects more neighbours → more smoothing → lower variance."""
+        rng = np.random.RandomState(4)
+        noisy = np.full((80, 80), 100.0) * (1.0 + rng.randn(80, 80) * 0.5)
+        r_low  = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.5).apply(noisy)
+        r_high = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.99).apply(noisy)
+        assert np.var(r_high) < np.var(r_low)
+
+    def test_invalid_sigma_raises(self):
+        """Sigma outside (0, 1) raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LeeSigmaFilter(sigma=0.0)
+        with pytest.raises(ValidationError):
+            LeeSigmaFilter(sigma=1.0)
+        with pytest.raises(ValidationError):
+            LeeSigmaFilter(sigma=1.5)
+
+    def test_invalid_min_valid_raises(self):
+        """min_valid < 1 raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LeeSigmaFilter(min_valid=0)
+
+    def test_even_kernel_raises(self):
+        """Even kernel size raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LeeSigmaFilter(kernel_size=4)
+
+    def test_runtime_sigma_override(self, random_image):
+        """Runtime sigma override via kwargs works."""
+        f = LeeSigmaFilter(kernel_size=5, enl=1.0, sigma=0.5)
+        r1 = f.apply(random_image)
+        r2 = f.apply(random_image, sigma=0.95)
+        assert not np.allclose(r1, r2)
+
+    def test_point_target_preserved(self):
+        """Bright point target passes through (intensity far outside sigma bounds)."""
+        image = np.full((30, 30), 10.0)
+        image[15, 15] = 10000.0
+        f = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.9)
+        result = f.apply(image)
+        assert result[15, 15] > 500.0
+
+    def test_gpu_compatible_false(self):
+        """LeeSigmaFilter is not GPU-compatible (Python loop over offsets)."""
+        assert LeeSigmaFilter.__gpu_compatible__ is False
+
+    def test_complex_phase_preserved_exactly(self):
+        """Phase is preserved exactly for constant-amplitude complex input."""
+        rng = np.random.RandomState(5)
+        phase = rng.uniform(-np.pi, np.pi, (30, 30))
+        z = 10.0 * np.exp(1j * phase)
+        f = LeeSigmaFilter(kernel_size=5, enl=4.0, sigma=0.9)
+        result = f.apply(z)
+        np.testing.assert_allclose(np.angle(result), np.angle(z), atol=1e-10)
+
+    def test_random_phase_slc_enl_improves(self):
+        """ENL increases for single-pol SLC with random (incoherent) phase."""
+        rng = np.random.RandomState(6)
+        amp = rng.rayleigh(scale=5.0, size=(100, 100))
+        phase = rng.uniform(-np.pi, np.pi, (100, 100))
+        z = amp * np.exp(1j * phase)
+        f = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.9)
+        result = f.apply(z)
+        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
+        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
+            np.var(np.abs(result) ** 2), 1e-12
+        )
+        assert enl_after > enl_before
+
+    def test_complex_amplitude_matches_real_input(self):
+        """Complex input amplitude must equal LeeSigmaFilter on np.abs(slc)."""
+        rng = np.random.RandomState(7)
+        amp = rng.rayleigh(scale=5.0, size=(50, 50))
+        phase = rng.uniform(-np.pi, np.pi, (50, 50))
+        z = amp * np.exp(1j * phase)
+        enl, ks = 1.0, 7
+        real_out = LeeSigmaFilter(kernel_size=ks, enl=enl, sigma=0.9).apply(amp)
+        cplx_out = np.abs(LeeSigmaFilter(kernel_size=ks, enl=enl, sigma=0.9).apply(z))
+        np.testing.assert_allclose(real_out, cplx_out, rtol=1e-10)
 
 
 # ---------------------------------------------------------------------------

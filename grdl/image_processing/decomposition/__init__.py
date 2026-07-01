@@ -45,7 +45,17 @@ Modified
 
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
+from grdl.image_processing.decomposition.h_a_alpha_base import HAalphaBase
 from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
+from grdl.image_processing.decomposition.h_a_alpha_fp import FullPolHAalpha
+from grdl.image_processing.decomposition.freeman_durden import FreemanDurden3C
+from grdl.image_processing.decomposition.model_free import ModelFree3C, ModelFree4C
+from grdl.image_processing.decomposition.dop import DegreeOfPolarization
+from grdl.image_processing.decomposition.shannon_entropy import ShannonEntropy
+from grdl.image_processing.decomposition.neumann import NeumannDecomposition
+from grdl.image_processing.decomposition.praks import PraksParameters
+from grdl.image_processing.decomposition.touzi import TouziDecomposition
+from grdl.image_processing.decomposition.yamaguchi import Yamaguchi4C
 from grdl.image_processing.decomposition.pol_matrix import (
     CovarianceMatrix,
     CoherencyMatrix,
@@ -55,8 +65,19 @@ from grdl.image_processing.decomposition.pol_matrix import (
 
 __all__ = [
     'PolarimetricDecomposition',
+    'HAalphaBase',
     'PauliDecomposition',
     'DualPolHAlpha',
+    'FullPolHAalpha',
+    'FreemanDurden3C',
+    'ModelFree3C',
+    'ModelFree4C',
+    'DegreeOfPolarization',
+    'ShannonEntropy',
+    'NeumannDecomposition',
+    'PraksParameters',
+    'TouziDecomposition',
+    'Yamaguchi4C',
     'CovarianceMatrix',
     'CoherencyMatrix',
     'StokesVector',

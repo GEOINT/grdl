@@ -9,6 +9,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`EnhancedLeeFilter`** (`grdl/image_processing/filters`): New adaptive
+  speckle filter implementing Lopes et al. (1990).  Each pixel is classified
+  into one of three regimes based on the local amplitude coefficient of
+  variation ``ci = std_local(|z|) / mean_local(|z|)`` relative to hard
+  thresholds ``cu = 1/sqrt(ENL)`` (homogeneous) and
+  ``cmax = sqrt(1 + 2/ENL)`` (point target).  In the mixed regime a
+  spatially varying weight ``W = exp(-damp*(ci-cu)/(cmax-ci))`` blends the
+  local mean and the original pixel, providing sharper point-target
+  protection and cleaner homogeneous regions than the standard MMSE Lee
+  filter.  Supports real and complex SLC input (phase-preserving).
+  Parameters: ``kernel_size`` (3–31, odd), ``enl`` (0 = auto), ``damp``
+  (≥ 0, default 1.0).  ``__gpu_compatible__ = True``.
+
+- **`LeeSigmaFilter`** (`grdl/image_processing/filters`): New sigma-interval
+  adaptive speckle filter (Lee 1983).  For each pixel, only those neighbours
+  whose intensity falls within the ``(1-sigma)/2``–``(1+sigma)/2`` quantiles of
+  the ``Gamma(ENL, 1/ENL)`` speckle distribution are used to estimate local
+  statistics.  An MMSE Lee weight is then applied from these sigma-selected
+  pixels.  Supports real-valued intensity/amplitude images and complex SLC
+  (phase-preserving).  Parameters: ``kernel_size`` (3–31, odd), ``enl`` (0 =
+  auto), ``sigma`` (0–1, default 0.9), ``min_valid`` (fallback threshold).
+  ``__gpu_compatible__ = False`` (Python loop over kernel offsets).
+
+- **`DegreeOfPolarization`** (`grdl/image_processing/decomposition`): New
+  full-pol polarimetric decomposition implementing the Barakat (1977) scalar
+  degree of polarisation: ``m = sqrt(max(1 - 27·det(T3)/tr(T3)³, 0))``.
+  Returns a single ``dop`` component in [0, 1] per pixel.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Barakat, R. (1977). Optica Acta.)*
+
+- **`ShannonEntropy`** (`grdl/image_processing/decomposition`): New full-pol
+  polarimetric decomposition implementing the Shannon entropy of the
+  coherency matrix (Morio et al. 2009).  Decomposes total entropy into
+  intensity (``H_intensity``) and polarimetric (``H_polarimetric``) parts;
+  total entropy ``H_total`` is their ``nansum`` (robust to degenerate pixels).
+  ``__gpu_compatible__ = False``.
+  *(Reference: Morio, J. et al. (2009). IEEE Geosci. Remote Sens. Lett.)*
+
+- **`NeumannDecomposition`** (`grdl/image_processing/decomposition`): New
+  full-pol decomposition based on the de-orientation coherency matrix approach
+  (Neumann et al. 2010).  Extracts orientation angle ``psi`` (±45°), coherence
+  magnitude ``delta_mod``, coherence phase ``delta_pha``, and depolarisation
+  factor ``tau``.  ``__gpu_compatible__ = False``.
+  *(Reference: Neumann, M. et al. (2010). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`PraksParameters`** (`grdl/image_processing/decomposition`): New full-pol
+  decomposition extracting seven target-scattering parameters from the
+  normalised covariance matrix [C3] (Praks et al. 2009): Frobenius norm,
+  scattering predominance, scattering diversity, degree of purity, depolarisation
+  index, alpha angle, and polarimetric entropy.  Operates on [C3]; ``decompose``
+  and ``decompose_from_c3`` are the primary entry points.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Praks, J. et al. (2009). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`TouziDecomposition`** (`grdl/image_processing/decomposition`): New
+  full-pol decomposition implementing the three-component TSVM (Target
+  Scattering Vector Model) framework (Touzi 2007).  Extracts, per eigenvector,
+  the TSVM parameters ``alpha_k`` (scattering type, 0–90°),
+  ``phi_k`` (scattering phase), ``tau_k`` (helicity), ``psi_k`` (orientation)
+  plus probability-weighted means.  Outputs 16 real float64 images.
+  ``__gpu_compatible__ = False``.
+  *(Reference: Touzi, R. (2007). IEEE Trans. Geosci. Remote Sens.)*
+
+- **`Yamaguchi4C`** (`grdl/image_processing/decomposition`): New full-pol
+  four-component scattering power decomposition separating total backscatter
+  into surface (Ps), double-bounce (Pd), volume (Pv), and helix (Pc) powers.
+  Supports three variants via the ``model`` parameter: ``'y4o'`` (original
+  Yamaguchi 2005), ``'y4r'`` (rotation-corrected Yamaguchi 2011), and
+  ``'y4s'`` (extended volume model).  The per-pixel decision loop is
+  JIT-compiled with numba when ``grdl[polsar]`` is installed, with a pure
+  Python fallback otherwise.  ``__gpu_compatible__ = False``.
+  *(References: Yamaguchi et al. 2005, 2011. IEEE Trans. Geosci. Remote Sens.)*
+
+- **`polsar` extras group** (`pyproject.toml`): New optional dependency group
+  ``grdl[polsar]`` installing ``numba>=0.57.0`` for JIT-accelerated
+  ``Yamaguchi4C`` pixel loops.  Also added to the ``all`` extras aggregator.
+
+### Fixed
+
+- **`LeeSigmaFilter`** complex-input fix: sigma-selected neighbours and MMSE
+  statistics are now accumulated in the **amplitude** domain (``|z|``)
+  instead of the complex domain.  Previously, summing complex values caused
+  near-zero means (random phase cancels), collapsing ENL.  The phase of
+  each pixel is now preserved exactly.  ``|LeeSigmaFilter(z)| ==
+  LeeSigmaFilter(|z|)`` for identical parameters (verified by test).
+
+- **`LeeFilter`** now raises ``ValidationError`` for complex input instead of
+  silently discarding the imaginary part (``ComplexWarning``).  Use
+  ``ComplexLeeFilter`` for complex SLC data.
+
+- **`ComplexLeeFilter`** algorithm changed twice this release.  Final
+  algorithm: **amplitude-domain MMSE + phase preservation**
+  ``(z_out = (E[a] + W*(a-E[a])) * exp(j·angle(z)))`` where
+  ``a = |z|`` and ``Ci² = var_local(a)/E_local[a]²``.  Working in the
+  amplitude domain (as ``LeeFilter`` does) produces smoother MMSE weights
+  than the intensity domain, eliminating blocky edge-boundary artifacts.
+  The output amplitude is now **numerically identical** to
+  ``LeeFilter(np.abs(slc))``, with the original pixel phase attached.
+  The previous intensity-domain implementation
+  ``(z_out = sqrt(MMSE(|z|²)) * exp(j·angle(z)))`` caused small
+  high-variance blobs at kernel boundaries because ``Ci²`` from intensity
+  has larger variance than from amplitude, creating sharper weight
+  transitions.
+
 ---
 
 ## [0.6.2] — 2026-06-25
