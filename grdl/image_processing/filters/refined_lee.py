@@ -79,7 +79,7 @@ _WINDOW_PARAMS = {
 def _build_masks(window_size: int) -> np.ndarray:
     """Build 8 directional half-plane masks for the given window size.
 
-    Returns shape (8, window_size, window_size) boolean array.
+    Returns shape (8, window_size, window_size) float32 mask array with values {0, 1}.
 
     Mask indices:
         0: right half (cols >= center)
