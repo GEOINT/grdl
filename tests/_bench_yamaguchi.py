@@ -34,11 +34,7 @@ for n, run_pst in [(50, True), (100, True), (200, False), (500, False), (1000, F
     yam = Yamaguchi4C(model='y4o')
 
     # GRDL (numba already compiled)
-    grdl_ms = min(
-        (time.perf_counter(), yam.decompose_from_t3(t3), time.perf_counter())[2]
-        - (time.perf_counter(), yam.decompose_from_t3(t3), time.perf_counter())[0]
-        for _ in range(REPS)
-    )
+    # Timing is computed below using a single decompose_from_t3 call per repetition.
     # simpler timing
     times = []
     for _ in range(REPS):
