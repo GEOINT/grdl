@@ -2,9 +2,10 @@
 """
 CRSD XML Metadata Builder for Sentinel-1 Level 0 Data.
 
-Constructs an ``lxml.etree.ElementTree`` conforming to the
+Constructs an ``lxml.etree.ElementTree`` targeting the
 NGA.STND.0080-1 CRSD schema from Sentinel-1 L0 burst metadata,
-orbit state vectors, and waveform parameters.
+orbit state vectors, and waveform parameters.  Schema validation
+does not currently pass; see ``CRSD_VALIDATION.md`` section 6.
 
 The output XML is consumed by ``sarkit.crsd.Writer`` to produce
 a NITF CRSD file.
@@ -30,6 +31,7 @@ Created
 
 Modified
 --------
+2026-07-21  Docstring: schema is a target, not a conformance claim.
 2026-05-27
 """
 

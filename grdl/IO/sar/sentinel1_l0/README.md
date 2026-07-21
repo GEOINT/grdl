@@ -478,8 +478,9 @@ crsd_path = converter.convert()
 - CI2 (int8 complex) signal data — raw I/Q, not range-compressed.
 - Per-vector PVP arrays (receive positions, velocities, timing)
   and per-pulse PPP arrays (transmit waveform parameters).
-- CRSD XML metadata conforming to the `CRSDsar` schema
-  (`http://api.nsgreg.nga.mil/schema/crsd/1.0`).
+- CRSD XML metadata targeting the `CRSDsar` schema
+  (`http://api.nsgreg.nga.mil/schema/crsd/1.0`). Schema validation
+  does not currently pass — see `CRSD_VALIDATION.md` §6 for status.
 
 **Requirements:** `sarkit >= 1.5.0` (for `sarkit.crsd.Writer`).
 The converter auto-detects POE orbit files co-located in the SAFE
