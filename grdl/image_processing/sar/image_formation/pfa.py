@@ -474,12 +474,17 @@ class PolarFormatAlgorithm(ImageFormationAlgorithm):
             del shifted
             image = _scipy_fft.fftshift(image)
 
-        # Reverse the range axis (cols of (az, rg)) so that after the
-        # downstream (az, rg) → (rg, az) transpose, row 0 = near range
-        # and increasing row = increasing slant range, per SICD Vol 1
-        # §4.4. Without this flip the PFA's natural output places far
-        # range at row 0, which is non-spec.
-        image = image[:, ::-1]
+        # No axis reversal: for a CPHD signal that matches its declared
+        # SGN (phase = SGN*fx*dTOA per NGA.STND.0068 Fig 1-9), the
+        # matched transform direction (fft2 for +1, ifft2 for -1) with
+        # DC at index 0 and a final fftshift places scene position 0 at
+        # the center bin and increasing position along +uRG / +uAZ at
+        # increasing bin index -- exactly the SICD Vol 1 §4.15 grid
+        # (row 0 = near range after the downstream transpose). A range
+        # flip here previously compensated for data whose signal phase
+        # contradicts its declared SGN (e.g. the ASPEN simulator, which
+        # writes SGN=+1 over SGN=-1 phase); that is a defect of the
+        # data, repaired at ingest by overriding SGN, not here.
 
         # Output: rows = azimuth, cols = range (col 0 = near range).
         # Transpose to SICD (rows = range, cols = azimuth) at write time.
