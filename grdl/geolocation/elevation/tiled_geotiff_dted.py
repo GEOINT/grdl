@@ -21,9 +21,14 @@ This class fixes all three:
   halo for cross-tile interpolation) and probe each candidate DTED
   path directly.  ``Path.exists()`` ×  ~12-per-cell is cheap.  No
   ``rglob`` is ever invoked when a bbox is supplied.
-- **The cache stores file metadata, not raster bytes.**  Tiles open
-  once at index time to capture transform/dims/nodata, then close.
-  Pickle payload is just paths + a few floats per tile.
+- **Indexing is path-only and metadata is lazy.**  Construction records
+  ``(lon, lat) -> Path`` and opens nothing.  A tile's
+  transform/dims/nodata are captured the first time that tile is
+  sampled, reusing the LRU handle that the read needs anyway, so the
+  metadata costs no extra I/O.  Construction is O(1) opens instead of
+  one GDAL open per tile in the archive -- the dominant cost when no
+  bbox is supplied.  Pickle payload is just paths + a few floats per
+  resolved tile.
 - **An LRU of open rasterio datasets** keeps file handles warm without
   unbounded growth, mirroring :class:`TiledGeoTIFFDEM`.
 - **Cross-tile interpolation** uses padded windowed reads, identical
@@ -56,6 +61,8 @@ Created
 
 Modified
 --------
+2026-07-20  Lazy tile metadata: index paths only at construction and
+            resolve transform/dims/nodata on first sample.
 2026-06-08  Share DTED discovery with DTEDElevation: nested archive
             layouts and OS-independent, cached case-insensitive probing
             for both the bbox and no-bbox paths.
@@ -91,6 +98,11 @@ class _DTEDTileMeta(NamedTuple):
     nrows: int
     ncols: int
     nodata: Optional[float]
+
+
+# Sentinel distinguishing "metadata not yet resolved" from a cached
+# ``None`` meaning "resolution was attempted and failed".
+_UNRESOLVED = object()
 
 
 def _hemi_lon(lon: int) -> str:
@@ -130,6 +142,15 @@ class TiledGeoDTED(ElevationModel):
     neighbouring tile when the kernel footprint of an edge query
     crosses a 1° boundary.
 
+    Construction opens no files: the index maps ``(lon, lat)`` to a
+    path, and georeferencing metadata is resolved per tile on first
+    sample.  Consequently ``tile_count`` counts tiles *discovered on
+    disk*, not tiles verified readable -- a file with a valid DTED name
+    that GDAL cannot open is counted here and yields NaN when sampled,
+    where an eager index would have excluded it.  Verifying every tile
+    up front costs one GDAL open per tile in the archive, which is the
+    cost this class exists to avoid.
+
     Examples
     --------
     >>> elev = TiledGeoDTED('/data/dted', bbox=(116.0, 34.0, 117.5, 35.5))
@@ -167,7 +188,12 @@ class TiledGeoDTED(ElevationModel):
         self._bbox = bbox
 
         # path-only index; rasterio is opened lazily through the LRU
-        self._tile_index: Dict[Tuple[int, int], _DTEDTileMeta] = {}
+        self._tile_index: Dict[Tuple[int, int], Path] = {}
+        # Metadata resolved on first sample of each tile.  A cached
+        # ``None`` marks a tile that failed to open, so the failure is
+        # not retried on every query.  Kept separate from the LRU
+        # because the LRU evicts and this must survive.
+        self._meta_cache: Dict[Tuple[int, int], Optional[_DTEDTileMeta]] = {}
         self._open_tiles: "OrderedDict[Tuple[int, int], object]" = OrderedDict()
 
         if bbox is not None:
@@ -227,24 +253,71 @@ class TiledGeoDTED(ElevationModel):
             self._index_tile(lon, lat, fpath)
 
     def _index_tile(self, lon: int, lat: int, filepath: Path) -> None:
-        """Open a tile once to capture transform + dims, then close."""
-        key = (int(lon), int(lat))
-        if key in self._tile_index:
-            return
-        import rasterio
+        """Record a tile path.  No file is opened here.
+
+        Georeferencing metadata is resolved lazily by :meth:`_meta` on
+        the tile's first sample, so indexing an archive costs directory
+        entries only -- not one GDAL open per tile.
+        """
+        self._tile_index.setdefault((int(lon), int(lat)), filepath)
+
+    def _meta(self, key: Tuple[int, int]) -> Optional[_DTEDTileMeta]:
+        """Metadata for a tile, resolved on first use and cached.
+
+        Opens the tile through the LRU (:meth:`_open_tile`), which the
+        subsequent windowed read needs anyway, so resolution costs no
+        extra I/O.  Returns ``None`` if the tile is not indexed or
+        cannot be opened; the ``None`` is cached so a bad tile is not
+        reopened on every query.
+
+        Parameters
+        ----------
+        key : tuple of (int, int)
+            ``(lon_floor, lat_floor)`` tile key.
+
+        Returns
+        -------
+        _DTEDTileMeta or None
+        """
+        cached = self._meta_cache.get(key, _UNRESOLVED)
+        if cached is not _UNRESOLVED:
+            return cached
+
+        filepath = self._tile_index.get(key)
+        if filepath is None:
+            self._meta_cache[key] = None
+            return None
         try:
-            with rasterio.open(str(filepath)) as ds:
-                meta = _DTEDTileMeta(
-                    path=filepath,
-                    transform=ds.transform,
-                    inv_transform=~ds.transform,
-                    nrows=ds.height,
-                    ncols=ds.width,
-                    nodata=ds.nodata,
-                )
-            self._tile_index[key] = meta
+            ds = self._open_tile(key)
+            meta = _DTEDTileMeta(
+                path=filepath,
+                transform=ds.transform,
+                inv_transform=~ds.transform,
+                nrows=ds.height,
+                ncols=ds.width,
+                nodata=ds.nodata,
+            )
         except Exception as exc:  # pragma: no cover - depends on disk state
-            logger.debug("Failed to index %s: %s", filepath, exc)
+            logger.debug("Failed to resolve metadata for %s: %s", filepath, exc)
+            self._meta_cache[key] = None
+            return None
+        self._meta_cache[key] = meta
+        return meta
+
+    def _tile_dims(
+        self, key: Tuple[int, int], fallback: Tuple[int, int],
+    ) -> Tuple[int, int]:
+        """``(nrows, ncols)`` for a tile, or ``fallback`` if unresolvable.
+
+        Used for the neighbour peeks in :meth:`_read_padded_window`,
+        where an unindexed or unreadable neighbour should not abort the
+        read -- the caller falls back to the origin tile's dimensions
+        and the out-of-range region simply stays NaN.
+        """
+        meta = self._meta(key)
+        if meta is None:
+            return fallback
+        return meta.nrows, meta.ncols
 
     # ── Read-side helpers ────────────────────────────────────────────
 
@@ -274,8 +347,9 @@ class TiledGeoDTED(ElevationModel):
         if key in self._open_tiles:
             self._open_tiles.move_to_end(key)
             return self._open_tiles[key]
-        meta = self._tile_index[key]
-        ds = rasterio.open(str(meta.path))
+        # Path-only lookup: _meta() calls this to resolve metadata, so
+        # this must not depend on _meta().
+        ds = rasterio.open(str(self._tile_index[key]))
         self._open_tiles[key] = ds
         while len(self._open_tiles) > self._max_open:
             _evict_key, evict_ds = self._open_tiles.popitem(last=False)
@@ -294,9 +368,9 @@ class TiledGeoDTED(ElevationModel):
         c_max: int,
     ) -> Optional[np.ndarray]:
         """Read a window from one tile, clamped to its valid extent."""
-        if key not in self._tile_index:
+        meta = self._meta(key)
+        if meta is None:
             return None
-        meta = self._tile_index[key]
         nrows, ncols = meta.nrows, meta.ncols
         cr_min = max(0, r_min)
         cr_max = min(nrows - 1, r_max)
@@ -334,11 +408,14 @@ class TiledGeoDTED(ElevationModel):
         north-up with ``row 0`` at the northern edge, so the
         ``r < 0 → north``, ``r >= nrows → south`` convention applies.
         """
-        meta = self._tile_index[key]
-        nrows, ncols = meta.nrows, meta.ncols
         out_h = r_max - r_min + 1
         out_w = c_max - c_min + 1
         result = np.full((out_h, out_w), np.nan, dtype=np.float64)
+
+        meta = self._meta(key)
+        if meta is None:
+            return result
+        nrows, ncols = meta.nrows, meta.ncols
         lon0, lat0 = key
 
         r_splits = [(r_min, min(r_max, nrows - 1))]
@@ -369,10 +446,8 @@ class TiledGeoDTED(ElevationModel):
 
                 if rs_min < 0:
                     adj_lat = lat0 + 1
-                    adj_key_check = (adj_lon, adj_lat)
-                    adj_nrows = (
-                        self._tile_index[adj_key_check].nrows
-                        if adj_key_check in self._tile_index else nrows
+                    adj_nrows, _ = self._tile_dims(
+                        (adj_lon, adj_lat), (nrows, ncols),
                     )
                     adj_rs_min = adj_nrows + rs_min
                     adj_rs_max = adj_nrows + rs_max
@@ -383,10 +458,8 @@ class TiledGeoDTED(ElevationModel):
 
                 if cs_min < 0:
                     adj_lon = lon0 - 1
-                    adj_key_check = (adj_lon, adj_lat)
-                    adj_ncols = (
-                        self._tile_index[adj_key_check].ncols
-                        if adj_key_check in self._tile_index else ncols
+                    _, adj_ncols = self._tile_dims(
+                        (adj_lon, adj_lat), (nrows, ncols),
                     )
                     adj_cs_min = adj_ncols + cs_min
                     adj_cs_max = adj_ncols + cs_max
@@ -468,7 +541,9 @@ class TiledGeoDTED(ElevationModel):
         heights_out: np.ndarray,
     ) -> None:
         """Sample all points whose tile key is ``key``."""
-        meta = self._tile_index[key]
+        meta = self._meta(key)
+        if meta is None:
+            return
         batch_lats = lats[idx]
         batch_lons = lons[idx]
 
