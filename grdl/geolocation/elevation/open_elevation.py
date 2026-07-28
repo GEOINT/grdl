@@ -33,6 +33,9 @@ Created
 
 Modified
 --------
+2026-07-22  Gate the tiled-GeoTIFF fallback behind the DTED probe so a
+            DTED archive never triggers a recursive rglob, and
+            short-circuit the GeoTIFF presence check.
 2026-06-08  Layout-agnostic DTED probe (standard + nested archive) and
             bbox-aware DTEDElevation loader in _try_dted.
 2026-03-27  Add interpolation parameter, pass through to all DEM backends.
@@ -133,24 +136,38 @@ def open_elevation(
 
     # ── Directory ────────────────────────────────────────────────
     elif dem_path.is_dir():
-        # Try DTED first. Pass bbox so DTEDElevation can probe candidate
-        # tile paths directly — covering standard and nested archive
-        # layouts — instead of an exhaustive rglob across the archive.
-        model = _try_dted(
-            dem_path, geoid_path, location, interpolation, bbox=bbox,
-        )
-        if model is not None:
-            return model
-
-        # Try tiled GeoTIFF (FABDEM, Copernicus, etc.)
-        model = _try_tiled_geotiff(
-            dem_path, geoid_path, location, interpolation,
-            bbox=bbox,
-        )
-        if model is not None:
-            return model
-
-        logger.warning("No usable DEM found in %s", dem_path)
+        # Classify the layout once with the cheap, bounded DTED probe
+        # (bbox-limited candidate paths, or a shallow scan of the layout
+        # roots — never a recursive rglob). A DTED archive and a tiled
+        # GeoTIFF directory are mutually exclusive layouts, so this
+        # decides which backend to attempt and, crucially, gates the
+        # GeoTIFF scan.
+        if _has_dted_files(dem_path, bbox=bbox):
+            # DTED archive. Attempt DTED backends only and never fall
+            # through to the GeoTIFF scan: on a large DTED tree the
+            # recursive rglob('*.tif') walks the entire archive and looks
+            # like a freeze. A DTED-like tree that yields no usable model
+            # (layout mismatch, or no coverage at `location`) drops
+            # straight to the constant-height fallback below.
+            model = _try_dted(
+                dem_path, geoid_path, location, interpolation,
+                bbox=bbox, _dted_present=True,
+            )
+            if model is not None:
+                return model
+            logger.warning(
+                "DTED archive at %s produced no usable coverage; "
+                "using fallback", dem_path,
+            )
+        else:
+            # Not a DTED layout: try tiled GeoTIFF (FABDEM, Copernicus).
+            model = _try_tiled_geotiff(
+                dem_path, geoid_path, location, interpolation,
+                bbox=bbox,
+            )
+            if model is not None:
+                return model
+            logger.warning("No usable DEM found in %s", dem_path)
 
     else:
         raise FileNotFoundError(
@@ -274,6 +291,7 @@ def _try_dted(
     location: Optional[Tuple[float, float]],
     interpolation: int = 3,
     bbox: Optional[Tuple[float, float, float, float]] = None,
+    _dted_present: Optional[bool] = None,
 ) -> Optional[ElevationModel]:
     """Try to open a DTED directory and verify coverage at location.
 
@@ -283,10 +301,18 @@ def _try_dted(
     unavailable. Both probe the standard layout and nested archive
     layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) via the shared,
     OS-independent discovery. Returns ``None`` when no DTED files are
-    present (so callers fall through to the GeoTIFF probe), when no tiles
-    index, or when a supplied ``location`` has no coverage.
+    present, when no tiles index, or when a supplied ``location`` has no
+    coverage.
+
+    ``_dted_present`` lets a caller pass a pre-computed
+    :func:`_has_dted_files` result to skip the redundant probe; when
+    ``None`` (the default, and for direct callers) the probe runs here so
+    the function stays self-contained.
     """
-    if not _has_dted_files(dem_dir, bbox=bbox):
+    present = _dted_present
+    if present is None:
+        present = _has_dted_files(dem_dir, bbox=bbox)
+    if not present:
         logger.debug(
             "No DTED tiles under %s — skipping DTED backend",
             dem_dir,
@@ -367,11 +393,14 @@ def _try_tiled_geotiff(
     and seamlessly queries across tile boundaries with cross-tile
     interpolation.
     """
-    # Quick check: any .tif files present?
-    tif_files = list(dem_dir.rglob('*.tif'))
-    if not tif_files:
-        tif_files = list(dem_dir.rglob('*.tiff'))
-    if not tif_files:
+    # Quick check: any GeoTIFF present? Short-circuit on the first hit
+    # instead of materializing the full recursive listing — the count is
+    # never used (TiledGeoTIFFDEM re-indexes internally), so we only need
+    # to know whether at least one tile exists.
+    if (
+        next(dem_dir.rglob('*.tif'), None) is None
+        and next(dem_dir.rglob('*.tiff'), None) is None
+    ):
         return None
 
     try:

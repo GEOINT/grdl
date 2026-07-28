@@ -18,15 +18,20 @@ latitude/longitude vectors are derived on load.  Known formats include:
 - EGM2008 2.5 arc-minute (4321 x 8640)
 - EGM2008 1 arc-minute (10801 x 21600)
 
-PGM Storage Convention
-----------------------
-- Format: PGM (Portable Gray Map), 16-bit unsigned big-endian (P5) or
-  ASCII (P2)
+PGM Storage Convention (GeographicLib)
+--------------------------------------
+GeographicLib distributes the EGM geoid grids as PGM files.  GRDL reads
+that exact format:
+
+- Format: PGM (Portable Gray Map), P5 (binary, big-endian) or P2
+  (ASCII).  GeographicLib grids are P5 with a 16-bit ``maxval`` of 65535.
 - Latitude range: 90N (row 0) to 90S (row ``nrows - 1``)
-- Longitude range: 0 (col 0) to ``360 - lon_step`` (col ``ncols - 1``)
-- Values: undulation in centimeters, offset by 32768 (EGM default);
-  scale and offset may be overridden by PGM comment lines of the form
-  ``# scale <value>`` and ``# offset <value>``
+- Longitude range: 0 (col 0) to ``360 - 360/ncols`` (col ``ncols - 1``)
+- Values: raw pixels are decoded to undulation in meters with the
+  GeographicLib affine convention ``undulation = offset + scale * pixel``.
+  ``offset`` and ``scale`` are read from the required ``# Offset`` and
+  ``# Scale`` header comment lines (e.g. ``# Offset -108`` /
+  ``# Scale 0.003``); a PGM lacking them is rejected.
 
 GeoTIFF geoids (single-band, geographic CRS) are also supported with
 grid extent read entirely from the affine transform.
@@ -48,6 +53,12 @@ Created
 
 Modified
 --------
+2026-07-22  Read the GeographicLib geoid PGM format: decode undulation as
+            ``offset + scale * pixel`` from the required ``# Offset`` /
+            ``# Scale`` header lines, with a spec-correct NetPBM header
+            tokenizer (comments/whitespace anywhere, 1- or 2-byte
+            samples). Replaces the wrong ``(pixel - 32768) * 0.01``
+            convention.
 2026-05-26  Add ``to_shared`` / ``release_shared`` plus pickle hooks so
             the in-memory geoid grid can be hoisted into
             ``multiprocessing.shared_memory`` once and attached by
@@ -76,11 +87,6 @@ from grdl.geolocation.base import _is_scalar, _to_array
 
 logger = logging.getLogger(__name__)
 
-# EGM-family PGM default encoding (override via '# scale'/'# offset'
-# comment lines in the PGM header).
-_PGM_DEFAULT_OFFSET = 32768  # unsigned → signed centimeter offset
-_PGM_DEFAULT_SCALE = 1.0 / 100.0  # centimeters → meters
-
 
 class GeoidCorrection:
     """Geoid undulation lookup from an EGM-family grid file.
@@ -106,11 +112,11 @@ class GeoidCorrection:
 
     Notes
     -----
-    EGM-family PGM files store undulation values as unsigned 16-bit
-    integers with a default offset of 32768 (raw centimeters →
-    ``undulation_cm = raw_value - 32768``). Scale and offset may be
-    overridden by ``# scale`` / ``# offset`` comment lines in the PGM
-    header. Values are converted to meters on load.
+    GeographicLib geoid PGM files store undulation as unsigned integers
+    decoded with the affine convention
+    ``undulation_m = offset + scale * pixel``. ``offset`` and ``scale``
+    are read from the required ``# Offset`` / ``# Scale`` header comment
+    lines and applied on load; a PGM without them is rejected.
 
     Examples
     --------
@@ -141,8 +147,8 @@ class GeoidCorrection:
         geoid_path : str or Path
             Path to a geoid undulation grid file.  Supported formats:
 
-            - **PGM** (``*.pgm``): EGM96 15-arc-minute grid (P5 binary
-              or P2 ASCII).  Fixed 721 x 1440 global grid.
+            - **PGM** (``*.pgm``): GeographicLib geoid grid (P5 binary
+              or P2 ASCII) of any standard EGM96/EGM2008 resolution.
             - **GeoTIFF** (``*.tif``, ``*.tiff``): Any geoid model
               (EGM96, EGM2008, etc.) stored as a single-band GeoTIFF
               with geographic CRS.  Grid dimensions and extent are read
@@ -339,202 +345,199 @@ class GeoidCorrection:
 
     @staticmethod
     def _load_pgm(filepath: Path) -> np.ndarray:
-        """Load an EGM-family PGM file and return undulation in meters.
+        """Load a GeographicLib geoid PGM and return undulation in meters.
 
-        Reads the PGM file format (P5 binary or P2 ASCII), skips comment
-        lines, and converts raw unsigned 16-bit values to undulation in
-        meters using the default EGM offset convention (or the scale /
-        offset declared in PGM comment lines, when present).
+        Parses the PGM header (``P5`` binary or ``P2`` ASCII) honoring the
+        NetPBM whitespace/comment rules, then decodes raw pixel values to
+        geoid undulation in meters using the GeographicLib convention::
+
+            undulation_m = offset + scale * pixel
+
+        ``offset`` and ``scale`` are read from the required ``# Offset``
+        and ``# Scale`` header comment lines that GeographicLib writes
+        into every geoid grid.  Without them the raw pixels are
+        meaningless, so their absence is a hard error.
 
         Parameters
         ----------
         filepath : Path
-            Path to the PGM file.
+            Path to the GeographicLib geoid PGM file.
 
         Returns
         -------
         np.ndarray
-            Geoid undulation grid in meters. Shape ``(nrows, ncols)``
-            as declared in the PGM header, dtype float64. Latitude runs
-            from 90N (row 0) to 90S (row ``nrows - 1``). Longitude runs
-            from 0 (col 0) eastward to ``360 - lon_step``
-            (col ``ncols - 1``).
+            Geoid undulation grid in meters. Shape ``(nrows, ncols)`` as
+            declared in the PGM header, dtype float64. Row 0 is 90N, row
+            ``nrows - 1`` is 90S; col 0 is 0 longitude, col ``ncols - 1``
+            is ``360 - 360/ncols``.
 
         Raises
         ------
         ValueError
-            If the PGM magic number is not ``P5`` or ``P2`` or the
-            pixel stream is truncated.
+            If the magic number is not ``P5`` / ``P2``, the header is
+            malformed, the pixel stream is truncated, or the required
+            ``# Offset`` / ``# Scale`` comment lines are missing.
         """
         with open(filepath, 'rb') as f:
-            # Read magic number
-            magic = f.readline().strip()
+            magic, ncols, nrows, maxval, offset, scale = (
+                GeoidCorrection._parse_pgm_header(f)
+            )
 
-            if magic == b'P5':
-                # Binary PGM
-                return GeoidCorrection._load_pgm_binary(f)
-            elif magic == b'P2':
-                # ASCII PGM
-                return GeoidCorrection._load_pgm_ascii(f)
-            else:
+            if offset is None or scale is None:
                 raise ValueError(
-                    f"Invalid PGM magic number: {magic!r}. "
-                    f"Expected 'P5' (binary) or 'P2' (ASCII)."
+                    f"{filepath.name} is missing the required '# Offset' / "
+                    f"'# Scale' header lines. GeoidCorrection reads "
+                    f"GeographicLib geoid PGM grids, which encode "
+                    f"undulation as 'offset + scale * pixel'; a PGM without "
+                    f"these values cannot be decoded to meters."
                 )
 
+            expected = nrows * ncols
+            if magic == b'P5':
+                # 1 byte/sample when maxval < 256, else 2-byte big-endian.
+                dtype = np.dtype('>u1') if maxval < 256 else np.dtype('>u2')
+                nbytes = expected * dtype.itemsize
+                buf = f.read(nbytes)
+                if len(buf) < nbytes:
+                    raise ValueError(
+                        f"Truncated PGM raster in {filepath.name}: expected "
+                        f"{nbytes} bytes, got {len(buf)}."
+                    )
+                raw = np.frombuffer(buf, dtype=dtype).astype(np.float64)
+            else:  # b'P2' — ASCII samples follow the header.
+                tokens = f.read().decode('ascii').split()
+                if len(tokens) < expected:
+                    raise ValueError(
+                        f"Truncated PGM raster in {filepath.name}: expected "
+                        f"{expected} samples, got {len(tokens)}."
+                    )
+                raw = np.array(tokens[:expected], dtype=np.float64)
+
+        raw = raw.reshape((nrows, ncols))
+        # GeographicLib affine decode: undulation = offset + scale * pixel.
+        grid = offset + scale * raw
+        logger.debug(
+            "GeographicLib PGM %d x %d, offset=%.6g, scale=%.6g",
+            nrows, ncols, offset, scale,
+        )
+        return grid
+
     @staticmethod
-    def _parse_pgm_comments(comment_lines: list) -> tuple:
-        """Extract scale and offset from PGM comment lines if present.
+    def _parse_pgm_header(f) -> tuple:
+        """Parse a NetPBM PGM header from a binary stream.
+
+        Reads the magic number, width, height, and maxval as
+        whitespace-delimited tokens, skipping ``#`` comments (to end of
+        line) wherever they appear, per the NetPBM specification. The
+        GeographicLib ``# Offset`` and ``# Scale`` values are captured
+        from the comment lines. On return the stream is positioned at the
+        first raster byte: the single whitespace character terminating
+        ``maxval`` has been consumed (exactly as the PGM format requires),
+        so the P5 binary raster or the P2 ASCII samples follow
+        immediately.
+
+        Parameters
+        ----------
+        f : BinaryIO
+            File opened in binary mode, positioned at the start.
+
+        Returns
+        -------
+        tuple
+            ``(magic, ncols, nrows, maxval, offset, scale)``. ``magic`` is
+            ``b'P5'`` or ``b'P2'``; ``offset`` / ``scale`` are floats, or
+            ``None`` when the corresponding comment line is absent.
+
+        Raises
+        ------
+        ValueError
+            If the magic number is not ``P5`` / ``P2`` or the header ends
+            before width, height, and maxval are read.
+        """
+        comments = []
+
+        def next_token() -> bytes:
+            token = bytearray()
+            while True:
+                ch = f.read(1)
+                if ch == b'':
+                    break  # EOF
+                if ch == b'#':
+                    # Comment runs to end of line; capture the payload.
+                    line = bytearray()
+                    while True:
+                        c = f.read(1)
+                        if c == b'' or c == b'\n':
+                            break
+                        line += c
+                    comments.append(bytes(line))
+                    if token:
+                        break
+                    continue
+                if ch.isspace():
+                    if token:
+                        break  # single whitespace terminator consumed
+                    continue
+                token += ch
+            return bytes(token)
+
+        magic = next_token()
+        if magic not in (b'P5', b'P2'):
+            raise ValueError(
+                f"Invalid PGM magic number: {magic!r}. "
+                f"Expected 'P5' (binary) or 'P2' (ASCII)."
+            )
+        try:
+            ncols = int(next_token())
+            nrows = int(next_token())
+            maxval = int(next_token())
+        except ValueError:
+            raise ValueError(
+                "Malformed PGM header: could not read width, height, and "
+                "maxval."
+            )
+
+        offset, scale = GeoidCorrection._parse_pgm_comments(comments)
+        return magic, ncols, nrows, maxval, offset, scale
+
+    @staticmethod
+    def _parse_pgm_comments(comment_lines) -> tuple:
+        """Extract GeographicLib ``Offset`` and ``Scale`` from comments.
+
+        GeographicLib geoid PGMs declare the affine decode parameters as
+        header comment lines of the form ``# Offset -108`` and
+        ``# Scale 0.003``. The leading ``#`` has already been stripped by
+        :meth:`_parse_pgm_header`.
 
         Parameters
         ----------
         comment_lines : list of bytes
-            Comment lines (starting with ``#``) from the PGM header.
+            Comment payloads (without the leading ``#``) from the header.
 
         Returns
         -------
         tuple of (float or None, float or None)
-            ``(scale, offset)`` parsed from comments, or ``None`` for
-            each if not found.
+            ``(offset, scale)`` parsed from the comments, or ``None`` for
+            each key not found.
         """
-        scale = None
         offset = None
+        scale = None
         for line in comment_lines:
-            text = line.decode('ascii', errors='ignore').strip().lstrip('#').strip()
-            lower = text.lower()
-            if lower.startswith('scale'):
+            words = line.decode('ascii', errors='ignore').split()
+            if len(words) < 2:
+                continue
+            key = words[0].lower()
+            if key == 'offset':
                 try:
-                    scale = float(text.split()[-1])
-                except (ValueError, IndexError):
+                    offset = float(words[1])
+                except ValueError:
                     pass
-            elif lower.startswith('offset'):
+            elif key == 'scale':
                 try:
-                    offset = float(text.split()[-1])
-                except (ValueError, IndexError):
+                    scale = float(words[1])
+                except ValueError:
                     pass
-        return scale, offset
-
-    @staticmethod
-    def _load_pgm_binary(f) -> np.ndarray:
-        """Load binary (P5) PGM file.
-
-        Parameters
-        ----------
-        f : file object
-            Open file positioned after the magic number line.
-
-        Returns
-        -------
-        np.ndarray
-            Undulation grid in meters. Shape ``(nrows, ncols)`` as
-            declared in the PGM header.
-        """
-        # Collect comment lines for scale/offset parsing
-        comment_lines = []
-        line = f.readline()
-        while line.startswith(b'#'):
-            comment_lines.append(line)
-            line = f.readline()
-
-        # Parse dimensions
-        parts = line.split()
-        if len(parts) == 2:
-            ncols, nrows = int(parts[0]), int(parts[1])
-        else:
-            # Dimensions may be on separate lines
-            ncols = int(parts[0])
-            nrows = int(f.readline().strip())
-
-        # Read max value
-        _maxval = int(f.readline().strip())
-
-        # Read binary data (16-bit big-endian unsigned integers)
-        raw = np.frombuffer(
-            f.read(nrows * ncols * 2), dtype=np.dtype('>u2')
-        )
-        raw = raw.reshape((nrows, ncols))
-
-        # Use file-embedded scale/offset if available, else EGM defaults
-        file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
-            comment_lines
-        )
-        scale = file_scale if file_scale is not None else _PGM_DEFAULT_SCALE
-        offset = (
-            file_offset if file_offset is not None else _PGM_DEFAULT_OFFSET
-        )
-        if file_scale is not None or file_offset is not None:
-            logger.debug(
-                "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset
-            )
-
-        grid = (raw.astype(np.float64) - offset) * scale
-        return grid
-
-    @staticmethod
-    def _load_pgm_ascii(f) -> np.ndarray:
-        """Load ASCII (P2) PGM file.
-
-        Parameters
-        ----------
-        f : file object
-            Open file positioned after the magic number line.
-
-        Returns
-        -------
-        np.ndarray
-            Undulation grid in meters. Shape ``(nrows, ncols)`` as
-            declared in the PGM header.
-        """
-        # Read remaining content as text
-        content = f.read().decode('ascii')
-        lines = content.split('\n')
-
-        # Collect comment lines for scale/offset, extract data tokens
-        comment_lines = []
-        tokens = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                comment_lines.append(stripped.encode('ascii'))
-            elif stripped:
-                tokens.extend(stripped.split())
-
-        # Parse header: width height maxval
-        if len(tokens) < 3:
-            raise ValueError("Insufficient header data in ASCII PGM file.")
-
-        ncols = int(tokens[0])
-        nrows = int(tokens[1])
-        _maxval = int(tokens[2])
-
-        # Parse pixel values
-        expected = nrows * ncols
-        pixel_tokens = tokens[3:]
-        if len(pixel_tokens) < expected:
-            raise ValueError(
-                f"Expected {expected} pixel values, got {len(pixel_tokens)}."
-            )
-
-        raw = np.array(
-            [int(t) for t in pixel_tokens[:expected]], dtype=np.float64
-        )
-        raw = raw.reshape((nrows, ncols))
-
-        # Use file-embedded scale/offset if available, else EGM defaults
-        file_scale, file_offset = GeoidCorrection._parse_pgm_comments(
-            comment_lines
-        )
-        scale = file_scale if file_scale is not None else _PGM_DEFAULT_SCALE
-        offset = (
-            file_offset if file_offset is not None else _PGM_DEFAULT_OFFSET
-        )
-        if file_scale is not None or file_offset is not None:
-            logger.debug(
-                "PGM file-embedded scale=%.6g, offset=%.6g", scale, offset
-            )
-
-        grid = (raw - offset) * scale
-        return grid
+        return offset, scale
 
     def get_undulation(
         self,
