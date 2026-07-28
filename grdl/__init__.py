@@ -31,7 +31,7 @@ Modified
 2026-05-02
 """
 
-__version__ = "0.6.2"
+__version__ = "0.7.1"
 __author__ = "Duane Smalley"
 
 from grdl.exceptions import (
