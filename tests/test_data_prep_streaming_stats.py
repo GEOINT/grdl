@@ -321,6 +321,70 @@ class TestComputeImageStatistics:
         assert res.mad == pytest.approx(mad, rel=0.01)
         assert res.mad_std == pytest.approx(1.4826 * mad, rel=0.01)
 
+    def test_mad_hist_and_exact_agree(self):
+        """The single-pass MAD must match the two-pass one it replaced.
+
+        ``mad=True`` reads the deviation off the value histogram; ``'exact'``
+        re-reads the image to accumulate ``|x - median|``. The second costs a
+        full extra pass, so the first is the default -- it has to give the
+        same answer.
+        """
+        rng = np.random.default_rng(4)
+        data = (rng.standard_normal((500, 500)).astype(np.float32) * 3.0 + 12.0)
+        data.ravel()[:400] = 900.0                       # outliers
+        fast = compute_image_statistics(
+            _ArrayReader(data), tile=128, transform='identity', mad=True)
+        exact = compute_image_statistics(
+            _ArrayReader(data), tile=128, transform='identity', mad='exact')
+        assert fast.median == exact.median               # same interpolated p50
+        assert fast.mad == pytest.approx(exact.mad, rel=0.01)
+
+    def test_mad_hist_matches_numpy_across_distributions(self):
+        """Histogram MAD tracks the true MAD over varied shapes and scales.
+
+        Scale matters: the float32 bin geometry is RELATIVE, so a distribution
+        centered far from zero relative to its own spread is the hard case.
+        """
+        rng = np.random.default_rng(11)
+        cases = {
+            'normal': rng.standard_normal(200_000) * 2.0,
+            'offset': 1000.0 + 50.0 * rng.standard_normal(200_000),
+            'rayleigh': rng.rayleigh(1.0, 200_000),
+            'lognormal': rng.lognormal(0.0, 1.0, 200_000),
+            'tiny': 1e-6 * rng.standard_normal(200_000),
+            'negative': -5.0 - rng.exponential(1.0, 200_000),
+        }
+        for name, x in cases.items():
+            x = x.astype(np.float64)
+            med = float(np.median(x))
+            want = float(np.median(np.abs(x - med)))
+            acc = StreamingStats(percentiles=[50.0])
+            acc.update(x)
+            got = acc.mad_from_hist(acc.result().percentiles[50.0])
+            assert got == pytest.approx(want, rel=0.01), name
+
+    def test_mad_from_hist_edge_cases(self):
+        """Degenerate inputs return something usable, never a crash."""
+        # no histogram configured -> nan, not an exception
+        assert np.isnan(StreamingStats().mad_from_hist(1.0))
+        # nothing accumulated -> nan
+        assert np.isnan(StreamingStats(percentiles=[50.0]).mad_from_hist(1.0))
+        # non-finite center -> nan
+        acc = StreamingStats(percentiles=[50.0])
+        acc.update(np.arange(1000, dtype=np.float64))
+        assert np.isnan(acc.mad_from_hist(float('nan')))
+        # a constant image has MAD 0; the histogram can only resolve it to
+        # within one bin, so require small-not-exact rather than pretend
+        const = StreamingStats(percentiles=[50.0])
+        const.update(np.full(10_000, 3.25))
+        assert const.mad_from_hist(3.25) < 0.05 * 3.25
+
+    def test_mad_rejects_unknown_string(self):
+        with pytest.raises(ValidationError):
+            compute_image_statistics(
+                _ArrayReader(np.ones((32, 32), np.float32)), tile=16,
+                transform='identity', mad='approximate')
+
     def test_mad_does_not_leak_internal_median_percentile(self):
         data = np.arange(64 * 64, dtype=np.float64).reshape(64, 64)
         res = compute_image_statistics(

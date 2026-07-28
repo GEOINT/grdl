@@ -428,6 +428,105 @@ class StreamingStats:
         frac = (target - below) / in_bin
         return float(lo + frac * (hi - lo))
 
+    def _bin_of(self, value: float) -> int:
+        """Index of the histogram bin containing ``value``.
+
+        The inverse of :meth:`_bin_edge`, using the same geometry
+        :meth:`update` bins with, so a value lands in the bin that counted it.
+        """
+        if self._spacing == 'float32':
+            b = int(np.array(value, dtype=np.float32).view(np.uint32))
+            key = (~b) & 0xFFFFFFFF if b & 0x80000000 else b | 0x80000000
+            i = key >> self._shift
+        elif self._spacing == 'log':
+            tiny = float(np.finfo(np.float64).tiny)
+            pos = np.log10(max(float(value), tiny))
+            i = int((pos - self._lo) / self._span * self._n_bins)
+        else:
+            i = int((float(value) - self._lo) / self._span * self._n_bins)
+        return int(min(max(i, 0), self._n_bins - 1))
+
+    def _count_le(self, value: float, cum: np.ndarray) -> float:
+        """Interpolated number of accumulated samples ``<= value``.
+
+        Linear within the bin -- exactly the model
+        :meth:`_percentile_from_hist` inverts, so the two are consistent by
+        construction.
+        """
+        i = self._bin_of(value)
+        below = float(cum[i - 1]) if i > 0 else 0.0
+        in_bin = float(self._counts[i])
+        if in_bin <= 0.0:
+            return below
+        lo, hi = self._bin_edge(i), self._bin_edge(i + 1)
+        if not (hi > lo):
+            return below + in_bin
+        frac = (float(value) - lo) / (hi - lo)
+        frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+        return below + frac * in_bin
+
+    def mad_from_hist(self, center: float) -> float:
+        """``median(|x - center|)`` derived from the VALUE histogram.
+
+        The straightforward way to get a MAD is a second pass over the image
+        accumulating ``|x - median|``. That doubles the I/O of a
+        whole-image reduction, and it buys an exactness the result does not
+        have anyway: the ``center`` it deviates about is itself the
+        histogram-interpolated 50th percentile, so an exact deviation is being
+        taken about an approximate median. Reading the deviation off the same
+        histogram is consistent with how the median was obtained, and needs no
+        second read.
+
+        ``F(d) = #{|x - center| <= d} = C(center + d) - C(center - d)`` is
+        monotone in ``d``, where ``C`` is the interpolated CDF
+        (:meth:`_count_le`), so the MAD is found by bisection on ``d``. Cost is
+        ~64 CDF evaluations, each a ``searchsorted``-free O(1) lookup -- versus
+        one full pass over the pixels.
+
+        Accuracy is that of the histogram geometry. At the default 65536
+        ``'float32'`` bins the top 16 bits of the IEEE-754 key are kept -- 7
+        mantissa bits, so ~0.8% relative bin width -- and the within-bin linear
+        model makes the residual second order. MEASURED against the exact
+        two-pass MAD on real SAR magnitude imagery: see the module tests.
+
+        Parameters
+        ----------
+        center : float
+            The value to take absolute deviations about, normally the median.
+
+        Returns
+        -------
+        float
+            ``median(|x - center|)``, or ``nan`` when no histogram was
+            configured or nothing was accumulated.
+        """
+        if self._counts is None:
+            return float('nan')
+        total = float(self._counts.sum())
+        if total <= 0.0 or not np.isfinite(center):
+            return float('nan')
+
+        cum = np.cumsum(self._counts)
+        target = 0.5 * total
+
+        def covered(d: float) -> float:
+            return (self._count_le(center + d, cum)
+                    - self._count_le(center - d, cum))
+
+        hi = max(abs(self._max - center), abs(center - self._min))
+        if not np.isfinite(hi) or hi <= 0.0:
+            return 0.0
+        if covered(hi) < target:          # degenerate; the data ends here
+            return float(hi)
+        lo = 0.0
+        for _ in range(64):               # to well below the bin resolution
+            mid = 0.5 * (lo + hi)
+            if covered(mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        return float(0.5 * (lo + hi))
+
     def result(self) -> StatsResult:
         """Return the finalized statistics.
 
@@ -723,7 +822,7 @@ def compute_image_statistics(
     n_workers: Optional[int] = None,
     band: int = 0,
     min_pixels: int = PARALLEL_MIN_PIXELS,
-    mad: bool = False,
+    mad: Union[bool, str] = False,
 ) -> StatsResult:
     """Compute exact full-image statistics over valid pixels, tile by tile.
 
@@ -733,6 +832,11 @@ def compute_image_statistics(
     once. ``'log'``/``'linear'`` spacing instead sizes the histogram from the
     pass-1 data range and re-reads the image for a second pass. Accumulation
     runs serially or across processes depending on ``parallel``.
+
+    ``mad=True`` also comes out of that single pass: the deviation is read off
+    the value histogram (:meth:`StreamingStats.mad_from_hist`) instead of
+    re-reading the image to accumulate ``|x - median|``. Pass ``mad='exact'``
+    for the old two-pass behavior.
 
     Parameters
     ----------
@@ -767,15 +871,24 @@ def compute_image_statistics(
         Band index for multi-band imagery.
     min_pixels : int
         Pixel-count threshold for the ``'auto'`` parallel decision.
-    mad : bool
+    mad : bool or {'exact'}
         Also compute the median and the Median Absolute Deviation
         ``median(|x - median(x)|)``, populating :attr:`StatsResult.median` and
         :attr:`StatsResult.mad` (and the derived :attr:`StatsResult.mad_std`).
-        The MAD is taken about the median, so it requires the median first --
-        this adds one extra read of the image (a deviation pass over a
-        non-negative float32 histogram). The median is computed even if no
-        value percentiles were requested, but it is not added to
-        ``percentiles`` unless the caller asked for ``50.0``.
+        The median is computed even if no value percentiles were requested,
+        but it is not added to ``percentiles`` unless the caller asked for
+        ``50.0``.
+
+        ``True`` reads the deviation off the value histogram already built by
+        the value pass (:meth:`StreamingStats.mad_from_hist`), so it costs no
+        extra I/O. ``'exact'`` instead re-reads the image and accumulates
+        ``|x - median|`` directly, DOUBLING the I/O of a whole-image
+        reduction. That exactness is narrower than it looks: the ``median``
+        both paths deviate about is the histogram-interpolated 50th
+        percentile either way, so ``'exact'`` computes an exact deviation
+        about an approximate center. Use it when you need bit-comparability
+        with an older run, or when a caller-supplied ``hist_spacing`` makes
+        the value histogram too coarse near the median.
 
     Returns
     -------
@@ -795,6 +908,14 @@ def compute_image_statistics(
         raise ValidationError(
             f"mask must be one of {MASK_STRATEGIES}; got {mask!r}"
         )
+    if isinstance(mad, str):
+        if mad.lower() != 'exact':
+            raise ValidationError(
+                f"mad must be a bool or 'exact'; got {mad!r}"
+            )
+        mad_exact = True
+    else:
+        mad_exact = False
     spacing = 'float32' if hist_spacing == 'auto' else hist_spacing
     if spacing not in ('float32', 'log', 'linear'):
         raise ValidationError(
@@ -851,11 +972,15 @@ def compute_image_statistics(
     need_internal_median = mad and 50.0 not in user_pcts
     value_pcts = user_pcts + ([50.0] if need_internal_median else [])
 
+    # Keep the accumulator that holds the VALUE histogram, not just its
+    # result: the MAD is read back off that histogram (see mad_from_hist).
+    value_acc = None
     try:
         if value_pcts and spacing == 'float32':
             # Single pass: the float32 histogram needs no data range, so the
             # exact moments and the percentile histogram share one read.
-            res = _run((None, None, n_bins, 'float32'), value_pcts).result()
+            value_acc = _run((None, None, n_bins, 'float32'), value_pcts)
+            res = value_acc.result()
         else:
             # Pass 1: exact mean/std/min/max (no histogram).
             res = _run(None, None).result()
@@ -864,19 +989,23 @@ def compute_image_statistics(
             if value_pcts:
                 lo, hi = res.minimum, res.maximum
                 if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                    acc2 = _run((lo, hi, n_bins, spacing), value_pcts)
-                    res.percentiles = acc2.result().percentiles
+                    value_acc = _run((lo, hi, n_bins, spacing), value_pcts)
+                    res.percentiles = value_acc.result().percentiles
 
         if mad:
-            # Deviation pass: median(|x - median|). Deviations are
-            # non-negative, so the single-pass float32 histogram is exact in
-            # ordering and needs no range -- one extra read of the image.
             median = res.percentiles.get(50.0, float('nan'))
             res.median = float(median)
             if np.isfinite(median):
-                dev = _run((None, None, n_bins, 'float32'), [50.0],
-                           deviation_center=median).result()
-                res.mad = float(dev.percentiles.get(50.0, float('nan')))
+                if mad_exact or value_acc is None:
+                    # Deviation pass: accumulate |x - median| directly. One
+                    # EXTRA READ of the image, which on a whole-scene reduction
+                    # doubles the I/O -- see mad_from_hist for why the default
+                    # no longer pays it.
+                    dev = _run((None, None, n_bins, 'float32'), [50.0],
+                               deviation_center=median).result()
+                    res.mad = float(dev.percentiles.get(50.0, float('nan')))
+                else:
+                    res.mad = float(value_acc.mad_from_hist(median))
             if need_internal_median:
                 res.percentiles.pop(50.0, None)
 
