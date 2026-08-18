@@ -15,10 +15,19 @@ numerical equivalence for:
   7. Praks Parameters (PraksParameters vs polsartools praks_parm_fp)
   8. Touzi Decomposition (TouziDecomposition vs polsartools touzi_decomposition)
   9. Yamaguchi 4C (Yamaguchi4C vs polsartools yam4c_fp_py; patch only — slow)
+ 10. Dual-pol H/Alpha (DualPolHAlpha vs polsartools h_alpha_dp)
+ 11. Dual-pol DoP (DegreeOfPolarizationDP vs polsartools dop_dp)
+ 12. Dual-pol Shannon entropy (ShannonEntropyDP vs polsartools shannon_h_dp)
+ 13. Dual-pol model-free 3C (ModelFree3CD vs polsartools mf3cd)
+ 14. Dual-pol Radar Built-up Index (DualPolRadarBuiltUpIndex vs polsartools dprbi)
+ 15. Dual-pol Radar Surface Index (DualPolRadarSurfaceIndex vs polsartools dprsi)
+ 16. Dual-pol scattering powers (ScatteringPowerDP vs polsartools powers_dp)
 
 Usage:
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --chip-size 500
+    conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --mode full
+    conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --mode dual
 
 Author
 ------
@@ -36,6 +45,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import uniform_filter
 
 
 # ======================================================================
@@ -602,6 +612,241 @@ def polsartools_shannon_h_fp(t3_ccyx):
     return (np.real(HS).reshape(rows, cols).astype(np.float32),
             np.real(HSI).reshape(rows, cols).astype(np.float32),
             np.real(HSP).reshape(rows, cols).astype(np.float32))
+
+
+def _dual_c2_from_slc(s_co, s_cross, window_size=1):
+    """Build dual-pol C2 terms from SLC channels using boxcar averaging."""
+    c11 = uniform_filter(np.abs(s_co) ** 2, size=window_size)
+    c22 = uniform_filter(np.abs(s_cross) ** 2, size=window_size)
+    c12 = (
+        uniform_filter(np.real(s_co * np.conj(s_cross)), size=window_size)
+        + 1j * uniform_filter(np.imag(s_co * np.conj(s_cross)), size=window_size)
+    )
+    return c11, c12, c22
+
+
+def _dual_t2_from_slc(s_co, s_cross, window_size=1):
+    """Build dual-pol T2 terms from SLC channels using Pauli basis."""
+    inv_sqrt2 = 1.0 / np.sqrt(2.0)
+    k1 = (s_co + s_cross) * inv_sqrt2
+    k2 = (s_co - s_cross) * inv_sqrt2
+
+    t11 = uniform_filter(np.abs(k1) ** 2, size=window_size)
+    t22 = uniform_filter(np.abs(k2) ** 2, size=window_size)
+    t12 = (
+        uniform_filter(np.real(k1 * np.conj(k2)), size=window_size)
+        + 1j * uniform_filter(np.imag(k1 * np.conj(k2)), size=window_size)
+    )
+    return t11, t12, t22
+
+
+def _pst_clip_norm(arr):
+    """Replicate polsartools percentile clip + normalize-by-max behavior."""
+    finite = np.isfinite(arr)
+    if not np.any(finite):
+        return np.zeros_like(arr, dtype=np.float64)
+    vals = arr[finite]
+    lo = np.percentile(vals, 2)
+    hi = np.percentile(vals, 98)
+    clipped = np.clip(arr, lo, hi)
+    max_v = np.nanmax(clipped)
+    if not np.isfinite(max_v) or max_v <= np.finfo(np.float64).tiny:
+        return np.zeros_like(arr, dtype=np.float64)
+    return clipped / max_v
+
+
+def polsartools_dop_dp(c11, c12, c22):
+    """Dual-pol Barakat DoP from C2 (polsartools dop_dp)."""
+    det_c2 = c11 * c22 - c12 * np.conj(c12)
+    trace_c2 = c11 + c22
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dop = np.real(np.sqrt(1.0 - (4.0 * det_c2 / np.power(trace_c2, 2))))
+    return dop.astype(np.float32)
+
+
+def polsartools_shannon_h_dp(c11, c12, c22):
+    """Dual-pol Shannon entropy components from C2 (polsartools shannon_h_dp)."""
+    rows, cols = c11.shape
+    c2 = np.dstack((c11, c12, np.conj(c12), c22)).astype(np.complex64)
+    data = c2.reshape(rows * cols, 2, 2)
+    data = np.nan_to_num(data, nan=0.0, posinf=0, neginf=0)
+
+    evals, _ = np.linalg.eig(data)
+    evals[:, 0][evals[:, 0] < 0] = 0
+    evals[:, 1][evals[:, 1] > 1] = 1
+
+    eps = 1e-8
+    D = evals[:, 0] * evals[:, 1]
+    I = evals[:, 0] + evals[:, 1]
+
+    DoP = np.ones(rows * cols).astype(np.float32) - 4 * D / (I * I + eps)
+    condition = (np.ones(rows * cols) - DoP) < eps
+    HSP = np.where(condition, 0, np.log(np.abs(np.ones(rows * cols) - DoP)))
+    HSP[np.isinf(HSP)] = np.nan
+    HSP[HSP == 0] = np.nan
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        HSI = 2 * np.log(np.exp(1) * np.pi * I / 2)
+        HSI[np.isinf(HSI)] = np.nan
+        HSI[HSI == 0] = np.nan
+
+    HS = np.nansum(np.dstack((HSP, HSI)), 2)
+    return (
+        np.real(HS).reshape(rows, cols).astype(np.float32),
+        np.real(HSI).reshape(rows, cols).astype(np.float32),
+        np.real(HSP).reshape(rows, cols).astype(np.float32),
+    )
+
+
+def polsartools_mf3cd(t11, t12, t22):
+    """Dual-pol model-free 3-component from T2 (polsartools mf3cd)."""
+    det_t2 = t11 * t22 - t12 * np.conj(t12)
+    trace_t2 = t11 + t22
+
+    m1 = np.real(np.sqrt(1 - (4 * (det_t2 / (trace_t2 ** 2)))))
+    h = (t11 - t22)
+    g = t22
+    span = t11 + t22
+
+    val = (m1 * span * h) / (t11 * g + m1 ** 2 * span ** 2)
+    thet = np.real(np.arctan(val))
+    theta_dp = np.rad2deg(thet)
+
+    ps = (m1 * span * (1 + np.sin(2 * thet)) / 2)
+    pd = (m1 * span * (1 - np.sin(2 * thet)) / 2)
+    pv = (span * (1 - m1))
+
+    return (
+        np.real(ps).astype(np.float32),
+        np.real(pd).astype(np.float32),
+        np.real(pv).astype(np.float32),
+        np.real(theta_dp).astype(np.float32),
+    )
+
+
+def polsartools_dprbi(c11, c12, c22):
+    """Dual-pol Radar Built-up Index from C2 (polsartools dprbi)."""
+    s1 = np.abs(c11 - c22)
+    s2 = np.abs(2 * c12.real)
+    s3 = np.abs(2 * c12.imag)
+
+    s1_norm = _pst_clip_norm(s1)
+    s2_norm = _pst_clip_norm(s2)
+    s3_norm = _pst_clip_norm(s3)
+    dprbi = np.sqrt(np.square(s1_norm) + np.square(s2_norm) + np.square(s3_norm)) / np.sqrt(3)
+    return dprbi.astype(np.float32)
+
+
+def polsartools_dprsi(c11, c12, c22):
+    """Dual-pol Radar Surface Index from C2 (polsartools dprsi)."""
+    c11_db = 10 * np.log10(np.maximum(np.real(c11), np.finfo(np.float64).tiny))
+    s0 = c11 + c22
+    s1 = c11 - c22
+    s2 = 2 * c12.real
+    s3 = 2 * c12.imag
+
+    tpp = np.sqrt(np.square(s1) + np.square(s2) + np.square(s3))
+    lmbd1 = (s0 + tpp) / 2
+    lmbd2 = (s0 - tpp) / 2
+
+    prob1 = lmbd1 / (lmbd1 + lmbd2)
+    prob2 = lmbd2 / (lmbd1 + lmbd2)
+    ent = -prob1 * np.log2(prob1) - prob2 * np.log2(prob2)
+
+    s1_norm = _pst_clip_norm(np.abs(s1))
+
+    dprsi_valid = (1 - ent) * np.sqrt(1 - np.square(s1_norm))
+    dprsi_noise = np.sqrt(1 - np.square(s1_norm))
+    NESZ = -16
+    dprsi = np.where(c11_db > NESZ, dprsi_valid, dprsi_noise)
+    return dprsi.astype(np.float32)
+
+
+def polsartools_powers_dp(c11, c12, c22, method=1):
+    """Dual-pol scattering powers from C2 (polsartools powers_dp)."""
+    c11_db = 10 * np.log10(np.maximum(np.real(c11), np.finfo(np.float64).tiny))
+    s0 = c11 + c22
+    s1 = c11 - c22
+    s2 = 2 * c12.real
+    s3 = 2 * c12.imag
+
+    tpp = np.sqrt(np.square(s1) + np.square(s2) + np.square(s3))
+    lmbd1 = (s0 + tpp) / 2
+    lmbd2 = (s0 - tpp) / 2
+    prob1 = lmbd1 / (lmbd1 + lmbd2)
+    prob2 = lmbd2 / (lmbd1 + lmbd2)
+    ent = -prob1 * np.log2(prob1) - prob2 * np.log2(prob2)
+    dop = (lmbd1 - lmbd2) / (lmbd1 + lmbd2)
+    beta = lmbd1 / (lmbd1 + lmbd2)
+
+    s0_abs = np.abs(s0)
+    s1_norm = _pst_clip_norm(np.abs(s1))
+    s2_norm = _pst_clip_norm(np.abs(s2))
+    s3_norm = _pst_clip_norm(np.abs(s3))
+
+    dprbi = np.sqrt(np.square(s1_norm) + np.square(s2_norm) + np.square(s3_norm)) / np.sqrt(3)
+    dprsi_valid = (1 - ent) * np.sqrt(1 - np.square(s1_norm))
+    dprsi_noise = np.sqrt(1 - np.square(s1_norm))
+    NESZ = -16
+    dprsi = np.where(c11_db > NESZ, dprsi_valid, dprsi_noise)
+
+    if method == 1:
+        alpha1 = np.degrees(np.arctan2(dprbi, 1 - dprbi))
+        alpha2 = np.degrees(np.arctan2(1 - dprsi, dprsi))
+        alpha_dp = (alpha1 + alpha2) / 2
+
+        alpha_dp_rad = np.radians(2 * alpha_dp)
+        cos_a = np.cos(alpha_dp_rad)
+
+        pu_v = (1 - dop) * s0_abs
+        pd_v = (1 / 2) * dop * s0_abs * (1 - cos_a)
+        ps_v = (1 / 2) * dop * s0_abs * (1 + cos_a)
+
+        pu_n = (1 - beta) * s0_abs
+        pd_n = (1 / 2) * beta * s0_abs * (1 - cos_a)
+        ps_n = (1 / 2) * beta * s0_abs * (1 + cos_a)
+
+        pu = np.where(c11_db > NESZ, pu_v, pu_n)
+        pd = np.where(c11_db > NESZ, pd_v, pd_n)
+        ps = np.where(c11_db > NESZ, ps_v, ps_n)
+
+        return (
+            alpha_dp.astype(np.float32),
+            pd.astype(np.float32),
+            ps.astype(np.float32),
+            pu.astype(np.float32),
+        )
+
+    dprbi_flt = dprbi.flatten()
+    dprsi_flt = dprsi.flatten()
+    shp = dprbi.shape
+    shp_flt = dprbi_flt.shape
+
+    indices_vec = np.array([dprsi_flt, dprbi_flt]).transpose()
+    indices_vec_sort = np.array([[max(row), min(row)] for row in indices_vec])
+
+    y1 = indices_vec_sort[:, 0]
+    y2 = (1 - indices_vec_sort[:, 0]) * indices_vec_sort[:, 1]
+    residue = 1 - (y1 + y2)
+
+    dprsi_dom = np.where(dprsi_flt > dprbi_flt)[0]
+    dprbi_dom = np.where(dprsi_flt < dprbi_flt)[0]
+
+    ps = np.zeros(shp_flt)
+    ps[dprsi_dom] = y1[dprsi_dom]
+    ps[dprbi_dom] = y2[dprbi_dom]
+    ps = ps.reshape(shp[0], shp[1])
+    ps = np.multiply(s0_abs, ps)
+
+    pd = np.zeros(shp_flt)
+    pd[dprbi_dom] = y1[dprbi_dom]
+    pd[dprsi_dom] = y2[dprsi_dom]
+    pd = pd.reshape(shp[0], shp[1])
+    pd = np.multiply(s0_abs, pd)
+
+    pr = residue.reshape(shp[0], shp[1])
+    pr = np.multiply(s0_abs, pr)
+    return pd.astype(np.float32), ps.astype(np.float32), pr.astype(np.float32)
 
 
 def polsartools_neumann_fp(t3_ccyx):
@@ -1410,6 +1655,161 @@ def validate_refined_lee(shh, shv, svh, svv, window_size=7):
                         np.imag(t3_pst[i, j]), f'{name}.im')
 
 
+def validate_halpha_dp(shh, shv, window_size=3):
+    """Cross-validate DualPolHAlpha with an inlined h_alpha_dp equivalent."""
+    from grdl.image_processing.decomposition import DualPolHAlpha
+
+    print('\n' + '=' * 60)
+    print('Dual-pol H/Alpha — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = DualPolHAlpha(window_size=window_size).decompose_dual(shh, shv)
+
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+    rows, cols = c11.shape
+    c2 = np.dstack((c11, c12, np.conj(c12), c22)).reshape(rows * cols, 2, 2)
+    evals, evecs = np.linalg.eig(c2)
+    idx = np.argsort(evals, axis=-1)[:, ::-1]
+    evals = np.take_along_axis(evals, idx, axis=-1)
+    evecs = np.array([evecs[i][:, idx[i]] for i in range(evecs.shape[0])])
+
+    esum = evals[:, 0] + evals[:, 1]
+    p1 = np.real(np.where(np.abs(esum) > 0, evals[:, 0] / esum, 0.5))
+    p2 = np.real(np.where(np.abs(esum) > 0, evals[:, 1] / esum, 0.5))
+    p1[p1 < 0] = 0
+    p2[p2 < 0] = 0
+
+    h = -(p1 * np.log2(np.clip(p1, 1e-12, 1.0)) + p2 * np.log2(np.clip(p2, 1e-12, 1.0)))
+    alpha1 = np.degrees(np.arccos(np.clip(np.abs(evecs[:, 0, 0]), 0.0, 1.0)))
+    alpha2 = np.degrees(np.arccos(np.clip(np.abs(evecs[:, 0, 1]), 0.0, 1.0)))
+    alpha = p1 * alpha1 + p2 * alpha2
+    anis = np.real((evals[:, 0] - evals[:, 1]) / np.where(np.abs(esum) > 0, esum, 1.0))
+
+    h = h.reshape(rows, cols).astype(np.float32)
+    alpha = alpha.reshape(rows, cols).astype(np.float32)
+    anis = np.clip(anis.reshape(rows, cols), 0.0, 1.0).astype(np.float32)
+
+    print('\nMSE comparison:')
+    mse_h = mse_compare(comp['entropy'], h, 'entropy')
+    mse_a = mse_compare(comp['alpha'], alpha, 'alpha (deg)')
+    mse_an = mse_compare(comp['anisotropy'], anis, 'anisotropy')
+    return mse_h, mse_a, mse_an
+
+
+def validate_dop_dp(shh, shv, window_size=3):
+    """Cross-validate DegreeOfPolarizationDP against polsartools dop_dp."""
+    from grdl.image_processing.decomposition import DegreeOfPolarizationDP
+
+    print('\n' + '=' * 60)
+    print('Dual-pol DoP — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = DegreeOfPolarizationDP(window_size=window_size).decompose_dual(shh, shv)
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+    dop_pst = polsartools_dop_dp(c11, c12, c22)
+
+    print('\nMSE comparison:')
+    return mse_compare(comp['dop'], dop_pst, 'dop_dp')
+
+
+def validate_shannon_entropy_dp(shh, shv, window_size=3):
+    """Cross-validate ShannonEntropyDP against polsartools shannon_h_dp."""
+    from grdl.image_processing.decomposition import ShannonEntropyDP
+
+    print('\n' + '=' * 60)
+    print('Dual-pol Shannon entropy — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = ShannonEntropyDP(window_size=window_size).decompose_dual(shh, shv)
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+    hs, hsi, hsp = polsartools_shannon_h_dp(c11, c12, c22)
+
+    print('\nMSE comparison:')
+    mse_hs = mse_compare(comp['H_total'], hs, 'H_total')
+    mse_hsi = mse_compare(comp['H_intensity'], hsi, 'H_intensity')
+    mse_hsp = mse_compare(comp['H_polarimetric'], hsp, 'H_polarimetric')
+    return mse_hs, mse_hsi, mse_hsp
+
+
+def validate_model_free_dp(shh, shv, window_size=3):
+    """Cross-validate ModelFree3CD against polsartools mf3cd."""
+    from grdl.image_processing.decomposition import ModelFree3CD
+
+    print('\n' + '=' * 60)
+    print('Dual-pol Model-Free 3C — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = ModelFree3CD(window_size=window_size).decompose_dual(shh, shv)
+    t11, t12, t22 = _dual_t2_from_slc(shh, shv, window_size=window_size)
+    ps, pd, pv, theta = polsartools_mf3cd(t11, t12, t22)
+
+    print('\nMSE comparison:')
+    mse_ps = mse_compare(comp['surface'], ps, 'surface')
+    mse_pd = mse_compare(comp['double_bounce'], pd, 'double_bounce')
+    mse_pv = mse_compare(comp['volume'], pv, 'volume')
+    mse_th = mse_compare(comp['theta_dp'], theta, 'theta_dp')
+    return mse_ps, mse_pd, mse_pv, mse_th
+
+
+def validate_dprbi(shh, shv, window_size=3):
+    """Cross-validate DualPolRadarBuiltUpIndex against polsartools dprbi."""
+    from grdl.image_processing.decomposition import DualPolRadarBuiltUpIndex
+
+    print('\n' + '=' * 60)
+    print('Dual-pol DpRBI — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = DualPolRadarBuiltUpIndex(window_size=window_size).decompose_dual(shh, shv)
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+    pst = polsartools_dprbi(c11, c12, c22)
+
+    print('\nMSE comparison:')
+    return mse_compare(comp['dprbi'], pst, 'dprbi')
+
+
+def validate_dprsi(shh, shv, window_size=3):
+    """Cross-validate DualPolRadarSurfaceIndex against polsartools dprsi."""
+    from grdl.image_processing.decomposition import DualPolRadarSurfaceIndex
+
+    print('\n' + '=' * 60)
+    print('Dual-pol DpRSI — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = DualPolRadarSurfaceIndex(window_size=window_size).decompose_dual(shh, shv)
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+    pst = polsartools_dprsi(c11, c12, c22)
+
+    print('\nMSE comparison:')
+    return mse_compare(comp['dprsi'], pst, 'dprsi')
+
+
+def validate_scattering_power_dp(shh, shv, window_size=3):
+    """Cross-validate ScatteringPowerDP against polsartools powers_dp."""
+    from grdl.image_processing.decomposition import ScatteringPowerDP
+
+    print('\n' + '=' * 60)
+    print('Dual-pol powers_dp — GRDL vs polsartools')
+    print('=' * 60)
+
+    c11, c12, c22 = _dual_c2_from_slc(shh, shv, window_size=window_size)
+
+    comp1 = ScatteringPowerDP(window_size=window_size, method=1).decompose_dual(shh, shv)
+    alpha, pd, ps, pu = polsartools_powers_dp(c11, c12, c22, method=1)
+    print('\nMSE comparison (method=1):')
+    mse_compare(comp1['alpha'], alpha, 'alpha')
+    mse_compare(comp1['double_bounce'], pd, 'double_bounce')
+    mse_compare(comp1['surface'], ps, 'surface')
+    mse_compare(comp1['unpolarized'], pu, 'unpolarized')
+
+    comp2 = ScatteringPowerDP(window_size=window_size, method=2).decompose_dual(shh, shv)
+    pd2, ps2, pr2 = polsartools_powers_dp(c11, c12, c22, method=2)
+    print('\nMSE comparison (method=2):')
+    mse_pd2 = mse_compare(comp2['double_bounce'], pd2, 'double_bounce')
+    mse_ps2 = mse_compare(comp2['surface'], ps2, 'surface')
+    mse_pr2 = mse_compare(comp2['residual'], pr2, 'residual')
+    return mse_pd2, mse_ps2, mse_pr2
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -1434,6 +1834,10 @@ def main():
         '--filter-window-size', type=int, default=7,
         help='Refined Lee filter kernel size (odd, 3-31, default 7)'
     )
+    parser.add_argument(
+        '--mode', choices=('all', 'full', 'dual'), default='all',
+        help='Validation mode: all, full-pol only, or dual-pol only'
+    )
     args = parser.parse_args()
 
     if not args.nisar_file.exists():
@@ -1455,18 +1859,33 @@ def main():
 
     print(f'\nData shape: {shh.shape}')
     print(f'Window size: {args.window_size}')
+    print(f'Mode: {args.mode}')
 
-    # Run all cross-validations
-    validate_halpha(shh, shv, svh, svv, window_size=args.window_size)
-    validate_freeman_durden(shh, shv, svh, svv, window_size=args.window_size)
-    validate_model_free(shh, shv, svh, svv, window_size=args.window_size)
-    validate_dop(shh, shv, svh, svv, window_size=args.window_size)
-    validate_shannon_entropy(shh, shv, svh, svv, window_size=args.window_size)
-    validate_neumann(shh, shv, svh, svv, window_size=args.window_size)
-    validate_praks(shh, shv, svh, svv, window_size=args.window_size)
-    validate_touzi(shh, shv, svh, svv, window_size=args.window_size)
-    validate_yamaguchi4c(shh, shv, svh, svv, window_size=args.window_size)
-    validate_refined_lee(shh, shv, svh, svv, window_size=args.filter_window_size)
+    run_full = args.mode in ('all', 'full')
+    run_dual = args.mode in ('all', 'dual')
+
+    if run_full:
+        # Full-pol cross-validations
+        validate_halpha(shh, shv, svh, svv, window_size=args.window_size)
+        validate_freeman_durden(shh, shv, svh, svv, window_size=args.window_size)
+        validate_model_free(shh, shv, svh, svv, window_size=args.window_size)
+        validate_dop(shh, shv, svh, svv, window_size=args.window_size)
+        validate_shannon_entropy(shh, shv, svh, svv, window_size=args.window_size)
+        validate_neumann(shh, shv, svh, svv, window_size=args.window_size)
+        validate_praks(shh, shv, svh, svv, window_size=args.window_size)
+        validate_touzi(shh, shv, svh, svv, window_size=args.window_size)
+        validate_yamaguchi4c(shh, shv, svh, svv, window_size=args.window_size)
+        validate_refined_lee(shh, shv, svh, svv, window_size=args.filter_window_size)
+
+    if run_dual:
+        # Dual-pol cross-validations (HH as co-pol, HV as cross-pol)
+        validate_halpha_dp(shh, shv, window_size=args.window_size)
+        validate_dop_dp(shh, shv, window_size=args.window_size)
+        validate_shannon_entropy_dp(shh, shv, window_size=args.window_size)
+        validate_model_free_dp(shh, shv, window_size=args.window_size)
+        validate_dprbi(shh, shv, window_size=args.window_size)
+        validate_dprsi(shh, shv, window_size=args.window_size)
+        validate_scattering_power_dp(shh, shv, window_size=args.window_size)
 
     print('\n' + '=' * 60)
     print('Cross-validation complete.')

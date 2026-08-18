@@ -30,7 +30,7 @@ import pytest
 
 # GRDL
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
-from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
+from grdl.image_processing.decomposition.h_alpha_dp import DualPolHAlpha
 
 
 # ===================================================================

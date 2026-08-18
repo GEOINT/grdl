@@ -44,14 +44,25 @@ Modified
 """
 
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.decomposition.dual_pol_base import DualPolDecompositionBase
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
 from grdl.image_processing.decomposition.h_a_alpha_base import HAalphaBase
-from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
+from grdl.image_processing.decomposition.h_alpha_dp import DualPolHAlpha
 from grdl.image_processing.decomposition.h_a_alpha_fp import FullPolHAalpha
 from grdl.image_processing.decomposition.freeman_durden import FreemanDurden3C
 from grdl.image_processing.decomposition.model_free import ModelFree3C, ModelFree4C
 from grdl.image_processing.decomposition.dop import DegreeOfPolarization
 from grdl.image_processing.decomposition.shannon_entropy import ShannonEntropy
+from grdl.image_processing.decomposition.dop_dp import DegreeOfPolarizationDP
+from grdl.image_processing.decomposition.shannon_entropy_dp import ShannonEntropyDP
+from grdl.image_processing.decomposition.model_free_dp import ModelFree3CD
+from grdl.image_processing.decomposition.compact_pol_base import CompactPolDecompositionBase
+from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
+from grdl.image_processing.decomposition.model_free_cp import CompactPolModelFree3C
+from grdl.image_processing.decomposition.s_omega_cp import CompactPolSOmega
+from grdl.image_processing.decomposition.m_chi_cp import CompactPolMChi
+from grdl.image_processing.decomposition.m_delta_cp import CompactPolMDelta
+from grdl.image_processing.decomposition.scattering_power_dp import ScatteringPowerDP
 from grdl.image_processing.decomposition.neumann import NeumannDecomposition
 from grdl.image_processing.decomposition.praks import PraksParameters
 from grdl.image_processing.decomposition.touzi import TouziDecomposition
@@ -65,6 +76,8 @@ from grdl.image_processing.decomposition.pol_matrix import (
 
 __all__ = [
     'PolarimetricDecomposition',
+  'DualPolDecompositionBase',
+    'CompactPolDecompositionBase',
     'HAalphaBase',
     'PauliDecomposition',
     'DualPolHAlpha',
@@ -74,6 +87,15 @@ __all__ = [
     'ModelFree4C',
     'DegreeOfPolarization',
     'ShannonEntropy',
+    'DegreeOfPolarizationDP',
+    'ShannonEntropyDP',
+    'ModelFree3CD',
+    'CompactPolDegreeOfPolarization',
+    'CompactPolModelFree3C',
+    'CompactPolSOmega',
+    'CompactPolMChi',
+    'CompactPolMDelta',
+    'ScatteringPowerDP',
     'NeumannDecomposition',
     'PraksParameters',
     'TouziDecomposition',

@@ -60,6 +60,17 @@ from grdl.IO.sar.biomass import BIOMASSL1Reader, open_biomass
 
 # NISAR
 from grdl.IO.sar.nisar import NISARReader, open_nisar
+from grdl.IO.sar.compact_pol_synthesis import (
+    convert_quad_pol_to_compact,
+    synthesize_compact_pol,
+    write_compact_pol_sicd,
+    write_compact_pol_c2_h5,
+)
+from grdl.IO.sar.compact_pol_c2 import (
+    CompactPolC2H5Reader,
+    open_compact_pol_c2,
+    is_compact_pol_c2_h5,
+)
 
 # SICD Collection (multi-polarization)
 from grdl.IO.sar.sicd_collection import SICDCollectionReader, open_sicd_collection
@@ -168,6 +179,11 @@ def open_sar(filepath: Union[str, Path]) -> ImageReader:
             except (ValueError, ImportError, Exception):
                 pass
 
+    # Try Compact-Pol C2 HDF5 before NISAR (both are .h5)
+    if filepath.suffix.lower() in ('.h5', '.hdf5'):
+        if is_compact_pol_c2_h5(filepath):
+            return CompactPolC2H5Reader(filepath)
+
     # Try NISAR HDF5
     if filepath.suffix.lower() in ('.h5', '.hdf5'):
         try:
@@ -225,4 +241,11 @@ __all__ = [
     'open_sicd_collection',
     'open_biomass',
     'open_nisar',
+    'convert_quad_pol_to_compact',
+    'synthesize_compact_pol',
+    'write_compact_pol_sicd',
+    'write_compact_pol_c2_h5',
+    'CompactPolC2H5Reader',
+    'open_compact_pol_c2',
+    'is_compact_pol_c2_h5',
 ]
