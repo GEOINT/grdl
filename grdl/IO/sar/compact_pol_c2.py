@@ -1,12 +1,42 @@
 # -*- coding: utf-8 -*-
-"""Reader for PolSARpro-style compact-pol C2 covariance matrix HDF5 files."""
+"""
+Compact-Pol C2 Reader - PolSARpro-style covariance matrix HDF5.
+
+Provides format detection and a reader that loads compact-pol C2 datasets
+from HDF5 files into a 4-band CYX float32 cube:
+``[C11, C12_real, C12_imag, C22]``.
+
+Dependencies
+------------
+h5py
+
+Author
+------
+GRDL Development Team
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-06-20
+
+Modified
+--------
+2026-08-21
+"""
 
 from __future__ import annotations
 
+# Standard library
 import logging
 from pathlib import Path
 from typing import List, Optional, Union
 
+# Third-party
 import numpy as np
 
 try:
@@ -15,6 +45,7 @@ try:
 except ImportError:
     _HAS_H5PY = False
 
+# GRDL internal
 from grdl.IO.base import ImageReader
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 

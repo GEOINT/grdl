@@ -173,9 +173,9 @@ class PauliDecomposition(PolarimetricDecomposition):
     def decompose(
         self,
         shh: np.ndarray,
-        shv: np.ndarray = None,
-        svh: np.ndarray = None,
-        svv: np.ndarray = None,
+        shv: np.ndarray | None = None,
+        svh: np.ndarray | None = None,
+        svv: np.ndarray | None = None,
     ) -> Dict[str, np.ndarray]:
         """
         Decompose the scattering matrix into Pauli basis components.
