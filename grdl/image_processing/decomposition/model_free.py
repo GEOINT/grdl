@@ -521,7 +521,7 @@ class ModelFree4C(PolarimetricDecomposition):
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
-        representation: str = 'db',
+        representation: str = 'magnitude',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:

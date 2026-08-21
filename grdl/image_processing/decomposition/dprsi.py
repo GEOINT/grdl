@@ -88,10 +88,11 @@ class DualPolRadarSurfaceIndex(DualPolDecompositionBase):
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        del representation, percentile_low, percentile_high
+        del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        arr = np.clip(components['dprsi'], 0.0, 1.0).astype(np.float32)
+        arr = np.clip(components['dprsi'], 0.0, 1.0)
+        arr = self._percentile_stretch(arr, percentile_low, percentile_high)
         rgb = np.stack([arr, arr, arr], axis=0)
         meta = ImageMetadata(
             format='DpRSI_RGB',

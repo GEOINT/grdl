@@ -260,6 +260,71 @@ class TestDecompose:
             assert not np.iscomplexobj(c[name])
             assert np.nanmin(c[name]) >= 0.0
 
+    # --- monostatic / single cross-pol tests --------------------------------
+
+    def test_monostatic_shv_only_matches_reciprocal(self, pauli):
+        """decompose(shh, shv=x, svv=svv) matches decompose(shh, x, x, svv)."""
+        rng = np.random.default_rng(7)
+        shape = (16, 16)
+        shh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        shv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+        c_mono = pauli.decompose(shh, shv=shv, svv=svv)
+        c_full = pauli.decompose(shh, shv, shv, svv)  # svh == shv
+
+        np.testing.assert_allclose(c_mono['surface'], c_full['surface'])
+        np.testing.assert_allclose(c_mono['double_bounce'], c_full['double_bounce'])
+        np.testing.assert_allclose(c_mono['volume'], c_full['volume'])
+
+    def test_monostatic_svh_only_matches_reciprocal(self, pauli):
+        """decompose(shh, svh=x, svv=svv) matches decompose(shh, x, x, svv)."""
+        rng = np.random.default_rng(8)
+        shape = (16, 16)
+        shh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+        c_mono = pauli.decompose(shh, svh=svh, svv=svv)
+        c_full = pauli.decompose(shh, svh, svh, svv)  # shv == svh
+
+        np.testing.assert_allclose(c_mono['surface'], c_full['surface'])
+        np.testing.assert_allclose(c_mono['double_bounce'], c_full['double_bounce'])
+        np.testing.assert_allclose(c_mono['volume'], c_full['volume'])
+
+    def test_monostatic_volume_equals_sqrt2_times_shv(self, pauli):
+        """volume = sqrt(2) * shv when only shv is provided."""
+        rng = np.random.default_rng(9)
+        shape = (8, 8)
+        shh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        shv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+        c = pauli.decompose(shh, shv=shv, svv=svv)
+        np.testing.assert_allclose(c['volume'], np.sqrt(2.0) * shv, rtol=1e-10)
+
+    def test_monostatic_missing_both_cross_pol_raises(self, pauli):
+        """Omitting both shv and svh must raise ValueError."""
+        rng = np.random.default_rng(10)
+        shape = (8, 8)
+        shh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+        with pytest.raises(ValueError, match="At least one cross-pol"):
+            pauli.decompose(shh, svv=svv)
+
+    def test_monostatic_output_shape_matches_input(self, pauli):
+        """Monostatic path preserves shape."""
+        rng = np.random.default_rng(11)
+        shape = (20, 30)
+        shh = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        shv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        svv = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+        c = pauli.decompose(shh, shv=shv, svv=svv)
+        for name in pauli.component_names:
+            assert c[name].shape == shape
+
 
 # ---------------------------------------------------------------------------
 # Phase preservation

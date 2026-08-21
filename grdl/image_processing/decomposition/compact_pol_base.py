@@ -2,9 +2,10 @@
 """Compact-pol decomposition base classes.
 
 Provides ``CompactPolDecompositionBase`` for algorithms that operate on
-compact-polarimetric 2x2 covariance matrices [C2]. The base standardizes
-input extraction for C2-style notebook and processor workflows while keeping
-the decomposition logic in subclasses.
+compact-polarimetric 2x2 covariance matrices [C2]. The base follows the same
+inheritance pattern as other polarimetric decomposition families so subclasses
+inherit shared helpers such as ``_percentile_stretch`` while standardizing
+input extraction for C2-style notebook and processor workflows.
 """
 
 # Standard library
@@ -17,14 +18,24 @@ import numpy as np
 from scipy.ndimage import uniform_filter
 
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
-class CompactPolDecompositionBase(ImageProcessor):
+class CompactPolDecompositionBase(PolarimetricDecomposition):
     """Abstract base for compact-pol decomposition algorithms."""
+
+    def decompose(
+        self,
+        shh: np.ndarray,
+        shv: np.ndarray,
+        svh: np.ndarray,
+        svv: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """Bridge the universal 4-channel interface to compact-pol C2 input."""
+        return self.decompose_compact(shh, shv, svh, svv)
 
     def execute(
         self,

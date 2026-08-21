@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
+from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
 from grdl.image_processing.decomposition.model_free_cp import CompactPolModelFree3C
 from grdl.image_processing.decomposition.s_omega_cp import CompactPolSOmega
@@ -47,12 +48,21 @@ def _cube_from_c2(c2_random):
 
 
 class TestCompactPolBase:
+    def test_inherits_polarimetric_base(self):
+        proc = CompactPolDegreeOfPolarization()
+        assert isinstance(proc, PolarimetricDecomposition)
+
     def test_execute_from_cube(self, c2_random, c2_metadata):
         cube = _cube_from_c2(c2_random)
         proc = CompactPolDegreeOfPolarization(window_size=3)
         result, updated = proc.execute(c2_metadata, cube)
         assert set(result.keys()) == {'dop'}
         assert updated.bands == 1
+
+    def test_decompose_bridges_to_compact_interface(self, c2_random):
+        proc = CompactPolDegreeOfPolarization(window_size=3)
+        result = proc.decompose(*c2_random)
+        assert set(result.keys()) == {'dop'}
 
 
 class TestDegreeOfPolarizationCP:

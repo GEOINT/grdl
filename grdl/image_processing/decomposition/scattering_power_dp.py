@@ -165,13 +165,24 @@ class ScatteringPowerDP(DualPolDecompositionBase):
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
         if int(self.method) == 1:
-            r = self._percentile_stretch(components['double_bounce'], percentile_low, percentile_high)
-            g = self._percentile_stretch(components['unpolarized'], percentile_low, percentile_high)
-            b = self._percentile_stretch(components['surface'], percentile_low, percentile_high)
+            r = self._percentile_stretch(
+                self._apply_power_representation(components['double_bounce'], representation),
+                percentile_low,
+                percentile_high,
+            )
+            g = self._percentile_stretch(
+                self._apply_power_representation(components['unpolarized'], representation),
+                percentile_low,
+                percentile_high,
+            )
+            b = self._percentile_stretch(
+                self._apply_power_representation(components['surface'], representation),
+                percentile_low,
+                percentile_high,
+            )
             ch = [
                 ChannelMetadata(index=0, name='double_bounce', role='rgb_red'),
                 ChannelMetadata(index=1, name='unpolarized', role='rgb_green'),
@@ -179,9 +190,21 @@ class ScatteringPowerDP(DualPolDecompositionBase):
             ]
             fmt = 'PowersDP1_RGB'
         else:
-            r = self._percentile_stretch(components['double_bounce'], percentile_low, percentile_high)
-            g = self._percentile_stretch(components['residual'], percentile_low, percentile_high)
-            b = self._percentile_stretch(components['surface'], percentile_low, percentile_high)
+            r = self._percentile_stretch(
+                self._apply_power_representation(components['double_bounce'], representation),
+                percentile_low,
+                percentile_high,
+            )
+            g = self._percentile_stretch(
+                self._apply_power_representation(components['residual'], representation),
+                percentile_low,
+                percentile_high,
+            )
+            b = self._percentile_stretch(
+                self._apply_power_representation(components['surface'], representation),
+                percentile_low,
+                percentile_high,
+            )
             ch = [
                 ChannelMetadata(index=0, name='double_bounce', role='rgb_red'),
                 ChannelMetadata(index=1, name='residual', role='rgb_green'),

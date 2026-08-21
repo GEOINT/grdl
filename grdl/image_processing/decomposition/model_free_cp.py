@@ -61,12 +61,23 @@ class CompactPolModelFree3C(CompactPolDecompositionBase):
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        r = self._percentile_stretch(components['double_bounce'], percentile_low, percentile_high)
-        g = self._percentile_stretch(components['volume'], percentile_low, percentile_high)
-        b = self._percentile_stretch(components['surface'], percentile_low, percentile_high)
+        r = self._percentile_stretch(
+            self._apply_power_representation(components['double_bounce'], representation),
+            percentile_low,
+            percentile_high,
+        )
+        g = self._percentile_stretch(
+            self._apply_power_representation(components['volume'], representation),
+            percentile_low,
+            percentile_high,
+        )
+        b = self._percentile_stretch(
+            self._apply_power_representation(components['surface'], representation),
+            percentile_low,
+            percentile_high,
+        )
         rgb = np.stack([r, g, b], axis=0)
         meta = ImageMetadata(
             format='CpMF3CC_RGB',

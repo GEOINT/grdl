@@ -1648,10 +1648,34 @@ class SICDReader(ImageReader):
             raise ValueError("End indices exceed image dimensions")
 
         if self.backend == 'sarkit':
-            data, _ = self._reader.read_sub_image(
-                row_start, col_start, row_end, col_end,
-            )
-            data = self._to_complex(data)
+            try:
+                data, _ = self._reader.read_sub_image(
+                    row_start, col_start, row_end, col_end,
+                )
+                data = self._to_complex(data)
+            except (KeyError, IndexError) as exc:
+                if isinstance(exc, KeyError):
+                    if exc.args != (None,):
+                        raise
+                    reason = 'missing SCPCOA/SideOfTrack'
+                else:
+                    if '0-dimensional' not in str(exc):
+                        raise
+                    reason = 'missing GeoData/Grid context for subimage XML rewrite'
+
+                # Some synthesized SICD products omit geometry fields that
+                # sarkit's subimage helper expects when rewriting subimage XML.
+                # Sarpy can still read the pixel window directly.
+                from sarpy.io.complex.converter import open_complex
+
+                logger.warning(
+                    "Sarkit subimage read failed for %s due to %s; "
+                    "falling back to sarpy window read.",
+                    self.filepath, reason,
+                )
+                if not hasattr(self, '_sarpy_fallback_reader'):
+                    self._sarpy_fallback_reader = open_complex(str(self.filepath))
+                data = self._sarpy_fallback_reader[row_start:row_end, col_start:col_end]
         else:
             data = self._reader[row_start:row_end, col_start:col_end]
         return self._assert_2d(
@@ -1715,6 +1739,8 @@ class SICDReader(ImageReader):
                 self._reader.done()
             if hasattr(self, '_file_handle') and self._file_handle is not None:
                 self._file_handle.close()
+            if hasattr(self, '_sarpy_fallback_reader') and self._sarpy_fallback_reader is not None:
+                self._sarpy_fallback_reader.close()
         else:
             if hasattr(self, '_reader') and self._reader is not None:
                 self._reader.close()

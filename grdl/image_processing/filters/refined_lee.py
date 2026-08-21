@@ -478,8 +478,7 @@ class RefinedLeeFilter(SARFilter):
         """Build a polarimetric matrix from SLC channels and filter it.
 
         Convenience method that constructs the covariance [C3] or
-        coherency [T3] matrix from quad-pol SLC data (with boxcar
-        spatial averaging), then applies the Refined Lee filter.
+        coherency [T3] matrix from quad-pol SLC data then applies the Refined Lee filter.
 
         Parameters
         ----------
@@ -498,9 +497,9 @@ class RefinedLeeFilter(SARFilter):
         channels = np.stack([shh, shv, svh, svv], axis=0)
 
         if matrix_type.upper() == 'C3':
-            matrix = CovarianceMatrix(window_size=self.kernel_size).compute(channels)
+            matrix = CovarianceMatrix(window_size=1).compute(channels)
         elif matrix_type.upper() == 'T3':
-            matrix = CoherencyMatrix(window_size=self.kernel_size).compute(channels)
+            matrix = CoherencyMatrix(window_size=1).compute(channels)
         else:
             raise ValidationError(
                 f"matrix_type must be 'C3' or 'T3', got '{matrix_type}'"

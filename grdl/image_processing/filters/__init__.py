@@ -58,6 +58,7 @@ from grdl.image_processing.filters.standard_lee import ComplexLeeFilter, LeeFilt
 from grdl.image_processing.filters.enhanced_lee import EnhancedLeeFilter
 from grdl.image_processing.filters.lee_sigma import LeeSigmaFilter
 from grdl.image_processing.filters.refined_lee import RefinedLeeFilter
+from grdl.image_processing.filters.idan import IDANFilter
 from grdl.image_processing.filters.phase import PhaseGradientFilter
 
 __all__ = [
@@ -73,5 +74,6 @@ __all__ = [
     'EnhancedLeeFilter',
     'LeeSigmaFilter',
     'RefinedLeeFilter',
+    'IDANFilter',
     'PhaseGradientFilter',
 ]

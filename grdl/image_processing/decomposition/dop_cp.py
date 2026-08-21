@@ -47,10 +47,11 @@ class CompactPolDegreeOfPolarization(CompactPolDecompositionBase):
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        del representation, percentile_low, percentile_high
+        del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        dop = np.clip(components['dop'], 0.0, 1.0).astype(np.float32)
+        dop = np.clip(components['dop'], 0.0, 1.0)
+        dop = self._percentile_stretch(dop, percentile_low, percentile_high)
         rgb = np.stack([dop, dop, dop], axis=0)
         meta = ImageMetadata(
             format='CpDOP_RGB',

@@ -22,12 +22,18 @@ numerical equivalence for:
  14. Dual-pol Radar Built-up Index (DualPolRadarBuiltUpIndex vs polsartools dprbi)
  15. Dual-pol Radar Surface Index (DualPolRadarSurfaceIndex vs polsartools dprsi)
  16. Dual-pol scattering powers (ScatteringPowerDP vs polsartools powers_dp)
+ 17. Compact-pol DoP (CompactPolDegreeOfPolarization vs polsartools dop_cp)
+ 18. Compact-pol model-free 3C (CompactPolModelFree3C vs polsartools mf3cc)
+ 19. Compact-pol M-Chi (CompactPolMChi vs polsartools m_chi)
+ 20. Compact-pol M-Delta (CompactPolMDelta vs polsartools m_delta)
+ 21. Compact-pol S-Omega (CompactPolSOmega vs polsartools s_omega)
 
 Usage:
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --chip-size 500
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --mode full
     conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --mode dual
+    conda run -n grdx python tests/grdl_polsar_vs_polsartools.py --mode compact
 
 Author
 ------
@@ -640,6 +646,32 @@ def _dual_t2_from_slc(s_co, s_cross, window_size=1):
     return t11, t12, t22
 
 
+def _compact_c2_from_quad(shh, shv, svh, svv, transmit='R'):
+    """Synthesize compact-pol C2 terms from quad-pol SLC channels."""
+    from grdl.IO.sar.compact_pol_synthesis import synthesize_compact_pol
+
+    cpol = synthesize_compact_pol(shh, shv, svh, svv, transmit=transmit)
+    c11 = np.asarray(cpol['C11'], dtype=np.float32)
+    c12 = np.asarray(cpol['C12_real'], dtype=np.float32) + 1j * np.asarray(
+        cpol['C12_imag'], dtype=np.float32
+    )
+    c22 = np.asarray(cpol['C22'], dtype=np.float32)
+    return c11, c12, np.conj(c12), c22
+
+
+def _boxcar_complex(arr, window_size=1):
+    """Apply boxcar averaging to real or complex arrays."""
+    arr = np.asarray(arr)
+    if window_size <= 1:
+        return arr
+    if np.iscomplexobj(arr):
+        return (
+            uniform_filter(np.real(arr), size=window_size)
+            + 1j * uniform_filter(np.imag(arr), size=window_size)
+        )
+    return uniform_filter(arr, size=window_size)
+
+
 def _pst_clip_norm(arr):
     """Replicate polsartools percentile clip + normalize-by-max behavior."""
     finite = np.isfinite(arr)
@@ -662,6 +694,21 @@ def polsartools_dop_dp(c11, c12, c22):
     with np.errstate(divide='ignore', invalid='ignore'):
         dop = np.real(np.sqrt(1.0 - (4.0 * det_c2 / np.power(trace_c2, 2))))
     return dop.astype(np.float32)
+
+
+def polsartools_dop_cp(c11, c12, c21, c22, chi=45.0, window_size=1):
+    """Compact-pol DoP from C2 (polsartools dop_cp)."""
+    c11 = _boxcar_complex(c11, window_size)
+    c12 = _boxcar_complex(c12, window_size)
+    c21 = _boxcar_complex(c21, window_size)
+    c22 = _boxcar_complex(c22, window_size)
+    s0 = c11 + c22
+    s1 = c11 - c22
+    s2 = c12 + c21
+    s3 = np.where(chi >= 0, 1j * (c12 - c21), -1j * (c12 - c21))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dop = np.sqrt(np.power(s1, 2) + np.power(s2, 2) + np.power(s3, 2)) / s0
+    return np.real(dop).astype(np.float32)
 
 
 def polsartools_shannon_h_dp(c11, c12, c22):
@@ -721,6 +768,158 @@ def polsartools_mf3cd(t11, t12, t22):
         np.real(pd).astype(np.float32),
         np.real(pv).astype(np.float32),
         np.real(theta_dp).astype(np.float32),
+    )
+
+
+def polsartools_mf3cc(c11, c12, c21, c22, chi=45.0, window_size=1):
+    """Compact-pol model-free 3-component from C2 (polsartools mf3cc)."""
+    c11 = _boxcar_complex(c11, window_size)
+    c12 = _boxcar_complex(c12, window_size)
+    c21 = _boxcar_complex(c21, window_size)
+    c22 = _boxcar_complex(c22, window_size)
+    c2_det = c11 * c22 - c12 * c21
+    c2_trace = c11 + c22
+    with np.errstate(divide='ignore', invalid='ignore'):
+        m1 = np.real(np.sqrt(1.0 - (4.0 * c2_det / np.power(c2_trace, 2))))
+
+    s0 = c11 + c22
+    s3 = np.where(chi >= 0, 1j * (c12 - c21), -1j * (c12 - c21))
+    s3 = np.real(s3)
+
+    sc = (s0 - s3) / 2.0
+    oc = (s0 + s3) / 2.0
+    h = oc - sc
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        val = (m1 * s0 * h) / (sc * oc + (m1 ** 2) * (s0 ** 2))
+    thet = np.real(np.arctan(val))
+    theta_cp = np.rad2deg(thet)
+
+    ps = (m1 * c2_trace * (1.0 + np.sin(2 * thet)) / 2.0)
+    pd = (m1 * c2_trace * (1.0 - np.sin(2 * thet)) / 2.0)
+    pv = c2_trace * (1.0 - m1)
+
+    return (
+        np.real(ps).astype(np.float32),
+        np.real(pd).astype(np.float32),
+        np.real(pv).astype(np.float32),
+        np.real(theta_cp).astype(np.float32),
+    )
+
+
+def polsartools_m_chi_cp(c11, c12, c21, c22, chi=45.0, window_size=1):
+    """Compact-pol M-Chi from C2 (polsartools m_chi)."""
+    c11 = _boxcar_complex(c11, window_size)
+    c12 = _boxcar_complex(c12, window_size)
+    c21 = _boxcar_complex(c21, window_size)
+    c22 = _boxcar_complex(c22, window_size)
+    s0 = np.real(c11 + c22)
+    s1 = np.real(c11 - c22)
+    s2 = np.real(c12 + c21)
+    s3 = np.where(chi >= 0, 1j * (c12 - c21), -1j * (c12 - c21))
+    s3 = np.real(s3)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        m = np.sqrt(s1 ** 2 + s2 ** 2 + s3 ** 2) / s0
+        chi_rad = 0.5 * np.arcsin(-s3 / (m * s0))
+
+    ps = np.sqrt((m * s0 * (1 - np.sin(2 * chi_rad))) / 2)
+    pd = np.sqrt((m * s0 * (1 + np.sin(2 * chi_rad))) / 2)
+    pv = np.sqrt(s0 * (1 - m))
+    chi_bug = chi_rad * 180 * np.pi
+
+    return (
+        np.real(ps).astype(np.float32),
+        np.real(pd).astype(np.float32),
+        np.real(pv).astype(np.float32),
+        np.real(m).astype(np.float32),
+        np.real(chi_bug).astype(np.float32),
+    )
+
+
+def polsartools_m_delta_cp(c11, c12, c21, c22, chi=45.0, window_size=1):
+    """Compact-pol M-Delta from C2 (polsartools m_delta)."""
+    c11 = _boxcar_complex(c11, window_size)
+    c12 = _boxcar_complex(c12, window_size)
+    c21 = _boxcar_complex(c21, window_size)
+    c22 = _boxcar_complex(c22, window_size)
+    s0 = np.real(c11 + c22)
+    s1 = np.real(c11 - c22)
+    s2 = np.real(c12 + c21)
+    s3 = np.where(chi >= 0, 1j * (c12 - c21), -1j * (c12 - c21))
+    s3 = np.real(s3)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        m = np.sqrt(s1 ** 2 + s2 ** 2 + s3 ** 2) / s0
+    delta = np.arctan2(s3, s2)
+
+    ps = np.sqrt((m * s0 * (1 + np.sin(delta))) / 2)
+    pd = np.sqrt((m * s0 * (1 - np.sin(delta))) / 2)
+    pv = np.sqrt((s0 * (1 - m)) / 2)
+    delta_bug = delta * 180 * np.pi
+
+    return (
+        np.real(ps).astype(np.float32),
+        np.real(pd).astype(np.float32),
+        np.real(pv).astype(np.float32),
+        np.real(m).astype(np.float32),
+        np.real(delta_bug).astype(np.float32),
+    )
+
+
+def polsartools_s_omega_cp(c11, c12, c21, c22, chi=45.0, psi=0.0, window_size=1):
+    """Compact-pol S-Omega from C2 (polsartools s_omega)."""
+    c11 = _boxcar_complex(c11, window_size)
+    c12 = _boxcar_complex(c12, window_size)
+    c21 = _boxcar_complex(c21, window_size)
+    c22 = _boxcar_complex(c22, window_size)
+    s0 = np.abs(c11 + c22)
+    s1 = np.abs(c11 - c22)
+    s2 = np.abs(c12 + c21)
+    s3 = np.where(chi >= 0, 1j * (c12 - c21), -1j * (c12 - c21))
+    s3 = np.real(s3)
+
+    sc = (s0 - s3) / 2.0
+    oc = (s0 + s3) / 2.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cpr = sc / oc
+        dop = np.sqrt(np.power(s1, 2) + np.power(s2, 2) + np.power(s3, 2)) / s0
+        psi_img = 0.5 * np.degrees(np.arctan2(s2, s1))
+        docp = (-s3) / (dop * s0)
+        chi_img = 0.5 * np.degrees(np.arcsin(docp))
+
+        x1 = np.cos(2 * chi * np.pi / 180) * np.cos(2 * psi * np.pi / 180)
+        x1 *= np.cos(2 * chi_img * np.pi / 180) * np.cos(2 * psi_img * np.pi / 180)
+        x2 = np.cos(2 * chi * np.pi / 180) * np.sin(2 * psi * np.pi / 180)
+        x2 *= np.cos(2 * chi_img * np.pi / 180) * np.sin(2 * psi_img * np.pi / 180)
+        x3 = np.abs(np.sin(2 * chi * np.pi / 180) * np.sin(2 * chi_img * np.pi / 180))
+        prec = dop * (1 + x1 + x2 + x3)
+        prec1 = (1 - dop) + dop * (1 + x1 + x2 + x3)
+        omega = prec / prec1
+
+    surface = np.zeros_like(s0, dtype=np.float64)
+    double_bounce = np.zeros_like(s0, dtype=np.float64)
+
+    g1 = cpr > 1
+    l1 = cpr < 1
+    e1 = cpr == 1
+
+    surface[g1] = omega[g1] * (1 - omega[g1]) * oc[g1]
+    double_bounce[g1] = omega[g1] * s0[g1] - omega[g1] * (1 - omega[g1]) * oc[g1]
+    surface[l1] = omega[l1] * s0[l1] - omega[l1] * (1 - omega[l1]) * sc[l1]
+    double_bounce[l1] = omega[l1] * (1 - omega[l1]) * sc[l1]
+    surface[e1] = omega[e1] * oc[e1]
+    double_bounce[e1] = omega[e1] * sc[e1]
+    volume = (1 - omega) * s0
+
+    surface[surface == 0] = np.nan
+    double_bounce[double_bounce == 0] = np.nan
+    volume[volume == 0] = np.nan
+
+    return (
+        surface.astype(np.float32),
+        double_bounce.astype(np.float32),
+        volume.astype(np.float32),
     )
 
 
@@ -1810,6 +2009,118 @@ def validate_scattering_power_dp(shh, shv, window_size=3):
     return mse_pd2, mse_ps2, mse_pr2
 
 
+def validate_dop_cp(c11, c12, c21, c22, window_size=3, chi=45.0, psi=0.0):
+    """Cross-validate CompactPolDegreeOfPolarization against polsartools dop_cp."""
+    from grdl.image_processing.decomposition import CompactPolDegreeOfPolarization
+
+    print('\n' + '=' * 60)
+    print('Compact-pol DoP — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = CompactPolDegreeOfPolarization(
+        window_size=window_size, chi=chi, psi=psi
+    ).decompose_compact(c11, c12, c21, c22)
+    dop_pst = polsartools_dop_cp(c11, c12, c21, c22, chi=chi, window_size=window_size)
+
+    print('\nMSE comparison:')
+    return mse_compare(comp['dop'], dop_pst, 'dop_cp')
+
+
+def validate_model_free_cp(c11, c12, c21, c22, window_size=3, chi=45.0, psi=0.0):
+    """Cross-validate CompactPolModelFree3C against polsartools mf3cc."""
+    from grdl.image_processing.decomposition import CompactPolModelFree3C
+
+    print('\n' + '=' * 60)
+    print('Compact-pol Model-Free 3C — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = CompactPolModelFree3C(
+        window_size=window_size, chi=chi, psi=psi
+    ).decompose_compact(c11, c12, c21, c22)
+    ps, pd, pv, theta = polsartools_mf3cc(
+        c11, c12, c21, c22, chi=chi, window_size=window_size
+    )
+
+    print('\nMSE comparison:')
+    mse_ps = mse_compare(comp['surface'], ps, 'surface')
+    mse_pd = mse_compare(comp['double_bounce'], pd, 'double_bounce')
+    mse_pv = mse_compare(comp['volume'], pv, 'volume')
+    mse_th = mse_compare(comp['theta_cp'], theta, 'theta_cp')
+    return mse_ps, mse_pd, mse_pv, mse_th
+
+
+def validate_m_chi_cp(c11, c12, c21, c22, window_size=3, chi=45.0, psi=0.0):
+    """Cross-validate CompactPolMChi against polsartools m_chi."""
+    from grdl.image_processing.decomposition import CompactPolMChi
+
+    print('\n' + '=' * 60)
+    print('Compact-pol M-Chi — GRDL vs polsartools')
+    print('=' * 60)
+    print('NOTE: polsartools writes chi_cp with a 180*pi scaling bug; '
+          'comparing powers and m_cp only.')
+
+    comp = CompactPolMChi(
+        window_size=window_size, chi=chi, psi=psi
+    ).decompose_compact(c11, c12, c21, c22)
+    ps, pd, pv, m_cp, _ = polsartools_m_chi_cp(
+        c11, c12, c21, c22, chi=chi, window_size=window_size
+    )
+
+    print('\nMSE comparison:')
+    mse_ps = mse_compare(comp['surface'], ps, 'surface')
+    mse_pd = mse_compare(comp['double_bounce'], pd, 'double_bounce')
+    mse_pv = mse_compare(comp['volume'], pv, 'volume')
+    mse_m = mse_compare(comp['m_cp'], m_cp, 'm_cp')
+    return mse_ps, mse_pd, mse_pv, mse_m
+
+
+def validate_m_delta_cp(c11, c12, c21, c22, window_size=3, chi=45.0, psi=0.0):
+    """Cross-validate CompactPolMDelta against polsartools m_delta."""
+    from grdl.image_processing.decomposition import CompactPolMDelta
+
+    print('\n' + '=' * 60)
+    print('Compact-pol M-Delta — GRDL vs polsartools')
+    print('=' * 60)
+    print('NOTE: polsartools writes delta_cp with a 180*pi scaling bug; '
+          'comparing powers and m_cp only.')
+
+    comp = CompactPolMDelta(
+        window_size=window_size, chi=chi, psi=psi
+    ).decompose_compact(c11, c12, c21, c22)
+    ps, pd, pv, m_cp, _ = polsartools_m_delta_cp(
+        c11, c12, c21, c22, chi=chi, window_size=window_size
+    )
+
+    print('\nMSE comparison:')
+    mse_ps = mse_compare(comp['surface'], ps, 'surface')
+    mse_pd = mse_compare(comp['double_bounce'], pd, 'double_bounce')
+    mse_pv = mse_compare(comp['volume'], pv, 'volume')
+    mse_m = mse_compare(comp['m_cp'], m_cp, 'm_cp')
+    return mse_ps, mse_pd, mse_pv, mse_m
+
+
+def validate_s_omega_cp(c11, c12, c21, c22, window_size=3, chi=45.0, psi=0.0):
+    """Cross-validate CompactPolSOmega against polsartools s_omega."""
+    from grdl.image_processing.decomposition import CompactPolSOmega
+
+    print('\n' + '=' * 60)
+    print('Compact-pol S-Omega — GRDL vs polsartools')
+    print('=' * 60)
+
+    comp = CompactPolSOmega(
+        window_size=window_size, chi=chi, psi=psi
+    ).decompose_compact(c11, c12, c21, c22)
+    ps, pd, pv = polsartools_s_omega_cp(
+        c11, c12, c21, c22, chi=chi, psi=psi, window_size=window_size
+    )
+
+    print('\nMSE comparison:')
+    mse_ps = mse_compare(comp['surface'], ps, 'surface')
+    mse_pd = mse_compare(comp['double_bounce'], pd, 'double_bounce')
+    mse_pv = mse_compare(comp['volume'], pv, 'volume')
+    return mse_ps, mse_pd, mse_pv
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -1835,8 +2146,16 @@ def main():
         help='Refined Lee filter kernel size (odd, 3-31, default 7)'
     )
     parser.add_argument(
-        '--mode', choices=('all', 'full', 'dual'), default='all',
-        help='Validation mode: all, full-pol only, or dual-pol only'
+        '--mode', choices=('all', 'full', 'dual', 'compact'), default='all',
+        help='Validation mode: all, full-pol only, dual-pol only, or compact-pol only'
+    )
+    parser.add_argument(
+        '--compact-chi', type=float, default=45.0,
+        help='Compact-pol transmit ellipticity angle in degrees (default: +45 for RHCP)'
+    )
+    parser.add_argument(
+        '--compact-psi', type=float, default=0.0,
+        help='Compact-pol transmit orientation angle in degrees (default: 0)'
     )
     args = parser.parse_args()
 
@@ -1860,9 +2179,11 @@ def main():
     print(f'\nData shape: {shh.shape}')
     print(f'Window size: {args.window_size}')
     print(f'Mode: {args.mode}')
+    print(f'Compact-pol chi/psi: {args.compact_chi}/{args.compact_psi}')
 
     run_full = args.mode in ('all', 'full')
     run_dual = args.mode in ('all', 'dual')
+    run_compact = args.mode in ('all', 'compact')
 
     if run_full:
         # Full-pol cross-validations
@@ -1886,6 +2207,44 @@ def main():
         validate_dprbi(shh, shv, window_size=args.window_size)
         validate_dprsi(shh, shv, window_size=args.window_size)
         validate_scattering_power_dp(shh, shv, window_size=args.window_size)
+
+    if run_compact:
+        transmit = 'R' if args.compact_chi >= 0 else 'L'
+        c11, c12, c21, c22 = _compact_c2_from_quad(
+            shh, shv, svh, svv, transmit=transmit
+        )
+        print(f'\nCompact-pol synthesis: transmit={transmit}, '
+              f'C2 shape={c11.shape}')
+        validate_dop_cp(
+            c11, c12, c21, c22,
+            window_size=args.window_size,
+            chi=args.compact_chi,
+            psi=args.compact_psi,
+        )
+        validate_model_free_cp(
+            c11, c12, c21, c22,
+            window_size=args.window_size,
+            chi=args.compact_chi,
+            psi=args.compact_psi,
+        )
+        validate_m_chi_cp(
+            c11, c12, c21, c22,
+            window_size=args.window_size,
+            chi=args.compact_chi,
+            psi=args.compact_psi,
+        )
+        validate_m_delta_cp(
+            c11, c12, c21, c22,
+            window_size=args.window_size,
+            chi=args.compact_chi,
+            psi=args.compact_psi,
+        )
+        validate_s_omega_cp(
+            c11, c12, c21, c22,
+            window_size=args.window_size,
+            chi=args.compact_chi,
+            psi=args.compact_psi,
+        )
 
     print('\n' + '=' * 60)
     print('Cross-validation complete.')

@@ -96,7 +96,11 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
         }
 
     @classmethod
-    def rgb_channel_metadata(cls) -> list:
+    def rgb_channel_metadata(
+        cls,
+        alpha_low_deg: float = 10.0,
+        alpha_high_deg: float = 80.0,
+    ) -> list:
         from grdl.IO.models.base import ChannelMetadata
 
         return [
@@ -116,7 +120,10 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
                 role='decomposition',
                 extras={
                     'halpha_component': 'alpha',
-                    'formula': 'alpha / 90 in [0, 1]',
+                    'formula': (
+                        f'clip((alpha-{alpha_low_deg:g})/'
+                        f'({alpha_high_deg:g}-{alpha_low_deg:g}), 0, 1)'
+                    ),
                     'display': 'Green',
                 },
             ),
@@ -138,6 +145,8 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        alpha_low_deg: float = 10.0,
+        alpha_high_deg: float = 80.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         del representation
         from grdl.IO.models.base import ImageMetadata
@@ -149,8 +158,17 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
                 f"Missing component keys: {missing}. Expected keys: {required}"
             )
 
+        if alpha_high_deg <= alpha_low_deg:
+            raise ValueError(
+                "alpha_high_deg must be greater than alpha_low_deg for RGB scaling."
+            )
+
         r = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
-        g = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
+        g = np.clip(
+            (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
+            0.0,
+            1.0,
+        ).astype(np.float32)
 
         span = components['span']
         span_db = 10.0 * np.log10(np.maximum(span, np.finfo(np.float64).tiny))
@@ -164,7 +182,7 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
             dtype=str(rgb.dtype),
             bands=3,
             axis_order='CYX',
-            channel_metadata=self.rgb_channel_metadata(),
+            channel_metadata=self.rgb_channel_metadata(alpha_low_deg, alpha_high_deg),
         )
         return rgb, metadata
 

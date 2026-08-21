@@ -56,6 +56,8 @@ from grdl.image_processing.decomposition.shannon_entropy import ShannonEntropy
 from grdl.image_processing.decomposition.dop_dp import DegreeOfPolarizationDP
 from grdl.image_processing.decomposition.shannon_entropy_dp import ShannonEntropyDP
 from grdl.image_processing.decomposition.model_free_dp import ModelFree3CD
+from grdl.image_processing.decomposition.dprbi import DualPolRadarBuiltUpIndex
+from grdl.image_processing.decomposition.dprsi import DualPolRadarSurfaceIndex
 from grdl.image_processing.decomposition.compact_pol_base import CompactPolDecompositionBase
 from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
 from grdl.image_processing.decomposition.model_free_cp import CompactPolModelFree3C
@@ -90,6 +92,8 @@ __all__ = [
     'DegreeOfPolarizationDP',
     'ShannonEntropyDP',
     'ModelFree3CD',
+    'DualPolRadarBuiltUpIndex',
+    'DualPolRadarSurfaceIndex',
     'CompactPolDegreeOfPolarization',
     'CompactPolModelFree3C',
     'CompactPolSOmega',

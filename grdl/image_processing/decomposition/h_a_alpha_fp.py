@@ -251,13 +251,15 @@ class FullPolHAalpha(HAalphaBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        alpha_low_deg: float = 10.0,
+        alpha_high_deg: float = 80.0,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from full-pol H/A/Alpha decomposition.
 
         Channel mapping:
 
         - **Red**: Entropy [0, 1]
-        - **Green**: Alpha / 90 [0, 1]
+        - **Green**: Alpha stretched from 10° to 80° into [0, 1]
         - **Blue**: Anisotropy [0, 1]
 
         Parameters
@@ -290,8 +292,17 @@ class FullPolHAalpha(HAalphaBase):
         # Red: Entropy (already [0, 1])
         r = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
 
-        # Green: Alpha / 90 (normalized to [0, 1])
-        g = np.clip(components['alpha'] / 90.0, 0.0, 1.0).astype(np.float32)
+        if alpha_high_deg <= alpha_low_deg:
+            raise ValueError(
+                "alpha_high_deg must be greater than alpha_low_deg for RGB scaling."
+            )
+
+        # Green: Alpha stretched to emphasize the common 10°-80° interval.
+        g = np.clip(
+            (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
+            0.0,
+            1.0,
+        ).astype(np.float32)
 
         # Blue: Anisotropy (already [0, 1])
         b = np.clip(components['anisotropy'], 0.0, 1.0).astype(np.float32)
@@ -314,7 +325,10 @@ class FullPolHAalpha(HAalphaBase):
                 ChannelMetadata(
                     index=1, name='alpha_norm', role='decomposition',
                     extras={'halpha_component': 'alpha',
-                            'formula': 'alpha / 90 in [0, 1]',
+                            'formula': (
+                                f'clip((alpha-{alpha_low_deg:g})/'
+                                f'({alpha_high_deg:g}-{alpha_low_deg:g}), 0, 1)'
+                            ),
                             'display': 'Green'},
                 ),
                 ChannelMetadata(

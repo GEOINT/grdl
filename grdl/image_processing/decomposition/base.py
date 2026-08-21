@@ -34,7 +34,7 @@ Modified
 # Standard library
 import dataclasses
 from abc import abstractmethod
-from typing import Any, Dict, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -399,11 +399,46 @@ class PolarimetricDecomposition(ImageProcessor):
             result[k] = db
         return result
 
+    def _apply_power_representation(
+        self,
+        arr: np.ndarray,
+        representation: str = 'db',
+    ) -> np.ndarray:
+        """
+        Convert a real-valued power-like image for display normalization.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            Real-valued component image (typically power/intensity).
+        representation : str
+            One of ``'db'``, ``'magnitude'``, or ``'power'``.
+
+        Returns
+        -------
+        np.ndarray
+            Converted real-valued image.
+        """
+        arr = np.real(np.asarray(arr, dtype=np.float64))
+        if representation == 'power':
+            return arr
+        if representation == 'magnitude':
+            return np.sqrt(np.clip(arr, 0.0, None))
+        if representation == 'db':
+            tiny = np.finfo(np.float64).tiny
+            with np.errstate(divide='ignore', invalid='ignore'):
+                return 10.0 * np.log10(np.maximum(arr, tiny))
+        raise ValueError(
+            f"representation must be one of ['db', 'magnitude', 'power'], got {representation!r}"
+        )
+
     def _percentile_stretch(
         self,
         arr: np.ndarray,
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
     ) -> np.ndarray:
         """
         Percentile-stretch an array to [0, 1].
@@ -413,9 +448,20 @@ class PolarimetricDecomposition(ImageProcessor):
         arr : np.ndarray
             Real-valued 2D array.
         percentile_low : float
-            Lower percentile. Default 2.0.
+            Lower percentile used to derive ``vmin`` when ``vmin`` is not
+            supplied explicitly. Default 2.0.
         percentile_high : float
-            Upper percentile. Default 98.0.
+            Upper percentile used to derive ``vmax`` when ``vmax`` is not
+            supplied explicitly. Default 98.0.
+        vmin : float, optional
+            Explicit lower clip value.  When provided, overrides
+            ``percentile_low`` for this call.  Pass the same value to
+            multiple ``_percentile_stretch`` calls to produce RGB bands
+            that share a common stretch range, enabling colour-comparable
+            composites across different images or algorithms.
+        vmax : float, optional
+            Explicit upper clip value.  When provided, overrides
+            ``percentile_high`` for this call.
 
         Returns
         -------
@@ -426,9 +472,13 @@ class PolarimetricDecomposition(ImageProcessor):
         if not np.any(finite_mask):
             return np.zeros_like(arr, dtype=np.float32)
 
-        vals = arr[finite_mask]
-        vmin = np.percentile(vals, percentile_low)
-        vmax = np.percentile(vals, percentile_high)
+        if vmin is None or vmax is None:
+            vals = arr[finite_mask]
+            if vmin is None:
+                vmin = float(np.percentile(vals, percentile_low))
+            if vmax is None:
+                vmax = float(np.percentile(vals, percentile_high))
+
         span = vmax - vmin
         if span < np.finfo(np.float32).eps:
             return np.zeros_like(arr, dtype=np.float32)
