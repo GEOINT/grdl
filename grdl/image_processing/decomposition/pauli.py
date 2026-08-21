@@ -234,6 +234,8 @@ class PauliDecomposition(PolarimetricDecomposition):
             If inputs are not 2D or have mismatched shapes, or if both
             ``shv`` and ``svh`` are omitted.
         """
+        if svv is None:
+            raise ValueError("svv must be provided.")
         if shv is None and svh is None:
             raise ValueError(
                 "At least one cross-pol channel (shv or svh) must be provided."
