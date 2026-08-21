@@ -46,6 +46,56 @@ class TestSICDReader:
         with pytest.raises(FileNotFoundError):
             SICDReader('/nonexistent/file.nitf')
 
+    def test_read_chip_falls_back_to_sarpy_when_sarkit_subimage_lacks_side_of_track(self):
+        """Missing SCPCOA/SideOfTrack falls back from sarkit to sarpy."""
+        from grdl.IO.sar.sicd import SICDReader
+
+        reader = object.__new__(SICDReader)
+        reader.filepath = mock.MagicMock()
+        reader.backend = 'sarkit'
+        reader.metadata = {'rows': 128, 'cols': 128}
+        reader._enforce_2d = True
+        reader._reader = mock.MagicMock()
+        reader._reader.read_sub_image.side_effect = KeyError(None)
+
+        sarpy_reader = mock.MagicMock()
+        sarpy_chip = np.ones((16, 16), dtype=np.complex64)
+        sarpy_reader.__getitem__.return_value = sarpy_chip
+
+        with mock.patch('sarpy.io.complex.converter.open_complex', return_value=sarpy_reader) as open_complex:
+            chip = reader.read_chip(0, 16, 0, 16)
+
+        open_complex.assert_called_once()
+        sarpy_reader.__getitem__.assert_called_once_with((slice(0, 16, None), slice(0, 16, None)))
+        assert chip.shape == (16, 16)
+        assert chip.dtype == np.complex64
+
+    def test_read_chip_falls_back_to_sarpy_when_sarkit_subimage_lacks_geodata(self):
+        """Missing GeoData/Grid context falls back from sarkit to sarpy."""
+        from grdl.IO.sar.sicd import SICDReader
+
+        reader = object.__new__(SICDReader)
+        reader.filepath = mock.MagicMock()
+        reader.backend = 'sarkit'
+        reader.metadata = {'rows': 128, 'cols': 128}
+        reader._enforce_2d = True
+        reader._reader = mock.MagicMock()
+        reader._reader.read_sub_image.side_effect = IndexError(
+            'too many indices for array: array is 0-dimensional, but 1 were indexed'
+        )
+
+        sarpy_reader = mock.MagicMock()
+        sarpy_chip = np.ones((16, 16), dtype=np.complex64)
+        sarpy_reader.__getitem__.return_value = sarpy_chip
+
+        with mock.patch('sarpy.io.complex.converter.open_complex', return_value=sarpy_reader) as open_complex:
+            chip = reader.read_chip(0, 16, 0, 16)
+
+        open_complex.assert_called_once()
+        sarpy_reader.__getitem__.assert_called_once_with((slice(0, 16, None), slice(0, 16, None)))
+        assert chip.shape == (16, 16)
+        assert chip.dtype == np.complex64
+
 
 # -- CPHDReader tests -------------------------------------------------------
 

@@ -100,6 +100,7 @@ from grdl.geolocation.projection import (
     ground_to_image,
     wgs84_norm,
 )
+from grdl._version import __version__
 
 __all__ = [
     'Geolocation',
@@ -130,7 +131,6 @@ __all__ = [
     'wgs84_norm',
 ]
 
-__version__ = "0.5.1"
 
 
 def create_geolocation(reader: object, **kwargs) -> Geolocation:

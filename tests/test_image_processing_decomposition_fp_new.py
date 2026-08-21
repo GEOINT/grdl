@@ -137,6 +137,28 @@ def test_full_pol_halpha_alpha_uses_first_component_of_each_eigenvector():
     np.testing.assert_allclose(comp['alpha'][0, 0], expected_alpha, atol=1e-10)
 
 
+def test_full_pol_halpha_to_rgb_alpha_channel_uses_10_to_80_stretch():
+    components = {
+        'entropy': np.zeros((1, 4), dtype=np.float32),
+        'alpha': np.array([[0.0, 10.0, 45.0, 80.0]], dtype=np.float32),
+        'anisotropy': np.zeros((1, 4), dtype=np.float32),
+    }
+    rgb, _ = FullPolHAalpha(window_size=1).to_rgb(components)
+    np.testing.assert_allclose(rgb[1], [[0.0, 0.0, 0.5, 1.0]], atol=1e-6)
+
+
+def test_full_pol_halpha_to_rgb_invalid_alpha_stretch_thresholds_raise():
+    components = {
+        'entropy': np.zeros((1, 1), dtype=np.float32),
+        'alpha': np.zeros((1, 1), dtype=np.float32),
+        'anisotropy': np.zeros((1, 1), dtype=np.float32),
+    }
+    with pytest.raises(ValueError, match='alpha_high_deg must be greater'):
+        FullPolHAalpha(window_size=1).to_rgb(
+            components, alpha_low_deg=80.0, alpha_high_deg=10.0
+        )
+
+
 # ---------------------------------------------------------------------------
 # DegreeOfPolarization
 # ---------------------------------------------------------------------------

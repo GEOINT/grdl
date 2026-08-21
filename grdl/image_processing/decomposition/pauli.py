@@ -19,6 +19,10 @@ The 1/sqrt(2) normalization ensures the Pauli basis is unitary: under
 monostatic reciprocity (S_HV = S_VH), total component power equals the
 span of the scattering matrix.
 
+Monostatic / single cross-pol support: when only one of S_HV or S_VH is
+available, the volume component is computed as sqrt(2) * S_HV (or S_VH),
+which is statistically equivalent under the reciprocity assumption.
+
 Author
 ------
 Duane Smalley, PhD
@@ -102,8 +106,11 @@ class PauliDecomposition(PolarimetricDecomposition):
     >>>
     >>> pauli = PauliDecomposition()
     >>>
-    >>> # Decompose complex scattering matrix channels
+    >>> # Decompose complex scattering matrix channels (quad-pol)
     >>> components = pauli.decompose(shh, shv, svh, svv)
+    >>>
+    >>> # Monostatic / single cross-pol (reciprocity assumed)
+    >>> components = pauli.decompose(shh, shv=shv, svv=svv)
     >>> surface = components['surface']            # complex
     >>> dbl_bounce = components['double_bounce']   # complex
     >>> volume = components['volume']              # complex
@@ -166,9 +173,9 @@ class PauliDecomposition(PolarimetricDecomposition):
     def decompose(
         self,
         shh: np.ndarray,
-        shv: np.ndarray,
-        svh: np.ndarray,
-        svv: np.ndarray,
+        shv: np.ndarray | None = None,
+        svh: np.ndarray | None = None,
+        svv: np.ndarray | None = None,
     ) -> Dict[str, np.ndarray]:
         """
         Decompose the scattering matrix into Pauli basis components.
@@ -185,16 +192,29 @@ class PauliDecomposition(PolarimetricDecomposition):
         interference when they are 180 deg out of phase. The subtraction
         ``S_HH - S_VV`` captures the complementary double-bounce signature.
 
+        **Monostatic / single cross-pol mode**: For monostatic systems where
+        reciprocity holds (``S_HV ≈ S_VH`` statistically), only one cross-pol
+        channel is required.  When exactly one of ``shv`` or ``svh`` is
+        provided the volume component is computed as::
+
+            volume = sqrt(2) * S_HV   (or sqrt(2) * S_VH)
+
+        which is statistically equivalent to ``(S_HV + S_VH) / sqrt(2)``
+        under the monostatic reciprocity assumption.
+
         Parameters
         ----------
         shh : np.ndarray
-            Complex S_HH channel. Shape (rows, cols).
-        shv : np.ndarray
-            Complex S_HV channel. Shape (rows, cols).
-        svh : np.ndarray
-            Complex S_VH channel. Shape (rows, cols).
+            Complex S_HH channel. Shape (rows, cols). Required.
+        shv : np.ndarray, optional
+            Complex S_HV channel. Shape (rows, cols).  At least one of
+            ``shv`` or ``svh`` must be provided.
+        svh : np.ndarray, optional
+            Complex S_VH channel. Shape (rows, cols).  At least one of
+            ``shv`` or ``svh`` must be provided.
         svv : np.ndarray
-            Complex S_VV channel. Shape (rows, cols).
+            Complex S_VV channel. Shape (rows, cols). Required.
+
         Spatial averaging is applied only when ``self.window_size > 1``.
         The averaging is boxcar and is performed independently on real/imag
         parts of each channel before the Pauli mixing equations.
@@ -211,18 +231,46 @@ class PauliDecomposition(PolarimetricDecomposition):
         TypeError
             If any input is not complex-valued.
         ValueError
-            If inputs are not 2D or have mismatched shapes.
+            If inputs are not 2D or have mismatched shapes, or if both
+            ``shv`` and ``svh`` are omitted.
         """
-        self._validate_scattering_matrix(shh, shv, svh, svv)
+        if svv is None:
+            raise ValueError("svv must be provided.")
+        if shv is None and svh is None:
+            raise ValueError(
+                "At least one cross-pol channel (shv or svh) must be provided."
+            )
+
+        # Build the cross-pol term before validation so we can validate a
+        # uniform set of 4 arrays with the base validator.
+        if shv is not None and svh is not None:
+            # Full bistatic / quad-pol: average both cross-pol channels.
+            cross_pol_term = shv + svh   # divided by sqrt(2) below with norm
+            n_channels = 4
+        elif shv is not None:
+            # Monostatic, only HV: multiply by 2 (= sqrt(2) * sqrt(2) * shv)
+            # so that after multiplying by norm (1/sqrt(2)) we get sqrt(2)*shv.
+            cross_pol_term = shv * 2.0
+            n_channels = 3
+        else:
+            # Monostatic, only VH.
+            cross_pol_term = svh * 2.0
+            n_channels = 3
+
+        # Validate co-pol channels and whichever cross-pol channels were given.
+        cross_sample = shv if shv is not None else svh
+        self._validate_scattering_matrix(
+            shh, cross_sample, cross_sample, svv
+        )
+
         logger.info(
-            "Pauli decomposition: shape %s, 4 channels, dtype %s, window_size=%d",
-            shh.shape, shh.dtype, self.window_size,
+            "Pauli decomposition: shape %s, %d channels, dtype %s, window_size=%d",
+            shh.shape, n_channels, shh.dtype, self.window_size,
         )
 
         if self.window_size > 1:
             shh = self._boxcar_complex(shh, self.window_size)
-            shv = self._boxcar_complex(shv, self.window_size)
-            svh = self._boxcar_complex(svh, self.window_size)
+            cross_pol_term = self._boxcar_complex(cross_pol_term, self.window_size)
             svv = self._boxcar_complex(svv, self.window_size)
 
         # Normalization constant in matching precision to avoid
@@ -235,7 +283,7 @@ class PauliDecomposition(PolarimetricDecomposition):
         result = {
             'surface': (shh + svv) * norm,
             'double_bounce': (shh - svv) * norm,
-            'volume': (shv + svh) * norm,
+            'volume': cross_pol_term * norm,
         }
 
         logger.debug(

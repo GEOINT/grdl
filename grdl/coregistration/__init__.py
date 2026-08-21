@@ -51,6 +51,7 @@ Modified
 from grdl.coregistration.base import CoRegistration, RegistrationResult
 from grdl.coregistration.affine import AffineCoRegistration
 from grdl.coregistration.projective import ProjectiveCoRegistration
+from grdl._version import __version__
 
 __all__ = [
     'CoRegistration',
@@ -67,4 +68,3 @@ try:
 except ImportError:
     pass
 
-__version__ = "0.5.1"

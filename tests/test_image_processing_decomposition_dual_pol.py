@@ -30,7 +30,7 @@ import pytest
 
 # GRDL
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
-from grdl.image_processing.decomposition.dual_pol_halpha import DualPolHAlpha
+from grdl.image_processing.decomposition.h_alpha_dp import DualPolHAlpha
 
 
 # ===================================================================
@@ -272,6 +272,26 @@ class TestToRgb:
     def test_missing_key_raises(self, halpha):
         with pytest.raises(ValueError, match="Missing"):
             halpha.to_rgb({'entropy': np.zeros((3, 3))})
+
+    def test_alpha_channel_uses_10_to_80_stretch(self, halpha):
+        components = {
+            'entropy': np.zeros((1, 4), dtype=np.float32),
+            'alpha': np.array([[0.0, 10.0, 45.0, 80.0]], dtype=np.float32),
+            'anisotropy': np.zeros((1, 4), dtype=np.float32),
+            'span': np.ones((1, 4), dtype=np.float32),
+        }
+        rgb, _ = halpha.to_rgb(components)
+        np.testing.assert_allclose(rgb[1], [[0.0, 0.0, 0.5, 1.0]], atol=1e-6)
+
+    def test_invalid_alpha_stretch_thresholds_raise(self, halpha):
+        components = {
+            'entropy': np.zeros((1, 1), dtype=np.float32),
+            'alpha': np.zeros((1, 1), dtype=np.float32),
+            'anisotropy': np.zeros((1, 1), dtype=np.float32),
+            'span': np.ones((1, 1), dtype=np.float32),
+        }
+        with pytest.raises(ValueError, match='alpha_high_deg must be greater'):
+            halpha.to_rgb(components, alpha_low_deg=80.0, alpha_high_deg=10.0)
 
 
 class TestExecuteExtraction:

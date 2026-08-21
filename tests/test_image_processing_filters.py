@@ -38,6 +38,7 @@ from grdl.image_processing.filters import (
     ComplexLeeFilter,
     EnhancedLeeFilter,
     GaussianFilter,
+    IDANFilter,
     LeeFilter,
     LeeSigmaFilter,
     MaxFilter,
@@ -789,6 +790,168 @@ class TestLeeSigmaFilter:
         real_out = LeeSigmaFilter(kernel_size=ks, enl=enl, sigma=0.9).apply(amp)
         cplx_out = np.abs(LeeSigmaFilter(kernel_size=ks, enl=enl, sigma=0.9).apply(z))
         np.testing.assert_allclose(real_out, cplx_out, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# IDANFilter tests
+# ---------------------------------------------------------------------------
+
+class TestIDANFilter:
+    """Tests for IDANFilter correctness, shape preservation, and validation."""
+
+    # ---- Parameter validation ----------------------------------------
+
+    def test_even_kernel_raises(self):
+        """Even kernel_size raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(kernel_size=4)
+
+    def test_kernel_too_small_raises(self):
+        """kernel_size < 3 raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(kernel_size=1)
+
+    def test_max_pixels_too_small_raises(self):
+        """max_pixels < 5 raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(kernel_size=3, max_pixels=2)
+
+    def test_similarity_threshold_zero_raises(self):
+        """similarity_threshold = 0 raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(similarity_threshold=0.0)
+
+    def test_similarity_threshold_above_one_raises(self):
+        """similarity_threshold > 1 raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(similarity_threshold=1.5)
+
+    def test_negative_enl_raises(self):
+        """Negative enl raises ValidationError."""
+        with pytest.raises(ValidationError):
+            IDANFilter(enl=-1.0)
+
+    # ---- Shape preservation ------------------------------------------
+
+    def test_scalar_2d_shape_preserved(self):
+        """Output shape matches input for a 2D real image."""
+        rng = np.random.default_rng(0)
+        img = rng.random((20, 20)).astype(np.float32) + 0.1
+        f = IDANFilter(kernel_size=3, max_pixels=10, enl=4.0)
+        out = f.apply(img)
+        assert out.shape == img.shape
+
+    def test_scalar_3d_shape_preserved(self):
+        """Output shape matches input for a 3D (bands, rows, cols) real image."""
+        rng = np.random.default_rng(1)
+        img = rng.random((2, 15, 15)).astype(np.float32) + 0.1
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=4.0)
+        out = f.apply(img)
+        assert out.shape == img.shape
+
+    def test_complex_2d_shape_preserved(self):
+        """Output shape matches input for a 2D complex image."""
+        rng = np.random.default_rng(2)
+        img = (rng.random((12, 12)) + 1j * rng.random((12, 12))).astype(np.complex64)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=4.0)
+        out = f.apply(img)
+        assert out.shape == img.shape
+
+    # ---- Smoothing behaviour ------------------------------------------
+
+    def test_homogeneous_patch_smoothed(self):
+        """Homogeneous patch with multiplicative noise has lower variance after filtering."""
+        rng = np.random.default_rng(42)
+        N = 20
+        # constant amplitude + multiplicative Rayleigh speckle
+        base = np.ones((N, N), dtype=np.float32)
+        speckle = rng.exponential(scale=1.0, size=(N, N)).astype(np.float32)
+        img = base * speckle
+
+        f = IDANFilter(kernel_size=3, max_pixels=25, similarity_threshold=0.9, enl=1.0)
+        out = f.apply(img)
+
+        # Interior variance should drop
+        assert float(np.var(out[2:-2, 2:-2])) < float(np.var(img[2:-2, 2:-2]))
+
+    def test_constant_image_unchanged(self):
+        """A perfectly constant image is passed through without change."""
+        img = np.full((10, 10), 2.5, dtype=np.float32)
+        f = IDANFilter(kernel_size=3, max_pixels=10, enl=4.0)
+        out = f.apply(img)
+        np.testing.assert_allclose(out, img, atol=1e-5)
+
+    def test_dtype_preserved_float32(self):
+        """float32 input produces float32 output."""
+        img = (np.random.default_rng(7).random((10, 10)) + 0.1).astype(np.float32)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=4.0)
+        out = f.apply(img)
+        assert out.dtype == np.float32
+
+    # ---- Polarimetric matrix path ------------------------------------
+
+    def test_filter_matrix_shape_preserved(self):
+        """filter_matrix output shape matches (N, N, rows, cols) input."""
+        rng = np.random.default_rng(10)
+        N, R, C = 2, 10, 10
+        # Build a Hermitian positive-semidefinite C2 from random SLC
+        s_rh = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
+        s_rv = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
+        c11 = np.abs(s_rh) ** 2
+        c22 = np.abs(s_rv) ** 2
+        c12 = s_rh * np.conj(s_rv)
+        mat = np.array([
+            [c11, c12],
+            [np.conj(c12), c22],
+        ])  # (2, 2, R, C)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
+        out = f.filter_matrix(mat)
+        assert out.shape == mat.shape
+
+    def test_filter_matrix_non_square_raises(self):
+        """Non-square first two dims raises ValidationError."""
+        mat = np.zeros((2, 3, 10, 10), dtype=np.complex64)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
+        with pytest.raises(ValidationError):
+            f.filter_matrix(mat)
+
+    def test_filter_matrix_wrong_ndim_raises(self):
+        """3D input raises ValidationError."""
+        mat = np.zeros((3, 10, 10), dtype=np.complex64)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
+        with pytest.raises(ValidationError):
+            f.filter_matrix(mat)
+
+    def test_filter_channels_shape(self):
+        """filter_channels returns (3, 3, rows, cols) for quad-pol input."""
+        rng = np.random.default_rng(20)
+        R, C = 10, 10
+        shh = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
+        shv = (0.3 * (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C)))).astype(np.complex64)
+        svh = shv.copy()
+        svv = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
+
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
+        out = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
+        assert out.shape == (3, 3, R, C)
+
+    def test_filter_channels_invalid_type_raises(self):
+        """Unknown matrix_type raises ValidationError."""
+        rng = np.random.default_rng(21)
+        slc = (rng.standard_normal((8, 8)) + 1j * rng.standard_normal((8, 8))).astype(np.complex64)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
+        with pytest.raises(ValidationError, match='matrix_type'):
+            f.filter_channels(slc, slc, slc, slc, matrix_type='X4')
+
+    # ---- ENL auto-estimation ------------------------------------------
+
+    def test_auto_enl_runs(self):
+        """enl=0 (auto) completes without error and returns finite output."""
+        rng = np.random.default_rng(99)
+        img = (rng.exponential(size=(12, 12)) + 0.1).astype(np.float32)
+        f = IDANFilter(kernel_size=3, max_pixels=8, enl=0.0)
+        out = f.apply(img)
+        assert np.all(np.isfinite(out))
 
 
 # ---------------------------------------------------------------------------
