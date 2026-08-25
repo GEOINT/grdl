@@ -7,7 +7,7 @@ Barakat, R. (1977). "Degree of polarization and the principal
 idempotents," Optica Acta, 24(9), pp.1093-1096.
 """
 
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, Tuple, List, Optional, TYPE_CHECKING
 
 import numpy as np
 
@@ -52,6 +52,7 @@ class DegreeOfPolarizationDP(DualPolDecompositionBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata

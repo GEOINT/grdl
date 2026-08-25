@@ -13,7 +13,7 @@ Lee, J.S. and Pottier, E. (2009), Polarimetric Radar Imaging:
 From Basics to Applications. CRC Press.
 """
 
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
@@ -139,6 +139,8 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
             ),
         ]
 
+    _RGB_CHANNELS = ['entropy', 'alpha', 'span']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
@@ -147,15 +149,36 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
         percentile_high: float = 98.0,
         alpha_low_deg: float = 10.0,
         alpha_high_deg: float = 80.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        del representation
-        from grdl.IO.models.base import ImageMetadata
+        """Create an RGB composite from dual-pol H/Alpha decomposition.
 
-        required = {'entropy', 'alpha', 'span'}
-        missing = required - set(components.keys())
+        Default channel mapping:
+
+        - **Red**: entropy [0, 1]
+        - **Green**: alpha stretched from ``alpha_low_deg`` to ``alpha_high_deg``
+        - **Blue**: span (dB, percentile stretched)
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'entropy'``, ``'alpha'``, ``'span'``.
+            Defaults to ``['entropy', 'alpha', 'span']``.
+        """
+        del representation
+        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
         if missing:
             raise ValueError(
-                f"Missing component keys: {missing}. Expected keys: {required}"
+                f"Missing component keys: {missing}. "
+                f"Available keys: {list(components.keys())}"
             )
 
         if alpha_high_deg <= alpha_low_deg:
@@ -163,18 +186,24 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
                 "alpha_high_deg must be greater than alpha_low_deg for RGB scaling."
             )
 
-        r = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
-        g = np.clip(
-            (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
-            0.0,
-            1.0,
-        ).astype(np.float32)
+        def _render(key: str) -> np.ndarray:
+            if key == 'entropy':
+                return np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
+            if key == 'alpha':
+                return np.clip(
+                    (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
+                    0.0, 1.0,
+                ).astype(np.float32)
+            if key == 'span':
+                span_db = 10.0 * np.log10(np.maximum(components['span'], np.finfo(np.float64).tiny))
+                return self._percentile_stretch(span_db, percentile_low, percentile_high)
+            # fallback: percentile stretch
+            return self._percentile_stretch(components[key], percentile_low, percentile_high)
 
-        span = components['span']
-        span_db = 10.0 * np.log10(np.maximum(span, np.finfo(np.float64).tiny))
-        b = self._percentile_stretch(span_db, percentile_low, percentile_high)
+        bands = [_render(k) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
-        rgb = np.stack([r, g, b], axis=0)
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         metadata = ImageMetadata(
             format='HAlphaRGB',
             rows=int(rgb.shape[1]),
@@ -182,7 +211,10 @@ class DualPolHAlpha(DualPolDecompositionBase, HAalphaBase):
             dtype=str(rgb.dtype),
             bands=3,
             axis_order='CYX',
-            channel_metadata=self.rgb_channel_metadata(alpha_low_deg, alpha_high_deg),
+            channel_metadata=[
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
+            ],
         )
         return rgb, metadata
 

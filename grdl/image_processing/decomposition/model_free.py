@@ -44,7 +44,7 @@ Modified
 """
 
 # Standard library
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -181,12 +181,19 @@ class ModelFree3C(PolarimetricDecomposition):
 
         return self._mf3cf(t3)
 
+    _RGB_CHANNELS = [
+        ('double_bounce', 'rgb_red'),
+        ('volume',        'rgb_green'),
+        ('surface',       'rgb_blue'),
+    ]
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from MF3CF components.
 
@@ -206,53 +213,20 @@ class ModelFree3C(PolarimetricDecomposition):
             Lower percentile for stretch. Default 2.0.
         percentile_high : float
             Upper percentile for stretch. Default 98.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            E.g. ``channels=['surface', 'volume', 'double_bounce']``.
+            Defaults to ``['double_bounce', 'volume', 'surface']``.
 
         Returns
         -------
         tuple[np.ndarray, ImageMetadata]
             ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
         """
-        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
-
-        required = {'surface', 'double_bounce', 'volume'}
-        missing = required - set(components.keys())
-        if missing:
-            raise ValueError(f"Missing component keys: {missing}")
-
-        pd = components['double_bounce'].copy()
-        pv = components['volume'].copy()
-        ps = components['surface'].copy()
-
-        if representation == 'db':
-            with np.errstate(divide='ignore', invalid='ignore'):
-                pd = 10.0 * np.log10(np.maximum(pd, 1e-10))
-                pv = 10.0 * np.log10(np.maximum(pv, 1e-10))
-                ps = 10.0 * np.log10(np.maximum(ps, 1e-10))
-
-        def _stretch(arr):
-            lo = np.nanpercentile(arr, percentile_low)
-            hi = np.nanpercentile(arr, percentile_high)
-            return np.clip((arr - lo) / max(hi - lo, 1e-8), 0.0, 1.0).astype(np.float32)
-
-        rgb = np.stack([_stretch(pd), _stretch(pv), _stretch(ps)], axis=0)
-
-        meta = ImageMetadata(
-            format='RGB',
-            rows=rgb.shape[1],
-            cols=rgb.shape[2],
-            bands=3,
-            dtype='float32',
-            axis_order='CYX',
-            channel_metadata=[
-                ChannelMetadata(index=0, name='double_bounce',
-                                role='rgb_red'),
-                ChannelMetadata(index=1, name='volume',
-                                role='rgb_green'),
-                ChannelMetadata(index=2, name='surface',
-                                role='rgb_blue'),
-            ],
+        return self._build_power_rgb(
+            components, self._RGB_CHANNELS, 'MF3CFRGB',
+            representation, percentile_low, percentile_high, channels=channels,
         )
-        return rgb, meta
 
     def __repr__(self) -> str:
         return f"ModelFree3C(window_size={self.window_size})"
@@ -518,12 +492,19 @@ class ModelFree4C(PolarimetricDecomposition):
 
         return self._mf4cf(t3)
 
+    _RGB_CHANNELS = [
+        ('double_bounce', 'rgb_red'),
+        ('volume',        'rgb_green'),
+        ('surface',       'rgb_blue'),
+    ]
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'magnitude',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from MF4CF components.
 
@@ -533,8 +514,8 @@ class ModelFree4C(PolarimetricDecomposition):
         - **Green**: Volume (Pv)
         - **Blue**: Surface (Ps)
 
-        The helix component is not shown in the RGB but is available
-        in the components dict.
+        The helix component is not shown in the default RGB but is available
+        in the components dict and can be selected via ``channels``.
 
         Parameters
         ----------
@@ -546,53 +527,21 @@ class ModelFree4C(PolarimetricDecomposition):
             Lower percentile for stretch. Default 2.0.
         percentile_high : float
             Upper percentile for stretch. Default 98.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys include ``'surface'``, ``'double_bounce'``,
+            ``'volume'``, ``'helix'``.
+            Defaults to ``['double_bounce', 'volume', 'surface']``.
 
         Returns
         -------
         tuple[np.ndarray, ImageMetadata]
             ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
         """
-        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
-
-        required = {'surface', 'double_bounce', 'volume'}
-        missing = required - set(components.keys())
-        if missing:
-            raise ValueError(f"Missing component keys: {missing}")
-
-        pd = components['double_bounce'].copy()
-        pv = components['volume'].copy()
-        ps = components['surface'].copy()
-
-        if representation == 'db':
-            with np.errstate(divide='ignore', invalid='ignore'):
-                pd = 10.0 * np.log10(np.maximum(pd, 1e-10))
-                pv = 10.0 * np.log10(np.maximum(pv, 1e-10))
-                ps = 10.0 * np.log10(np.maximum(ps, 1e-10))
-
-        def _stretch(arr):
-            lo = np.nanpercentile(arr, percentile_low)
-            hi = np.nanpercentile(arr, percentile_high)
-            return np.clip((arr - lo) / max(hi - lo, 1e-8), 0.0, 1.0).astype(np.float32)
-
-        rgb = np.stack([_stretch(pd), _stretch(pv), _stretch(ps)], axis=0)
-
-        meta = ImageMetadata(
-            format='RGB',
-            rows=rgb.shape[1],
-            cols=rgb.shape[2],
-            bands=3,
-            dtype='float32',
-            axis_order='CYX',
-            channel_metadata=[
-                ChannelMetadata(index=0, name='double_bounce',
-                                role='rgb_red'),
-                ChannelMetadata(index=1, name='volume',
-                                role='rgb_green'),
-                ChannelMetadata(index=2, name='surface',
-                                role='rgb_blue'),
-            ],
+        return self._build_power_rgb(
+            components, self._RGB_CHANNELS, 'MF4CFRGB',
+            representation, percentile_low, percentile_high, channels=channels,
         )
-        return rgb, meta
 
     def __repr__(self) -> str:
         return f"ModelFree4C(window_size={self.window_size})"

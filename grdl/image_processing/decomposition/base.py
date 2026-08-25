@@ -34,7 +34,7 @@ Modified
 # Standard library
 import dataclasses
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -233,6 +233,7 @@ class PolarimetricDecomposition(ImageProcessor):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """
         Create an RGB composite from decomposition components.
@@ -252,6 +253,10 @@ class PolarimetricDecomposition(ImageProcessor):
             Lower percentile for contrast stretch. Default 2.0.
         percentile_high : float
             Upper percentile for contrast stretch. Default 98.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            When provided, must contain exactly 3 valid component key names.
+            Defaults to the decomposition's canonical R/G/B mapping.
 
         Returns
         -------
@@ -485,3 +490,100 @@ class PolarimetricDecomposition(ImageProcessor):
 
         out = (arr - vmin) / span
         return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+    def _build_power_rgb(
+        self,
+        components: Dict[str, np.ndarray],
+        channel_map: List[Tuple[str, str]],
+        format_name: str,
+        representation: str = 'db',
+        percentile_low: float = 2.0,
+        percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
+    ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        """Build an RGB composite from real-valued power-like components.
+
+        Applies ``_apply_power_representation`` then ``_percentile_stretch``
+        to each channel independently, stacks them into ``(3, rows, cols)``,
+        and wraps the result in an ``ImageMetadata`` object.
+
+        This helper is intended for decompositions whose R/G/B channels are
+        real-valued power (or power-derived) quantities with the same semantic
+        role — i.e. FreemanDurden, ModelFree3C/4C, CompactPolModelFree3C, and
+        Yamaguchi.  H/A/alpha, Touzi, Praks, Neumann, and DoP use
+        physics-specific normalisation that does not fit this pattern and
+        should continue to override ``to_rgb`` directly.
+
+        Parameters
+        ----------
+        components : Dict[str, np.ndarray]
+            Output of ``decompose()`` or equivalent.
+        channel_map : list of (component_key, rgb_role)
+            Exactly 3 entries in R/G/B order used when ``channels`` is None.
+        format_name : str
+            Value for ``ImageMetadata.format`` (e.g. ``'FreemanDurdenRGB'``).
+        representation : str
+            ``'db'`` (default), ``'power'``, or ``'magnitude'``.
+        percentile_low : float
+            Lower percentile for stretch. Default 2.0.
+        percentile_high : float
+            Upper percentile for stretch. Default 98.0.
+        channels : list of str, optional
+            Override the R/G/B channel selection.  Exactly 3 component key
+            names in R, G, B order.  When provided, *channel_map* is
+            ignored.  Useful for visualising non-default components, e.g.
+            ``channels=['helix', 'volume', 'surface']``.
+
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
+
+        Raises
+        ------
+        ValueError
+            If any component key is missing from *components*, or the
+            resolved channel selection does not contain exactly 3 entries.
+        """
+        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
+        if channels is not None:
+            if len(channels) != 3:
+                raise ValueError(
+                    f"channels must have exactly 3 entries, got {len(channels)}"
+                )
+            channel_map = list(zip(channels, _roles))
+
+        if len(channel_map) != 3:
+            raise ValueError(
+                f"channel_map must have exactly 3 entries, got {len(channel_map)}"
+            )
+
+        missing = {k for k, _ in channel_map} - set(components.keys())
+        if missing:
+            raise ValueError(f"Missing component keys: {missing}")
+
+        bands = [
+            self._percentile_stretch(
+                self._apply_power_representation(components[key], representation),
+                percentile_low,
+                percentile_high,
+            )
+            for key, _ in channel_map
+        ]
+        rgb = np.stack(bands, axis=0)
+
+        meta = ImageMetadata(
+            format=format_name,
+            rows=rgb.shape[1],
+            cols=rgb.shape[2],
+            bands=3,
+            dtype='float32',
+            axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=i, name=key, role=role)
+                for i, (key, role) in enumerate(channel_map)
+            ],
+        )
+        return rgb, meta

@@ -26,7 +26,7 @@ The GRDL implementation is an independently structured implementation
 validated against open-form equations and numerical cross-checks.
 """
 
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
@@ -158,68 +158,82 @@ class ScatteringPowerDP(DualPolDecompositionBase):
             'residual': np.real(pr),
         }
 
+    # Method 1: double_bounce / unpolarized / surface
+    # Method 2: double_bounce / residual / surface
+    _RGB_CHANNELS_M1 = [
+        ('double_bounce', 'rgb_red'),
+        ('unpolarized',   'rgb_green'),
+        ('surface',       'rgb_blue'),
+    ]
+    _RGB_CHANNELS_M2 = [
+        ('double_bounce', 'rgb_red'),
+        ('residual',      'rgb_green'),
+        ('surface',       'rgb_blue'),
+    ]
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        """Create an RGB composite from dual-pol scattering power components.
+
+        Default channel mapping depends on ``self.method``:
+
+        - **Method 1**: R=double_bounce, G=unpolarized, B=surface
+        - **Method 2**: R=double_bounce, G=residual, B=surface
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys (method 1): ``'double_bounce'``, ``'unpolarized'``,
+            ``'surface'``.  Available keys (method 2): ``'double_bounce'``,
+            ``'residual'``, ``'surface'``.
+            Defaults to the method-appropriate mapping above.
+        """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        if int(self.method) == 1:
-            r = self._percentile_stretch(
-                self._apply_power_representation(components['double_bounce'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            g = self._percentile_stretch(
-                self._apply_power_representation(components['unpolarized'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            b = self._percentile_stretch(
-                self._apply_power_representation(components['surface'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            ch = [
-                ChannelMetadata(index=0, name='double_bounce', role='rgb_red'),
-                ChannelMetadata(index=1, name='unpolarized', role='rgb_green'),
-                ChannelMetadata(index=2, name='surface', role='rgb_blue'),
-            ]
-            fmt = 'PowersDP1_RGB'
-        else:
-            r = self._percentile_stretch(
-                self._apply_power_representation(components['double_bounce'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            g = self._percentile_stretch(
-                self._apply_power_representation(components['residual'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            b = self._percentile_stretch(
-                self._apply_power_representation(components['surface'], representation),
-                percentile_low,
-                percentile_high,
-            )
-            ch = [
-                ChannelMetadata(index=0, name='double_bounce', role='rgb_red'),
-                ChannelMetadata(index=1, name='residual', role='rgb_green'),
-                ChannelMetadata(index=2, name='surface', role='rgb_blue'),
-            ]
-            fmt = 'PowersDP2_RGB'
+        # Determine default channel map based on method
+        default_map = self._RGB_CHANNELS_M1 if int(self.method) == 1 else self._RGB_CHANNELS_M2
+        fmt = 'PowersDP1_RGB' if int(self.method) == 1 else 'PowersDP2_RGB'
 
-        rgb = np.stack([r, g, b], axis=0)
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
+        if channels is not None:
+            if len(channels) != 3:
+                raise ValueError(
+                    f"channels must have exactly 3 entries, got {len(channels)}"
+                )
+            missing = set(channels) - set(components.keys())
+            if missing:
+                raise ValueError(f"Missing component keys: {missing}")
+            channel_map = list(zip(channels, _roles))
+        else:
+            channel_map = default_map
+
+        bands = [
+            self._percentile_stretch(
+                self._apply_power_representation(components[k], representation),
+                percentile_low,
+                percentile_high,
+            )
+            for k, _ in channel_map
+        ]
+        rgb = np.stack(bands, axis=0)
+
         meta = ImageMetadata(
             format=fmt,
-            rows=r.shape[0],
-            cols=r.shape[1],
+            rows=rgb.shape[1],
+            cols=rgb.shape[2],
             bands=3,
             dtype='float32',
             axis_order='CYX',
-            channel_metadata=ch,
+            channel_metadata=[
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(channel_map)
+            ],
         )
         return rgb, meta

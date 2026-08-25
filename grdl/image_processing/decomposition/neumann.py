@@ -44,7 +44,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -223,35 +223,65 @@ class NeumannDecomposition(PolarimetricDecomposition):
             'tau':       tau,
         }
 
+    # Per-channel normalisation functions for Neumann parameters.
+    # 'psi' has a fixed physical range; 'delta_mod' and 'tau' use percentile
+    # stretch and direct clip respectively.  This dict is consulted in to_rgb.
+    _RGB_CHANNELS = ['psi', 'delta_mod', 'tau']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Neumann parameters.
+
+        Default channel mapping:
 
         - **Red**: psi (orientation angle, ±45° → [0, 1])
         - **Green**: delta_mod (degree of polarization, percentile stretched)
         - **Blue**: tau (scattering diversity [0, 1])
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'psi'``, ``'delta_mod'``, ``'tau'``.
+            Each is normalised using its own physical rule (see default mapping
+            above).  Defaults to ``['psi', 'delta_mod', 'tau']``.
         """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        def _stretch(arr, lo=None, hi=None):
-            if lo is None:
-                lo = np.nanpercentile(arr, percentile_low)
-            if hi is None:
-                hi = np.nanpercentile(arr, percentile_high)
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
+        if missing:
+            raise ValueError(f"Missing component keys: {missing}")
+
+        def _render(key: str) -> np.ndarray:
+            arr = components[key]
+            if key == 'psi':
+                return np.clip(
+                    (arr - (-45.0)) / 90.0, 0.0, 1.0
+                ).astype(np.float32)
+            if key == 'tau':
+                return np.clip(arr, 0.0, 1.0).astype(np.float32)
+            # delta_mod and anything else: percentile stretch
+            lo = np.nanpercentile(arr, percentile_low)
+            hi = np.nanpercentile(arr, percentile_high)
             return np.clip(
                 (arr - lo) / max(hi - lo, 1e-8), 0.0, 1.0
             ).astype(np.float32)
 
-        r = _stretch(components['psi'], lo=-45.0, hi=45.0)
-        g = _stretch(components['delta_mod'])
-        b = np.clip(components['tau'], 0.0, 1.0).astype(np.float32)
-        rgb = np.stack([r, g, b], axis=0)
+        bands = [_render(k) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         meta = ImageMetadata(
             format='NeumannRGB',
             rows=rgb.shape[1],
@@ -260,9 +290,8 @@ class NeumannDecomposition(PolarimetricDecomposition):
             dtype='float32',
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(index=0, name='psi', role='rgb_red'),
-                ChannelMetadata(index=1, name='delta_mod', role='rgb_green'),
-                ChannelMetadata(index=2, name='tau', role='rgb_blue'),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
             ],
         )
         return rgb, meta

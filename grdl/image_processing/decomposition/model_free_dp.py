@@ -15,7 +15,7 @@ of Selected Topics in Applied Earth Observations and Remote Sensing, 14,
 pp.3887-3898.
 """
 
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 import numpy as np
 
@@ -73,43 +73,42 @@ class ModelFree3CD(DualPolDecompositionBase):
             'theta_dp': np.real(theta_dp),
         }
 
+    _RGB_CHANNELS = [
+        ('double_bounce', 'rgb_red'),
+        ('volume',        'rgb_green'),
+        ('surface',       'rgb_blue'),
+    ]
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
-        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+        """Create an RGB composite (R=double_bounce, G=volume, B=surface).
 
-        r = self._percentile_stretch(
-            self._apply_power_representation(components['double_bounce'], representation),
-            percentile_low,
-            percentile_high,
-        )
-        g = self._percentile_stretch(
-            self._apply_power_representation(components['volume'], representation),
-            percentile_low,
-            percentile_high,
-        )
-        b = self._percentile_stretch(
-            self._apply_power_representation(components['surface'], representation),
-            percentile_low,
-            percentile_high,
-        )
-        rgb = np.stack([r, g, b], axis=0)
+        Parameters
+        ----------
+        components : Dict[str, np.ndarray]
+            Output of the decomposition.
+        representation : str
+            ``'db'`` (default), ``'power'``, or ``'magnitude'``.
+        percentile_low : float
+            Lower percentile for stretch. Default 2.0.
+        percentile_high : float
+            Upper percentile for stretch. Default 98.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Defaults to ``['double_bounce', 'volume', 'surface']``.
 
-        meta = ImageMetadata(
-            format='MF3CD_RGB',
-            rows=r.shape[0],
-            cols=r.shape[1],
-            bands=3,
-            dtype='float32',
-            axis_order='CYX',
-            channel_metadata=[
-                ChannelMetadata(index=0, name='double_bounce', role='rgb_red'),
-                ChannelMetadata(index=1, name='volume', role='rgb_green'),
-                ChannelMetadata(index=2, name='surface', role='rgb_blue'),
-            ],
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
+        """
+        return self._build_power_rgb(
+            components, self._RGB_CHANNELS, 'MF3CDRGB',
+            representation, percentile_low, percentile_high, channels=channels,
         )
-        return rgb, meta

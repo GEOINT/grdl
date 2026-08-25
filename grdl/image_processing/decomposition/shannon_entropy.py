@@ -50,7 +50,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -207,20 +207,40 @@ class ShannonEntropy(PolarimetricDecomposition):
             'H_polarimetric': HSP.reshape(rows, cols),
         }
 
+    _RGB_CHANNELS = ['H_total', 'H_intensity', 'H_polarimetric']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Shannon entropy components.
 
         - **Red**: H_total (percentile stretched)
         - **Green**: H_intensity (percentile stretched)
         - **Blue**: H_polarimetric (percentile stretched)
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'H_total'``, ``'H_intensity'``,
+            ``'H_polarimetric'``.
+            Defaults to ``['H_total', 'H_intensity', 'H_polarimetric']``.
         """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
+        if missing:
+            raise ValueError(f"Missing component keys: {missing}")
 
         def _stretch(arr):
             finite = arr[np.isfinite(arr)]
@@ -230,11 +250,10 @@ class ShannonEntropy(PolarimetricDecomposition):
                 np.float32
             )
 
-        r = _stretch(components['H_total'])
-        g = _stretch(components['H_intensity'])
-        b = _stretch(components['H_polarimetric'])
-        rgb = np.stack([r, g, b], axis=0)
+        bands = [_stretch(components[k]) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         meta = ImageMetadata(
             format='ShannonEntropyRGB',
             rows=rgb.shape[1],
@@ -243,11 +262,8 @@ class ShannonEntropy(PolarimetricDecomposition):
             dtype='float32',
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(index=0, name='H_total', role='rgb_red'),
-                ChannelMetadata(index=1, name='H_intensity', role='rgb_green'),
-                ChannelMetadata(
-                    index=2, name='H_polarimetric', role='rgb_blue'
-                ),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
             ],
         )
         return rgb, meta
