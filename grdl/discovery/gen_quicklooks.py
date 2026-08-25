@@ -363,6 +363,11 @@ class QuicklookGenerator:
         backend: Optional[str] = None,
         workers: int = 1,
     ) -> None:
+        if looks_rg <= 0 or looks_az <= 0:
+            raise ValueError('looks_rg and looks_az must be positive integers')
+        if not (0.0 <= overlap < 1.0):
+            raise ValueError('overlap must be in [0.0, 1.0)')
+
         self.looks_rg = looks_rg
         self.looks_az = looks_az
         self.overlap = overlap
