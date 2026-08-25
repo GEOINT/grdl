@@ -208,8 +208,8 @@ def _mean_power(grid: np.ndarray) -> np.ndarray:
 def _save_png(image_u8: np.ndarray, path: Path) -> None:
     """Write a uint8 greyscale PNG to *path*.
 
-    Uses ``Pillow`` when available, otherwise falls back to ``imageio``
-    or a raw PNG written with only the standard library.
+    Uses ``Pillow`` when available, otherwise falls back to ``imageio`` or
+    ``matplotlib`` (if installed).
 
     Parameters
     ----------
