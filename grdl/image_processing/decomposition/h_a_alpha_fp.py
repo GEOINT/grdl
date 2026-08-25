@@ -301,7 +301,7 @@ class FullPolHAalpha(HAalphaBase):
         if missing:
             raise ValueError(
                 f"Missing component keys: {missing}. "
-                f"Expected keys from decompose(): {set(components.keys())}"
+                f"Expected channel keys from decompose(): {set(components.keys())}"
             )
 
         if alpha_high_deg <= alpha_low_deg:
