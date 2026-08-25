@@ -208,8 +208,8 @@ def _mean_power(grid: np.ndarray) -> np.ndarray:
 def _save_png(image_u8: np.ndarray, path: Path) -> None:
     """Write a uint8 greyscale PNG to *path*.
 
-    Uses ``Pillow`` when available, otherwise falls back to ``imageio``
-    or a raw PNG written with only the standard library.
+    Uses ``Pillow`` when available, otherwise falls back to ``imageio`` or
+    ``matplotlib`` (if installed).
 
     Parameters
     ----------
@@ -363,6 +363,11 @@ class QuicklookGenerator:
         backend: Optional[str] = None,
         workers: int = 1,
     ) -> None:
+        if looks_rg <= 0 or looks_az <= 0:
+            raise ValueError('looks_rg and looks_az must be positive integers')
+        if not (0.0 <= overlap < 1.0):
+            raise ValueError('overlap must be in [0.0, 1.0)')
+
         self.looks_rg = looks_rg
         self.looks_az = looks_az
         self.overlap = overlap
