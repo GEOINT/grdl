@@ -660,8 +660,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    looks_group = parser.add_mutually_exclusive_group()
-    looks_group.add_argument(
+    parser.add_argument(
         '--looks', '-l',
         type=int,
         default=None,
@@ -673,14 +672,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=10,
         metavar='N',
-        help='Range multilook factor. Default: 10.',
+        help='Range multilook factor. Default: 10. Ignored if --looks is specified.',
     )
     parser.add_argument(
         '--looks-az',
         type=int,
         default=10,
         metavar='N',
-        help='Azimuth multilook factor. Default: 10.',
+        help='Azimuth multilook factor. Default: 10. Ignored if --looks is specified.',
     )
 
     parser.add_argument(
@@ -695,6 +694,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='Disable apodization removal before multilook.',
     )
+    parser.add_argument(
+        '--freq-multilook',
+        action='store_true',
+        help=(
+            'Use frequency-domain sub-aperture decomposition (FFT-based) instead of '
+            'the default spatial-domain block averaging. '
+            'Enables GPU acceleration via --backend (or auto-detect). '
+            'Output image preserves input dimensions but requires more memory.'
+        ),
+    )
 
     gpu_group = parser.add_mutually_exclusive_group()
     gpu_group.add_argument(
@@ -707,16 +716,6 @@ def _build_parser() -> argparse.ArgumentParser:
         '--no-gpu',
         action='store_true',
         help='Disable GPU acceleration (equivalent to --backend cpu).',
-    )
-    gpu_group.add_argument(
-        '--freq-multilook',
-        action='store_true',
-        help=(
-            'Use frequency-domain sub-aperture decomposition (FFT-based) instead of '
-            'the default spatial-domain block averaging. '
-            'Enables GPU acceleration via --backend (or auto-detect). '
-            'Output image preserves input dimensions but requires more memory.'
-        ),
     )
 
     parser.add_argument(
