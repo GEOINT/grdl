@@ -35,7 +35,7 @@ Modified
 """
 
 # Standard library
-from typing import Annotated, Any, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -245,6 +245,8 @@ class FullPolHAalpha(HAalphaBase):
             'lambda_3': eigenvalues[..., 2],
         }
 
+    _RGB_CHANNELS = ['entropy', 'alpha', 'anisotropy']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
@@ -253,13 +255,14 @@ class FullPolHAalpha(HAalphaBase):
         percentile_high: float = 98.0,
         alpha_low_deg: float = 10.0,
         alpha_high_deg: float = 80.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from full-pol H/A/Alpha decomposition.
 
-        Channel mapping:
+        Default channel mapping:
 
         - **Red**: Entropy [0, 1]
-        - **Green**: Alpha stretched from 10° to 80° into [0, 1]
+        - **Green**: Alpha stretched from ``alpha_low_deg`` to ``alpha_high_deg``
         - **Blue**: Anisotropy [0, 1]
 
         Parameters
@@ -269,9 +272,17 @@ class FullPolHAalpha(HAalphaBase):
         representation : str
             Ignored (components are real-valued).
         percentile_low : float
-            Unused for full-pol (all channels already in [0, 1]).
+            Unused for fixed-range channels (entropy, alpha, anisotropy).
         percentile_high : float
-            Unused for full-pol (all channels already in [0, 1]).
+            Unused for fixed-range channels (entropy, alpha, anisotropy).
+        alpha_low_deg : float
+            Lower bound for alpha normalisation (degrees). Default 10.0.
+        alpha_high_deg : float
+            Upper bound for alpha normalisation (degrees). Default 80.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'entropy'``, ``'alpha'``, ``'anisotropy'``.
+            Defaults to ``['entropy', 'alpha', 'anisotropy']``.
 
         Returns
         -------
@@ -281,33 +292,36 @@ class FullPolHAalpha(HAalphaBase):
         """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        required = {'entropy', 'alpha', 'anisotropy'}
-        missing = required - set(components.keys())
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
         if missing:
             raise ValueError(
                 f"Missing component keys: {missing}. "
-                f"Expected keys from decompose(): {required}"
+                f"Expected channel keys from decompose(): {set(components.keys())}"
             )
-
-        # Red: Entropy (already [0, 1])
-        r = np.clip(components['entropy'], 0.0, 1.0).astype(np.float32)
 
         if alpha_high_deg <= alpha_low_deg:
             raise ValueError(
                 "alpha_high_deg must be greater than alpha_low_deg for RGB scaling."
             )
 
-        # Green: Alpha stretched to emphasize the common 10°-80° interval.
-        g = np.clip(
-            (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
-            0.0,
-            1.0,
-        ).astype(np.float32)
+        def _render(key: str) -> np.ndarray:
+            if key == 'alpha':
+                return np.clip(
+                    (components['alpha'] - alpha_low_deg) / (alpha_high_deg - alpha_low_deg),
+                    0.0, 1.0,
+                ).astype(np.float32)
+            # entropy and anisotropy are already in [0, 1]
+            return np.clip(components[key], 0.0, 1.0).astype(np.float32)
 
-        # Blue: Anisotropy (already [0, 1])
-        b = np.clip(components['anisotropy'], 0.0, 1.0).astype(np.float32)
+        bands = [_render(k) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
-        rgb = np.stack([r, g, b], axis=0)
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         metadata = ImageMetadata(
             format='HAalphaRGB',
             rows=int(rgb.shape[1]),
@@ -316,27 +330,8 @@ class FullPolHAalpha(HAalphaBase):
             bands=3,
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(
-                    index=0, name='entropy', role='decomposition',
-                    extras={'halpha_component': 'entropy',
-                            'formula': 'H in [0, 1]',
-                            'display': 'Red'},
-                ),
-                ChannelMetadata(
-                    index=1, name='alpha_norm', role='decomposition',
-                    extras={'halpha_component': 'alpha',
-                            'formula': (
-                                f'clip((alpha-{alpha_low_deg:g})/'
-                                f'({alpha_high_deg:g}-{alpha_low_deg:g}), 0, 1)'
-                            ),
-                            'display': 'Green'},
-                ),
-                ChannelMetadata(
-                    index=2, name='anisotropy', role='decomposition',
-                    extras={'halpha_component': 'anisotropy',
-                            'formula': 'A in [0, 1]',
-                            'display': 'Blue'},
-                ),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
             ],
         )
         return rgb, metadata

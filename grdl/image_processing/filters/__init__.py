@@ -24,7 +24,7 @@ Phase Filters
     ``PhaseGradientFilter`` — windowed phase gradient for complex SAR data
 
 SAR Polarimetric Filters (matrix-aware; inherit ``SARFilter`` directly)
-    (future: further polarimetric filters)
+    ``WishartFilter`` — Complex Wishart filter for polarimetric covariance matrices
 
 Dependencies
 ------------
@@ -60,6 +60,7 @@ from grdl.image_processing.filters.lee_sigma import LeeSigmaFilter
 from grdl.image_processing.filters.refined_lee import RefinedLeeFilter
 from grdl.image_processing.filters.idan import IDANFilter
 from grdl.image_processing.filters.phase import PhaseGradientFilter
+from grdl.image_processing.filters.wishart import WishartFilter
 
 __all__ = [
     'MeanFilter',
@@ -76,4 +77,5 @@ __all__ = [
     'RefinedLeeFilter',
     'IDANFilter',
     'PhaseGradientFilter',
+    'WishartFilter',
 ]

@@ -47,7 +47,9 @@ from grdl.image_processing.filters import (
     MinFilter,
     PhaseGradientFilter,
     StdDevFilter,
+    WishartFilter,
 )
+from grdl.image_processing.decomposition import CoherencyMatrix, CovarianceMatrix
 from grdl.image_processing.filters._validation import (
     validate_kernel_size,
     validate_mode,
@@ -952,6 +954,99 @@ class TestIDANFilter:
         f = IDANFilter(kernel_size=3, max_pixels=8, enl=0.0)
         out = f.apply(img)
         assert np.all(np.isfinite(out))
+
+
+# ---------------------------------------------------------------------------
+# WishartFilter tests
+# ---------------------------------------------------------------------------
+
+class TestWishartFilter:
+    """Focused API tests for Wishart matrix workflows."""
+
+    @staticmethod
+    def _quad_pol_slc(rows=8, cols=8, seed=123):
+        rng = np.random.default_rng(seed)
+        shh = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(np.complex64)
+        shv = (0.3 * (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols)))).astype(np.complex64)
+        svh = shv.copy()
+        svv = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(np.complex64)
+        return shh, shv, svh, svv
+
+    def test_filter_matrix_shape_preserved_for_t3(self):
+        """filter_matrix accepts (N,N,rows,cols) and preserves shape for T3."""
+        shh, shv, svh, svv = self._quad_pol_slc()
+        channels = np.stack([shh, shv, svh, svv], axis=0)
+        t3 = CoherencyMatrix(window_size=1).compute(channels)
+
+        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type='T3')
+        out = f.filter_matrix(t3)
+
+        assert out.shape == t3.shape
+        assert np.iscomplexobj(out)
+        assert np.all(np.isfinite(np.real(out)))
+        assert np.all(np.isfinite(np.imag(out)))
+
+    def test_apply_accepts_matrix_tensor(self):
+        """apply dispatches 4D matrix tensors to matrix filtering path."""
+        shh, shv, svh, svv = self._quad_pol_slc(seed=124)
+        channels = np.stack([shh, shv, svh, svv], axis=0)
+        c3 = CovarianceMatrix(window_size=1).compute(channels)
+
+        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type='C3')
+        out = f.apply(c3)
+
+        assert out.shape == c3.shape
+        assert np.iscomplexobj(out)
+
+    def test_filter_channels_c3_and_t3_shapes(self):
+        """filter_channels returns (3,3,rows,cols) for C3 and T3."""
+        shh, shv, svh, svv = self._quad_pol_slc(seed=125)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+
+        c3_out = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
+        t3_out = f.filter_channels(shh, shv, svh, svv, matrix_type='T3')
+
+        assert c3_out.shape == (3, 3, shh.shape[0], shh.shape[1])
+        assert t3_out.shape == (3, 3, shh.shape[0], shh.shape[1])
+
+    def test_filter_channels_c2_and_t2_shapes(self):
+        """filter_channels supports dual-pol C2/T2 with two channels."""
+        shh, shv, _, _ = self._quad_pol_slc(seed=126)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+
+        c2_out = f.filter_channels(shh, shv, matrix_type='C2')
+        t2_out = f.filter_channels(shh, shv, matrix_type='T2')
+
+        assert c2_out.shape == (2, 2, shh.shape[0], shh.shape[1])
+        assert t2_out.shape == (2, 2, shh.shape[0], shh.shape[1])
+
+    def test_filter_channels_invalid_type_raises(self):
+        """Unknown matrix_type raises ValidationError."""
+        shh, shv, svh, svv = self._quad_pol_slc(seed=127)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+        with pytest.raises(ValidationError, match='matrix_type'):
+            f.filter_channels(shh, shv, svh, svv, matrix_type='X4')
+
+    def test_filter_channels_missing_quad_channels_raises(self):
+        """C3/T3 require all four quad-pol channels."""
+        shh, shv, _, _ = self._quad_pol_slc(seed=128)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+        with pytest.raises(ValidationError, match='requires shh, shv, svh, and svv'):
+            f.filter_channels(shh, shv, matrix_type='T3')
+
+    def test_filter_matrix_non_square_raises(self):
+        """Non-square matrix dimensions raise ValidationError."""
+        mat = np.zeros((2, 3, 8, 8), dtype=np.complex64)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+        with pytest.raises(ValidationError, match='square'):
+            f.filter_matrix(mat)
+
+    def test_filter_matrix_wrong_ndim_raises(self):
+        """Non-4D matrix input raises ValidationError."""
+        mat = np.zeros((3, 8, 8), dtype=np.complex64)
+        f = WishartFilter(kernel_size=3, enl=1.0)
+        with pytest.raises(ValidationError, match='4D matrix'):
+            f.filter_matrix(mat)
 
 
 # ---------------------------------------------------------------------------

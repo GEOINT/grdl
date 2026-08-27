@@ -44,7 +44,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -232,35 +232,59 @@ class PraksParameters(PolarimetricDecomposition):
             'entropy':                 np.real(entropy),
         }
 
+    # 'alpha' has a fixed physical range [0, 90°]; the others use percentile stretch.
+    _RGB_CHANNELS = ['alpha', 'scattering_diversity', 'depolarization_index']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Praks parameters.
+
+        Default channel mapping:
 
         - **Red**: alpha (angle, 0–90° normalised to [0, 1])
         - **Green**: scattering_diversity (percentile stretched)
         - **Blue**: depolarization_index (percentile stretched)
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'alpha'``, ``'scattering_diversity'``,
+            ``'depolarization_index'``.  ``'alpha'`` is normalised over
+            [0, 90°]; others use percentile stretch.
+            Defaults to ``['alpha', 'scattering_diversity', 'depolarization_index']``.
         """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        def _stretch(arr, lo=None, hi=None):
-            if lo is None:
-                lo = np.nanpercentile(arr, percentile_low)
-            if hi is None:
-                hi = np.nanpercentile(arr, percentile_high)
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
+        if missing:
+            raise ValueError(f"Missing component keys: {missing}")
+
+        def _render(key: str) -> np.ndarray:
+            arr = components[key]
+            if key == 'alpha':
+                return np.clip(arr / 90.0, 0.0, 1.0).astype(np.float32)
+            lo = np.nanpercentile(arr, percentile_low)
+            hi = np.nanpercentile(arr, percentile_high)
             return np.clip(
                 (arr - lo) / max(hi - lo, 1e-8), 0.0, 1.0
             ).astype(np.float32)
 
-        r = _stretch(components['alpha'], lo=0.0, hi=90.0)
-        g = _stretch(components['scattering_diversity'])
-        b = _stretch(components['depolarization_index'])
-        rgb = np.stack([r, g, b], axis=0)
+        bands = [_render(k) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         meta = ImageMetadata(
             format='PraksRGB',
             rows=rgb.shape[1],
@@ -269,13 +293,8 @@ class PraksParameters(PolarimetricDecomposition):
             dtype='float32',
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(index=0, name='alpha', role='rgb_red'),
-                ChannelMetadata(
-                    index=1, name='scattering_diversity', role='rgb_green'
-                ),
-                ChannelMetadata(
-                    index=2, name='depolarization_index', role='rgb_blue'
-                ),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
             ],
         )
         return rgb, meta

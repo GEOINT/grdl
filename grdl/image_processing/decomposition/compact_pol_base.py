@@ -11,7 +11,7 @@ input extraction for C2-style notebook and processor workflows.
 # Standard library
 import dataclasses
 from abc import abstractmethod
-from typing import Any, Dict, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -200,6 +200,7 @@ class CompactPolDecompositionBase(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from decomposition outputs."""
         ...

@@ -45,7 +45,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -297,30 +297,94 @@ class TouziDecomposition(PolarimetricDecomposition):
             'psi_mean':   (psi_mean   * to_deg).reshape(shape),
         }
 
+    # Physical [lo, hi] range for each mean parameter (degrees).
+    # Used by to_rgb for fixed-range normalisation.
+    _CHANNEL_RANGES: Dict[str, Tuple[float, float]] = {
+        'alpha_mean': (0.0,    90.0),
+        'phi_mean':   (-180.0, 180.0),
+        'tau_mean':   (-45.0,  45.0),
+        'psi_mean':   (-45.0,  45.0),
+    }
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Touzi mean parameters.
+
+        Default channel mapping:
 
         - **Red**: alpha_mean [0, 90°]
         - **Green**: |tau_mean| [0, 45°]
         - **Blue**: psi_mean [−45, 45°]
+
+        An alternate mapping (alpha, phi, tau) can be requested via the
+        ``channels`` parameter, which is useful for examining helicity and
+        orientation phase simultaneously.
+
+        Parameters
+        ----------
+        components : Dict[str, np.ndarray]
+            Output of ``decompose()`` or ``decompose_from_t3()``.
+        representation : str
+            Ignored — all Touzi parameters are already real-valued angles.
+        percentile_low : float
+            Ignored — physical ranges are used for all channels.
+        percentile_high : float
+            Ignored — physical ranges are used for all channels.
+        channels : list of str, optional
+            Override the R/G/B channel selection.  Exactly 3 mean component
+            key names (``'alpha_mean'``, ``'phi_mean'``, ``'tau_mean'``,
+            ``'psi_mean'``) in R, G, B order.  Each is normalised using its
+            physical range from ``_CHANNEL_RANGES``.  Note that ``tau_mean``
+            is mapped as ``|tau_mean|`` over [0, 45°] regardless of sign.
+            Defaults to ``['alpha_mean', 'tau_mean', 'psi_mean']``.
+
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+            ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
+
+        Raises
+        ------
+        ValueError
+            If ``channels`` does not contain exactly 3 entries or any key
+            is not a recognised mean parameter.
         """
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        def _stretch(arr, lo, hi):
+        _default = ['alpha_mean', 'tau_mean', 'psi_mean']
+        channel_keys = list(channels) if channels is not None else _default
+
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        unknown = set(channel_keys) - set(self._CHANNEL_RANGES)
+        if unknown:
+            raise ValueError(
+                f"Unknown Touzi channel(s): {unknown}. "
+                f"Valid options: {list(self._CHANNEL_RANGES)}"
+            )
+
+        def _stretch_channel(key: str) -> np.ndarray:
+            arr = components[key]
+            lo, hi = self._CHANNEL_RANGES[key]
+            # tau_mean is folded to |tau| so it fills the positive half-range
+            if key == 'tau_mean':
+                arr = np.abs(arr)
+                hi = abs(hi)
+                lo = 0.0
             return np.clip(
                 (arr - lo) / max(hi - lo, 1e-8), 0.0, 1.0
             ).astype(np.float32)
 
-        r = _stretch(components['alpha_mean'], 0.0, 90.0)
-        g = _stretch(np.abs(components['tau_mean']), 0.0, 45.0)
-        b = _stretch(components['psi_mean'], -45.0, 45.0)
-        rgb = np.stack([r, g, b], axis=0)
+        bands = [_stretch_channel(k) for k in channel_keys]
+        rgb = np.stack(bands, axis=0)
 
         meta = ImageMetadata(
             format='TouziRGB',
@@ -330,9 +394,10 @@ class TouziDecomposition(PolarimetricDecomposition):
             dtype='float32',
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(index=0, name='alpha_mean', role='rgb_red'),
-                ChannelMetadata(index=1, name='tau_mean',   role='rgb_green'),
-                ChannelMetadata(index=2, name='psi_mean',   role='rgb_blue'),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(
+                    zip(channel_keys, ('rgb_red', 'rgb_green', 'rgb_blue'))
+                )
             ],
         )
         return rgb, meta

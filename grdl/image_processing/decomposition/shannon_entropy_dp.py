@@ -12,7 +12,7 @@ scheme of POLSAR images based on the complex Wishart distribution
 and H/A/Alpha polarimetric decomposition theorem."
 """
 
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
@@ -67,32 +67,59 @@ class ShannonEntropyDP(DualPolDecompositionBase):
             'H_polarimetric': np.real(hsp),
         }
 
+    _RGB_CHANNELS = ['H_total', 'H_intensity', 'H_polarimetric']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        """Create an RGB composite from Shannon entropy components.
+
+        - **Red**: H_total (percentile stretched)
+        - **Green**: H_intensity (percentile stretched)
+        - **Blue**: H_polarimetric (percentile stretched)
+
+        Parameters
+        ----------
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            Available keys: ``'H_total'``, ``'H_intensity'``,
+            ``'H_polarimetric'``.
+            Defaults to ``['H_total', 'H_intensity', 'H_polarimetric']``.
+        """
         del representation
         from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        r = self._percentile_stretch(components['H_total'], percentile_low, percentile_high)
-        g = self._percentile_stretch(components['H_intensity'], percentile_low, percentile_high)
-        b = self._percentile_stretch(components['H_polarimetric'], percentile_low, percentile_high)
-        rgb = np.stack([r, g, b], axis=0)
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+        missing = set(channel_keys) - set(components.keys())
+        if missing:
+            raise ValueError(f"Missing component keys: {missing}")
 
+        bands = [
+            self._percentile_stretch(components[k], percentile_low, percentile_high)
+            for k in channel_keys
+        ]
+        rgb = np.stack(bands, axis=0)
+
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         meta = ImageMetadata(
             format='ShannonDP_RGB',
-            rows=r.shape[0],
-            cols=r.shape[1],
+            rows=rgb.shape[1],
+            cols=rgb.shape[2],
             bands=3,
             dtype='float32',
             axis_order='CYX',
             channel_metadata=[
-                ChannelMetadata(index=0, name='H_total', role='rgb_red'),
-                ChannelMetadata(index=1, name='H_intensity', role='rgb_green'),
-                ChannelMetadata(index=2, name='H_polarimetric', role='rgb_blue'),
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
             ],
         )
         return rgb, meta

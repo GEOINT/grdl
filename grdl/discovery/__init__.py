@@ -53,6 +53,7 @@ from grdl.discovery.scanner import MetadataScanner, ScanResult, compute_beam_foo
 from grdl.discovery.catalog import LocalCatalog
 from grdl.discovery.synthesizer import DataSynthesizer
 from grdl.discovery.plugins import GRDLCatalogPlugin
+from grdl.discovery.gen_quicklooks import QuicklookGenerator
 from grdl._version import __version__
 
 __all__ = [
@@ -64,5 +65,6 @@ __all__ = [
     'LocalCatalog',
     'DataSynthesizer',
     'GRDLCatalogPlugin',
+    'QuicklookGenerator',
 ]
 

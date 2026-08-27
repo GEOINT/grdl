@@ -45,7 +45,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, Tuple, TYPE_CHECKING
+from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
@@ -405,12 +405,15 @@ class PauliDecomposition(PolarimetricDecomposition):
             ),
         ]
 
+    _RGB_CHANNELS = ['double_bounce', 'volume', 'surface']
+
     def to_rgb(
         self,
         components: Dict[str, np.ndarray],
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """
         Create Pauli RGB composite.
@@ -434,6 +437,10 @@ class PauliDecomposition(PolarimetricDecomposition):
             Lower percentile for contrast stretch. Default 2.0.
         percentile_high : float
             Upper percentile for contrast stretch. Default 98.0.
+        channels : list of str, optional
+            Override which 3 component keys map to R, G, B (in that order).
+            E.g. ``channels=['surface', 'volume', 'double_bounce']``.
+            Defaults to ``['double_bounce', 'volume', 'surface']``.
 
         Returns
         -------
@@ -448,9 +455,16 @@ class PauliDecomposition(PolarimetricDecomposition):
             If ``representation`` is not one of the supported values,
             or if required component keys are missing.
         """
-        from grdl.IO.models.base import ImageMetadata
+        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
 
-        required = {'surface', 'double_bounce', 'volume'}
+        channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
+
+        if len(channel_keys) != 3:
+            raise ValueError(
+                f"channels must have exactly 3 entries, got {len(channel_keys)}"
+            )
+
+        required = set(channel_keys)
         missing = required - set(components.keys())
         if missing:
             raise ValueError(
@@ -471,17 +485,13 @@ class PauliDecomposition(PolarimetricDecomposition):
 
         real_components = converters[representation](components)
 
-        r = self._percentile_stretch(
-            real_components['double_bounce'], percentile_low, percentile_high
-        )
-        g = self._percentile_stretch(
-            real_components['volume'], percentile_low, percentile_high
-        )
-        b = self._percentile_stretch(
-            real_components['surface'], percentile_low, percentile_high
-        )
+        bands = [
+            self._percentile_stretch(real_components[k], percentile_low, percentile_high)
+            for k in channel_keys
+        ]
+        rgb = np.stack(bands, axis=0)  # (3, rows, cols) float32
 
-        rgb = np.stack([r, g, b], axis=0)  # (3, rows, cols) float32
+        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         metadata = ImageMetadata(
             format='PauliRGB',
             rows=int(rgb.shape[1]),
@@ -489,7 +499,10 @@ class PauliDecomposition(PolarimetricDecomposition):
             dtype=str(rgb.dtype),
             bands=3,
             axis_order='CYX',
-            channel_metadata=self.rgb_channel_metadata(),
+            channel_metadata=[
+                ChannelMetadata(index=i, name=k, role=role)
+                for i, (k, role) in enumerate(zip(channel_keys, _roles))
+            ],
         )
         return rgb, metadata
 
