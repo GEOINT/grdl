@@ -28,7 +28,7 @@ Modified
 
 # Standard library
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Third-party
 import numpy as np
@@ -643,6 +643,7 @@ class SICDImageFormation:
     processing: Optional[List[SICDProcessingStep]] = None
     polarization_hv_angle_poly: Optional[Poly1D] = None
     polarization_calibration: Optional[Dict[str, Any]] = None
+    tx_rcv_polarization_proc: Optional[Union[str, List[str]]] = None
 
 
 # ===================================================================
