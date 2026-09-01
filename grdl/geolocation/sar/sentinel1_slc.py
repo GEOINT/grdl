@@ -44,6 +44,8 @@ Created
 
 Modified
 --------
+2026-08-31  dem_path/geoid_path/interpolation are keyword-only, so a
+            DEM path can never bind to another parameter.
 2026-06-09  Forward DEM interpolation order through from_reader.
 2026-04-18  Document grid-vs-native accuracy limitation.
 2026-03-10
@@ -112,6 +114,7 @@ class Sentinel1SLCGeolocation(Geolocation):
     def __init__(
         self,
         metadata: 'Sentinel1SLCMetadata',
+        *,
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
         interpolation: int = 3,
@@ -264,6 +267,7 @@ class Sentinel1SLCGeolocation(Geolocation):
     def from_reader(
         cls,
         reader: 'Sentinel1SLCReader',
+        *,
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
         interpolation: int = 3,

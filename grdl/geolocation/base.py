@@ -23,6 +23,10 @@ Created
 
 Modified
 --------
+2026-08-31  Lazy, footprint-scoped elevation: dem_path is resolved on
+            first use with a bbox derived from the sensor model, so DEM
+            discovery never scans a whole archive.
+            dem_path/geoid_path/interpolation are now keyword-only.
 2026-03-31  Add _resolve_height and _fill_nan_heights for consistent
             height/NaN handling across all subclasses.  Add interpolation
             parameter to __init__ and _build_elevation_model.
@@ -87,6 +91,15 @@ class Geolocation(ABC):
     so that the base-class wrapper does not add a redundant outer loop.
     """
 
+    _elevation: Optional[Any] = None
+    """Backing store for the :attr:`elevation` property."""
+
+    _dem_path: Optional[Any] = None
+    _geoid_path: Optional[Any] = None
+    _dem_interpolation: int = 3
+    _elevation_pending: bool = False
+    _elevation_building: bool = False
+
     _handles_dem_internally: bool = False
     """If True, ``_image_to_latlon_array`` already queries ``self.elevation``
     internally (e.g. via the R/Rdot projection engine).  The base-class
@@ -100,6 +113,7 @@ class Geolocation(ABC):
         self,
         shape: Tuple[int, int],
         crs: str = 'WGS84',
+        *,
         dem_path: Optional[Union[str, Any]] = None,
         geoid_path: Optional[Union[str, Any]] = None,
         interpolation: int = 3,
@@ -127,11 +141,145 @@ class Geolocation(ABC):
         """
         self.shape = shape
         self.crs = crs
-        self.elevation = None
+
+        # The elevation model is built lazily on first access.  Two
+        # reasons:
+        #
+        # 1. Tile discovery needs the scene bbox, and the bbox comes from
+        #    the sensor model, which subclasses finish assembling only
+        #    *after* this constructor returns.
+        # 2. Nothing should pay for a DEM it never queries.  On a network
+        #    archive an unscoped scan of every tile is the difference
+        #    between a construction that returns and one that appears to
+        #    hang.
+        self._elevation = None
+        self._dem_path = None
+        self._geoid_path = geoid_path
+        self._dem_interpolation = interpolation
+        self._elevation_pending = False
+        self._elevation_building = False
 
         if dem_path is not None:
-            self.elevation = _build_elevation_model(
-                dem_path, geoid_path, interpolation=interpolation)
+            if _is_elevation_model(dem_path):
+                # Already-constructed model: adopt it as-is.
+                self._elevation = dem_path
+            else:
+                self._dem_path = dem_path
+                self._elevation_pending = True
+
+    @property
+    def elevation(self) -> Optional[Any]:
+        """Terrain model for this geolocation, or ``None``.
+
+        Built on first access from the ``dem_path`` handed to
+        ``__init__``, scoped to the tiles covering :meth:`dem_bbox`.
+        Assigning to this attribute replaces the model outright and
+        cancels any pending lazy build::
+
+            geo.elevation = open_elevation(dted_dir, geoid_path=geoid)
+
+        Returns ``None`` while the lazy build is in flight, so that
+        :meth:`dem_bbox` can project the footprint against the
+        ellipsoid without recursing back into DEM construction.
+        """
+        if self._elevation_pending and not self._elevation_building:
+            self._elevation_building = True
+            try:
+                self._elevation = _build_elevation_model(
+                    self._dem_path,
+                    self._geoid_path,
+                    interpolation=self._dem_interpolation,
+                    bbox=self.dem_bbox(),
+                )
+            finally:
+                self._elevation_building = False
+                self._elevation_pending = False
+        return self._elevation
+
+    @elevation.setter
+    def elevation(self, model: Optional[Any]) -> None:
+        self._elevation = model
+        self._elevation_pending = False
+        self._dem_path = None
+
+    def dem_bbox(
+        self,
+        pad_deg: float = 0.05,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Geographic bounds used to scope DEM tile discovery.
+
+        Returns the scene extent as ``(min_lon, min_lat, max_lon,
+        max_lat)`` in degrees, padded by ``pad_deg`` so that terrain
+        parallax and cross-tile interpolation stay inside the indexed
+        set.  Passed to ``open_elevation`` so that only the tiles the
+        scene actually touches are opened, instead of every tile in the
+        archive.
+
+        Resolution order:
+
+        1. :meth:`_metadata_bbox` — corner points carried in the sensor
+           metadata (exact and free; subclasses override).
+        2. The perimeter footprint projected against the ellipsoid.
+
+        Parameters
+        ----------
+        pad_deg : float, default=0.05
+            Halo in degrees added to every side of the extent.
+
+        Returns
+        -------
+        tuple of float, or None
+            ``(min_lon, min_lat, max_lon, max_lat)``, or ``None`` when
+            no geographic extent can be determined (the caller then
+            falls back to unscoped discovery).
+        """
+        bounds = self._metadata_bbox()
+        if bounds is None:
+            bounds = self._footprint_bbox()
+        if bounds is None:
+            return None
+
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bounds)
+        if not all(np.isfinite(v) for v in
+                   (min_lon, min_lat, max_lon, max_lat)):
+            return None
+
+        pad = float(pad_deg)
+        return (
+            min_lon - pad,
+            max(min_lat - pad, -90.0),
+            max_lon + pad,
+            min(max_lat + pad, 90.0),
+        )
+
+    def _metadata_bbox(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Scene bounds straight from sensor metadata, if carried.
+
+        Subclasses whose metadata records image corner coordinates
+        override this to avoid projecting the perimeter at all.  The
+        base implementation returns ``None``, which sends
+        :meth:`dem_bbox` to the footprint fallback.
+        """
+        return None
+
+    def _footprint_bbox(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Scene bounds from the perimeter footprint, or ``None``.
+
+        Projects against the ellipsoid: this runs while the DEM is
+        still being built, so ``self.elevation`` reads as ``None``.
+        """
+        try:
+            footprint = self.get_footprint()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        bounds = footprint.get('bounds') if footprint else None
+        if bounds is None or len(bounds) != 4:
+            return None
+        return tuple(bounds)  # type: ignore[return-value]
 
     @property
     def default_hae(self) -> float:
@@ -689,10 +837,22 @@ class NoGeolocation(Geolocation):
         }
 
 
+def _is_elevation_model(obj: Any) -> bool:
+    """Is *obj* an already-constructed ``ElevationModel``?
+
+    Used so that ``dem_path`` may be handed either a path or a live
+    elevation model, as the ``from_reader`` factories document.
+    """
+    from grdl.geolocation.elevation.base import ElevationModel
+
+    return isinstance(obj, ElevationModel)
+
+
 def _build_elevation_model(
     dem_path: Union[str, Any],
     geoid_path: Optional[Union[str, Any]] = None,
     interpolation: int = 3,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> Any:
     """
     Build an ElevationModel from DEM path and optional geoid path.
@@ -708,6 +868,9 @@ def _build_elevation_model(
     interpolation : int, default=3
         Spline interpolation order for DEM sampling (1=bilinear,
         3=bicubic, 5=quintic).  Passed through to ``open_elevation``.
+    bbox : tuple of (min_lon, min_lat, max_lon, max_lat), optional
+        Scene bounds in degrees.  Restricts tile discovery to the cells
+        the scene touches instead of indexing the whole archive.
 
     Returns
     -------
@@ -723,8 +886,12 @@ def _build_elevation_model(
     """
     from grdl.geolocation.elevation.open_elevation import open_elevation
 
+    if _is_elevation_model(dem_path):
+        return dem_path
+
     return open_elevation(
         str(dem_path),
         geoid_path=str(geoid_path) if geoid_path else None,
         interpolation=interpolation,
+        bbox=bbox,
     )

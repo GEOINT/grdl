@@ -16,6 +16,12 @@ Key Classes
 - GeoTIFFDEM: Reads a single GeoTIFF DEM file via rasterio, bicubic default
 - GeoidCorrection: EGM96 geoid undulation lookup
 
+Key Functions
+-------------
+- open_elevation: Auto-detect DEM format from a file or directory path
+- open_elevation_for: Same, scoped to a reader/geolocation footprint so
+  only the tiles the scene covers are discovered
+
 Usage
 -----
     >>> from grdl.geolocation.elevation import ConstantElevation
@@ -50,13 +56,17 @@ Created
 
 Modified
 --------
+2026-08-31  Export open_elevation_for (footprint-scoped DEM discovery).
 2026-03-27  Update DTEDElevation description for interpolation/stitching.
 2026-02-11
 """
 
 from grdl.geolocation.elevation.base import ElevationModel
 from grdl.geolocation.elevation.constant import ConstantElevation
-from grdl.geolocation.elevation.open_elevation import open_elevation
+from grdl.geolocation.elevation.open_elevation import (
+    open_elevation,
+    open_elevation_for,
+)
 
 # Optional: may fail if rasterio not available
 try:
@@ -88,6 +98,7 @@ __all__ = [
     'ElevationModel',
     'ConstantElevation',
     'open_elevation',
+    'open_elevation_for',
     'DTEDElevation',
     'GeoTIFFDEM',
     'TiledGeoTIFFDEM',

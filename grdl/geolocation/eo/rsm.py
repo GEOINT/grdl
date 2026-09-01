@@ -28,6 +28,8 @@ Created
 
 Modified
 --------
+2026-08-31  dem_path/geoid_path/interpolation are keyword-only, so a
+            DEM path can never bind to another parameter.
 2026-06-09  Replace FD Jacobian with closed-form analytic Jacobian.
 2026-04-01  Add multi-segment RSM support and ICHIPB integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
@@ -475,6 +477,7 @@ class RSMGeolocation(Geolocation):
         rsm_segments: Optional['RSMSegmentGrid'] = None,
         ichipb: Optional['ICHIPBMetadata'] = None,
         shape: Tuple[int, int] = (1, 1),
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,
@@ -852,6 +855,7 @@ class RSMGeolocation(Geolocation):
     def from_reader(
         cls,
         reader: object,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,
