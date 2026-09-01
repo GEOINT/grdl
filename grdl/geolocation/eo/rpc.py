@@ -28,6 +28,9 @@ Created
 
 Modified
 --------
+2026-08-31  Add _metadata_bbox() so DEM tile discovery is scoped to
+            the scene footprint without projecting the perimeter.
+            dem_path/geoid_path/interpolation are now keyword-only.
 2026-06-09  Replace FD Jacobian with closed-form analytic Jacobian.
 2026-04-01  Add ICHIPB chip transform integration.
 2026-03-31  Add interpolation parameter for DEM sampling order.
@@ -373,6 +376,7 @@ class RPCGeolocation(Geolocation):
         rpc: 'RPCCoefficients',
         ichipb: Optional['ICHIPBMetadata'] = None,
         shape: Tuple[int, int] = (1, 1),
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,
@@ -384,6 +388,36 @@ class RPCGeolocation(Geolocation):
         super().__init__(
             shape, crs='WGS84', dem_path=dem_path, geoid_path=geoid_path,
             interpolation=interpolation)
+
+    def _metadata_bbox(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Scene bounds from the RPC normalization domain.
+
+        ``LAT_OFF`` / ``LAT_SCALE`` and ``LONG_OFF`` / ``LONG_SCALE``
+        define the ground region the rational polynomials were fit
+        over -- a tight superset of the image footprint, available
+        without evaluating the model.
+
+        Returns
+        -------
+        tuple of float, or None
+            ``(min_lon, min_lat, max_lon, max_lat)`` in degrees, or
+            ``None`` when the normalization scales are degenerate.
+        """
+        lat_off = float(self.rpc.lat_off)
+        lon_off = float(self.rpc.long_off)
+        lat_scale = abs(float(self.rpc.lat_scale))
+        lon_scale = abs(float(self.rpc.long_scale))
+        if lat_scale == 0.0 or lon_scale == 0.0:
+            return None
+
+        return (
+            lon_off - lon_scale,
+            lat_off - lat_scale,
+            lon_off + lon_scale,
+            lat_off + lat_scale,
+        )
 
     def _latlon_to_image_array(
         self,
@@ -520,6 +554,7 @@ class RPCGeolocation(Geolocation):
     def from_reader(
         cls,
         reader: object,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,

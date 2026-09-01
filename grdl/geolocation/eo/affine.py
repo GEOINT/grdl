@@ -37,6 +37,8 @@ Created
 
 Modified
 --------
+2026-08-31  dem_path/geoid_path/interpolation are keyword-only, so a
+            DEM path can never bind to another parameter.
 2026-06-09
 """
 
@@ -124,6 +126,7 @@ class AffineGeolocation(Geolocation):
         transform: 'Affine',
         shape: Tuple[int, int],
         crs: str,
+        *,
         dem_path: Optional[Union[str, object]] = None,
         geoid_path: Optional[Union[str, object]] = None,
         interpolation: int = 3,
@@ -280,6 +283,7 @@ class AffineGeolocation(Geolocation):
     def from_reader(
         cls,
         reader: 'ImageReader',
+        *,
         dem_path: Optional[Union[str, object]] = None,
         geoid_path: Optional[Union[str, object]] = None,
         interpolation: int = 3,

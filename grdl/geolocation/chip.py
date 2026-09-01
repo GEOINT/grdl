@@ -24,11 +24,13 @@ Created
 
 Modified
 --------
+2026-08-31  Delegate elevation to the parent instead of copying it,
+            so a chip never forces the parent's lazy DEM build.
 2026-03-27
 """
 
 # Standard library
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 # Third-party
 import numpy as np
@@ -87,9 +89,32 @@ class ChipGeolocation(Geolocation):
         self._geo = geolocation
         self._row_offset = float(row_offset)
         self._col_offset = float(col_offset)
-        # Inherit elevation and DEM handling from parent geolocation
-        self.elevation = geolocation.elevation
+        # Inherit DEM handling from the parent geolocation.  Elevation
+        # itself is delegated by the property below rather than copied,
+        # so building a chip never forces the parent's lazy DEM build.
         self._handles_dem_internally = geolocation._handles_dem_internally
+
+    _elevation_overridden: bool = False
+    """True once a caller has assigned to :attr:`elevation` on the chip,
+    which detaches it from the parent's model."""
+
+    @property
+    def elevation(self) -> Optional[Any]:
+        """The parent geolocation's elevation model.
+
+        Delegated, not copied: the parent may build its DEM lazily, and
+        a DEM attached to the parent after the chip was created is still
+        seen here.  Assigning to this attribute detaches the chip and
+        pins it to the assigned model.
+        """
+        if self._elevation_overridden:
+            return self._elevation
+        return self._geo.elevation
+
+    @elevation.setter
+    def elevation(self, model: Optional[Any]) -> None:
+        self._elevation = model
+        self._elevation_overridden = True
 
     @property
     def default_hae(self) -> float:

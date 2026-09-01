@@ -48,6 +48,11 @@ Created
 
 Modified
 --------
+2026-08-31  Add _metadata_bbox() so DEM tile discovery is scoped to
+            the scene footprint without projecting the perimeter.
+            Validate `refine` so a misplaced positional
+            dem_path/geoid_path fails loudly.
+            dem_path/geoid_path/interpolation are now keyword-only.
 2026-06-09  Use base class _resolve_height and _fill_nan_heights for
             consistent height/NaN handling.  Add interpolation parameter.
 2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_rdot_ppn)
@@ -143,11 +148,23 @@ class SIDDGeolocation(Geolocation):
         self,
         metadata: 'SIDDMetadata',
         refine: bool = True,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         per_point_normal: bool = True,
         interpolation: int = 3,
     ) -> None:
+        if not isinstance(refine, bool):
+            # Catches SIDDGeolocation(meta, dem, geoid): those paths bind
+            # to `refine` and `dem_path`, which would load the geoid as
+            # the terrain model and leave the DEM unread.
+            raise TypeError(
+                f"refine must be a bool, got {type(refine).__name__}. "
+                f"dem_path and geoid_path are keyword arguments: use "
+                f"SIDDGeolocation(metadata, dem_path=..., geoid_path=...), "
+                f"not positional arguments."
+            )
+
         self.metadata = metadata
         self.backend = 'native'
         self._use_ppn = per_point_normal
@@ -215,6 +232,32 @@ class SIDDGeolocation(Geolocation):
     # ------------------------------------------------------------------
     # Standardized public properties
     # ------------------------------------------------------------------
+
+    def _metadata_bbox(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Scene bounds from the SIDD image corner points.
+
+        Free and exact: ``GeoData/ImageCorners`` already carries the four
+        geographic corners, so DEM tile discovery needs no projection.
+
+        Returns
+        -------
+        tuple of float, or None
+            ``(min_lon, min_lat, max_lon, max_lat)`` in degrees, or
+            ``None`` when the metadata carries no corner points.
+        """
+        geo_data = getattr(self.metadata, 'geo_data', None)
+        if geo_data is None:
+            return None
+
+        corners = geo_data.image_corners or geo_data.valid_data
+        if not corners:
+            return None
+
+        lats = [c.lat for c in corners]
+        lons = [c.lon for c in corners]
+        return (min(lons), min(lats), max(lons), max(lats))
 
     @property
     def default_hae(self) -> float:
@@ -945,6 +988,7 @@ class SIDDGeolocation(Geolocation):
         cls,
         reader: object,
         refine: bool = True,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         per_point_normal: bool = True,

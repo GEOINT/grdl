@@ -115,7 +115,7 @@ types (PFA, INCA, RgAzComp, PLANE).
 ```python
 from grdl.IO.sar import SICDReader
 from grdl.geolocation import SICDGeolocation
-from grdl.geolocation.elevation import open_elevation
+from grdl.geolocation.elevation import open_elevation_for
 
 with SICDReader('complex.nitf') as reader:
     # From reader (auto-selects best backend; accepts dem_path=,
@@ -144,7 +144,8 @@ with SICDReader('complex.nitf') as reader:
 
 ```python
 geo = SICDGeolocation.from_reader(reader)
-geo.elevation = open_elevation('/data/dted/', geoid_path='/data/egm96.pgm')
+geo.elevation = open_elevation_for(
+    geo, '/data/dted/', geoid_path='/data/egm96.pgm')
 
 # Heights now come from the DEM, not a constant surface
 lat, lon, terrain_h = geo.image_to_latlon(500, 1000)
@@ -550,7 +551,7 @@ The DEM is **always** attached to the geolocation object. It is never
 passed separately to downstream consumers (orthorectifier, etc.).
 
 ```python
-from grdl.geolocation.elevation import open_elevation
+from grdl.geolocation.elevation import open_elevation, open_elevation_for
 
 # Auto-detect format from path
 dem = open_elevation('/data/srtm/')                          # DTED directory
@@ -565,6 +566,79 @@ geo.elevation = dem
 lat, lon, h = geo.image_to_latlon(500, 1000)
 row, col = geo.latlon_to_image(lat, lon)
 ```
+
+### DEM arguments are keyword-only
+
+`dem_path`, `geoid_path`, and `interpolation` are keyword-only on every
+geolocation constructor and `from_reader()` factory:
+
+```python
+geo = SICDGeolocation(metadata, dem_path=DTED, geoid_path=GEOID)   # correct
+geo = SICDGeolocation(metadata, DTED, GEOID)                       # TypeError/ValueError
+```
+
+The classes disagree about what their leading positional parameters
+are, and before this was enforced the mismatch was silent:
+
+| Class | positional parameters before the DEM arguments |
+|-------|------------------------------------------------|
+| `SICDGeolocation` | `metadata, raw_meta, backend, delta_arp, delta_varp, range_bias` |
+| `SIDDGeolocation` | `metadata, refine` |
+| `NISARGeolocation` | `metadata` |
+| `Sentinel1SLCGeolocation` | `metadata` |
+| `RPCGeolocation` | `rpc, ichipb, shape` |
+| `RSMGeolocation` | `rsm, rsm_id, rsm_segments, ichipb, shape` |
+| `AffineGeolocation` | `transform, shape, crs` |
+| `CornerGeolocation` | `corners, shape, height, accuracy_source` |
+
+`SICDGeolocation(metadata, dted_dir, geoid_file)` used to bind the DTED
+path to `raw_meta` and the geoid path to `backend`, leaving
+`dem_path=None`: the object constructed cleanly and projected every
+height onto the ellipsoid. SICD absorbs six positional parameters, so
+the keyword-only marker alone does not catch it -- the backend name is
+validated as well, and `SIDDGeolocation` type-checks `refine` for the
+same reason. Both errors name the fix.
+
+### Scoping tile discovery to the scene
+
+A directory DEM handed to `open_elevation()` with no `bbox` is indexed by
+scanning the whole archive. Against a large or network-mounted DTED tree
+that scan dominates: a 19 000-tile archive on a network mount takes long
+enough to read as a hang.
+
+`open_elevation_for()` takes the scene instead of the bbox and derives
+the bbox itself, so only the cells the imagery covers are opened:
+
+```python
+from grdl.geolocation.elevation import open_elevation_for
+
+geo = SICDGeolocation.from_reader(reader)
+geo.elevation = open_elevation_for(
+    geo,                                   # or the reader itself
+    '/mnt/archive/dted/',
+    geoid_path='/mnt/archive/egm96.pgm',
+)
+```
+
+The extent comes from `Geolocation.dem_bbox()`, which prefers corner
+points carried in the sensor metadata (SICD/SIDD `GeoData/ImageCorners`,
+the RPC normalization domain) and falls back to projecting the image
+perimeter against the ellipsoid. It is padded by `pad_deg` (default
+0.05 degrees) so terrain parallax and cross-tile interpolation stay
+inside the indexed set.
+
+**Passing `dem_path=` does this for you.** The elevation model is built
+lazily on first access to `geo.elevation`, at which point the sensor
+model is complete and the bbox is available:
+
+```python
+geo = SICDGeolocation.from_reader(reader, dem_path='/mnt/archive/dted/')
+# construction returns immediately — nothing has touched the archive
+lat, lon, h = geo.image_to_latlon(500, 1000)   # DEM is built here, scoped
+```
+
+Assigning `geo.elevation = ...` cancels any pending build and pins the
+assigned model.
 
 **DEM interpolation order** can be set via constructor:
 
@@ -591,8 +665,10 @@ geo = RPCGeolocation.from_reader(
 # geo.elevation is already populated
 ```
 
-The interpolation order flows `constructor → _build_elevation_model →
-open_elevation → DEM backend`. `GCPGeolocation.from_reader()` is the lone
+The model is built lazily on first access to `geo.elevation`, with tile
+discovery scoped to `geo.dem_bbox()` — see *Scoping tile discovery to the
+scene* above. The interpolation order flows `constructor →
+_build_elevation_model → open_elevation → DEM backend`. `GCPGeolocation.from_reader()` is the lone
 exception — it takes only `crs=` because BIOMASS GCPs carry their own
 heights and never consult an external DEM.
 
@@ -665,10 +741,25 @@ dem = open_elevation(
     geoid_path='/data/egm96.pgm',
     location=(34.05, -118.25),  # optional coverage check
     fallback_height=0.0,        # if nothing works
+    bbox=(-118.4, 34.0, -118.1, 34.2),  # scope tile discovery
 )
 # Returns TiledGeoDTED, DTEDElevation, GeoTIFFDEM, TiledGeoTIFFDEM,
 # or ConstantElevation (DTED directories prefer TiledGeoDTED).
 # Never returns None
+```
+
+**open_elevation_for()** — same, with the bbox taken from the scene:
+
+```python
+from grdl.geolocation.elevation import open_elevation_for
+
+dem = open_elevation_for(
+    geo,                        # a Geolocation, or any GRDL reader
+    '/data/terrain/',
+    geoid_path='/data/egm96.pgm',
+    pad_deg=0.05,               # halo around the footprint
+    verify_coverage=False,      # require a finite height at scene center
+)
 ```
 
 ### Geoid Correction

@@ -122,8 +122,17 @@ class ImageReader(ABC):
         Returns
         -------
         np.ndarray
-            Image data with shape (rows, cols) for single-band or
-            (rows, cols, bands) for multi-band imagery
+            Image data with shape ``(rows, cols)`` for single-band or
+            ``(bands, rows, cols)`` for multi-band imagery.
+
+            Note the axis order differs from :meth:`get_shape`, which
+            reports ``(rows, cols, bands)``.  Pixel data is band-first
+            because that is the native layout of the underlying
+            libraries (rasterio, GDAL, h5py) and of every consumer in
+            the library, including
+            :func:`grdl.image_processing.ortho.resample`.  Returning
+            band-last from a reader does not raise -- it silently
+            resamples the row axis as though it were bands.
 
         Raises
         ------
