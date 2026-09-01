@@ -42,8 +42,12 @@ Modified
 
 # Standard library
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import (
+    Any, Callable, Dict, List, Optional, Tuple, Union, TYPE_CHECKING,
+)
 
 # Third-party
 import numpy as np
@@ -54,9 +58,17 @@ from grdl.image_processing.ortho.ortho import Orthorectifier, GeographicGrid
 
 logger = logging.getLogger(__name__)
 
+# Above this many output pixels, ``orthorectify`` tiles automatically so
+# a large grid cannot exhaust memory.  8 Mpx is comfortably above any
+# interactive-sized output, and well below where the whole-grid path
+# gets expensive.  Set to ``None`` to disable auto-tiling entirely.
+AUTO_TILE_THRESHOLD_PX: Optional[int] = 8_000_000
+AUTO_TILE_SIZE = 1024
+
 if TYPE_CHECKING:
     from grdl.IO.base import ImageReader
     from grdl.geolocation.base import Geolocation
+    from grdl.image_processing.ortho.memory import MemoryEstimate
 
 
 class OrthoResult:
@@ -232,6 +244,8 @@ class OrthoBuilder:
         self._tile_size: Optional[Union[int, Tuple[int, int]]] = None
         self._enu_params: Optional[Dict[str, Any]] = None
         self._batch_size: int = 2_000_000
+        self._workers: int = 1
+        self._reader_factory: Optional[Callable[[], 'ImageReader']] = None
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -510,6 +524,87 @@ class OrthoBuilder:
         self._tile_size = tile_size
         return self
 
+    def with_workers(self, workers: int) -> 'OrthoBuilder':
+        """Process this many tiles concurrently.
+
+        The stages inside a single tile are already threaded but reach
+        only two to four cores, so running tiles concurrently is what
+        saturates a machine.  Tiles write disjoint slices of the
+        output, so the result is unchanged; peak memory scales with the
+        worker count.
+
+        Requires a tiled run.  A file-backed reader also needs
+        :meth:`with_reader_factory`, since one reader holds a single
+        file handle and seeks on it.
+
+        Parameters
+        ----------
+        workers : int
+            Concurrent tiles.  1 disables the pool.
+
+        Returns
+        -------
+        OrthoBuilder
+            Self for chaining.
+
+        Raises
+        ------
+        ValueError
+            If ``workers`` is not positive.
+        """
+        if workers < 1:
+            raise ValueError(f"workers must be >= 1, got {workers}")
+        self._workers = int(workers)
+        return self
+
+    def with_reader_factory(
+        self,
+        factory: Callable[[], 'ImageReader'],
+    ) -> 'OrthoBuilder':
+        """Supply a per-thread reader factory for parallel tiling.
+
+        Called once per worker thread to obtain a private reader.  This
+        is required for ``workers > 1`` with a file-backed reader:
+        concurrent reads through a single instance can race on the
+        shared file handle.  Readers created here are closed when the
+        run finishes.
+
+        Parameters
+        ----------
+        factory : callable
+            Zero-argument callable returning a fresh reader.
+
+        Returns
+        -------
+        OrthoBuilder
+            Self for chaining.
+        """
+        self._reader_factory = factory
+        return self
+
+    def estimate(self) -> 'MemoryEstimate':
+        """Predict peak memory for this configuration, allocating nothing.
+
+        Returns
+        -------
+        MemoryEstimate
+
+        Raises
+        ------
+        ValueError
+            If the output grid cannot be resolved.
+        """
+        from grdl.image_processing.ortho.memory import estimate_ortho_memory
+
+        grid = self._resolve_output_grid()
+        dtype = (self._source_array.dtype
+                 if self._source_array is not None else np.float32)
+        bands = len(self._bands) if self._bands else 1
+        return estimate_ortho_memory(
+            grid, self._geolocation, tile_size=self._tile_size,
+            dtype=dtype, bands=bands, workers=self._workers,
+        )
+
     def with_enu_grid(
         self,
         pixel_size_m: float,
@@ -581,11 +676,33 @@ class OrthoBuilder:
                 "(.with_source_array()) is required."
             )
 
-        if self._tile_size is not None:
-            return self._run_tiled()
-
         # 1. Resolve output grid
         grid = self._resolve_output_grid()
+
+        # Bound memory automatically.  The whole-grid path holds the
+        # inverse mapping, several derived coordinate arrays and a
+        # source chip covering every valid output pixel all at once --
+        # measured at roughly 235 bytes per output pixel, so a 400 Mpx
+        # grid needs ~90 GB and a billion-pixel grid cannot run at all.
+        # Tiling costs nothing in accuracy (the same code runs per
+        # tile) and turns that into a fixed per-tile working set, so it
+        # is the right default rather than an expert opt-in.  An
+        # explicit tile_size always wins; AUTO_TILE_THRESHOLD_PX = None
+        # restores the old behaviour.
+        tile_size = self._tile_size
+        if (tile_size is None
+                and AUTO_TILE_THRESHOLD_PX is not None
+                and grid.rows * grid.cols > AUTO_TILE_THRESHOLD_PX):
+            tile_size = AUTO_TILE_SIZE
+            logger.info(
+                "Output is %d x %d (%.1f Mpx); tiling at %d to bound "
+                "memory.  Pass tile_size explicitly to override.",
+                grid.rows, grid.cols,
+                grid.rows * grid.cols / 1e6, AUTO_TILE_SIZE,
+            )
+
+        if tile_size is not None:
+            return self._run_tiled(grid=grid, tile_size=tile_size)
 
         # 2. Create orthorectifier
         logger.info(
@@ -684,7 +801,11 @@ class OrthoBuilder:
             margin=self._margin,
         )
 
-    def _run_tiled(self) -> OrthoResult:
+    def _run_tiled(
+        self,
+        grid: Optional[GeographicGrid] = None,
+        tile_size: Optional[Union[int, Tuple[int, int]]] = None,
+    ) -> OrthoResult:
         """Execute orthorectification in spatial tiles.
 
         Partitions the output grid into tiles using
@@ -692,6 +813,13 @@ class OrthoBuilder:
         independently: compute mapping, read source chip, resample,
         and place into the pre-allocated output array.  Mapping memory
         is proportional to tile size, not full output size.
+
+        Parameters
+        ----------
+        grid : GeographicGrid, optional
+            Pre-resolved output grid; resolved here when omitted.
+        tile_size : int or (int, int), optional
+            Tile dimensions; falls back to the builder's setting.
 
         Returns
         -------
@@ -701,49 +829,86 @@ class OrthoBuilder:
         from grdl.data_prep import Tiler
 
         # 1. Resolve full output grid
-        grid = self._resolve_output_grid()
+        if grid is None:
+            grid = self._resolve_output_grid()
+        if tile_size is None:
+            tile_size = self._tile_size
 
         # 2. Plan tiles
         tiler = Tiler(
             nrows=grid.rows, ncols=grid.cols,
-            tile_size=self._tile_size,
+            tile_size=tile_size,
         )
-        tiles = tiler.tile_positions()
+        # Exact cover: tile_positions() snaps edge tiles inward so they
+        # overlap their neighbours, which resamples every seam twice.
+        tiles = tiler.partition_positions()
         logger.info(
             "Tiled processing: %dx%d grid, %d tiles",
             grid.rows, grid.cols, len(tiles),
         )
 
-        # 3. Determine output dtype and shape
+        # 3. Determine output dtype and shape.
+        #
+        # In source-array mode the array states both.  In reader mode
+        # they are not knowable up front: the dtype depends on what the
+        # reader yields *and* on how resample() promotes it (integers
+        # become float32 when nodata is NaN), and the band count depends
+        # on the `bands` selection.  This used to be hardcoded to
+        # float64 single-band, which doubled the buffer for real
+        # imagery and made complex SAR and multi-band EO fail outright
+        # on assignment.  Allocating from the first tile that actually
+        # produces data is exact for every modality and needs no
+        # per-format dispatch.
+        output: Optional[np.ndarray] = None
         if self._source_array is not None:
             dtype = self._source_array.dtype
             is_multiband = self._source_array.ndim == 3
             n_bands = self._source_array.shape[0] if is_multiband else 0
-        else:
-            dtype = np.float64
-            is_multiband = False
-            n_bands = 0
+            shape = ((n_bands, grid.rows, grid.cols) if is_multiband
+                     else (grid.rows, grid.cols))
+            output = np.full(shape, self._nodata, dtype=dtype)
 
-        if is_multiband:
-            output = np.full(
-                (n_bands, grid.rows, grid.cols),
-                self._nodata, dtype=dtype,
-            )
-        else:
-            output = np.full(
-                (grid.rows, grid.cols),
-                self._nodata, dtype=dtype,
-            )
-
-        # 4. Process each tile
+        # 4. Process each tile.
+        #
+        # Tiles write disjoint slices of `output`, so concurrency is
+        # safe on the output side.  The readers are not: one holds a
+        # single file handle and seeks on it, so a parallel run needs a
+        # private reader per worker thread.  Without a factory we stay
+        # serial rather than risk interleaved seeks.
         total_tiles = len(tiles)
-        last_logged_pct = -1
-        for tile_idx, tile in enumerate(tiles):
+        workers = max(1, self._workers)
+        if (workers > 1 and self._source_array is None
+                and self._reader_factory is None):
+            logger.warning(
+                "workers=%d ignored: a file-backed reader needs "
+                "with_reader_factory() to be used concurrently",
+                workers,
+            )
+            workers = 1
+
+        local = threading.local()
+        opened: List['ImageReader'] = []
+        state_lock = threading.Lock()
+        progress = {'done': 0, 'logged': -1}
+
+        def _tile_reader() -> 'ImageReader':
+            """Reader private to the calling thread."""
+            if self._reader_factory is None:
+                return self._reader
+            if not hasattr(local, 'reader'):
+                local.reader = self._reader_factory()
+                with state_lock:
+                    opened.append(local.reader)
+            return local.reader
+
+        def _process(tile: Any) -> None:
+            """Orthorectify one tile into its slice of the output."""
+            nonlocal output
+
             sub = grid.sub_grid(
                 tile.row_start, tile.col_start,
                 tile.row_end, tile.col_end,
             )
-
             tile_ortho = Orthorectifier(
                 geolocation=self._geolocation,
                 output_grid=sub,
@@ -752,26 +917,43 @@ class OrthoBuilder:
             )
             tile_ortho.compute_mapping()
 
-            pct = (tile_idx + 1) * 100 // total_tiles
-            if pct // 10 > last_logged_pct // 10:
-                logger.debug(
-                    "Tile progress: %d/%d (%d%%)",
-                    tile_idx + 1, total_tiles, pct,
-                )
-                last_logged_pct = pct
-
             if self._source_array is not None:
                 tile_data = tile_ortho.apply(
                     self._source_array, nodata=self._nodata,
                 )
             else:
                 tile_data = tile_ortho.apply_from_reader(
-                    self._reader, bands=self._bands,
+                    _tile_reader(), bands=self._bands,
                     nodata=self._nodata,
                 )
 
-            # Place tile into output
-            if is_multiband:
+            # Allocate on the first tile that reveals the true dtype and
+            # band count; guarded because several tiles may finish at
+            # once.
+            with state_lock:
+                if output is None:
+                    if tile_data.ndim == 3:
+                        shape = (tile_data.shape[0], grid.rows, grid.cols)
+                    else:
+                        shape = (grid.rows, grid.cols)
+                    output = np.full(
+                        shape, self._nodata, dtype=tile_data.dtype,
+                    )
+                    logger.debug(
+                        "Allocated %s output from the first tile",
+                        output.dtype,
+                    )
+
+                progress['done'] += 1
+                pct = progress['done'] * 100 // total_tiles
+                if pct // 10 > progress['logged'] // 10:
+                    logger.debug(
+                        "Tile progress: %d/%d (%d%%)",
+                        progress['done'], total_tiles, pct,
+                    )
+                    progress['logged'] = pct
+
+            if output.ndim == 3:
                 output[
                     :,
                     tile.row_start:tile.row_end,
@@ -782,6 +964,37 @@ class OrthoBuilder:
                     tile.row_start:tile.row_end,
                     tile.col_start:tile.col_end,
                 ] = tile_data
+
+        try:
+            if workers > 1:
+                logger.info(
+                    "Processing %d tiles across %d workers",
+                    total_tiles, workers,
+                )
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    list(pool.map(_process, tiles))
+            else:
+                for tile in tiles:
+                    _process(tile)
+        finally:
+            # Leaving these open leaks a handle per worker, and on
+            # Windows also holds a lock on the file.
+            for handle in opened:
+                try:
+                    handle.close()
+                except Exception:  # noqa: BLE001 - cleanup is best-effort
+                    logger.debug(
+                        "failed to close a worker reader", exc_info=True,
+                    )
+
+        if output is None:
+            # No tile produced data; nothing observed the dtype.
+            logger.warning(
+                "No tile yielded data; returning an empty float32 grid",
+            )
+            output = np.full(
+                (grid.rows, grid.cols), self._nodata, dtype=np.float32,
+            )
 
         # 5. Build metadata from full grid
         meta_ortho = Orthorectifier(
@@ -820,7 +1033,10 @@ def orthorectify(
     tile_size: Optional[Union[int, Tuple[int, int]]] = None,
     enu_grid: Optional[Dict[str, Any]] = None,
     batch_size: int = 2_000_000,
-) -> OrthoResult:
+    workers: int = 1,
+    reader_factory: Optional[Callable[[], 'ImageReader']] = None,
+    estimate_only: bool = False,
+) -> Union[OrthoResult, 'MemoryEstimate']:
     """Orthorectify imagery to a geographic or ENU grid.
 
     Convenience function wrapping ``OrthoBuilder`` with keyword arguments.
@@ -862,12 +1078,24 @@ def orthorectify(
         ENU grid parameters passed to ``with_enu_grid()``.  Keys:
         ``pixel_size_m``, ``ref_lat``, ``ref_lon``, ``ref_alt``,
         ``margin_m``.
+    workers : int, default=1
+        Tiles processed concurrently.  Only applies to a tiled run,
+        which large outputs select automatically.  Output is unchanged;
+        peak memory scales with the worker count.
+    reader_factory : callable, optional
+        Zero-argument callable returning a fresh reader, called once
+        per worker thread.  Required for ``workers > 1`` when reading
+        from a file; without it the run stays serial and warns.
+    estimate_only : bool, default=False
+        Return a ``MemoryEstimate`` for this configuration instead of
+        running it.  Useful before committing to a large output.
 
     Returns
     -------
-    OrthoResult
+    OrthoResult or MemoryEstimate
         Container with ``data``, ``output_grid``, and
-        ``geolocation_metadata``.
+        ``geolocation_metadata``; or the estimate when
+        ``estimate_only`` is set.
 
     Raises
     ------
@@ -877,6 +1105,12 @@ def orthorectify(
 
     Examples
     --------
+    Check the cost before running a large output::
+
+        est = orthorectify(geolocation=geo, reader=reader,
+                           estimate_only=True)
+        print(est.report())
+
     From a reader with DEM::
 
         geo.elevation = dem
@@ -926,5 +1160,11 @@ def orthorectify(
         builder.with_tile_size(tile_size)
     if enu_grid is not None:
         builder.with_enu_grid(**enu_grid)
+    if workers != 1:
+        builder.with_workers(workers)
+    if reader_factory is not None:
+        builder.with_reader_factory(reader_factory)
 
+    if estimate_only:
+        return builder.estimate()
     return builder.run()

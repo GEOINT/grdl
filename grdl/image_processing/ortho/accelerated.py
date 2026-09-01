@@ -461,8 +461,12 @@ def _resample_numba(
     effective_order = order if order in (1, 3, 5) else 1
     kernel = _NUMBA_KERNELS[effective_order]
 
-    rm = row_map.astype(np.float64)
-    cm = col_map.astype(np.float64)
+    # asarray, not astype: the maps arrive as float64 from
+    # Orthorectifier.compute_mapping, and astype copies unconditionally.
+    # That was a flat 16 bytes per output pixel of pure waste on every
+    # call -- 6.4 GB on a 400 Mpx grid.
+    rm = np.asarray(row_map, dtype=np.float64)
+    cm = np.asarray(col_map, dtype=np.float64)
 
     if order == 0:
         rm = np.floor(rm + 0.5)

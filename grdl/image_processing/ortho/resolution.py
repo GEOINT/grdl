@@ -52,8 +52,11 @@ def compute_output_resolution(
     """Compute output grid pixel spacing from imagery metadata.
 
     Dispatches to format-specific resolution computation based on the
-    metadata type.  Returns pixel sizes in degrees suitable for
-    ``OutputGrid`` construction.
+    metadata type.  When no rule matches, falls back to measuring the
+    ground sample spacing through ``geolocation`` itself, so any
+    modality with a mapping gets a sensible answer rather than an
+    error.  Returns pixel sizes in degrees suitable for ``OutputGrid``
+    construction.
 
     Parameters
     ----------
@@ -122,11 +125,90 @@ def compute_output_resolution(
             logger.debug("Matched metadata type: GeoTIFF/geocoded raster")
             return _resolution_from_geotiff(metadata, scale_factor)
 
+    # Modality-neutral fallback: measure the ground sample spacing
+    # through the geolocation itself.  Any sensor with a mapping has
+    # one, so this covers formats with no metadata-specific rule --
+    # EO NITF (RPC/RSM), Sentinel-2, VIIRS, ASTER, TerraSAR -- without
+    # a per-format branch.
+    if geolocation is not None:
+        try:
+            return _resolution_from_geolocation(geolocation, scale_factor)
+        except (AttributeError, ValueError, NotImplementedError) as err:
+            logger.debug("Geolocation probe failed: %s", err)
+
     raise ValueError(
         f"Cannot determine output resolution from metadata type "
-        f"{type(metadata).__name__}.  Provide pixel_size_lat and "
-        f"pixel_size_lon explicitly."
+        f"{type(metadata).__name__} and no usable geolocation was "
+        f"given.  Provide pixel_size_lat and pixel_size_lon explicitly."
     )
+
+
+def _resolution_from_geolocation(
+    geolocation: 'Geolocation',
+    scale_factor: float = 1.0,
+    step: float = 200.0,
+) -> Tuple[float, float]:
+    """Measure output spacing by probing the geolocation.
+
+    Projects three pixels near the image centre and measures the ground
+    distance per source row and per source column, then returns a
+    square output pixel at the **coarser** of the two.  Sampling at the
+    finer axis would interpolate the coarse one upward, inventing
+    detail the sensor did not collect and inflating the raster.
+
+    Measuring rather than deriving also picks up geometry the
+    closed-form rules miss: for a SICD with a non-zero twist angle,
+    ``row_ss / cos(graze)`` is several percent off the true ground
+    spacing.
+
+    Parameters
+    ----------
+    geolocation : Geolocation
+        Any geolocation exposing ``shape`` and ``image_to_latlon``.
+    scale_factor : float, default=1.0
+        Multiplier on the measured spacing; >1 coarsens.
+    step : float, default=200.0
+        Pixel baseline over which the spacings are measured.
+
+    Returns
+    -------
+    Tuple[float, float]
+        ``(pixel_size_lat, pixel_size_lon)`` in degrees.
+
+    Raises
+    ------
+    ValueError
+        If the geolocation does not produce finite coordinates.
+    """
+    rows, cols = geolocation.shape
+    step = float(min(step, max(1.0, rows / 4.0), max(1.0, cols / 4.0)))
+    center_row, center_col = rows / 2.0, cols / 2.0
+
+    probes = geolocation.image_to_latlon(np.array([
+        [center_row, center_col],
+        [center_row + step, center_col],
+        [center_row, center_col + step],
+    ], dtype=np.float64))
+    if not np.all(np.isfinite(probes[:, :2])):
+        raise ValueError('geolocation returned non-finite coordinates')
+
+    lat0 = float(probes[0, 0])
+    m_per_lat, m_per_lon = meters_per_degree(lat0)
+
+    def _ground(index: int) -> float:
+        """Ground meters per pixel along one image axis."""
+        d_lat = (probes[index, 0] - probes[0, 0]) * m_per_lat
+        d_lon = (probes[index, 1] - probes[0, 1]) * m_per_lon
+        return float(np.hypot(d_lat, d_lon)) / step
+
+    spacing = max(_ground(1), _ground(2)) * scale_factor
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        raise ValueError(f'measured a non-physical spacing: {spacing}')
+
+    logger.debug(
+        "Measured ground spacing through the geolocation: %.4f m", spacing,
+    )
+    return spacing / m_per_lat, spacing / m_per_lon
 
 
 # ------------------------------------------------------------------

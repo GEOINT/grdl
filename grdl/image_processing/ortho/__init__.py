@@ -50,6 +50,12 @@ GeographicGrid
     counts).  Satisfies ``OutputGridProtocol``.  Supports
     ``from_geolocation()`` construction and ``sub_grid()`` extraction
     for tiled processing.
+RotatedENUGrid
+    Local ENU grid rotated in the ground plane.  ``fit_to_collect``
+    aligns it with the source image's geometry so the collect fills the
+    raster instead of sitting as a rotated diamond inside a north-up
+    box -- typically ~99% covered rather than ~57%, which is both a
+    smaller product and less work.
 ENUGrid
     Local East-North-Up grid specification in meters, centered on a
     WGS-84 reference point.  Satisfies ``OutputGridProtocol`` —
@@ -58,6 +64,13 @@ ENUGrid
 validate_sub_grid_indices
     Shared bounds-checking helper used by ``GeographicGrid.sub_grid()``
     and ``ENUGrid.sub_grid()`` to validate tile indices.
+estimate_ortho_memory
+    Predict peak memory before allocating, so an oversized run can be
+    caught up front rather than by exhausting the machine.
+MemoryEstimate
+    Result of the above, with a ``report()`` summary.
+default_workers
+    A conservative concurrent-tile count for this machine.
 compute_output_resolution
     Auto-compute output pixel size in degrees from sensor metadata.
     Dispatches on metadata type: SICD, BIOMASS, Sentinel-1 SLC, NISAR,
@@ -111,12 +124,22 @@ from grdl.image_processing.ortho.ortho import (
     validate_sub_grid_indices,
 )
 from grdl.image_processing.ortho.enu_grid import ENUGrid
+from grdl.image_processing.ortho.rotated_enu_grid import (
+    RotatedENUGrid,
+    ground_axes,
+    orientation_preserved,
+)
 from grdl.image_processing.ortho.ortho_builder import (
     OrthoBuilder,
     OrthoResult,
     orthorectify,
 )
 from grdl.image_processing.ortho.resolution import compute_output_resolution
+from grdl.image_processing.ortho.memory import (
+    MemoryEstimate,
+    default_workers,
+    estimate_ortho_memory,
+)
 from grdl.image_processing.ortho.accelerated import resample, detect_backend
 from grdl.image_processing.ortho.roi import PointRoiResult, orthorectify_point_roi
 
@@ -137,12 +160,18 @@ __all__ = [
     'OutputGridProtocol',
     'validate_sub_grid_indices',
     'ENUGrid',
+    'RotatedENUGrid',
+    'ground_axes',
+    'orientation_preserved',
     'UTMGrid',
     'WebMercatorGrid',
     'OrthoBuilder',
     'OrthoResult',
     'orthorectify',
     'compute_output_resolution',
+    'MemoryEstimate',
+    'estimate_ortho_memory',
+    'default_workers',
     'resample',
     'detect_backend',
     'PointRoiResult',
