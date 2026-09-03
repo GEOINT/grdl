@@ -45,6 +45,16 @@ def test_full_pol_dop_to_rgb_uses_percentiles():
     _assert_scalar_rgb_percentile_behavior(DegreeOfPolarization(window_size=3), 'dop')
 
 
+def test_full_pol_dop_perceptual_mode_stays_grayscale():
+    arr = np.linspace(0.0, 1.0, 100, dtype=np.float64).reshape(10, 10)
+    rgb, _ = DegreeOfPolarization(window_size=3).to_rgb(
+        {'dop': arr},
+        color_mode='perceptual',
+    )
+    np.testing.assert_allclose(rgb[0], rgb[1])
+    np.testing.assert_allclose(rgb[1], rgb[2])
+
+
 def test_dual_pol_dop_to_rgb_uses_percentiles():
     _assert_scalar_rgb_percentile_behavior(DegreeOfPolarizationDP(window_size=3), 'dop')
 

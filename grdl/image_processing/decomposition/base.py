@@ -233,6 +233,7 @@ class PolarimetricDecomposition(ImageProcessor):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """
@@ -253,6 +254,10 @@ class PolarimetricDecomposition(ImageProcessor):
             Lower percentile for contrast stretch. Default 2.0.
         percentile_high : float
             Upper percentile for contrast stretch. Default 98.0.
+        color_mode : str
+            ``'standard'`` stacks the selected channels directly as RGB.
+            ``'perceptual'`` blends the channels in CIELAB space before
+            converting back to display RGB.
         channels : list of str, optional
             Override which 3 component keys map to R, G, B (in that order).
             When provided, must contain exactly 3 valid component key names.
@@ -499,6 +504,7 @@ class PolarimetricDecomposition(ImageProcessor):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Build an RGB composite from real-valued power-like components.
@@ -528,6 +534,10 @@ class PolarimetricDecomposition(ImageProcessor):
             Lower percentile for stretch. Default 2.0.
         percentile_high : float
             Upper percentile for stretch. Default 98.0.
+        color_mode : str
+            ``'standard'`` stacks the three selected channels directly as RGB.
+            ``'perceptual'`` blends the channels in CIELAB space before
+            converting back to display RGB.
         channels : list of str, optional
             Override the R/G/B channel selection.  Exactly 3 component key
             names in R, G, B order.  When provided, *channel_map* is
@@ -572,7 +582,11 @@ class PolarimetricDecomposition(ImageProcessor):
             )
             for key, _ in channel_map
         ]
-        rgb = np.stack(bands, axis=0)
+        rgb = self._bands_to_rgb(
+            bands,
+            color_mode=color_mode,
+            channel_keys=[key for key, _ in channel_map],
+        )
 
         meta = ImageMetadata(
             format=format_name,
@@ -587,3 +601,61 @@ class PolarimetricDecomposition(ImageProcessor):
             ],
         )
         return rgb, meta
+
+    def _bands_to_rgb(
+        self,
+        bands: List[np.ndarray],
+        color_mode: str = 'standard',
+        channel_keys: Optional[List[str]] = None,
+    ) -> np.ndarray:
+        """Convert three display bands to an RGB cube.
+
+        ``standard`` mode stacks the bands directly. ``perceptual`` mode
+        blends the bands in CIELAB space using canonical red/green/blue
+        anchors and then converts back to RGB.
+        """
+        if len(bands) != 3:
+            raise ValueError(f"bands must have exactly 3 entries, got {len(bands)}")
+
+        stack = np.stack([np.asarray(b, dtype=np.float64) for b in bands], axis=-1)
+
+        if color_mode == 'standard':
+            return np.moveaxis(stack.astype(np.float32, copy=False), -1, 0)
+
+        if color_mode != 'perceptual':
+            raise ValueError(
+                "color_mode must be one of ['standard', 'perceptual'], "
+                f"got {color_mode!r}"
+            )
+
+        if channel_keys is not None and len(set(channel_keys)) == 1:
+            gray = np.clip(np.mean(stack, axis=-1), 0.0, 1.0).astype(np.float32)
+            return np.stack([gray, gray, gray], axis=0)
+
+        try:
+            from skimage.color import lab2rgb, rgb2lab
+        except ImportError as exc:  # pragma: no cover - dependency check
+            raise ImportError(
+                "perceptual color_mode requires scikit-image"
+            ) from exc
+
+        anchors_rgb = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        anchors_lab = rgb2lab(anchors_rgb[np.newaxis, :, :])[0]
+
+        total = np.sum(stack, axis=-1, keepdims=True)
+        safe_total = np.maximum(total, np.finfo(np.float64).eps)
+        weights = stack / safe_total
+
+        lab = np.einsum('...k,kj->...j', weights, anchors_lab)
+        lab[..., 0] = 100.0 * np.clip(np.mean(stack, axis=-1), 0.0, 1.0)
+        lab[..., 1:] *= np.clip(total, 0.0, 1.0)
+
+        rgb = lab2rgb(lab)
+        return np.moveaxis(np.clip(rgb, 0.0, 1.0).astype(np.float32), -1, 0)

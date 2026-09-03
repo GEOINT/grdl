@@ -255,6 +255,7 @@ class FullPolHAalpha(HAalphaBase):
         percentile_high: float = 98.0,
         alpha_low_deg: float = 10.0,
         alpha_high_deg: float = 80.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from full-pol H/A/Alpha decomposition.
@@ -319,7 +320,7 @@ class FullPolHAalpha(HAalphaBase):
             return np.clip(components[key], 0.0, 1.0).astype(np.float32)
 
         bands = [_render(k) for k in channel_keys]
-        rgb = np.stack(bands, axis=0)
+        rgb = self._bands_to_rgb(bands, color_mode=color_mode, channel_keys=channel_keys)
 
         _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         metadata = ImageMetadata(

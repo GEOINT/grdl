@@ -241,6 +241,7 @@ class PraksParameters(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Praks parameters.
@@ -282,7 +283,7 @@ class PraksParameters(PolarimetricDecomposition):
             ).astype(np.float32)
 
         bands = [_render(k) for k in channel_keys]
-        rgb = np.stack(bands, axis=0)
+        rgb = self._bands_to_rgb(bands, color_mode=color_mode, channel_keys=channel_keys)
 
         _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
         meta = ImageMetadata(

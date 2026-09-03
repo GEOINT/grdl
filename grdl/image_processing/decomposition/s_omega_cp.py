@@ -90,6 +90,7 @@ class CompactPolSOmega(CompactPolDecompositionBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite (R=double_bounce, G=volume, B=surface).
@@ -115,5 +116,5 @@ class CompactPolSOmega(CompactPolDecompositionBase):
         """
         return self._build_power_rgb(
             components, self._RGB_CHANNELS, 'CpSOmegaRGB',
-            representation, percentile_low, percentile_high, channels=channels,
+            representation, percentile_low, percentile_high, color_mode=color_mode, channels=channels,
         )

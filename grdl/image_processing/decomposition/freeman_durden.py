@@ -196,6 +196,7 @@ class FreemanDurden3C(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from Freeman-Durden components.
@@ -228,7 +229,7 @@ class FreemanDurden3C(PolarimetricDecomposition):
         """
         return self._build_power_rgb(
             components, self._RGB_CHANNELS, 'FreemanDurdenRGB',
-            representation, percentile_low, percentile_high, channels=channels,
+            representation, percentile_low, percentile_high, color_mode=color_mode, channels=channels,
         )
 
     # ------------------------------------------------------------------

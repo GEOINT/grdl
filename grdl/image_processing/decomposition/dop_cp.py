@@ -46,6 +46,7 @@ class CompactPolDegreeOfPolarization(CompactPolDecompositionBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         del representation
@@ -53,7 +54,7 @@ class CompactPolDegreeOfPolarization(CompactPolDecompositionBase):
 
         dop = np.clip(components['dop'], 0.0, 1.0)
         dop = self._percentile_stretch(dop, percentile_low, percentile_high)
-        rgb = np.stack([dop, dop, dop], axis=0)
+        rgb = self._bands_to_rgb([dop, dop, dop], color_mode=color_mode, channel_keys=['dop', 'dop', 'dop'])
         meta = ImageMetadata(
             format='CpDOP_RGB',
             rows=dop.shape[0],

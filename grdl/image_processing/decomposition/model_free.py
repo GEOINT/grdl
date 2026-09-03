@@ -193,6 +193,7 @@ class ModelFree3C(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from MF3CF components.
@@ -225,7 +226,7 @@ class ModelFree3C(PolarimetricDecomposition):
         """
         return self._build_power_rgb(
             components, self._RGB_CHANNELS, 'MF3CFRGB',
-            representation, percentile_low, percentile_high, channels=channels,
+            representation, percentile_low, percentile_high, color_mode=color_mode, channels=channels,
         )
 
     def __repr__(self) -> str:
@@ -504,6 +505,7 @@ class ModelFree4C(PolarimetricDecomposition):
         representation: str = 'magnitude',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from MF4CF components.
@@ -540,7 +542,7 @@ class ModelFree4C(PolarimetricDecomposition):
         """
         return self._build_power_rgb(
             components, self._RGB_CHANNELS, 'MF4CFRGB',
-            representation, percentile_low, percentile_high, channels=channels,
+            representation, percentile_low, percentile_high, color_mode=color_mode, channels=channels,
         )
 
     def __repr__(self) -> str:

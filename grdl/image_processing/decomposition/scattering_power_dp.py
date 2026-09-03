@@ -177,6 +177,7 @@ class ScatteringPowerDP(DualPolDecompositionBase):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create an RGB composite from dual-pol scattering power components.
@@ -222,7 +223,7 @@ class ScatteringPowerDP(DualPolDecompositionBase):
             )
             for k, _ in channel_map
         ]
-        rgb = np.stack(bands, axis=0)
+        rgb = self._bands_to_rgb(bands, color_mode=color_mode, channel_keys=channel_keys)
 
         meta = ImageMetadata(
             format=fmt,

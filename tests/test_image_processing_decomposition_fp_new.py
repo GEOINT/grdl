@@ -495,3 +495,24 @@ class TestYamaguchi4C:
         assert set(Yamaguchi4C().component_names) == {
             'surface', 'double_bounce', 'volume', 'helix', 'span'
         }
+
+
+@pytest.mark.parametrize(
+    'factory, decompose_kwargs',
+    [
+        (lambda: DegreeOfPolarization(window_size=7), {}),
+        (lambda: ShannonEntropy(window_size=7), {}),
+        (lambda: NeumannDecomposition(window_size=7), {}),
+        (lambda: PraksParameters(window_size=7), {}),
+        (lambda: TouziDecomposition(window_size=7), {}),
+        (lambda: Yamaguchi4C(window_size=7), {}),
+    ],
+)
+def test_perceptual_rgb_smoke(factory, decompose_kwargs, quad_pol):
+    decomp = factory()
+    components = decomp.decompose(*quad_pol, **decompose_kwargs)
+    rgb, meta = decomp.to_rgb(components, color_mode='perceptual')
+    assert rgb.shape == (3, SHAPE[0], SHAPE[1])
+    assert meta.bands == 3
+    assert rgb.dtype == np.float32
+    assert np.all(np.isfinite(rgb))

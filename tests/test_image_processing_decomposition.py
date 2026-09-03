@@ -536,6 +536,15 @@ class TestConversions:
         assert rgb.dtype == np.float32
         assert meta.dtype == 'float32'
 
+    def test_to_rgb_perceptual_shape(self, pauli, quad_pol_random):
+        c = pauli.decompose(*quad_pol_random)
+        rgb, meta = pauli.to_rgb(c, color_mode='perceptual')
+        rows, cols = quad_pol_random[0].shape
+        assert rgb.shape == (3, rows, cols)
+        assert meta.rows == rows
+        assert meta.cols == cols
+        assert np.all(np.isfinite(rgb))
+
     def test_to_rgb_representations(self, pauli, quad_pol_random):
         c = pauli.decompose(*quad_pol_random)
         for rep in ('db', 'magnitude', 'power'):

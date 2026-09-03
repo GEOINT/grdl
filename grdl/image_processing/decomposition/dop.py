@@ -174,6 +174,7 @@ class DegreeOfPolarization(PolarimetricDecomposition):
         representation: str = 'db',
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
+        color_mode: str = 'standard',
         channels: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, 'ImageMetadata']:
         """Create a grayscale RGB image from the degree of polarization.
@@ -188,7 +189,7 @@ class DegreeOfPolarization(PolarimetricDecomposition):
 
         dop = np.clip(components['dop'], 0.0, 1.0)
         dop = self._percentile_stretch(dop, percentile_low, percentile_high)
-        rgb = np.stack([dop, dop, dop], axis=0)  # grayscale
+        rgb = self._bands_to_rgb([dop, dop, dop], color_mode=color_mode, channel_keys=['dop', 'dop', 'dop'])  # grayscale
 
         meta = ImageMetadata(
             format='DoPRGB',
