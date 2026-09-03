@@ -109,6 +109,9 @@ dev = [
 [project.urls]
 Repository = "https://github.com/geoint-org/GRDL"
 
+[project.scripts]
+grdl-version = "grdl.cli:main"
+
 [tool.setuptools]
 include-package-data = true
 
