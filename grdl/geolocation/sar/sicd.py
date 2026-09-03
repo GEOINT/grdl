@@ -33,6 +33,11 @@ Created
 
 Modified
 --------
+2026-08-31  Add _metadata_bbox() so DEM tile discovery is scoped to
+            the scene footprint without projecting the perimeter.
+            Validate the backend name so a misplaced positional
+            dem_path/geoid_path fails loudly.
+            dem_path/geoid_path/interpolation are now keyword-only.
 2026-06-09  Use base class _resolve_height and _fill_nan_heights for
             consistent height/NaN handling.  Add interpolation parameter.
 2026-03-27  Add per-point ellipsoid normal method (_latlon_to_image_native_ppn)
@@ -60,6 +65,9 @@ if TYPE_CHECKING:
     from grdl.geolocation.projection import COAProjection
 
 
+_VALID_BACKENDS = ('native', 'sarpy', 'sarkit')
+
+
 def _select_backend(preferred: Optional[str] = None) -> str:
     """Select the best available projection backend.
 
@@ -68,14 +76,33 @@ def _select_backend(preferred: Optional[str] = None) -> str:
     Parameters
     ----------
     preferred : str, optional
-        Force a specific backend.
+        Force a specific backend.  Must be one of ``'native'``,
+        ``'sarpy'``, ``'sarkit'``.
 
     Returns
     -------
     str
         One of ``'native'``, ``'sarpy'``, ``'sarkit'``.
+
+    Raises
+    ------
+    ValueError
+        If ``preferred`` is not a recognized backend name.  Validating
+        here is what turns the third positional argument of
+        ``SICDGeolocation`` into an immediate error instead of a
+        silently wrong projection: ``SICDGeolocation(meta, dem, geoid)``
+        binds those paths to ``raw_meta`` and ``backend``, leaving the
+        DEM unattached and every height on the ellipsoid.
     """
     if preferred is not None:
+        if preferred not in _VALID_BACKENDS:
+            raise ValueError(
+                f"Unknown SICD projection backend {preferred!r}; expected "
+                f"one of {_VALID_BACKENDS}. Note that dem_path and "
+                f"geoid_path are keyword arguments: use "
+                f"SICDGeolocation(metadata, dem_path=..., geoid_path=...), "
+                f"not positional arguments."
+            )
         return preferred
     if _HAS_SARPY:
         return 'sarpy'
@@ -165,6 +192,7 @@ class SICDGeolocation(Geolocation):
         delta_arp: Optional[np.ndarray] = None,
         delta_varp: Optional[np.ndarray] = None,
         range_bias: float = 0.0,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         per_point_normal: bool = True,
@@ -240,6 +268,32 @@ class SICDGeolocation(Geolocation):
     # ------------------------------------------------------------------
     # Standardized public properties
     # ------------------------------------------------------------------
+
+    def _metadata_bbox(
+        self,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Scene bounds from the SICD image corner points.
+
+        Free and exact: ``GeoData/ImageCorners`` already carries the four
+        geographic corners, so DEM tile discovery needs no projection.
+
+        Returns
+        -------
+        tuple of float, or None
+            ``(min_lon, min_lat, max_lon, max_lat)`` in degrees, or
+            ``None`` when the metadata carries no corner points.
+        """
+        geo_data = getattr(self.metadata, 'geo_data', None)
+        if geo_data is None:
+            return None
+
+        corners = geo_data.image_corners or geo_data.valid_data
+        if not corners:
+            return None
+
+        lats = [c.lat for c in corners]
+        lons = [c.lon for c in corners]
+        return (min(lons), min(lats), max(lons), max(lats))
 
     @property
     def default_hae(self) -> float:
@@ -728,6 +782,7 @@ class SICDGeolocation(Geolocation):
         delta_varp: Optional[np.ndarray] = None,
         range_bias: float = 0.0,
         per_point_normal: bool = False,
+        *,
         dem_path: Optional[str] = None,
         geoid_path: Optional[str] = None,
         interpolation: int = 3,

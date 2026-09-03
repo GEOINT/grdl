@@ -12,6 +12,13 @@ the appropriate ``ElevationModel`` subclass.  Handles:
 - **Constant height**: Falls back to ``ConstantElevation`` if nothing
   else works.
 
+Pass ``bbox`` whenever the scene extent is known: tile discovery is then
+restricted to the cells the scene touches.  Without it, a directory DEM
+is indexed by scanning the whole archive, which on a network-mounted
+DTED tree is slow enough to look like a hang.
+:func:`open_elevation_for` derives that bbox for you from a GRDL reader
+or geolocation object.
+
 Dependencies
 ------------
 rasterio (for GeoTIFF and DTED backends)
@@ -33,6 +40,9 @@ Created
 
 Modified
 --------
+2026-08-31  Add open_elevation_for(): derive the tile-discovery bbox from
+            a reader or geolocation footprint, and warn when a directory
+            DEM is opened unscoped.
 2026-07-22  Gate the tiled-GeoTIFF fallback behind the DTED probe so a
             DTED archive never triggers a recursive rglob, and
             short-circuit the GeoTIFF presence check.
@@ -45,7 +55,7 @@ Modified
 # Standard library
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -94,6 +104,14 @@ def open_elevation(
         - ``3`` — bicubic (C1, recommended for ortho)
         - ``5`` — quintic (C2, very smooth)
 
+    bbox : tuple of (min_lon, min_lat, max_lon, max_lat), optional
+        Scene bounds in degrees.  Restricts directory tile discovery to
+        the cells the scene touches (plus a one-cell halo for cross-tile
+        interpolation) instead of indexing the whole archive.  Strongly
+        recommended for large or network-mounted archives; see
+        :func:`open_elevation_for` to derive it from a reader or
+        geolocation.
+
     Returns
     -------
     ElevationModel
@@ -136,6 +154,17 @@ def open_elevation(
 
     # ── Directory ────────────────────────────────────────────────
     elif dem_path.is_dir():
+        if bbox is None:
+            # Unscoped discovery walks the archive. On a network mount
+            # that is the difference between "slow" and "hung", so make
+            # the cause visible rather than silently paying it.
+            logger.warning(
+                "open_elevation(%s) called without a bbox: tile "
+                "discovery will scan the whole archive. Pass bbox=..., "
+                "or use open_elevation_for(reader_or_geolocation, ...) "
+                "to scope discovery to the scene footprint.",
+                dem_path,
+            )
         # Classify the layout once with the cheap, bounded DTED probe
         # (bbox-limited candidate paths, or a shallow scan of the layout
         # roots — never a recursive rglob). A DTED archive and a tiled
@@ -178,6 +207,102 @@ def open_elevation(
     logger.info("Using constant elevation fallback: %.1f m",
                 fallback_height)
     return ConstantElevation(height=fallback_height)
+
+
+def open_elevation_for(
+    source: Any,
+    dem_path: str,
+    geoid_path: Optional[str] = None,
+    fallback_height: float = 0.0,
+    interpolation: int = 3,
+    pad_deg: float = 0.05,
+    verify_coverage: bool = False,
+) -> ElevationModel:
+    """Open a DEM scoped to the footprint of a reader or geolocation.
+
+    Convenience wrapper around :func:`open_elevation` that derives the
+    ``bbox`` from the scene itself, so only the tiles the imagery
+    actually covers are discovered and indexed.  This is the entry
+    point to use against a large or network-mounted archive: an
+    unscoped ``open_elevation`` on such a tree walks every tile.
+
+    Parameters
+    ----------
+    source : Geolocation or ImageReader
+        A GRDL geolocation object, or any reader that
+        ``grdl.geolocation.create_geolocation`` recognizes.  The
+        footprint comes from the sensor metadata where it is carried
+        (SICD/SIDD image corners, RPC normalization domain) and from a
+        projected perimeter otherwise.
+    dem_path : str or Path
+        Path to a DEM file or directory, as for :func:`open_elevation`.
+    geoid_path : str or Path, optional
+        Path to a geoid model file for MSL → HAE correction.
+    fallback_height : float, default=0.0
+        Height (meters HAE) for the ``ConstantElevation`` fallback.
+    interpolation : int, default=3
+        Spline interpolation order for DEM sampling.
+    pad_deg : float, default=0.05
+        Halo in degrees added to the footprint before tile selection.
+    verify_coverage : bool, default=False
+        When True, require the DEM to return a finite height at the
+        footprint center; a DEM that does not falls back to
+        ``ConstantElevation``.
+
+    Returns
+    -------
+    ElevationModel
+        The loaded elevation model.  Never returns ``None``.
+
+    Raises
+    ------
+    TypeError
+        If ``source`` is neither a geolocation nor a recognized reader.
+
+    Examples
+    --------
+    >>> from grdl.IO.sar import SICDReader
+    >>> from grdl.geolocation import SICDGeolocation
+    >>> from grdl.geolocation.elevation import open_elevation_for
+    >>>
+    >>> reader = SICDReader('image.nitf')
+    >>> geo = SICDGeolocation.from_reader(reader, backend='native')
+    >>> geo.elevation = open_elevation_for(
+    ...     geo, '/mnt/archive/dted', geoid_path='/mnt/archive/egm96.pgm')
+    """
+    geo = source
+    if not hasattr(geo, 'dem_bbox'):
+        # Not a geolocation — try to treat it as a reader.
+        from grdl.geolocation import create_geolocation
+        try:
+            geo = create_geolocation(source)
+        except Exception as exc:
+            raise TypeError(
+                "open_elevation_for() needs a Geolocation or a reader "
+                f"create_geolocation() recognizes; got "
+                f"{type(source).__name__}"
+            ) from exc
+
+    bbox = geo.dem_bbox(pad_deg=pad_deg)
+    if bbox is None:
+        logger.warning(
+            "Could not derive a footprint from %s; falling back to "
+            "unscoped DEM discovery.", type(source).__name__,
+        )
+
+    location = None
+    if verify_coverage and bbox is not None:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        location = (0.5 * (min_lat + max_lat), 0.5 * (min_lon + max_lon))
+
+    return open_elevation(
+        str(dem_path),
+        geoid_path=str(geoid_path) if geoid_path else None,
+        location=location,
+        fallback_height=fallback_height,
+        interpolation=interpolation,
+        bbox=bbox,
+    )
 
 
 def _has_dted_files(

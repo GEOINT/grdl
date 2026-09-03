@@ -856,6 +856,35 @@ class Orthorectifier(ImageTransform):
             backend=backend,
         )
 
+    @staticmethod
+    def _nodata_dtype(reader: 'ImageReader', nodata: float) -> np.dtype:
+        """Dtype an all-nodata result should take for a given reader.
+
+        Mirrors the promotion ``resample`` applies, so an empty tile is
+        indistinguishable in dtype from a covered one.
+
+        Parameters
+        ----------
+        reader : ImageReader
+            Source reader.
+        nodata : float
+            Fill value; a NaN fill forces integers to float.
+
+        Returns
+        -------
+        np.dtype
+        """
+        try:
+            dtype = np.dtype(reader.get_dtype())
+        except (AttributeError, TypeError, NotImplementedError):
+            return np.dtype(np.float32)
+
+        if np.issubdtype(dtype, np.complexfloating):
+            return dtype
+        if np.isnan(nodata) and np.issubdtype(dtype, np.integer):
+            return np.dtype(np.float32)
+        return dtype
+
     def apply_from_reader(
         self,
         reader: 'ImageReader',
@@ -892,43 +921,56 @@ class Orthorectifier(ImageTransform):
         source_cols = self._source_cols
         valid = self._valid_mask
 
-        # Determine source region needed from mapping bounds
-        valid_src_rows = source_rows[valid]
-        valid_src_cols = source_cols[valid]
+        # Determine source region needed from mapping bounds.
+        #
+        # np.min(..., where=, initial=) finds the extrema without
+        # materialising boolean-indexed copies of the mapping.  The
+        # copies were up to 8 bytes per output pixel each, allocated
+        # only to read four scalars, and stayed live through the read
+        # and the resample because nothing released them.
+        any_valid = bool(valid.any())
 
-        if valid_src_rows.size == 0:
-            logger.warning("No valid source mapping found, returning nodata grid")
-            # No valid mapping -- return all nodata
+        if not any_valid:
+            logger.debug("No valid source mapping; returning a nodata grid")
             shape = reader.get_shape()
             n_bands = len(bands) if bands else (shape[2] if len(shape) > 2 else 1)
-            if n_bands == 1:
-                return np.full(
-                    (self.output_grid.rows, self.output_grid.cols),
-                    nodata, dtype=np.float64
-                )
-            return np.full(
-                (n_bands, self.output_grid.rows, self.output_grid.cols),
-                nodata, dtype=np.float64
+
+            # Match the dtype a covered tile would have produced.  This
+            # used to be hardcoded float64, which is wrong twice over:
+            # it silently widened real imagery, and a caller that sizes
+            # its output from the first tile it receives -- as the tiled
+            # path does -- would allocate real and then discard the
+            # imaginary part of every complex tile that followed.
+            dtype = self._nodata_dtype(reader, nodata)
+            out_shape = (
+                (self.output_grid.rows, self.output_grid.cols)
+                if n_bands == 1 else
+                (n_bands, self.output_grid.rows, self.output_grid.cols)
             )
+            return np.full(out_shape, nodata, dtype=dtype)
 
         # Compute bounding box of needed source pixels (with padding for
         # interpolation kernel)
         pad = self._order + 1
-        row_min = max(0, int(np.floor(valid_src_rows.min())) - pad)
+        row_lo = np.min(source_rows, where=valid, initial=np.inf)
+        row_hi = np.max(source_rows, where=valid, initial=-np.inf)
+        col_lo = np.min(source_cols, where=valid, initial=np.inf)
+        col_hi = np.max(source_cols, where=valid, initial=-np.inf)
+
+        row_min = max(0, int(np.floor(row_lo)) - pad)
         row_max = min(
             self.geolocation.shape[0],
-            int(np.ceil(valid_src_rows.max())) + pad + 1
+            int(np.ceil(row_hi)) + pad + 1
         )
-        col_min = max(0, int(np.floor(valid_src_cols.min())) - pad)
+        col_min = max(0, int(np.floor(col_lo)) - pad)
         col_max = min(
             self.geolocation.shape[1],
-            int(np.ceil(valid_src_cols.max())) + pad + 1
+            int(np.ceil(col_hi)) + pad + 1
         )
 
         # Read the needed source region
         source_chip = reader.read_chip(row_min, row_max, col_min, col_max,
                                        bands=bands)
-        is_complex = np.iscomplexobj(source_chip)
 
         # Adjust mapping coordinates to chip-relative
         chip_rows = source_rows - row_min
@@ -971,6 +1013,11 @@ class Orthorectifier(ImageTransform):
             - 'cols': int, number of output columns
             - 'transform': Tuple, affine coefficients
               (origin_lon, pixel_size_lon, 0, origin_lat, 0, -pixel_size_lat)
+
+            For a grid that is not one of the concrete classes but does
+            satisfy ``OutputGridProtocol``, the corners are derived
+            through the protocol and ``'transform'`` is ``None``, since
+            no affine can be stated without knowing the grid's CRS.
         """
         from grdl.image_processing.ortho.enu_grid import ENUGrid
         from grdl.image_processing.ortho.utm_grid import UTMGrid
@@ -1023,21 +1070,53 @@ class Orthorectifier(ImageTransform):
                 ),
             }
 
+        if hasattr(grid, 'min_lon'):
+            return {
+                'crs': 'WGS84',
+                'bounds': (
+                    grid.min_lon, grid.min_lat, grid.max_lon, grid.max_lat,
+                ),
+                'pixel_size_lat': grid.pixel_size_lat,
+                'pixel_size_lon': grid.pixel_size_lon,
+                'rows': grid.rows,
+                'cols': grid.cols,
+                'transform': (
+                    grid.min_lon,           # origin longitude (top-left)
+                    grid.pixel_size_lon,    # pixel width (degrees)
+                    0.0,                    # rotation (0 for north-up)
+                    grid.max_lat,           # origin latitude (top-left)
+                    0.0,                    # rotation (0 for north-up)
+                    -grid.pixel_size_lat,   # pixel height (negative=south)
+                ),
+            }
+
+        # Any other grid satisfying OutputGridProtocol.  The protocol is
+        # documented as the extension point for custom grids, so this
+        # must not raise merely because the grid is not one of the four
+        # concrete classes above -- which is what reading grid.min_lon
+        # unconditionally used to do, including for this module's own
+        # WebMercatorGrid.  Corners come from the protocol itself, so
+        # the result is correct for any conforming grid even though no
+        # affine transform can be stated without knowing its CRS.
+        corners = np.array([
+            [0.0, 0.0],
+            [0.0, float(grid.cols)],
+            [float(grid.rows), float(grid.cols)],
+            [float(grid.rows), 0.0],
+        ])
+        lats, lons = grid.image_to_latlon(corners[:, 0], corners[:, 1])
+        lats = np.atleast_1d(np.asarray(lats, dtype=np.float64))
+        lons = np.atleast_1d(np.asarray(lons, dtype=np.float64))
         return {
-            'crs': 'WGS84',
-            'bounds': (grid.min_lon, grid.min_lat, grid.max_lon, grid.max_lat),
-            'pixel_size_lat': grid.pixel_size_lat,
-            'pixel_size_lon': grid.pixel_size_lon,
+            'crs': getattr(grid, 'crs', None) or type(grid).__name__,
+            'bounds': (
+                float(np.nanmin(lons)), float(np.nanmin(lats)),
+                float(np.nanmax(lons)), float(np.nanmax(lats)),
+            ),
             'rows': grid.rows,
             'cols': grid.cols,
-            'transform': (
-                grid.min_lon,           # origin longitude (top-left corner)
-                grid.pixel_size_lon,    # pixel width (degrees)
-                0.0,                    # rotation (0 for north-up)
-                grid.max_lat,           # origin latitude (top-left corner)
-                0.0,                    # rotation (0 for north-up)
-                -grid.pixel_size_lat,   # pixel height (negative = south)
-            ),
+            'grid_type': type(grid).__name__,
+            'transform': None,
         }
 
     def __repr__(self) -> str:

@@ -758,6 +758,7 @@ def _extract_image_formation_xml(
         polarization_hv_angle_poly=_xml_poly1d_at(
             imf, '{*}PolarizationHVAnglePoly'
         ),
+        tx_rcv_polarization_proc=_xml_str(imf, '{*}TxRcvPolarizationProc'),
     )
 
 
@@ -1352,6 +1353,7 @@ def _extract_image_formation_sarpy(
         image_beam_comp=_safe_get(imf, 'ImageBeamComp'),
         az_autofocus=_safe_get(imf, 'AzAutofocus'),
         rg_autofocus=_safe_get(imf, 'RgAutofocus'),
+        tx_rcv_polarization_proc=_safe_get(imf, 'TxRcvPolarizationProc'),
     )
 
 

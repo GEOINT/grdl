@@ -927,7 +927,10 @@ class Sentinel2Reader(ImageReader):
             if len(chips) == 1:
                 return chips[0]
             else:
-                return np.stack(chips, axis=-1)
+                # Band-first, matching ImageReader.read_chip and every
+                # other reader.  Stacking band-last here made
+                # multi-band S2 resample its row axis as bands.
+                return np.stack(chips, axis=0)
         else:
             # Single-band mode
             return self.jp2_reader.read_chip(
@@ -971,7 +974,7 @@ class Sentinel2Reader(ImageReader):
             if len(full_images) == 1:
                 return full_images[0]
             else:
-                return np.stack(full_images, axis=-1)
+                return np.stack(full_images, axis=0)
         else:
             # Single-band mode
             return self.jp2_reader.read_full(bands=bands)
