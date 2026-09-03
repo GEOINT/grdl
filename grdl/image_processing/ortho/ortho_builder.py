@@ -37,6 +37,8 @@ Created
 
 Modified
 --------
+2026-09-01  Serialize only file-backed readers, so an in-RAM reader
+            keeps its workers.
 2026-03-27  DEM attached to geolocation instead of passed to Orthorectifier.
 """
 
@@ -871,14 +873,24 @@ class OrthoBuilder:
         # 4. Process each tile.
         #
         # Tiles write disjoint slices of `output`, so concurrency is
-        # safe on the output side.  The readers are not: one holds a
-        # single file handle and seeks on it, so a parallel run needs a
-        # private reader per worker thread.  Without a factory we stay
-        # serial rather than risk interleaved seeks.
+        # safe on the output side.  A *file-backed* reader is not: it
+        # holds a single handle and seeks on it, so a parallel run needs
+        # a private reader per worker thread and we stay serial without
+        # a factory rather than risk interleaved seeks.
+        #
+        # An in-RAM reader has neither a handle nor a seek cursor and is
+        # safe to share, so it must not be serialized: doing so silently
+        # dropped every decimated-overview run to one thread.
+        # ``ImageReader.__init__`` sets ``filepath`` on every file-backed
+        # reader, which is what distinguishes the two.
         total_tiles = len(tiles)
         workers = max(1, self._workers)
-        if (workers > 1 and self._source_array is None
-                and self._reader_factory is None):
+        needs_own_reader = (
+            self._source_array is None
+            and self._reader_factory is None
+            and hasattr(self._reader, 'filepath')
+        )
+        if workers > 1 and needs_own_reader:
             logger.warning(
                 "workers=%d ignored: a file-backed reader needs "
                 "with_reader_factory() to be used concurrently",

@@ -168,6 +168,72 @@ def test_workers_without_factory_falls_back(geocoded, caplog) -> None:
         reader.close()
 
 
+def test_in_ram_reader_keeps_its_workers(geocoded, caplog) -> None:
+    """Only a file-backed reader is serialized, not every reader.
+
+    An in-RAM reader has no file handle and no seek cursor, so it is
+    safe to share across threads.  Serializing it anyway silently
+    dropped every decimated-overview run to a single worker.
+    """
+    reader, geo = _open(geocoded)
+    try:
+        array = reader.read_full()
+        metadata = reader.metadata
+    finally:
+        reader.close()
+
+    class InRamReader:
+        """Windowed reader over an array; no filepath, no handle."""
+
+        def __init__(self, data: np.ndarray) -> None:
+            self._data = data
+
+        def get_shape(self):
+            return self._data.shape
+
+        def read_chip(self, r0, r1, c0, c1, bands=None):
+            return self._data[r0:r1, c0:c1]
+
+        def close(self) -> None:
+            pass
+
+    with caplog.at_level('WARNING'):
+        result = orthorectify(
+            geolocation=geo, reader=InRamReader(array),
+            metadata=metadata, tile_size=64,
+            nodata=np.nan, workers=4,
+        )
+    assert 'reader_factory' not in caplog.text
+    assert np.isfinite(result.data).any()
+
+
+def test_in_ram_and_file_backed_agree(geocoded) -> None:
+    """Running the in-RAM reader in parallel changes no pixel."""
+    reader, geo = _open(geocoded)
+    try:
+        array = reader.read_full()
+        metadata = reader.metadata
+        serial = orthorectify(
+            geolocation=geo, reader=reader, metadata=metadata,
+            tile_size=64, nodata=np.nan, workers=1,
+        )
+    finally:
+        reader.close()
+
+    class InRamReader:
+        def __init__(self, data): self._data = data
+        def get_shape(self): return self._data.shape
+        def read_chip(self, r0, r1, c0, c1, bands=None):
+            return self._data[r0:r1, c0:c1]
+        def close(self): pass
+
+    parallel = orthorectify(
+        geolocation=geo, reader=InRamReader(array), metadata=metadata,
+        tile_size=64, nodata=np.nan, workers=4,
+    )
+    np.testing.assert_array_equal(serial.data, parallel.data)
+
+
 def test_worker_readers_are_closed(geocoded) -> None:
     """Per-thread readers do not leak; on Windows a leak also locks."""
     from grdl.IO.geotiff import GeoTIFFReader

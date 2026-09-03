@@ -26,6 +26,8 @@ Created
 
 Modified
 --------
+2026-09-01  PercentileStretch: take percentiles over finite samples
+            and preserve the nodata mask.
 2026-03-09
 """
 
@@ -110,6 +112,11 @@ class PercentileStretch(ImageTransform):
     Clips values to the [*plow*, *phigh*] percentile range computed from
     the input, then linearly rescales to [0, 1].  Works on any shape.
 
+    Non-finite samples (``NaN``, ``+/-inf``) are excluded from the
+    percentile computation and come back as ``NaN``, so a nodata mask
+    survives the stretch.  This matters for orthorectified rasters,
+    which carry ``NaN`` wherever there was no source coverage.
+
     Parameters
     ----------
     plow : float
@@ -157,9 +164,29 @@ class PercentileStretch(ImageTransform):
         phigh = params['phigh']
 
         xp = cp if (_HAS_CUPY and isinstance(source, cp.ndarray)) else np
-        vmin = float(xp.percentile(source, plow))
-        vmax = float(xp.percentile(source, phigh))
+
+        # Percentiles come from the finite samples only, and the
+        # non-finite ones are written back as NaN afterwards.  Taking
+        # them over the raw array instead lets a single NaN propagate
+        # into vmin/vmax and drive the entire output to NaN -- which is
+        # what happens to any orthorectified raster, since ortho fills
+        # uncovered pixels with NaN.
+        finite = xp.isfinite(source)
+        n_finite = int(finite.sum())
+        if n_finite == 0:
+            return xp.full(source.shape, xp.nan, dtype=np.float32)
+
+        sample = source[finite] if n_finite != source.size else source
+        vmin = float(xp.percentile(sample, plow))
+        vmax = float(xp.percentile(sample, phigh))
+
         if vmax - vmin < np.finfo(np.float32).eps:
-            return xp.zeros_like(source, dtype=np.float32)
-        out = (source - vmin) / (vmax - vmin)
-        return xp.clip(out, 0.0, 1.0).astype(np.float32)
+            out = xp.zeros(source.shape, dtype=np.float32)
+        else:
+            out = xp.clip(
+                (source - vmin) / (vmax - vmin), 0.0, 1.0,
+            ).astype(np.float32)
+
+        if n_finite != source.size:
+            out = xp.where(finite, out, xp.asarray(xp.nan, np.float32))
+        return out

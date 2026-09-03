@@ -118,6 +118,61 @@ class TestPercentileStretch:
         result = stretch.apply(source)
         assert result.shape == (10, 10)
 
+    # NaN handling.  An orthorectified raster carries NaN wherever there
+    # was no source coverage, so taking percentiles over the raw array
+    # let one nodata pixel drive the whole output to NaN.
+
+    def test_nan_does_not_poison_the_stretch(self):
+        stretch = PercentileStretch()
+        rng = np.random.default_rng(0)
+        source = np.abs(rng.standard_normal((32, 32))) + 0.01
+        source[:4, :4] = np.nan
+        result = stretch.apply(source)
+        finite = np.isfinite(result)
+        assert finite.sum() == source.size - 16
+        assert result[finite].min() >= 0.0
+        assert result[finite].max() <= 1.0
+
+    def test_nan_mask_survives_exactly(self):
+        stretch = PercentileStretch()
+        source = np.arange(25.0).reshape(5, 5)
+        source[1, 2] = np.nan
+        source[3, 0] = np.nan
+        result = stretch.apply(source)
+        np.testing.assert_array_equal(
+            np.isnan(result), np.isnan(source))
+
+    def test_infinities_are_masked_not_stretched(self):
+        stretch = PercentileStretch()
+        source = np.array([[1.0, 2.0], [np.inf, 4.0]])
+        result = stretch.apply(source)
+        assert np.isnan(result[1, 0])
+        assert np.isfinite(result[0, 0])
+
+    def test_all_nan_input_returns_all_nan(self):
+        stretch = PercentileStretch()
+        result = stretch.apply(np.full((4, 4), np.nan))
+        assert np.isnan(result).all()
+        assert result.dtype == np.float32
+
+    def test_constant_input_with_nan_keeps_the_mask(self):
+        stretch = PercentileStretch()
+        source = np.full((4, 4), 3.0)
+        source[0, 0] = np.nan
+        result = stretch.apply(source)
+        assert np.isnan(result[0, 0])
+        assert (result[1:] == 0.0).all()
+
+    def test_finite_input_is_unchanged_by_nan_handling(self):
+        """The masked path must not perturb ordinary input."""
+        stretch = PercentileStretch(plow=2.0, phigh=98.0)
+        rng = np.random.default_rng(7)
+        source = rng.standard_normal((40, 40))
+        lo, hi = np.percentile(source, [2.0, 98.0])
+        expected = np.clip((source - lo) / (hi - lo), 0.0, 1.0)
+        np.testing.assert_array_equal(
+            stretch.apply(source), expected.astype(np.float32))
+
     def test_preserves_shape_3d(self):
         stretch = PercentileStretch()
         source = np.arange(300.0).reshape(3, 10, 10)
