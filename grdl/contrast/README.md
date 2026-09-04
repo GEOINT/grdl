@@ -185,26 +185,48 @@ prefer a declarative chain. `grdl.contrast` does not depend on it.
 
 ---
 
-## Worked Example — `point_roi_ortho.py`
+## Worked Example — Matching Two Panels
 
-`grdl/example/ortho/point_roi_ortho.py` ships a YAML-configured demo
-that pools shared stats across the source chip and the orthorectified
-result, then applies an auto-selected operator so both display panels
-show identical dynamic range:
+Displaying a source chip beside its orthorectified result is the common
+case where independent stretches mislead: each panel would normalise to
+its own extrema, so the same backscatter reads as two different
+brightnesses. Compute the statistics once over both panels and hand
+them to the operator.
 
-```yaml
-# point_roi_ortho.yaml
-display_contrast: auto       # auto | percentile | linear | log
-                             # | mangis | brighter | darker | high_contrast
-                             # | nrl | gamma | histogram | clahe
+```python
+import numpy as np
+from grdl.contrast import auto_select, NRLStretch, nan_safe_stats
+from grdl.image_processing.ortho import orthorectify_point_roi
+
+result = orthorectify_point_roi(reader, lat=32.1, lon=-81.1,
+                                width_m=500, height_m=500)
+
+# 1. auto_select returns an operator *name* for this sensor.
+name = auto_select(reader.metadata)          # e.g. 'nrl'
+
+# 2. Pool both panels before computing stats.  nodata is NaN, and
+#    nan_safe_stats is what keeps it out of the percentile.
+pooled = np.concatenate([
+    np.asarray(result.source_chip).ravel(),
+    np.asarray(result.data).ravel(),
+])
+stats = nan_safe_stats(pooled, percentile=99.0)   # (min, max, p99)
+
+# 3. Apply one operator with those shared stats to both panels.
+op = NRLStretch()
+src_display   = op.apply(result.source_chip, stats=stats)
+ortho_display = op.apply(result.data,        stats=stats)
+
+# 4. Render both at vmin=0, vmax=1.
 ```
 
-The script:
+The stats keyword is operator-specific — `NRLStretch` and the density
+operators take a `stats` triple, `LinearStretch` takes `min_value` /
+`max_value`. Check the operator's `apply()` docstring for which it
+wants.
 
-1. Calls `auto_select(reader.metadata)` to resolve the operator.
-2. Pools the finite samples from both panels.
-3. Threads pooled stats through the operator's correct kwargs.
-4. Renders both panels at `vmin=0, vmax=1` for visual consistency.
+The same pooling applies to any pair of panels meant to be compared —
+sublooks, polarimetric channels, before/after coregistration.
 
 ---
 

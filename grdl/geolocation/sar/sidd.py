@@ -183,12 +183,14 @@ class SIDDGeolocation(Geolocation):
             self._init_geographic(meas)
         elif self.projection_type == 'CylindricalProjection':
             self._init_cylindrical(meas)
+        elif self.projection_type == 'PolynomialProjection':
+            self._init_polynomial(meas)
         else:
             raise ValueError(
                 f"Unsupported SIDD projection type: "
                 f"{self.projection_type!r}.  Supported: "
                 f"PlaneProjection, GeographicProjection, "
-                f"CylindricalProjection."
+                f"CylindricalProjection, PolynomialProjection."
             )
 
         # Compute default HAE from the measurement reference point.
@@ -340,10 +342,12 @@ class SIDDGeolocation(Geolocation):
             Measurement section.
         """
         # GeographicProjection uses the same reference_point +
-        # sample_spacing convention; stored on plane_projection or
-        # directly on the measurement object.  Try plane_projection
-        # first (sarpy/sarkit populate it there), then fall back.
-        pp = meas.plane_projection
+        # sample_spacing convention as PlaneProjection.  Readers
+        # populate ``geographic_projection``; fall back to
+        # ``plane_projection`` for metadata built before that field
+        # was parsed.
+        pp = (getattr(meas, 'geographic_projection', None)
+              or getattr(meas, 'plane_projection', None))
         if pp is None:
             raise ValueError(
                 "GeographicProjection requires projection parameters"
@@ -378,7 +382,8 @@ class SIDDGeolocation(Geolocation):
         meas : SIDDMeasurement
             Measurement section.
         """
-        pp = meas.plane_projection
+        pp = (getattr(meas, 'cylindrical_projection', None)
+              or getattr(meas, 'plane_projection', None))
         if pp is None:
             raise ValueError(
                 "CylindricalProjection requires projection parameters"
@@ -433,6 +438,107 @@ class SIDDGeolocation(Geolocation):
         norm = np.linalg.norm(self._u_prime)
         if norm > 0:
             self._u_prime /= norm
+
+    def _init_polynomial(self, meas: object) -> None:
+        """Extract PFGD (PolynomialProjection) parameters.
+
+        The polynomial projection carries no constant sample spacing;
+        pixel-to-ground and ground-to-pixel are each a pair of 2-D
+        polynomials.  Used by products on grids with no closed-form
+        SIDD equivalent, such as UTM or Web Mercator.
+
+        Parameters
+        ----------
+        meas : SIDDMeasurement
+            Measurement section.
+
+        Raises
+        ------
+        ValueError
+            If the forward or inverse polynomial pair is missing.
+        """
+        pp = getattr(meas, 'polynomial_projection', None)
+        if pp is None:
+            raise ValueError(
+                "PolynomialProjection requires projection parameters"
+            )
+        if pp.row_col_to_lat is None or pp.row_col_to_lon is None:
+            raise ValueError(
+                "PolynomialProjection requires row_col_to_lat and "
+                "row_col_to_lon"
+            )
+        if pp.lat_lon_to_row is None or pp.lat_lon_to_col is None:
+            raise ValueError(
+                "PolynomialProjection requires lat_lon_to_row and "
+                "lat_lon_to_col"
+            )
+
+        self._rc_to_lat = pp.row_col_to_lat
+        self._rc_to_lon = pp.row_col_to_lon
+        self._rc_to_alt = pp.row_col_to_alt
+        self._ll_to_row = pp.lat_lon_to_row
+        self._ll_to_col = pp.lat_lon_to_col
+
+        rp = pp.reference_point
+        if rp is not None and rp.ecef is not None:
+            self._srp = np.array(
+                [rp.ecef.x, rp.ecef.y, rp.ecef.z], dtype=np.float64,
+            )
+
+    def _polynomial_to_latlon(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate the PFGD forward polynomials.
+
+        Parameters
+        ----------
+        rows, cols : np.ndarray
+            Pixel coordinates.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            ``(lats, lons, heights)`` in degrees, degrees and meters
+            HAE.  Heights come from ``RowColToAlt`` when present, else
+            the reference point height.
+        """
+        r = np.asarray(rows, dtype=np.float64)
+        c = np.asarray(cols, dtype=np.float64)
+        lats = np.asarray(self._rc_to_lat(r, c), dtype=np.float64)
+        lons = np.asarray(self._rc_to_lon(r, c), dtype=np.float64)
+        if self._rc_to_alt is not None:
+            heights = np.asarray(
+                self._rc_to_alt(r, c), dtype=np.float64,
+            )
+        else:
+            heights = np.full_like(lats, self._default_hae)
+        return lats, lons, heights
+
+    def _latlon_to_polynomial(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Evaluate the PFGD inverse polynomials.
+
+        Parameters
+        ----------
+        lats, lons : np.ndarray
+            Geographic coordinates in degrees.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            ``(rows, cols)`` fractional pixel coordinates.
+        """
+        la = np.asarray(lats, dtype=np.float64)
+        lo = np.asarray(lons, dtype=np.float64)
+        return (
+            np.asarray(self._ll_to_row(la, lo), dtype=np.float64),
+            np.asarray(self._ll_to_col(la, lo), dtype=np.float64),
+        )
 
     # ------------------------------------------------------------------
     # R/Rdot refinement initializer
@@ -508,6 +614,8 @@ class SIDDGeolocation(Geolocation):
             return self._geographic_to_latlon(rows, cols)
         elif self.projection_type == 'CylindricalProjection':
             return self._cylindrical_to_latlon(rows, cols)
+        elif self.projection_type == 'PolynomialProjection':
+            return self._polynomial_to_latlon(rows, cols)
         raise NotImplementedError(
             f"Forward projection not implemented for "
             f"{self.projection_type!r}"
@@ -568,6 +676,8 @@ class SIDDGeolocation(Geolocation):
             return self._latlon_to_geographic(lats, lons)
         elif self.projection_type == 'CylindricalProjection':
             return self._latlon_to_cylindrical(lats, lons, h)
+        elif self.projection_type == 'PolynomialProjection':
+            return self._latlon_to_polynomial(lats, lons)
         raise NotImplementedError(
             f"Inverse projection not implemented for "
             f"{self.projection_type!r}"

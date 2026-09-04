@@ -33,6 +33,8 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 |------|----------|----------|
 | Load any imagery format | `grdl.IO` readers (`SICDReader`, `NISARReader`, `Sentinel2Reader`, `EONITFReader`, ...) | Raw `rasterio.open()` / `h5py.File()` |
 | Write imagery to disk | `grdl.IO` writers (`GeoTIFFWriter`, `SICDWriter`, `NumpyWriter`, ...) | Raw write calls |
+| Orthorectify a chip (source array smaller than the full image) | `ChipGeolocation(geo, row_offset=r0, col_offset=c0, shape=chip.shape[-2:])` then `orthorectify(geolocation=chip_geo, source_array=chip)` | Passing the chip with the full-image geolocation, or hand-rolled row/col offset wrappers |
+| Build a SIDD product from an ortho result | `OrthoResult.save_sidd()`, or `grdl.IO.sar.build_sidd_metadata()` + `SIDDWriter` | Hand-built `SIDDType` / raw sarpy calls |
 | Open any supported format | `grdl.IO.open_reader()` (auto-detect; `open_any()` for ambiguous files) | Manual format detection or the deprecated `open_image()` |
 | Construct a reader/writer by format name | `grdl.IO.get_reader()` / `get_writer()`; register custom ones with `register_reader()` / `register_writer()` | Hard-coded `if fmt == ...: Reader()` dispatch |
 | Plan chip/tile regions | `grdl.data_prep.ChipExtractor` or `Tiler` | Hand-rolled `for r in range(0, rows, sz):` loops |
@@ -62,7 +64,7 @@ Every GRDL module owns a specific responsibility. **Always use the purpose-built
 | Geo-registered vector features (labels, AOIs, masks, exports) + spatial ops | `grdl.vector` (`Feature`, `FeatureSet`, `BufferOperator`, …, `RasterToPoints`/`Rasterize`) | Ad-hoc GeoJSON dicts / direct shapely calls |
 | Scan a directory of imagery / build a queryable catalog | `grdl.discovery` (`MetadataScanner`, `LocalCatalog`) | Hand-rolled `os.walk` + metadata parsing |
 
-Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/example/image_processing/sar/sublook_compare.py` and `grdl/example/image_processing/sar/csi_detection_overlay.py` for full integration examples.
+Modules handle edge cases (boundary snapping, band indexing, lazy loading, resource cleanup) that ad-hoc code misses. **Compose them at the application level** — each module does its job, the application wires them together. See `grdl/IO/integration.md` and the per-module `README.md` files (for instance `grdl/image_processing/ortho/README.md`) for full integration examples.
 
 ### DEM / Elevation Ownership
 
@@ -98,6 +100,29 @@ result = orthorectify(
 - SICD's native R/Rdot inverse checks `self.elevation` first and queries DEM directly -- if `geo.elevation` is not set, the projection falls back to the WGS84 ellipsoid (height=0), producing terrain-uncorrected output.
 - SIDD's R/Rdot inverse uses `self.elevation` when the caller passes `height=0.0`.
 - The orthorectifier has no `elevation` parameter. All terrain correction flows through `geo.elevation`.
+- `ChipGeolocation` forwards `elevation` assignment to the parent it wraps. A chip owns no projection engine -- both transforms delegate -- so a model held only by the chip would be reported back but never consulted.
+
+### One Pixel Frame Per Ortho Run
+
+**A source array and its geolocation must describe the same pixels.**
+
+The inverse mapping is expressed in the geolocation's pixel coordinates. Hand a chip to a full-image geolocation and every mapped coordinate addresses the full image, lands outside the chip, and the run returns an all-nodata grid. Wrap the full-image geolocation with `ChipGeolocation` so chip-local pixels are offset into the sensor model's frame.
+
+```python
+# CORRECT: the chip and the sensor model share one pixel frame
+chip = reader.read_chip(r0, r1, c0, c1)
+chip_geo = ChipGeolocation(geo, row_offset=r0, col_offset=c0,
+                           shape=chip.shape[-2:])
+result = orthorectify(geolocation=chip_geo, source_array=chip)
+```
+
+```python
+# WRONG: chip pixels mapped in full-image coordinates
+chip = reader.read_chip(r0, r1, c0, c1)
+result = orthorectify(geolocation=geo, source_array=chip)  # raises ValueError
+```
+
+Reading through `reader=` instead of `source_array=` avoids the question entirely -- the orthorectifier reads exactly the pixels the mapping needs, in full-image coordinates. `Orthorectifier.apply(source_origin=(r0, c0))` is the low-level alternative for a pre-read chip; never combine it with `ChipGeolocation`, or the offset is applied twice.
 
 ### Unified Height Resolution and NaN Fill
 
@@ -383,6 +408,7 @@ GRDL/
         crsd.py              # CRSDReader (sarkit)
         sidd.py              # SIDDReader (sarkit)
         sidd_writer.py       # SIDDWriter
+        sidd_builder.py      # build_sidd_metadata(), infer_pixel_type(), to_display_samples()
         biomass.py           # BIOMASSL1Reader
         biomass_catalog.py   # BIOMASSCatalog
         sentinel1_slc.py     # Sentinel1SLCReader

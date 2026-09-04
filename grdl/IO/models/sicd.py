@@ -28,7 +28,7 @@ Modified
 
 # Standard library
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 # Third-party
 import numpy as np
@@ -86,7 +86,10 @@ class SICDCollectionInfo:
     classification : str, optional
         Security classification string.
     country_codes : List[str], optional
-        Country code list.
+        Country codes.
+    parameters : Dict[str, str], optional
+        Free-form collection parameters, keyed by the ``name``
+        attribute of each ``Parameter`` element.
     """
 
     collector_name: Optional[str] = None
@@ -96,6 +99,7 @@ class SICDCollectionInfo:
     radar_mode: Optional[SICDRadarMode] = None
     classification: Optional[str] = None
     country_codes: Optional[List[str]] = None
+    parameters: Optional[Dict[str, str]] = None
 
 
 # ===================================================================
@@ -205,6 +209,39 @@ class SICDSCP:
 
 
 @dataclass
+class SICDGeoInfo:
+    """Named geographic feature annotating the collection.
+
+    ``GeoInfo`` blocks nest arbitrarily deep in the SICD schema, so
+    ``geo_info`` holds any children of this feature.  Exactly one of
+    ``point``, ``line`` or ``polygon`` carries geometry; a feature that
+    only groups children has none of them.
+
+    Parameters
+    ----------
+    name : str, optional
+        Feature name, from the ``name`` attribute.
+    descriptions : Dict[str, str], optional
+        Free-form ``Desc`` entries keyed by their ``name`` attribute.
+    point : LatLon, optional
+        Single point geometry.
+    line : List[LatLon], optional
+        Ordered line endpoints.
+    polygon : List[LatLon], optional
+        Ordered polygon vertices.
+    geo_info : List[SICDGeoInfo], optional
+        Nested child features.
+    """
+
+    name: Optional[str] = None
+    descriptions: Optional[Dict[str, str]] = None
+    point: Optional[LatLon] = None
+    line: Optional[List[LatLon]] = None
+    polygon: Optional[List[LatLon]] = None
+    geo_info: Optional[List['SICDGeoInfo']] = None
+
+
+@dataclass
 class SICDGeoData:
     """Geographic data.
 
@@ -218,12 +255,15 @@ class SICDGeoData:
         Four image corner coordinates.
     valid_data : List[LatLon], optional
         Valid data polygon vertices.
+    geo_info : List[SICDGeoInfo], optional
+        Named geographic features annotating the collection.
     """
 
     earth_model: str = 'WGS_84'
     scp: Optional[SICDSCP] = None
     image_corners: Optional[List[LatLon]] = None
     valid_data: Optional[List[LatLon]] = None
+    geo_info: Optional[List[SICDGeoInfo]] = None
 
 
 # ===================================================================
@@ -497,6 +537,122 @@ class SICDAreaCorner:
 
 
 @dataclass
+class SICDAreaReferencePoint:
+    """Reference point of the collection area plane.
+
+    Parameters
+    ----------
+    ecf : XYZ, optional
+        Reference point in ECF meters.
+    line : float, optional
+        Line coordinate of the reference point.
+    sample : float, optional
+        Sample coordinate of the reference point.
+    name : str, optional
+        Reference point name.
+    """
+
+    ecf: Optional[XYZ] = None
+    line: Optional[float] = None
+    sample: Optional[float] = None
+    name: Optional[str] = None
+
+
+@dataclass
+class SICDAreaXDirection:
+    """Increasing-line direction of the collection area plane.
+
+    Parameters
+    ----------
+    uvect_ecf : XYZ, optional
+        Unit vector in ECF.
+    line_spacing : float, optional
+        Spacing between lines (meters).
+    num_lines : int, optional
+        Number of lines.
+    first_line : int, optional
+        Index of the first line.
+    """
+
+    uvect_ecf: Optional[XYZ] = None
+    line_spacing: Optional[float] = None
+    num_lines: Optional[int] = None
+    first_line: Optional[int] = None
+
+
+@dataclass
+class SICDAreaYDirection:
+    """Increasing-sample direction of the collection area plane.
+
+    Parameters
+    ----------
+    uvect_ecf : XYZ, optional
+        Unit vector in ECF.
+    sample_spacing : float, optional
+        Spacing between samples (meters).
+    num_samples : int, optional
+        Number of samples.
+    first_sample : int, optional
+        Index of the first sample.
+    """
+
+    uvect_ecf: Optional[XYZ] = None
+    sample_spacing: Optional[float] = None
+    num_samples: Optional[int] = None
+    first_sample: Optional[int] = None
+
+
+@dataclass
+class SICDAreaSegment:
+    """One named rectangular segment of the collection area plane.
+
+    Parameters
+    ----------
+    start_line, start_sample : int, optional
+        Inclusive start of the segment.
+    end_line, end_sample : int, optional
+        Inclusive end of the segment.
+    identifier : str, optional
+        Segment identifier.
+    index : int, optional
+        1-based position in the segment list.
+    """
+
+    start_line: Optional[int] = None
+    start_sample: Optional[int] = None
+    end_line: Optional[int] = None
+    end_sample: Optional[int] = None
+    identifier: Optional[str] = None
+    index: Optional[int] = None
+
+
+@dataclass
+class SICDAreaPlane:
+    """Planar definition of the collection area.
+
+    Parameters
+    ----------
+    ref_pt : SICDAreaReferencePoint, optional
+        Plane reference point.
+    x_dir : SICDAreaXDirection, optional
+        Increasing-line direction.
+    y_dir : SICDAreaYDirection, optional
+        Increasing-sample direction.
+    segments : List[SICDAreaSegment], optional
+        Named segments of the plane.
+    orientation : str, optional
+        Plane orientation: ``'UP'``, ``'DOWN'``, ``'LEFT'``,
+        ``'RIGHT'``, ``'ARBITRARY'``.
+    """
+
+    ref_pt: Optional[SICDAreaReferencePoint] = None
+    x_dir: Optional[SICDAreaXDirection] = None
+    y_dir: Optional[SICDAreaYDirection] = None
+    segments: Optional[List[SICDAreaSegment]] = None
+    orientation: Optional[str] = None
+
+
+@dataclass
 class SICDArea:
     """Scene area.
 
@@ -504,12 +660,32 @@ class SICDArea:
     ----------
     corner_points : List[SICDAreaCorner], optional
         Corner points defining the area.
-    plane : Dict[str, Any], optional
-        Area plane segmentation info.
+    plane : SICDAreaPlane, optional
+        Planar definition of the area, including its reference point,
+        line/sample directions and segment list.
     """
 
     corner_points: Optional[List[SICDAreaCorner]] = None
-    plane: Optional[Dict[str, Any]] = None
+    plane: Optional[SICDAreaPlane] = None
+
+
+@dataclass
+class SICDTxStep:
+    """One step of a transmit pulse sequence.
+
+    Parameters
+    ----------
+    wf_index : int, optional
+        Index into the waveform parameter list.
+    tx_polarization : str, optional
+        Transmit polarization for this step.
+    index : int, optional
+        1-based position in the sequence.
+    """
+
+    wf_index: Optional[int] = None
+    tx_polarization: Optional[str] = None
+    index: Optional[int] = None
 
 
 @dataclass
@@ -531,6 +707,10 @@ class SICDRadarCollection:
         Receive channels.
     area : SICDArea, optional
         Scene area.
+    tx_sequence : List[SICDTxStep], optional
+        Transmit pulse sequence, when more than one waveform is used.
+    parameters : Dict[str, str], optional
+        Free-form radar collection parameters.
     """
 
     tx_frequency: Optional[SICDTxFrequency] = None
@@ -539,6 +719,8 @@ class SICDRadarCollection:
     tx_polarization: Optional[str] = None
     rcv_channels: Optional[List[SICDRcvChannel]] = None
     area: Optional[SICDArea] = None
+    tx_sequence: Optional[List[SICDTxStep]] = None
+    parameters: Optional[Dict[str, str]] = None
 
 
 # ===================================================================
@@ -600,6 +782,62 @@ class SICDProcessingStep:
 
 
 @dataclass
+class SICDDistortion:
+    """Polarimetric distortion matrix at the calibration epoch.
+
+    The complex terms follow the SICD convention: ``a`` scales the
+    matrix, ``f1``/``f2`` are the co-pol channel imbalances and
+    ``q1``-``q4`` the cross-talk terms.
+
+    Parameters
+    ----------
+    calibration_date : str, optional
+        Calibration date/time (ISO 8601).
+    a : float, optional
+        Absolute amplitude scale factor.
+    f1, f2 : complex, optional
+        Channel imbalance terms.
+    q1, q2, q3, q4 : complex, optional
+        Cross-talk terms.
+    gain_error_a, gain_error_f1, gain_error_f2 : float, optional
+        One-sigma gain errors (dB).
+    phase_error_f1, phase_error_f2 : float, optional
+        One-sigma phase errors (radians).
+    """
+
+    calibration_date: Optional[str] = None
+    a: Optional[float] = None
+    f1: Optional[complex] = None
+    q1: Optional[complex] = None
+    q2: Optional[complex] = None
+    f2: Optional[complex] = None
+    q3: Optional[complex] = None
+    q4: Optional[complex] = None
+    gain_error_a: Optional[float] = None
+    gain_error_f1: Optional[float] = None
+    gain_error_f2: Optional[float] = None
+    phase_error_f1: Optional[float] = None
+    phase_error_f2: Optional[float] = None
+
+
+@dataclass
+class SICDPolarizationCalibration:
+    """Polarimetric calibration state of the image.
+
+    Parameters
+    ----------
+    distort_correction_applied : bool, optional
+        Whether the distortion correction has already been applied to
+        the pixel data.
+    distortion : SICDDistortion, optional
+        The distortion matrix itself.
+    """
+
+    distort_correction_applied: Optional[bool] = None
+    distortion: Optional[SICDDistortion] = None
+
+
+@dataclass
 class SICDImageFormation:
     """Image formation parameters.
 
@@ -617,6 +855,9 @@ class SICDImageFormation:
         Processed frequency range.
     seg_id : str, optional
         Segment identifier.
+    st_beam_comp : str, optional
+        Slow-time beam shape compensation: ``'NO'``, ``'GLOBAL'``,
+        ``'SV'``.
     image_beam_comp : str, optional
         Beam compensation: ``'NO'``, ``'SV'``, ``'GLOBAL'``.
     az_autofocus : str, optional
@@ -627,8 +868,9 @@ class SICDImageFormation:
         Processing steps applied.
     polarization_hv_angle_poly : Poly1D, optional
         HV angle polynomial.
-    polarization_calibration : Dict[str, Any], optional
-        Polarization calibration data.
+    polarization_calibration : SICDPolarizationCalibration, optional
+        Polarimetric distortion matrix and whether it has been
+        applied to the pixel data.
     """
 
     rcv_chan_proc: Optional[SICDRcvChanProc] = None
@@ -637,12 +879,13 @@ class SICDImageFormation:
     t_end_proc: Optional[float] = None
     tx_frequency_proc: Optional[SICDTxFrequencyProc] = None
     seg_id: Optional[str] = None
+    st_beam_comp: Optional[str] = None
     image_beam_comp: Optional[str] = None
     az_autofocus: Optional[str] = None
     rg_autofocus: Optional[str] = None
     processing: Optional[List[SICDProcessingStep]] = None
     polarization_hv_angle_poly: Optional[Poly1D] = None
-    polarization_calibration: Optional[Dict[str, Any]] = None
+    polarization_calibration: Optional[SICDPolarizationCalibration] = None
     tx_rcv_polarization_proc: Optional[Union[str, List[str]]] = None
 
 
@@ -963,6 +1206,85 @@ class SICDRadarSensorError:
 
 
 @dataclass
+class SICDTropoError:
+    """Tropospheric propagation error components.
+
+    Parameters
+    ----------
+    tropo_range_vertical : float, optional
+        Vertical range error from the troposphere (meters).
+    tropo_range_slant : float, optional
+        Slant range error from the troposphere (meters).
+    tropo_range_decorr : SICDErrorDecorrFunc, optional
+        Range error decorrelation function.
+    """
+
+    tropo_range_vertical: Optional[float] = None
+    tropo_range_slant: Optional[float] = None
+    tropo_range_decorr: Optional[SICDErrorDecorrFunc] = None
+
+
+@dataclass
+class SICDIonoError:
+    """Ionospheric propagation error components.
+
+    Parameters
+    ----------
+    iono_range_vertical : float, optional
+        Vertical range error from the ionosphere (meters).
+    iono_range_rate_vertical : float, optional
+        Vertical range rate error (meters/second).
+    iono_rg_rg_rate_cc : float, optional
+        Range / range-rate error correlation coefficient.
+    iono_range_vert_decorr : SICDErrorDecorrFunc, optional
+        Vertical range error decorrelation function.
+    """
+
+    iono_range_vertical: Optional[float] = None
+    iono_range_rate_vertical: Optional[float] = None
+    iono_rg_rg_rate_cc: Optional[float] = None
+    iono_range_vert_decorr: Optional[SICDErrorDecorrFunc] = None
+
+
+@dataclass
+class SICDUnmodeledDecorr:
+    """Decorrelation of the unmodeled error in image coordinates.
+
+    Parameters
+    ----------
+    xrow : SICDErrorDecorrFunc, optional
+        Row-direction decorrelation function.
+    ycol : SICDErrorDecorrFunc, optional
+        Column-direction decorrelation function.
+    """
+
+    xrow: Optional[SICDErrorDecorrFunc] = None
+    ycol: Optional[SICDErrorDecorrFunc] = None
+
+
+@dataclass
+class SICDUnmodeledError:
+    """Unmodeled error variance in image coordinates.
+
+    Parameters
+    ----------
+    xrow : float, optional
+        Row-direction error variance (meters squared).
+    ycol : float, optional
+        Column-direction error variance (meters squared).
+    xrow_ycol : float, optional
+        Row/column error covariance.
+    unmodeled_decorr : SICDUnmodeledDecorr, optional
+        Decorrelation functions for the unmodeled error.
+    """
+
+    xrow: Optional[float] = None
+    ycol: Optional[float] = None
+    xrow_ycol: Optional[float] = None
+    unmodeled_decorr: Optional[SICDUnmodeledDecorr] = None
+
+
+@dataclass
 class SICDErrorStatistics:
     """Error statistics.
 
@@ -974,11 +1296,23 @@ class SICDErrorStatistics:
         Monostatic position/velocity errors.
     radar_sensor : SICDRadarSensorError, optional
         Radar sensor errors.
+    tropo_error : SICDTropoError, optional
+        Tropospheric propagation errors.
+    iono_error : SICDIonoError, optional
+        Ionospheric propagation errors.
+    unmodeled : SICDUnmodeledError, optional
+        Unmodeled error variance in image coordinates.
+    additional_parms : Dict[str, str], optional
+        Free-form additional error parameters.
     """
 
     composite_scp: Optional[SICDCompositeSCPError] = None
     monostatic: Optional[SICDPosVelErr] = None
     radar_sensor: Optional[SICDRadarSensorError] = None
+    tropo_error: Optional[SICDTropoError] = None
+    iono_error: Optional[SICDIonoError] = None
+    unmodeled: Optional[SICDUnmodeledError] = None
+    additional_parms: Optional[Dict[str, str]] = None
 
 
 # ===================================================================
@@ -1177,10 +1511,13 @@ class SICDRMA:
         Range migration reference.
     inca : SICDINCA, optional
         INCA parameters.
+    rm_algo_type : str, optional
+        Range migration algorithm: ``'OMEGA_K'``, ``'CSA'``,
+        ``'RG_DOP'``.
     image_type : str, optional
-        Image type: ``'RMAT'``, ``'RMCR'``, ``'INCA'``.
     """
 
+    rm_algo_type: Optional[str] = None
     rm_ref: Optional[SICDRMRef] = None
     inca: Optional[SICDINCA] = None
     image_type: Optional[str] = None

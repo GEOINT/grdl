@@ -225,7 +225,7 @@ Abstract class for image discovery and spatial queries.
 
 IO readers compose with other GRDL modules. **Use the purpose-built module for each task** -- IO for loading, `data_prep` for chip planning, `image_processing` for transforms:
 
-**Full integration example** (see `grdl/example/image_processing/sar/sublook_compare.py`):
+**Full integration example** (see [integration.md](integration.md)):
 
 ```python
 from grdl.IO import SICDReader                           # IO: load imagery
@@ -729,5 +729,5 @@ def process_large_image(reader, chunk_size=1024):
 
 - [README.md](README.md) - User-facing documentation and examples
 - [TODO.md](TODO.md) - Planned features and roadmap
-- [/CLAUDE.md](/CLAUDE.md) - Project-wide coding standards
-- [/LIBRARIES.md](/LIBRARIES.md) - Integration with other GRDL modules
+- [CLAUDE.md](../../CLAUDE.md) - Project-wide coding standards
+- [integration.md](integration.md) - Integration with other GRDL modules

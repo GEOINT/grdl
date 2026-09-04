@@ -692,17 +692,55 @@ class TestSIDDWriter:
             writer.write_chip(np.zeros((10, 10), dtype=np.uint8), 0, 0)
 
     def test_write_validates_dimensions(self):
-        """SIDDWriter.write rejects 1D arrays."""
+        """SIDDWriter.write rejects arrays that do not match the footprint."""
         try:
             from grdl.IO.sar.sidd_writer import SIDDWriter
         except ImportError:
             pytest.skip("sarpy not installed")
 
+        writer = _mono_writer(SIDDWriter, rows=10, cols=10)
+        with pytest.raises(ValueError, match='pixel footprint'):
+            writer.write(np.zeros(100, dtype=np.uint8))
+
+    def test_write_validates_dtype(self):
+        """SIDDWriter.write rejects samples in the wrong dtype."""
+        try:
+            from grdl.IO.sar.sidd_writer import SIDDWriter
+        except ImportError:
+            pytest.skip("sarpy not installed")
+
+        writer = _mono_writer(SIDDWriter, rows=10, cols=10)
+        with pytest.raises(ValueError, match='requires dtype uint8'):
+            writer.write(np.zeros((10, 10), dtype=np.float32))
+
+    def test_write_requires_measurement(self):
+        """SIDDWriter.write reports metadata too sparse to write."""
+        try:
+            from grdl.IO.sar.sidd_writer import SIDDWriter
+            from sarpy.io.product.sidd3_elements.SIDD import SIDDType
+        except ImportError:
+            pytest.skip("sarpy not installed")
+
         writer = SIDDWriter.__new__(SIDDWriter)
         writer.filepath = '/tmp/test.nitf'
-        writer._sarpy_meta = mock.MagicMock()
-        with pytest.raises(ValueError, match='2D or 3D'):
-            writer.write(np.zeros(100, dtype=np.uint8))
+        writer._sarpy_meta = SIDDType()
+        with pytest.raises(ValueError, match='PixelFootprint'):
+            writer.write(np.zeros((10, 10), dtype=np.uint8))
+
+
+def _mono_writer(writer_cls, rows, cols):
+    """Build a writer whose metadata declares a MONO8I footprint."""
+    from sarpy.io.product.sidd3_elements.SIDD import SIDDType
+    from sarpy.io.product.sidd3_elements.Display import ProductDisplayType
+    from sarpy.io.product.sidd3_elements.Measurement import MeasurementType
+
+    writer = writer_cls.__new__(writer_cls)
+    writer.filepath = '/tmp/test.nitf'
+    writer._sarpy_meta = SIDDType(
+        Display=ProductDisplayType(PixelType='MONO8I', NumBands=1),
+        Measurement=MeasurementType(PixelFootprint=(rows, cols)),
+    )
+    return writer
 
 
 # ===================================================================

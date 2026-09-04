@@ -140,7 +140,7 @@ total_1s = convolve_ellipses([pixel_loc, pointing, georeg])
 # a, b, rotation_deg reflect the combined 1-sigma uncertainty
 ```
 
-See [grdl/example/shapes/error_budget_overlay.py](../example/shapes/error_budget_overlay.py) for a complete demo.
+See [`combine.py`](combine.py) for the covariance algebra and [`display.py`](display.py) for the overlay helpers.
 
 ---
 
@@ -161,7 +161,7 @@ detector = CACFARDetector(guard_cells=2, training_cells=4, pfa=1e-3)
 detections = cued_detect(detector, image, roi, geo)
 ```
 
-See [grdl/example/shapes/cued_detection_overlay.py](../example/shapes/cued_detection_overlay.py).
+See [`cueing.py`](cueing.py) for the `cued_detect` contract.
 
 ---
 

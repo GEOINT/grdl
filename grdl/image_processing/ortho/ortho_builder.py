@@ -188,6 +188,105 @@ class OrthoResult:
         writer = GeoTIFFWriter(filepath)
         writer.write(self.data, geolocation=geolocation)
 
+    def save_sidd(
+        self,
+        filepath: Union[str, Path],
+        data: Optional[np.ndarray] = None,
+        *,
+        pixel_type: Optional[str] = None,
+        source_metadata: Optional[Any] = None,
+        product_class: str = 'Detected Image',
+        **kwargs: Any,
+    ) -> None:
+        """Save the result as a SIDD NITF product.
+
+        Builds complete SIDD metadata from the output grid and the
+        source collection, then writes the product.  The geolocation
+        and source metadata are taken from the orthorectifier unless
+        overridden.
+
+        SIDD carries display-ready integer samples, not the complex or
+        floating point values the orthorectifier produces, so pass the
+        stretched array as ``data``.  Normalized ``[0, 1]`` floats are
+        scaled to the pixel type automatically.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Output path for the SIDD NITF file.
+        data : np.ndarray, optional
+            Product samples.  Either integers in the pixel type's dtype
+            (``uint8`` / ``uint16``), or normalized floats in ``[0, 1]``
+            as every ``grdl.contrast`` stretch returns -- those are
+            scaled to the pixel type's full range, with non-finite
+            samples written as 0.  Defaults to ``self.data``, which is
+            usable only when the ortho output is already integer.
+        pixel_type : str, optional
+            ``'MONO8I'``, ``'MONO16I'`` or ``'RGB24I'``.  Inferred from
+            the array when omitted.
+        source_metadata : SICDMetadata, optional
+            Source collection metadata.  Defaults to the metadata
+            carried by the orthorectifier's geolocation, which is where
+            it lives for SICD and SIDD sources.
+        product_class : str
+            Descriptive product class recorded in ProductCreation.
+        **kwargs
+            Forwarded to
+            :func:`~grdl.IO.sar.sidd_builder.build_sidd_metadata`.
+
+        Raises
+        ------
+        ValidationError
+            If the array does not match the grid or the pixel type.
+
+        Examples
+        --------
+        >>> from grdl.contrast import PercentileStretch
+        >>> result = orthorectify(reader=reader, geolocation=geo,
+        ...                       output_grid=grid)
+        >>> display = PercentileStretch().apply(np.abs(result.data))
+        >>> result.save_sidd('product.nitf', display)
+
+        A three-channel product writes as ``RGB24I``; the band axis may
+        lead or trail:
+
+        >>> rgb = np.stack([red, green, blue])   # (3, rows, cols)
+        >>> result.save_sidd('color.nitf', rgb, product_class='Color Image')
+        """
+        from grdl.IO.sar.sidd_builder import (
+            build_sidd_metadata, infer_pixel_type, to_display_samples,
+        )
+        from grdl.IO.sar.sidd_writer import SIDDWriter
+
+        product = self.data if data is None else data
+        if pixel_type is None:
+            pixel_type = infer_pixel_type(product)
+        if np.issubdtype(np.asarray(product).dtype, np.floating):
+            # GRDL's stretches return float32 in [0, 1] with NaN where
+            # there was no coverage; SIDD carries integer samples.
+            logger.info(
+                "Scaling normalized float samples to %s", pixel_type,
+            )
+            product = to_display_samples(product, pixel_type)
+
+        geolocation = getattr(self.orthorectifier, 'geolocation', None)
+        if source_metadata is None:
+            source_metadata = getattr(geolocation, 'metadata', None)
+
+        metadata = build_sidd_metadata(
+            self.output_grid,
+            product.shape,
+            pixel_type=pixel_type,
+            source_metadata=source_metadata,
+            geolocation=geolocation,
+            product_class=product_class,
+            interpolation=getattr(
+                self.orthorectifier, 'interpolation', None,
+            ),
+            **kwargs,
+        )
+        SIDDWriter(filepath, metadata=metadata).write(product)
+
 
 class OrthoBuilder:
     """Universal orthorectification pipeline.
@@ -456,11 +555,17 @@ class OrthoBuilder:
         This is the recommended path for SAR: compute magnitude or other
         real-valued products in slant range, then orthorectify the result.
 
+        The array must describe the same pixels as the geolocation.
+        To orthorectify a chip, wrap the full-image geolocation with
+        ``ChipGeolocation`` so chip-local coordinates are offset into
+        the sensor model's frame; passing the chip with the full-image
+        geolocation raises at ``run()``.
+
         Parameters
         ----------
         array : np.ndarray
             Source image data.  Shape ``(rows, cols)`` or
-            ``(bands, rows, cols)``.
+            ``(bands, rows, cols)``, matching ``geolocation.shape``.
 
         Returns
         -------
@@ -584,8 +689,40 @@ class OrthoBuilder:
         self._reader_factory = factory
         return self
 
+    def _effective_tile_size(
+        self, grid: 'GeographicGrid',
+    ) -> Optional[Union[int, Tuple[int, int]]]:
+        """Tile size this configuration will actually run with.
+
+        An explicit ``with_tile_size()`` always wins.  Otherwise a grid
+        past ``AUTO_TILE_THRESHOLD_PX`` is tiled at ``AUTO_TILE_SIZE``
+        to bound memory.  ``run()`` and ``estimate()`` both resolve
+        through here so an estimate describes the run it precedes.
+
+        Parameters
+        ----------
+        grid : OutputGridProtocol
+            Resolved output grid.
+
+        Returns
+        -------
+        int or (int, int) or None
+            ``None`` only when the whole-grid path really will be used.
+        """
+        if self._tile_size is not None:
+            return self._tile_size
+        if (AUTO_TILE_THRESHOLD_PX is not None
+                and grid.rows * grid.cols > AUTO_TILE_THRESHOLD_PX):
+            return AUTO_TILE_SIZE
+        return None
+
     def estimate(self) -> 'MemoryEstimate':
         """Predict peak memory for this configuration, allocating nothing.
+
+        Reports the path ``run()`` will take, auto-tiling included --
+        an estimate that modelled the whole-grid path for a run that
+        auto-tiles would overstate peak memory by an order of magnitude
+        and fail callers that gate on it.
 
         Returns
         -------
@@ -603,7 +740,8 @@ class OrthoBuilder:
                  if self._source_array is not None else np.float32)
         bands = len(self._bands) if self._bands else 1
         return estimate_ortho_memory(
-            grid, self._geolocation, tile_size=self._tile_size,
+            grid, self._geolocation,
+            tile_size=self._effective_tile_size(grid),
             dtype=dtype, bands=bands, workers=self._workers,
         )
 
@@ -691,11 +829,8 @@ class OrthoBuilder:
         # is the right default rather than an expert opt-in.  An
         # explicit tile_size always wins; AUTO_TILE_THRESHOLD_PX = None
         # restores the old behaviour.
-        tile_size = self._tile_size
-        if (tile_size is None
-                and AUTO_TILE_THRESHOLD_PX is not None
-                and grid.rows * grid.cols > AUTO_TILE_THRESHOLD_PX):
-            tile_size = AUTO_TILE_SIZE
+        tile_size = self._effective_tile_size(grid)
+        if tile_size is not None and self._tile_size is None:
             logger.info(
                 "Output is %d x %d (%.1f Mpx); tiling at %d to bound "
                 "memory.  Pass tile_size explicitly to override.",
@@ -1065,6 +1200,10 @@ def orthorectify(
         Open imagery reader.  Mutually exclusive with ``source_array``.
     source_array : np.ndarray, optional
         Pre-loaded source array.  Mutually exclusive with ``reader``.
+        Must cover the same pixels as ``geolocation``: the mapping is
+        computed in the geolocation's own pixel frame, so a chip needs
+        its geolocation wrapped in ``ChipGeolocation`` rather than the
+        full-image one.  A mismatch raises ``ValueError``.
     metadata : Any, optional
         Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
     output_grid : GeographicGrid or ENUGrid, optional

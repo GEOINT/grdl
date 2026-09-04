@@ -33,7 +33,7 @@ Modified
 # Standard library
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
 # Third-party
@@ -78,6 +78,19 @@ from grdl.IO.models import (
     SICDPosVelErr,
     SICDCorrCoefs,
     SICDErrorDecorrFunc,
+    SICDGeoInfo,
+    SICDTropoError,
+    SICDIonoError,
+    SICDUnmodeledDecorr,
+    SICDUnmodeledError,
+    SICDDistortion,
+    SICDPolarizationCalibration,
+    SICDAreaReferencePoint,
+    SICDAreaXDirection,
+    SICDAreaYDirection,
+    SICDAreaSegment,
+    SICDAreaPlane,
+    SICDTxStep,
     SICDRadarSensorError,
     SICDMatchInfo,
     SICDMatchType,
@@ -441,6 +454,139 @@ def _sarpy_xyzpoly(obj: Any) -> Optional[XYZPoly]:
 # Section extractors — sarkit (XML)
 # ===================================================================
 
+def _xml_parameters(
+    elem: Optional[ET.Element],
+    path: str = '{*}Parameter',
+) -> Optional[Dict[str, str]]:
+    """Collect ``Parameter`` children into a name-keyed dict.
+
+    Parameters
+    ----------
+    elem : ET.Element or None
+        Parent element.
+    path : str
+        Child element path.  Defaults to direct ``Parameter`` children.
+
+    Returns
+    -------
+    Dict[str, str] or None
+        None when no matching children are present.
+    """
+    if elem is None:
+        return None
+    found = elem.findall(path)
+    if not found:
+        return None
+    return {
+        pm.get('name', ''): (pm.text or '').strip() for pm in found
+    }
+
+
+def _xml_complex(
+    elem: Optional[ET.Element],
+    path: str,
+) -> Optional[complex]:
+    """Read a SICD ``ComplexType`` (Real/Imag pair) as a Python complex.
+
+    Parameters
+    ----------
+    elem : ET.Element or None
+        Parent element.
+    path : str
+        Path to the complex-valued child.
+
+    Returns
+    -------
+    complex or None
+        None when the element or either component is absent.
+    """
+    if elem is None:
+        return None
+    sub = elem.find(path)
+    if sub is None:
+        return None
+    real = _xml_float(sub, '{*}Real')
+    imag = _xml_float(sub, '{*}Imag')
+    if real is None and imag is None:
+        return None
+    return complex(real or 0.0, imag or 0.0)
+
+
+def _xml_latlon_list(
+    elem: Optional[ET.Element],
+    path: str,
+) -> Optional[List[LatLon]]:
+    """Read an indexed list of lat/lon vertices.
+
+    Parameters
+    ----------
+    elem : ET.Element or None
+        Parent element.
+    path : str
+        Path to the vertex elements.
+
+    Returns
+    -------
+    List[LatLon] or None
+        Vertices in ``index`` attribute order, or None when absent.
+    """
+    if elem is None:
+        return None
+    found = elem.findall(path)
+    if not found:
+        return None
+    verts = []
+    for v in found:
+        lat = _xml_float(v, '{*}Lat')
+        lon = _xml_float(v, '{*}Lon')
+        if lat is None or lon is None:
+            continue
+        verts.append((int(v.get('index', '0')), LatLon(lat=lat, lon=lon)))
+    if not verts:
+        return None
+    verts.sort(key=lambda pair: pair[0])
+    return [ll for _, ll in verts]
+
+
+def _extract_geo_info_xml(elem: ET.Element) -> SICDGeoInfo:
+    """Build one ``SICDGeoInfo`` from a GeoInfo element, recursively.
+
+    Parameters
+    ----------
+    elem : ET.Element
+        A ``GeoInfo`` element.
+
+    Returns
+    -------
+    SICDGeoInfo
+        The feature, including any nested children.
+    """
+    point = None
+    pt = elem.find('{*}Point')
+    if pt is not None:
+        lat = _xml_float(pt, '{*}Lat')
+        lon = _xml_float(pt, '{*}Lon')
+        if lat is not None and lon is not None:
+            point = LatLon(lat=lat, lon=lon)
+
+    children = [
+        _extract_geo_info_xml(g) for g in elem.findall('{*}GeoInfo')
+    ]
+
+    return SICDGeoInfo(
+        name=elem.get('name'),
+        descriptions=_xml_parameters(elem, '{*}Desc'),
+        point=point,
+        line=_xml_latlon_list(
+            elem.find('{*}Line'), '{*}Endpoint',
+        ),
+        polygon=_xml_latlon_list(
+            elem.find('{*}Polygon'), '{*}Vertex',
+        ),
+        geo_info=children or None,
+    )
+
+
 def _extract_collection_info_xml(
     xml: ET.Element,
 ) -> Optional[SICDCollectionInfo]:
@@ -470,6 +616,7 @@ def _extract_collection_info_xml(
         radar_mode=radar_mode,
         classification=_xml_str(ci, '{*}Classification'),
         country_codes=country_codes,
+        parameters=_xml_parameters(ci),
     )
 
 
@@ -494,6 +641,26 @@ def _extract_image_data_xml(xml: ET.Element) -> Optional[SICDImageData]:
     if idata is None:
         return None
 
+    # AmpTable is a 256-entry lookup used by AMP8I_PHS8I products to
+    # map stored amplitude codes to magnitudes.  Entries carry an
+    # ``index`` attribute, so sort rather than trusting document order.
+    amp_table = None
+    at = idata.find('{*}AmpTable')
+    if at is not None:
+        entries = []
+        for amp in at.findall('{*}Amplitude'):
+            try:
+                entries.append(
+                    (int(amp.get('index', '0')), float(amp.text or 0.0)),
+                )
+            except (TypeError, ValueError):
+                continue
+        if entries:
+            entries.sort(key=lambda pair: pair[0])
+            amp_table = np.array(
+                [v for _, v in entries], dtype=np.float64,
+            )
+
     full_image = None
     fi = idata.find('{*}FullImage')
     if fi is not None:
@@ -510,6 +677,7 @@ def _extract_image_data_xml(xml: ET.Element) -> Optional[SICDImageData]:
         first_col=_xml_int(idata, '{*}FirstCol') or 0,
         full_image=full_image,
         scp_pixel=_xml_rowcol(idata, '{*}SCPPixel'),
+        amp_table=amp_table,
         valid_data=_xml_valid_vertices_rowcol(idata),
     )
 
@@ -528,11 +696,16 @@ def _extract_geo_data_xml(xml: ET.Element) -> Optional[SICDGeoData]:
             llh=_xml_latlonhae(scp_elem, '{*}LLH'),
         )
 
+    geo_info = [
+        _extract_geo_info_xml(g) for g in geo.findall('{*}GeoInfo')
+    ]
+
     return SICDGeoData(
         earth_model=_xml_str(geo, '{*}EarthModel') or 'WGS_84',
         scp=scp,
         image_corners=_xml_image_corners(geo),
         valid_data=_xml_valid_vertices_latlon(geo),
+        geo_info=geo_info or None,
     )
 
 
@@ -542,6 +715,25 @@ def _extract_dir_param_xml(
     """Extract Grid DirParam (Row or Col) from XML element."""
     if elem is None:
         return None
+
+    # WgtFunct is the sampled weighting function; entries carry an
+    # ``index`` attribute, so sort rather than trusting document order.
+    wgt_funct = None
+    wf = elem.find('{*}WgtFunct')
+    if wf is not None:
+        samples = []
+        for w in wf.findall('{*}Wgt'):
+            try:
+                samples.append(
+                    (int(w.get('index', '0')), float(w.text or 0.0)),
+                )
+            except (TypeError, ValueError):
+                continue
+        if samples:
+            samples.sort(key=lambda pair: pair[0])
+            wgt_funct = np.array(
+                [v for _, v in samples], dtype=np.float64,
+            )
 
     wgt_type = None
     wt = elem.find('{*}WgtType')
@@ -569,6 +761,7 @@ def _extract_dir_param_xml(
         delta_k2=_xml_float(elem, '{*}DeltaK2'),
         delta_k_coa_poly=_xml_poly2d_at(elem, '{*}DeltaKCOAPoly'),
         wgt_type=wgt_type,
+        wgt_funct=wgt_funct,
     )
 
 
@@ -618,10 +811,28 @@ def _extract_position_xml(xml: ET.Element) -> Optional[SICDPosition]:
     pos = xml.find('{*}Position')
     if pos is None:
         return None
+    # RcvAPC holds one RcvAPCPoly per receive aperture, each with an
+    # ``index`` attribute.
+    rcv_apc = None
+    rcv = pos.find('{*}RcvAPC')
+    if rcv is not None:
+        polys = []
+        for entry in rcv.findall('{*}RcvAPCPoly'):
+            poly = XYZPoly(
+                x=_xml_poly1d(entry.find('{*}X')),
+                y=_xml_poly1d(entry.find('{*}Y')),
+                z=_xml_poly1d(entry.find('{*}Z')),
+            )
+            polys.append((int(entry.get('index', '0')), poly))
+        if polys:
+            polys.sort(key=lambda pair: pair[0])
+            rcv_apc = [poly for _, poly in polys]
+
     return SICDPosition(
         arp_poly=_xml_xyzpoly(pos, '{*}ARPPoly'),
         grp_poly=_xml_xyzpoly(pos, '{*}GRPPoly'),
         tx_apc_poly=_xml_xyzpoly(pos, '{*}TxAPCPoly'),
+        rcv_apc=rcv_apc,
     )
 
 
@@ -685,7 +896,78 @@ def _extract_radar_collection_xml(
                     hae=_xml_float(acp, '{*}HAE') or 0.0,
                     index=int(acp.get('index', '0')),
                 ))
-        area = SICDArea(corner_points=corner_pts)
+        plane = None
+        pl = area_elem.find('{*}Plane')
+        if pl is not None:
+            ref_pt = None
+            rp = pl.find('{*}RefPt')
+            if rp is not None:
+                ref_pt = SICDAreaReferencePoint(
+                    ecf=_xml_xyz(rp, '{*}ECF'),
+                    line=_xml_float(rp, '{*}Line'),
+                    sample=_xml_float(rp, '{*}Sample'),
+                    name=rp.get('name'),
+                )
+
+            x_dir = None
+            xd = pl.find('{*}XDir')
+            if xd is not None:
+                x_dir = SICDAreaXDirection(
+                    uvect_ecf=_xml_xyz(xd, '{*}UVectECF'),
+                    line_spacing=_xml_float(xd, '{*}LineSpacing'),
+                    num_lines=_xml_int(xd, '{*}NumLines'),
+                    first_line=_xml_int(xd, '{*}FirstLine'),
+                )
+
+            y_dir = None
+            yd = pl.find('{*}YDir')
+            if yd is not None:
+                y_dir = SICDAreaYDirection(
+                    uvect_ecf=_xml_xyz(yd, '{*}UVectECF'),
+                    sample_spacing=_xml_float(yd, '{*}SampleSpacing'),
+                    num_samples=_xml_int(yd, '{*}NumSamples'),
+                    first_sample=_xml_int(yd, '{*}FirstSample'),
+                )
+
+            segments = None
+            seg_list = pl.find('{*}SegmentList')
+            if seg_list is not None:
+                segments = [
+                    SICDAreaSegment(
+                        start_line=_xml_int(sg, '{*}StartLine'),
+                        start_sample=_xml_int(sg, '{*}StartSample'),
+                        end_line=_xml_int(sg, '{*}EndLine'),
+                        end_sample=_xml_int(sg, '{*}EndSample'),
+                        identifier=_xml_str(sg, '{*}Identifier'),
+                        index=int(sg.get('index', '0')),
+                    )
+                    for sg in seg_list.findall('{*}Segment')
+                ] or None
+
+            plane = SICDAreaPlane(
+                ref_pt=ref_pt,
+                x_dir=x_dir,
+                y_dir=y_dir,
+                segments=segments,
+                orientation=_xml_str(pl, '{*}Orientation'),
+            )
+
+        area = SICDArea(corner_points=corner_pts, plane=plane)
+
+    tx_sequence = None
+    seq = rc.find('{*}TxSequence')
+    if seq is not None:
+        steps = [
+            SICDTxStep(
+                wf_index=_xml_int(st, '{*}WFIndex'),
+                tx_polarization=_xml_str(st, '{*}TxPolarization'),
+                index=int(st.get('index', '0')),
+            )
+            for st in seq.findall('{*}TxStep')
+        ]
+        if steps:
+            steps.sort(key=lambda s: s.index or 0)
+            tx_sequence = steps
 
     return SICDRadarCollection(
         tx_frequency=tx_freq,
@@ -694,6 +976,8 @@ def _extract_radar_collection_xml(
         tx_polarization=_xml_str(rc, '{*}TxPolarization'),
         rcv_channels=rcv_channels,
         area=area,
+        tx_sequence=tx_sequence,
+        parameters=_xml_parameters(rc),
     )
 
 
@@ -744,6 +1028,34 @@ def _extract_image_formation_xml(
                 parameters=params,
             ))
 
+    pol_cal = None
+    pc = imf.find('{*}PolarizationCalibration')
+    if pc is not None:
+        distortion = None
+        dist = pc.find('{*}Distortion')
+        if dist is not None:
+            distortion = SICDDistortion(
+                calibration_date=_xml_str(dist, '{*}CalibrationDate'),
+                a=_xml_float(dist, '{*}A'),
+                f1=_xml_complex(dist, '{*}F1'),
+                q1=_xml_complex(dist, '{*}Q1'),
+                q2=_xml_complex(dist, '{*}Q2'),
+                f2=_xml_complex(dist, '{*}F2'),
+                q3=_xml_complex(dist, '{*}Q3'),
+                q4=_xml_complex(dist, '{*}Q4'),
+                gain_error_a=_xml_float(dist, '{*}GainErrorA'),
+                gain_error_f1=_xml_float(dist, '{*}GainErrorF1'),
+                gain_error_f2=_xml_float(dist, '{*}GainErrorF2'),
+                phase_error_f1=_xml_float(dist, '{*}PhaseErrorF1'),
+                phase_error_f2=_xml_float(dist, '{*}PhaseErrorF2'),
+            )
+        pol_cal = SICDPolarizationCalibration(
+            distort_correction_applied=_xml_bool(
+                pc, '{*}DistortCorrectionApplied',
+            ),
+            distortion=distortion,
+        )
+
     return SICDImageFormation(
         rcv_chan_proc=rcv_chan_proc,
         image_form_algo=_xml_str(imf, '{*}ImageFormAlgo'),
@@ -751,10 +1063,12 @@ def _extract_image_formation_xml(
         t_end_proc=_xml_float(imf, '{*}TEndProc'),
         tx_frequency_proc=tx_freq_proc,
         seg_id=_xml_str(imf, '{*}SegmentIdentifier'),
+        st_beam_comp=_xml_str(imf, '{*}STBeamComp'),
         image_beam_comp=_xml_str(imf, '{*}ImageBeamComp'),
         az_autofocus=_xml_str(imf, '{*}AzAutofocus'),
         rg_autofocus=_xml_str(imf, '{*}RgAutofocus'),
         processing=processing,
+        polarization_calibration=pol_cal,
         polarization_hv_angle_poly=_xml_poly1d_at(
             imf, '{*}PolarizationHVAnglePoly'
         ),
@@ -935,7 +1249,9 @@ def _extract_error_statistics_xml(
         )
 
     radar_sensor = None
-    rs = err.find('{*}RadarSensor')
+    rs = err.find('{*}Components/{*}RadarSensor')
+    if rs is None:
+        rs = err.find('{*}RadarSensor')
     if rs is not None:
         radar_sensor = SICDRadarSensorError(
             range_bias=_xml_float(rs, '{*}RangeBias'),
@@ -946,10 +1262,58 @@ def _extract_error_statistics_xml(
             ),
         )
 
+    tropo_error = None
+    tropo = err.find('{*}Components/{*}TropoError')
+    if tropo is not None:
+        tropo_error = SICDTropoError(
+            tropo_range_vertical=_xml_float(tropo, '{*}TropoRangeVertical'),
+            tropo_range_slant=_xml_float(tropo, '{*}TropoRangeSlant'),
+            tropo_range_decorr=_extract_error_decorr_xml(
+                tropo.find('{*}TropoRangeDecorr'),
+            ),
+        )
+
+    iono_error = None
+    iono = err.find('{*}Components/{*}IonoError')
+    if iono is not None:
+        iono_error = SICDIonoError(
+            iono_range_vertical=_xml_float(iono, '{*}IonoRangeVertical'),
+            iono_range_rate_vertical=_xml_float(
+                iono, '{*}IonoRangeRateVertical',
+            ),
+            iono_rg_rg_rate_cc=_xml_float(iono, '{*}IonoRgRgRateCC'),
+            iono_range_vert_decorr=_extract_error_decorr_xml(
+                iono.find('{*}IonoRangeVertDecorr'),
+            ),
+        )
+
+    unmodeled = None
+    unm = err.find('{*}Unmodeled')
+    if unm is not None:
+        decorr = None
+        ud = unm.find('{*}UnmodeledDecorr')
+        if ud is not None:
+            decorr = SICDUnmodeledDecorr(
+                xrow=_extract_error_decorr_xml(ud.find('{*}Xrow')),
+                ycol=_extract_error_decorr_xml(ud.find('{*}Ycol')),
+            )
+        unmodeled = SICDUnmodeledError(
+            xrow=_xml_float(unm, '{*}Xrow'),
+            ycol=_xml_float(unm, '{*}Ycol'),
+            xrow_ycol=_xml_float(unm, '{*}XrowYcol'),
+            unmodeled_decorr=decorr,
+        )
+
     return SICDErrorStatistics(
         composite_scp=composite_scp,
         monostatic=monostatic,
         radar_sensor=radar_sensor,
+        tropo_error=tropo_error,
+        iono_error=iono_error,
+        unmodeled=unmodeled,
+        additional_parms=_xml_parameters(
+            err.find('{*}AdditionalParms'),
+        ),
     )
 
 
@@ -1058,6 +1422,7 @@ def _extract_rma_xml(xml: ET.Element) -> Optional[SICDRMA]:
         )
 
     return SICDRMA(
+        rm_algo_type=_xml_str(rma, '{*}RMAlgoType'),
         rm_ref=rm_ref,
         inca=inca,
         image_type=_xml_str(rma, '{*}ImageType'),
@@ -1572,34 +1937,82 @@ class SICDReader(ImageReader):
             raise ValueError(f"Failed to load SICD metadata: {e}") from e
 
     def _load_metadata_sarpy(self) -> None:
-        """Load metadata via sarpy (fallback) — all 17 sections."""
+        """Load metadata via sarpy (fallback) — all 17 sections.
+
+        Sarpy's ``SICDType`` is serialized back to XML and parsed with
+        the same extractors the sarkit path uses, so both backends
+        produce identical metadata.  Maintaining two parallel sets of
+        extractors is what let sections drift apart before.  The
+        direct object extractors remain as a fallback for the rare
+        structure sarpy cannot round-trip.
+        """
         from sarpy.io.complex.converter import open_complex
 
         try:
             self._reader = open_complex(str(self.filepath))
             sm = self._reader.sicd_meta
-
-            self.metadata = SICDMetadata(
-                format='SICD',
-                rows=sm.ImageData.NumRows,
-                cols=sm.ImageData.NumCols,
-                dtype='complex64',
-                backend='sarpy',
-                collection_info=_extract_collection_info_sarpy(sm),
-                image_creation=_extract_image_creation_sarpy(sm),
-                image_data=_extract_image_data_sarpy(sm),
-                geo_data=_extract_geo_data_sarpy(sm),
-                grid=_extract_grid_sarpy(sm),
-                timeline=_extract_timeline_sarpy(sm),
-                position=_extract_position_sarpy(sm),
-                radar_collection=_extract_radar_collection_sarpy(sm),
-                image_formation=_extract_image_formation_sarpy(sm),
-                scpcoa=_extract_scpcoa_sarpy(sm),
-                radiometric=_extract_radiometric_sarpy(sm),
-                rma=_extract_rma_sarpy(sm),
-            )
-
             self._sarpy_meta = sm
+
+            xml = None
+            try:
+                xml_text = sm.to_xml_string(tag='SICD')
+                if isinstance(xml_text, bytes):
+                    xml_text = xml_text.decode('utf-8')
+                xml = ET.fromstring(xml_text)
+            except Exception as exc:
+                logger.warning(
+                    "Could not round-trip sarpy SICD metadata to XML "
+                    "(%s); falling back to the direct extractors, which "
+                    "omit Antenna, ErrorStatistics, MatchInfo, RgAzComp "
+                    "and PFA.", exc,
+                )
+
+            if xml is not None:
+                self._xmltree = xml
+                self.metadata = SICDMetadata(
+                    format='SICD',
+                    rows=sm.ImageData.NumRows,
+                    cols=sm.ImageData.NumCols,
+                    dtype='complex64',
+                    backend='sarpy',
+                    collection_info=_extract_collection_info_xml(xml),
+                    image_creation=_extract_image_creation_xml(xml),
+                    image_data=_extract_image_data_xml(xml),
+                    geo_data=_extract_geo_data_xml(xml),
+                    grid=_extract_grid_xml(xml),
+                    timeline=_extract_timeline_xml(xml),
+                    position=_extract_position_xml(xml),
+                    radar_collection=_extract_radar_collection_xml(xml),
+                    image_formation=_extract_image_formation_xml(xml),
+                    scpcoa=_extract_scpcoa_xml(xml),
+                    radiometric=_extract_radiometric_xml(xml),
+                    antenna=_extract_antenna_xml(xml),
+                    error_statistics=_extract_error_statistics_xml(xml),
+                    match_info=_extract_match_info_xml(xml),
+                    rg_az_comp=_extract_rg_az_comp_xml(xml),
+                    pfa=_extract_pfa_xml(xml),
+                    rma=_extract_rma_xml(xml),
+                )
+            else:
+                self.metadata = SICDMetadata(
+                    format='SICD',
+                    rows=sm.ImageData.NumRows,
+                    cols=sm.ImageData.NumCols,
+                    dtype='complex64',
+                    backend='sarpy',
+                    collection_info=_extract_collection_info_sarpy(sm),
+                    image_creation=_extract_image_creation_sarpy(sm),
+                    image_data=_extract_image_data_sarpy(sm),
+                    geo_data=_extract_geo_data_sarpy(sm),
+                    grid=_extract_grid_sarpy(sm),
+                    timeline=_extract_timeline_sarpy(sm),
+                    position=_extract_position_sarpy(sm),
+                    radar_collection=_extract_radar_collection_sarpy(sm),
+                    image_formation=_extract_image_formation_sarpy(sm),
+                    scpcoa=_extract_scpcoa_sarpy(sm),
+                    radiometric=_extract_radiometric_sarpy(sm),
+                    rma=_extract_rma_sarpy(sm),
+                )
 
             logger.info(
                 "Loaded SICD %s (%d x %d) via sarpy",
