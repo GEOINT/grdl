@@ -689,8 +689,40 @@ class OrthoBuilder:
         self._reader_factory = factory
         return self
 
+    def _effective_tile_size(
+        self, grid: 'GeographicGrid',
+    ) -> Optional[Union[int, Tuple[int, int]]]:
+        """Tile size this configuration will actually run with.
+
+        An explicit ``with_tile_size()`` always wins.  Otherwise a grid
+        past ``AUTO_TILE_THRESHOLD_PX`` is tiled at ``AUTO_TILE_SIZE``
+        to bound memory.  ``run()`` and ``estimate()`` both resolve
+        through here so an estimate describes the run it precedes.
+
+        Parameters
+        ----------
+        grid : OutputGridProtocol
+            Resolved output grid.
+
+        Returns
+        -------
+        int or (int, int) or None
+            ``None`` only when the whole-grid path really will be used.
+        """
+        if self._tile_size is not None:
+            return self._tile_size
+        if (AUTO_TILE_THRESHOLD_PX is not None
+                and grid.rows * grid.cols > AUTO_TILE_THRESHOLD_PX):
+            return AUTO_TILE_SIZE
+        return None
+
     def estimate(self) -> 'MemoryEstimate':
         """Predict peak memory for this configuration, allocating nothing.
+
+        Reports the path ``run()`` will take, auto-tiling included --
+        an estimate that modelled the whole-grid path for a run that
+        auto-tiles would overstate peak memory by an order of magnitude
+        and fail callers that gate on it.
 
         Returns
         -------
@@ -708,7 +740,8 @@ class OrthoBuilder:
                  if self._source_array is not None else np.float32)
         bands = len(self._bands) if self._bands else 1
         return estimate_ortho_memory(
-            grid, self._geolocation, tile_size=self._tile_size,
+            grid, self._geolocation,
+            tile_size=self._effective_tile_size(grid),
             dtype=dtype, bands=bands, workers=self._workers,
         )
 
@@ -796,11 +829,8 @@ class OrthoBuilder:
         # is the right default rather than an expert opt-in.  An
         # explicit tile_size always wins; AUTO_TILE_THRESHOLD_PX = None
         # restores the old behaviour.
-        tile_size = self._tile_size
-        if (tile_size is None
-                and AUTO_TILE_THRESHOLD_PX is not None
-                and grid.rows * grid.cols > AUTO_TILE_THRESHOLD_PX):
-            tile_size = AUTO_TILE_SIZE
+        tile_size = self._effective_tile_size(grid)
+        if tile_size is not None and self._tile_size is None:
             logger.info(
                 "Output is %d x %d (%.1f Mpx); tiling at %d to bound "
                 "memory.  Pass tile_size explicitly to override.",
