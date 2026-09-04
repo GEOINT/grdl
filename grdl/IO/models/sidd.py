@@ -26,7 +26,9 @@ Created
 
 Modified
 --------
-2026-02-10
+2026-09-03  Add Measurement.valid_data and
+            ExploitationFeaturesProduct.polarizations, both required
+            by the SIDD 3.0 schema on write.
 """
 
 # Standard library
@@ -452,6 +454,10 @@ class SIDDMeasurement:
         ``'POST PROCESSED'``.
     arp_poly : XYZPoly, optional
         ARP position polynomial.
+    valid_data : List[RowCol], optional
+        Valid data polygon in product pixel coordinates, listed
+        clockwise starting from the vertex with the minimum row
+        index.  Required when writing a SIDD.
     """
 
     projection_type: Optional[str] = None
@@ -462,6 +468,7 @@ class SIDDMeasurement:
     pixel_footprint: Optional[RowCol] = None
     arp_flag: Optional[str] = None
     arp_poly: Optional[XYZPoly] = None
+    valid_data: Optional[List[RowCol]] = None
 
 
 # ===================================================================
@@ -567,6 +574,22 @@ class SIDDCollectionPhenomenology:
 
 
 @dataclass
+class SIDDInputROI:
+    """Region of the source image used to build the product.
+
+    Parameters
+    ----------
+    size : RowCol, optional
+        Number of rows and columns of the source ROI.
+    upper_left : RowCol, optional
+        Upper-left corner of the ROI in source pixel coordinates.
+    """
+
+    size: Optional[RowCol] = None
+    upper_left: Optional[RowCol] = None
+
+
+@dataclass
 class SIDDCollectionInfo:
     """Exploitation features collection information.
 
@@ -590,6 +613,8 @@ class SIDDCollectionInfo:
         Collection geometry.
     phenomenology : SIDDCollectionPhenomenology, optional
         Collection phenomenology.
+    input_roi : SIDDInputROI, optional
+        Region of the source image the product was built from.
     identifier : str, optional
         Collection identifier.
     """
@@ -603,6 +628,7 @@ class SIDDCollectionInfo:
     polarizations: Optional[List[SIDDTxRcvPolarization]] = None
     geometry: Optional[SIDDCollectionGeometry] = None
     phenomenology: Optional[SIDDCollectionPhenomenology] = None
+    input_roi: Optional[SIDDInputROI] = None
     identifier: Optional[str] = None
 
 
@@ -634,11 +660,15 @@ class SIDDExploitationFeaturesProduct:
         Ellipticity of the resolution cell.
     north : float, optional
         North direction angle (degrees).
+    polarizations : List[SIDDTxRcvPolarization], optional
+        Processed transmit/receive polarizations for the product.
+        Required by the SIDD 3.0 schema when writing.
     """
 
     resolution: Optional[SIDDProductResolution] = None
     ellipticity: Optional[float] = None
     north: Optional[float] = None
+    polarizations: Optional[List[SIDDTxRcvPolarization]] = None
 
 
 @dataclass

@@ -188,6 +188,105 @@ class OrthoResult:
         writer = GeoTIFFWriter(filepath)
         writer.write(self.data, geolocation=geolocation)
 
+    def save_sidd(
+        self,
+        filepath: Union[str, Path],
+        data: Optional[np.ndarray] = None,
+        *,
+        pixel_type: Optional[str] = None,
+        source_metadata: Optional[Any] = None,
+        product_class: str = 'Detected Image',
+        **kwargs: Any,
+    ) -> None:
+        """Save the result as a SIDD NITF product.
+
+        Builds complete SIDD metadata from the output grid and the
+        source collection, then writes the product.  The geolocation
+        and source metadata are taken from the orthorectifier unless
+        overridden.
+
+        SIDD carries display-ready integer samples, not the complex or
+        floating point values the orthorectifier produces, so pass the
+        stretched array as ``data``.  Normalized ``[0, 1]`` floats are
+        scaled to the pixel type automatically.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Output path for the SIDD NITF file.
+        data : np.ndarray, optional
+            Product samples.  Either integers in the pixel type's dtype
+            (``uint8`` / ``uint16``), or normalized floats in ``[0, 1]``
+            as every ``grdl.contrast`` stretch returns -- those are
+            scaled to the pixel type's full range, with non-finite
+            samples written as 0.  Defaults to ``self.data``, which is
+            usable only when the ortho output is already integer.
+        pixel_type : str, optional
+            ``'MONO8I'``, ``'MONO16I'`` or ``'RGB24I'``.  Inferred from
+            the array when omitted.
+        source_metadata : SICDMetadata, optional
+            Source collection metadata.  Defaults to the metadata
+            carried by the orthorectifier's geolocation, which is where
+            it lives for SICD and SIDD sources.
+        product_class : str
+            Descriptive product class recorded in ProductCreation.
+        **kwargs
+            Forwarded to
+            :func:`~grdl.IO.sar.sidd_builder.build_sidd_metadata`.
+
+        Raises
+        ------
+        ValidationError
+            If the array does not match the grid or the pixel type.
+
+        Examples
+        --------
+        >>> from grdl.contrast import PercentileStretch
+        >>> result = orthorectify(reader=reader, geolocation=geo,
+        ...                       output_grid=grid)
+        >>> display = PercentileStretch().apply(np.abs(result.data))
+        >>> result.save_sidd('product.nitf', display)
+
+        A three-channel product writes as ``RGB24I``; the band axis may
+        lead or trail:
+
+        >>> rgb = np.stack([red, green, blue])   # (3, rows, cols)
+        >>> result.save_sidd('color.nitf', rgb, product_class='Color Image')
+        """
+        from grdl.IO.sar.sidd_builder import (
+            build_sidd_metadata, infer_pixel_type, to_display_samples,
+        )
+        from grdl.IO.sar.sidd_writer import SIDDWriter
+
+        product = self.data if data is None else data
+        if pixel_type is None:
+            pixel_type = infer_pixel_type(product)
+        if np.issubdtype(np.asarray(product).dtype, np.floating):
+            # GRDL's stretches return float32 in [0, 1] with NaN where
+            # there was no coverage; SIDD carries integer samples.
+            logger.info(
+                "Scaling normalized float samples to %s", pixel_type,
+            )
+            product = to_display_samples(product, pixel_type)
+
+        geolocation = getattr(self.orthorectifier, 'geolocation', None)
+        if source_metadata is None:
+            source_metadata = getattr(geolocation, 'metadata', None)
+
+        metadata = build_sidd_metadata(
+            self.output_grid,
+            product.shape,
+            pixel_type=pixel_type,
+            source_metadata=source_metadata,
+            geolocation=geolocation,
+            product_class=product_class,
+            interpolation=getattr(
+                self.orthorectifier, 'interpolation', None,
+            ),
+            **kwargs,
+        )
+        SIDDWriter(filepath, metadata=metadata).write(product)
+
 
 class OrthoBuilder:
     """Universal orthorectification pipeline.

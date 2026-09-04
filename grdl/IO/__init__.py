@@ -86,6 +86,11 @@ from grdl.IO.sar import (
 # SAR writers
 from grdl.IO.sar.sicd_writer import SICDWriter
 from grdl.IO.sar.sidd_writer import SIDDWriter
+from grdl.IO.sar.sidd_builder import (
+    build_sidd_metadata,
+    infer_pixel_type,
+    to_display_samples,
+)
 
 # Catalog submodule
 from grdl.IO.catalog import (
@@ -568,6 +573,9 @@ __all__ = [
     'PngWriter',
     'SICDWriter',
     'SIDDWriter',
+    'build_sidd_metadata',
+    'infer_pixel_type',
+    'to_display_samples',
     # Reader factory
     'register_reader',
     'get_reader',

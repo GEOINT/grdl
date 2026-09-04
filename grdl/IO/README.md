@@ -82,7 +82,7 @@ All readers inherit from `ImageReader` (defined in `base.py`), ensuring a consis
 | NumPy (.npy/.npz) | `NumpyWriter` | numpy | ✅ Implemented |
 | PNG | `PngWriter` | Pillow | ✅ Implemented |
 | SICD (NITF) | `SICDWriter` | sarpy | ✅ Implemented |
-| SIDD (NITF) | `SIDDWriter` | sarpy | ✅ Implemented |
+| SIDD (NITF) | `SIDDWriter` | sarpy | ✅ Implemented (MONO8I / MONO16I / RGB24I; build metadata with `build_sidd_metadata()`) |
 | EO NITF chip-out | `write_chip()` | rasterio/GDAL | ✅ Implemented |
 | | | Writes ICHIPB (composed with parent) + RPC00B + serialized RSMIDA/RSMPCA so chips geolocate identically to the parent | |
 
@@ -1039,17 +1039,20 @@ See [TODO.md](TODO.md) for planned features and roadmap.
 
 ## Examples
 
-See `grdl/example/` for working workflows:
-- `catalog/discover_and_download.py` - Search ESA MAAP catalog, download products
-- `catalog/view_product.py` - Load BIOMASS L1A, display HH dB and Pauli RGB with interactive markers
-- `ortho/chip_ortho.py` - Ground-extent chip extraction and ENU orthorectification
-- `ortho/compare_sidd_ortho.py` - Dual-SIDD ortho comparison with PCA, NCC, and coregistration
-- `ortho/ortho_biomass.py` - Orthorectification with Pauli RGB composite output
-- `ortho/ortho_combined.py` - Combined SICD/SIDD auto-detect orthorectification
-- `ortho/ortho_sicd.py` - SICD orthorectification with DEM and ENU grids
-- `ortho/ortho_sidd.py` - SIDD orthorectification with DEM and ENU grids
-- `sar/view_sicd.py` - SICD magnitude viewer (linear, CLI-driven)
-- `image_processing/sar/sublook_compare.py` - **Full GRDL integration**: IO + data_prep + image_processing
+Worked workflows live with the module that owns each step:
+
+| Workflow | Where |
+|----------|-------|
+| Reader + `data_prep` + `image_processing` composition | [integration.md](integration.md) |
+| SICD chip to WGS-84 and ENU, terrain-corrected | [ortho README](../image_processing/ortho/README.md#worked-example--sicd-chip-to-wgs-84-and-enu) |
+| Point-centred ROI ortho in one call | [`orthorectify_point_roi()`](../image_processing/ortho/README.md#orthorectify_point_roi-point-centered-chip) |
+| Ortho result to a SIDD product | `OrthoResult.save_sidd()`, built on [sar/sidd_builder.py](sar/sidd_builder.py) |
+| Remote catalog search and download | [catalog/](catalog/) — `BIOMASSCatalog`, `Sentinel1SLCCatalog`, `NISARCatalog`, … |
+| Display stretch for any modality | [contrast README](../contrast/README.md) |
+
+The `grdl/example/` script tree these sections used to point at was
+removed in `1ffe87c`; the recipes it carried now live inline in the
+module docs above, where they are checked against the current API.
 
 ## Data Preparation
 

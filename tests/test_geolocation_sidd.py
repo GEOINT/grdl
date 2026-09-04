@@ -328,9 +328,19 @@ class TestValidation:
             SIDDGeolocation(meta)
 
     def test_unsupported_projection(self):
-        meas = _FakeMeasurement('PolynomialProjection', None)
+        meas = _FakeMeasurement('MercatorProjection', None)
         meta = _FakeMetadata(100, 100, meas)
         with pytest.raises(ValueError, match="Unsupported"):
+            SIDDGeolocation(meta)
+
+    def test_polynomial_missing_parameters(self):
+        # PolynomialProjection is supported, so it fails on the missing
+        # projection block rather than on the projection type.
+        meas = _FakeMeasurement('PolynomialProjection', None)
+        meta = _FakeMetadata(100, 100, meas)
+        with pytest.raises(
+            ValueError, match="PolynomialProjection requires",
+        ):
             SIDDGeolocation(meta)
 
     def test_plane_missing_reference_point(self):

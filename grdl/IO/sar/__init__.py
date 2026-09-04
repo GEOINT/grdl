@@ -43,6 +43,11 @@ from grdl.IO.sar.cphd import CPHDReader
 from grdl.IO.sar.crsd import CRSDReader
 from grdl.IO.sar.sidd import SIDDReader
 from grdl.IO.sar.sidd_writer import SIDDWriter
+from grdl.IO.sar.sidd_builder import (
+    build_sidd_metadata,
+    infer_pixel_type,
+    to_display_samples,
+)
 
 # Sentinel-1
 from grdl.IO.sar.sentinel1_slc import Sentinel1SLCReader
@@ -215,6 +220,9 @@ __all__ = [
     'CRSDReader',
     'SIDDReader',
     'SIDDWriter',
+    'build_sidd_metadata',
+    'infer_pixel_type',
+    'to_display_samples',
     # Sentinel-1
     'Sentinel1SLCReader',
     'Sentinel1L0Reader',

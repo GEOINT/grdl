@@ -65,6 +65,7 @@ from grdl.IO.models import (
     SIDDReferencePoint,
     SIDDProductPlane,
     SIDDExploitationFeatures,
+    SIDDInputROI,
     SIDDCollectionInfo,
     SIDDRadarMode,
     SIDDTxRcvPolarization,
@@ -73,6 +74,9 @@ from grdl.IO.models import (
     SIDDAngleMagnitude,
     SIDDExploitationFeaturesProduct,
     SIDDProductResolution,
+    SIDDGeographicProjection,
+    SIDDCylindricalProjection,
+    SIDDPolynomialProjection,
     SIDDDownstreamReprocessing,
     SIDDGeometricChip,
     SIDDProcessingEvent,
@@ -103,6 +107,7 @@ from grdl.IO.models.sicd import (
     SICDPosVelErr,
     SICDCorrCoefs,
     SICDRadarSensorError,
+    SICDErrorDecorrFunc,
     SICDNoiseLevel,
     SICDMatchType,
     SICDMatchCollection,
@@ -445,27 +450,73 @@ def _extract_geo_data(xml: ET.Element) -> Optional[SIDDGeoData]:
     )
 
 
+def _xml_reference_point(
+    parent: Optional[ET.Element],
+) -> Optional[SIDDReferencePoint]:
+    """Extract a projection ReferencePoint from SIDD XML."""
+    if parent is None:
+        return None
+    rp = parent.find('{*}ReferencePoint')
+    if rp is None:
+        return None
+    return SIDDReferencePoint(
+        ecef=_xml_xyz(rp, '{*}ECEF') or _xml_xyz(rp, '{*}ECF'),
+        point=_xml_rowcol(rp, '{*}Point'),
+        name=rp.get('name'),
+    )
+
+
+def _xml_valid_pixels(
+    parent: Optional[ET.Element],
+) -> Optional[List[RowCol]]:
+    """Extract a pixel-coordinate valid data polygon from SIDD XML.
+
+    Vertices are returned in ``index`` attribute order when present,
+    matching the clockwise ordering the SIDD schema requires.
+    """
+    if parent is None:
+        return None
+    vd = parent.find('{*}ValidData')
+    if vd is None:
+        return None
+
+    verts = []
+    for v in vd.findall('{*}Vertex'):
+        row = _xml_float(v, '{*}Row')
+        col = _xml_float(v, '{*}Col')
+        if row is None or col is None:
+            continue
+        verts.append((int(v.get('index', '0')), RowCol(row=row, col=col)))
+    if not verts:
+        return None
+    verts.sort(key=lambda pair: pair[0])
+    return [rc for _, rc in verts]
+
+
 def _extract_measurement(xml: ET.Element) -> Optional[SIDDMeasurement]:
-    """Extract Measurement from SIDD XML."""
+    """Extract Measurement from SIDD XML.
+
+    Handles all four SIDD projection types.  Exactly one is present in
+    a valid product; ``projection_type`` names which, and the matching
+    dataclass is populated.
+    """
     meas = xml.find('{*}Measurement')
     if meas is None:
         return None
 
     proj_type = None
     plane_proj = None
+    geo_proj = None
+    cyl_proj = None
+    poly_proj = None
 
     pp = meas.find('{*}PlaneProjection')
+    gp = meas.find('{*}GeographicProjection')
+    cp = meas.find('{*}CylindricalProjection')
+    yp = meas.find('{*}PolynomialProjection')
+
     if pp is not None:
         proj_type = 'PlaneProjection'
-
-        ref_point = None
-        rp = pp.find('{*}ReferencePoint')
-        if rp is not None:
-            ref_point = SIDDReferencePoint(
-                ecef=_xml_xyz(rp, '{*}ECEF') or _xml_xyz(rp, '{*}ECF'),
-                point=_xml_rowcol(rp, '{*}Point'),
-                name=rp.get('name'),
-            )
 
         product_plane = None
         pplane = pp.find('{*}ProductPlane')
@@ -476,24 +527,110 @@ def _extract_measurement(xml: ET.Element) -> Optional[SIDDMeasurement]:
             )
 
         plane_proj = SIDDPlaneProjection(
-            reference_point=ref_point,
+            reference_point=_xml_reference_point(pp),
             sample_spacing=_xml_rowcol(pp, '{*}SampleSpacing'),
             time_coa_poly=_xml_poly2d_at(pp, '{*}TimeCOAPoly'),
             product_plane=product_plane,
         )
-    elif meas.find('{*}GeographicProjection') is not None:
+    elif gp is not None:
         proj_type = 'GeographicProjection'
-    elif meas.find('{*}CylindricalProjection') is not None:
+        geo_proj = SIDDGeographicProjection(
+            reference_point=_xml_reference_point(gp),
+            sample_spacing=_xml_rowcol(gp, '{*}SampleSpacing'),
+            time_coa_poly=_xml_poly2d_at(gp, '{*}TimeCOAPoly'),
+            row_col_to_lat=_xml_poly2d_at(gp, '{*}RowColToLat'),
+            row_col_to_lon=_xml_poly2d_at(gp, '{*}RowColToLon'),
+            row_col_to_alt=_xml_poly2d_at(gp, '{*}RowColToAlt'),
+            lat_lon_to_row=_xml_poly2d_at(gp, '{*}LatLonToRow'),
+            lat_lon_to_col=_xml_poly2d_at(gp, '{*}LatLonToCol'),
+        )
+    elif cp is not None:
         proj_type = 'CylindricalProjection'
-    elif meas.find('{*}PolynomialProjection') is not None:
+
+        product_plane = None
+        pplane = cp.find('{*}ProductPlane')
+        if pplane is not None:
+            product_plane = SIDDProductPlane(
+                row_unit_vector=_xml_xyz(pplane, '{*}RowUnitVector'),
+                col_unit_vector=_xml_xyz(pplane, '{*}ColUnitVector'),
+            )
+
+        cyl_proj = SIDDCylindricalProjection(
+            reference_point=_xml_reference_point(cp),
+            sample_spacing=_xml_rowcol(cp, '{*}SampleSpacing'),
+            time_coa_poly=_xml_poly2d_at(cp, '{*}TimeCOAPoly'),
+            product_plane=product_plane,
+            stripmap_direction=_xml_xyz(cp, '{*}StripmapDirection'),
+            curvature_radius=_xml_float(cp, '{*}CurvatureRadius'),
+        )
+    elif yp is not None:
         proj_type = 'PolynomialProjection'
+        poly_proj = SIDDPolynomialProjection(
+            reference_point=_xml_reference_point(yp),
+            row_col_to_lat=_xml_poly2d_at(yp, '{*}RowColToLat'),
+            row_col_to_lon=_xml_poly2d_at(yp, '{*}RowColToLon'),
+            row_col_to_alt=_xml_poly2d_at(yp, '{*}RowColToAlt'),
+            lat_lon_to_row=_xml_poly2d_at(yp, '{*}LatLonToRow'),
+            lat_lon_to_col=_xml_poly2d_at(yp, '{*}LatLonToCol'),
+        )
 
     return SIDDMeasurement(
         projection_type=proj_type,
         plane_projection=plane_proj,
+        geographic_projection=geo_proj,
+        cylindrical_projection=cyl_proj,
+        polynomial_projection=poly_proj,
         pixel_footprint=_xml_rowcol(meas, '{*}PixelFootprint'),
         arp_flag=_xml_str(meas, '{*}ARPFlag'),
         arp_poly=_xml_xyzpoly(meas, '{*}ARPPoly'),
+        valid_data=_xml_valid_pixels(meas),
+    )
+
+
+def _xml_input_roi(
+    info: Optional[ET.Element],
+) -> Optional[SIDDInputROI]:
+    """Extract the InputROI block from a Collection/Information.
+
+    Parameters
+    ----------
+    info : ET.Element or None
+        The Information element.
+
+    Returns
+    -------
+    SIDDInputROI or None
+        None when the element is absent.
+    """
+    if info is None:
+        return None
+    roi = info.find('{*}InputROI')
+    if roi is None:
+        return None
+    return SIDDInputROI(
+        size=_xml_rowcol(roi, '{*}Size'),
+        upper_left=_xml_rowcol(roi, '{*}UpperLeft'),
+    )
+
+
+def _sarpy_input_roi(obj: Any) -> Optional[SIDDInputROI]:
+    """Convert a sarpy InputROIType to the GRDL type.
+
+    Parameters
+    ----------
+    obj : InputROIType or None
+        Sarpy input ROI.
+
+    Returns
+    -------
+    SIDDInputROI or None
+        None when the input is None.
+    """
+    if obj is None:
+        return None
+    return SIDDInputROI(
+        size=_sarpy_rowcol_obj(_safe_get(obj, 'Size')),
+        upper_left=_sarpy_rowcol_obj(_safe_get(obj, 'UpperLeft')),
     )
 
 
@@ -601,6 +738,7 @@ def _extract_exploitation_features(
                 polarizations=polarizations,
                 geometry=geometry,
                 phenomenology=phenomenology,
+                input_roi=_xml_input_roi(info),
                 identifier=coll.get('identifier'),
             ))
 
@@ -789,17 +927,27 @@ def _extract_product_processing(
     if pm_elems:
         modules = []
         for pm in pm_elems:
+            # The schema names each parameter element ModuleParameter,
+            # as a direct child of ProcessingModule.  The other two
+            # spellings are tolerated for metadata written by other
+            # producers.
             params = None
-            p_elems = pm.findall('{*}ModuleParameters/{*}Parameter')
+            p_elems = pm.findall('{*}ModuleParameter')
+            if not p_elems:
+                p_elems = pm.findall('{*}ModuleParameters/{*}Parameter')
             if not p_elems:
                 p_elems = pm.findall('{*}Parameter')
             if p_elems:
                 params = {
                     p.get('name', ''): (p.text or '') for p in p_elems
                 }
+            # ModuleName is a ParameterType: its text is the algorithm
+            # name and its name attribute identifies the module.
+            mn = pm.find('{*}ModuleName')
             modules.append(SIDDProcessingModule(
                 module_name=_xml_str(pm, '{*}ModuleName'),
-                name=pm.get('name'),
+                name=(mn.get('name') if mn is not None else None)
+                or pm.get('name'),
                 parameters=params,
             ))
 
@@ -1044,98 +1192,148 @@ def _extract_geo_data_sarpy(sm: Any) -> Optional[SIDDGeoData]:
     )
 
 
+def _sarpy_xyz_arr(obj: Any) -> Optional[XYZ]:
+    """Convert a sarpy XYZType (or 3-array) to XYZ."""
+    if obj is None:
+        return None
+    arr = obj.get_array() if hasattr(obj, 'get_array') else obj
+    try:
+        return XYZ(x=float(arr[0]), y=float(arr[1]), z=float(arr[2]))
+    except (TypeError, IndexError, ValueError):
+        return None
+
+
+def _sarpy_rowcol_obj(obj: Any) -> Optional[RowCol]:
+    """Convert a sarpy RowCol-style object to RowCol."""
+    if obj is None:
+        return None
+    row = _safe_get(obj, 'Row')
+    col = _safe_get(obj, 'Col')
+    if row is None and col is None:
+        return None
+    return RowCol(row=float(row or 0), col=float(col or 0))
+
+
+def _sarpy_reference_point(obj: Any) -> Optional[SIDDReferencePoint]:
+    """Convert a sarpy ReferencePointType to SIDDReferencePoint."""
+    if obj is None:
+        return None
+    return SIDDReferencePoint(
+        ecef=_sarpy_xyz_arr(_safe_get(obj, 'ECEF')),
+        point=_sarpy_rowcol_obj(_safe_get(obj, 'Point')),
+        name=_safe_get(obj, 'name'),
+    )
+
+
+def _sarpy_product_plane(obj: Any) -> Optional[SIDDProductPlane]:
+    """Convert a sarpy ProductPlaneType to SIDDProductPlane."""
+    if obj is None:
+        return None
+    return SIDDProductPlane(
+        row_unit_vector=_sarpy_xyz_arr(_safe_get(obj, 'RowUnitVector')),
+        col_unit_vector=_sarpy_xyz_arr(_safe_get(obj, 'ColUnitVector')),
+    )
+
+
+def _sarpy_valid_pixels(obj: Any) -> Optional[List[RowCol]]:
+    """Convert a sarpy Measurement ValidData array to RowCol vertices."""
+    if obj is None:
+        return None
+    verts = []
+    for v in obj:
+        rc = _sarpy_rowcol_obj(v)
+        if rc is not None:
+            verts.append(rc)
+    return verts or None
+
+
 def _extract_measurement_sarpy(sm: Any) -> Optional[SIDDMeasurement]:
-    """Extract Measurement from sarpy SIDDType."""
+    """Extract Measurement from sarpy SIDDType.
+
+    Handles all four SIDD projection types; see
+    :func:`_extract_measurement` for the XML-backend equivalent.
+    """
     meas = _safe_get(sm, 'Measurement')
     if meas is None:
         return None
 
     proj_type = None
     plane_proj = None
+    geo_proj = None
+    cyl_proj = None
+    poly_proj = None
 
     pp = _safe_get(meas, 'PlaneProjection')
+    gp = _safe_get(meas, 'GeographicProjection')
+    cp = _safe_get(meas, 'CylindricalProjection')
+    yp = _safe_get(meas, 'PolynomialProjection')
+
     if pp is not None:
         proj_type = 'PlaneProjection'
-
-        ref_point = None
-        rp = _safe_get(pp, 'ReferencePoint')
-        if rp is not None:
-            ecf = _safe_get(rp, 'ECEF')
-            ecef = None
-            if ecf is not None:
-                ecef = XYZ(
-                    x=float(ecf[0]) if ecf is not None else 0.0,
-                    y=float(ecf[1]) if ecf is not None else 0.0,
-                    z=float(ecf[2]) if ecf is not None else 0.0,
-                )
-            pt = _safe_get(rp, 'Point')
-            point = None
-            if pt is not None:
-                point = RowCol(
-                    row=float(_safe_get(pt, 'Row') or 0),
-                    col=float(_safe_get(pt, 'Col') or 0),
-                )
-            ref_point = SIDDReferencePoint(
-                ecef=ecef,
-                point=point,
-                name=_safe_get(rp, 'name'),
-            )
-
-        sample_spacing = None
-        ss = _safe_get(pp, 'SampleSpacing')
-        if ss is not None:
-            sample_spacing = RowCol(
-                row=float(_safe_get(ss, 'Row') or 0),
-                col=float(_safe_get(ss, 'Col') or 0),
-            )
-
-        product_plane = None
-        pplane = _safe_get(pp, 'ProductPlane')
-        if pplane is not None:
-            ruv = _safe_get(pplane, 'RowUnitVector')
-            cuv = _safe_get(pplane, 'ColUnitVector')
-            row_uv = None
-            col_uv = None
-            if ruv is not None:
-                row_uv = XYZ(
-                    x=float(ruv[0]), y=float(ruv[1]), z=float(ruv[2]),
-                )
-            if cuv is not None:
-                col_uv = XYZ(
-                    x=float(cuv[0]), y=float(cuv[1]), z=float(cuv[2]),
-                )
-            product_plane = SIDDProductPlane(
-                row_unit_vector=row_uv,
-                col_unit_vector=col_uv,
-            )
-
         plane_proj = SIDDPlaneProjection(
-            reference_point=ref_point,
-            sample_spacing=sample_spacing,
+            reference_point=_sarpy_reference_point(
+                _safe_get(pp, 'ReferencePoint'),
+            ),
+            sample_spacing=_sarpy_rowcol_obj(
+                _safe_get(pp, 'SampleSpacing'),
+            ),
             time_coa_poly=_sarpy_poly2d(_safe_get(pp, 'TimeCOAPoly')),
-            product_plane=product_plane,
+            product_plane=_sarpy_product_plane(
+                _safe_get(pp, 'ProductPlane'),
+            ),
         )
-    elif _safe_get(meas, 'GeographicProjection') is not None:
+    elif gp is not None:
         proj_type = 'GeographicProjection'
-    elif _safe_get(meas, 'CylindricalProjection') is not None:
+        geo_proj = SIDDGeographicProjection(
+            reference_point=_sarpy_reference_point(
+                _safe_get(gp, 'ReferencePoint'),
+            ),
+            sample_spacing=_sarpy_rowcol_obj(
+                _safe_get(gp, 'SampleSpacing'),
+            ),
+            time_coa_poly=_sarpy_poly2d(_safe_get(gp, 'TimeCOAPoly')),
+        )
+    elif cp is not None:
         proj_type = 'CylindricalProjection'
-    elif _safe_get(meas, 'PolynomialProjection') is not None:
+        cyl_proj = SIDDCylindricalProjection(
+            reference_point=_sarpy_reference_point(
+                _safe_get(cp, 'ReferencePoint'),
+            ),
+            sample_spacing=_sarpy_rowcol_obj(
+                _safe_get(cp, 'SampleSpacing'),
+            ),
+            time_coa_poly=_sarpy_poly2d(_safe_get(cp, 'TimeCOAPoly')),
+            product_plane=_sarpy_product_plane(
+                _safe_get(cp, 'ProductPlane'),
+            ),
+            stripmap_direction=_sarpy_xyz_arr(
+                _safe_get(cp, 'StripmapDirection'),
+            ),
+            curvature_radius=_safe_get(cp, 'CurvatureRadius'),
+        )
+    elif yp is not None:
         proj_type = 'PolynomialProjection'
-
-    pixel_footprint = None
-    pf = _safe_get(meas, 'PixelFootprint')
-    if pf is not None:
-        pixel_footprint = RowCol(
-            row=float(_safe_get(pf, 'Row') or 0),
-            col=float(_safe_get(pf, 'Col') or 0),
+        poly_proj = SIDDPolynomialProjection(
+            reference_point=_sarpy_reference_point(
+                _safe_get(yp, 'ReferencePoint'),
+            ),
+            row_col_to_lat=_sarpy_poly2d(_safe_get(yp, 'RowColToLat')),
+            row_col_to_lon=_sarpy_poly2d(_safe_get(yp, 'RowColToLon')),
+            row_col_to_alt=_sarpy_poly2d(_safe_get(yp, 'RowColToAlt')),
+            lat_lon_to_row=_sarpy_poly2d(_safe_get(yp, 'LatLonToRow')),
+            lat_lon_to_col=_sarpy_poly2d(_safe_get(yp, 'LatLonToCol')),
         )
 
     return SIDDMeasurement(
         projection_type=proj_type,
         plane_projection=plane_proj,
-        pixel_footprint=pixel_footprint,
+        geographic_projection=geo_proj,
+        cylindrical_projection=cyl_proj,
+        polynomial_projection=poly_proj,
+        pixel_footprint=_sarpy_rowcol_obj(_safe_get(meas, 'PixelFootprint')),
         arp_flag=_safe_get(meas, 'ARPFlag'),
         arp_poly=_sarpy_xyzpoly(_safe_get(meas, 'ARPPoly')),
+        valid_data=_sarpy_valid_pixels(_safe_get(meas, 'ValidData')),
     )
 
 
@@ -1228,6 +1426,10 @@ def _extract_exploitation_features_sarpy(
                 ),
                 collection_duration=(
                     _safe_get(info, 'CollectionDuration')
+                    if info is not None else None
+                ),
+                input_roi=_sarpy_input_roi(
+                    _safe_get(info, 'InputROI')
                     if info is not None else None
                 ),
                 resolution_range=(
@@ -1401,12 +1603,38 @@ def _extract_product_processing_sarpy(
     if pm_list:
         modules = []
         for pm in pm_list:
+            params = _safe_get(pm, 'ModuleParameters')
+            collection = None
+            if params is not None and hasattr(params, 'get_collection'):
+                collection = params.get_collection()
             modules.append(SIDDProcessingModule(
                 module_name=_safe_get(pm, 'ModuleName'),
                 name=_safe_get(pm, 'name'),
+                parameters=dict(collection) if collection else None,
             ))
 
     return SIDDProductProcessing(processing_modules=modules)
+
+
+def _sarpy_error_decorr(obj: Any) -> Optional[SICDErrorDecorrFunc]:
+    """Convert a sarpy ErrorDecorrFuncType to the GRDL type.
+
+    Parameters
+    ----------
+    obj : ErrorDecorrFuncType or None
+        Sarpy decorrelation function.
+
+    Returns
+    -------
+    SICDErrorDecorrFunc or None
+        None when the input is None.
+    """
+    if obj is None:
+        return None
+    return SICDErrorDecorrFunc(
+        corr_coef_zero=_safe_get(obj, 'CorrCoefZero'),
+        decorr_rate=_safe_get(obj, 'DecorrRate'),
+    )
 
 
 def _extract_error_statistics_sarpy(
@@ -1426,8 +1654,61 @@ def _extract_error_statistics_sarpy(
             rg_az=_safe_get(cs, 'RgAz'),
         )
 
+    monostatic = None
+    radar_sensor = None
+    components = _safe_get(es, 'Components')
+    if components is not None:
+        pv = _safe_get(components, 'PosVelErr')
+        if pv is not None:
+            corr_coefs = None
+            cc = _safe_get(pv, 'CorrCoefs')
+            if cc is not None:
+                corr_coefs = SICDCorrCoefs(
+                    p1p2=_safe_get(cc, 'P1P2'),
+                    p1p3=_safe_get(cc, 'P1P3'),
+                    p1v1=_safe_get(cc, 'P1V1'),
+                    p1v2=_safe_get(cc, 'P1V2'),
+                    p1v3=_safe_get(cc, 'P1V3'),
+                    p2p3=_safe_get(cc, 'P2P3'),
+                    p2v1=_safe_get(cc, 'P2V1'),
+                    p2v2=_safe_get(cc, 'P2V2'),
+                    p2v3=_safe_get(cc, 'P2V3'),
+                    p3v1=_safe_get(cc, 'P3V1'),
+                    p3v2=_safe_get(cc, 'P3V2'),
+                    p3v3=_safe_get(cc, 'P3V3'),
+                    v1v2=_safe_get(cc, 'V1V2'),
+                    v1v3=_safe_get(cc, 'V1V3'),
+                    v2v3=_safe_get(cc, 'V2V3'),
+                )
+            monostatic = SICDPosVelErr(
+                frame=_safe_get(pv, 'Frame'),
+                p1=_safe_get(pv, 'P1'),
+                p2=_safe_get(pv, 'P2'),
+                p3=_safe_get(pv, 'P3'),
+                v1=_safe_get(pv, 'V1'),
+                v2=_safe_get(pv, 'V2'),
+                v3=_safe_get(pv, 'V3'),
+                corr_coefs=corr_coefs,
+                position_decorr=_sarpy_error_decorr(
+                    _safe_get(pv, 'PositionDecorr'),
+                ),
+            )
+
+        rs = _safe_get(components, 'RadarSensor')
+        if rs is not None:
+            radar_sensor = SICDRadarSensorError(
+                range_bias=_safe_get(rs, 'RangeBias'),
+                clock_freq_sf=_safe_get(rs, 'ClockFreqSF'),
+                transmit_freq_sf=_safe_get(rs, 'TransmitFreqSF'),
+                range_bias_decorr=_sarpy_error_decorr(
+                    _safe_get(rs, 'RangeBiasDecorr'),
+                ),
+            )
+
     return SICDErrorStatistics(
         composite_scp=composite_scp,
+        monostatic=monostatic,
+        radar_sensor=radar_sensor,
     )
 
 
@@ -1810,6 +2091,34 @@ class SIDDReader(ImageReader):
         except Exception as e:
             raise ValueError(f"Failed to load SIDD metadata: {e}") from e
 
+    @staticmethod
+    def _to_bands(data: np.ndarray) -> np.ndarray:
+        """Flatten a structured RGB array to a plain band axis.
+
+        NITF stores ``RGB24I`` products band-interleaved by pixel,
+        and the backends surface that as a structured array with
+        one field per band.  GRDL's readers hand back plain numpy
+        arrays, so a structured result becomes ``(rows, cols,
+        bands)`` with the fields stacked in order.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Raw pixel data from the backend.
+
+        Returns
+        -------
+        np.ndarray
+            Unstructured array.  Single-band and already-plain
+            input is returned unchanged.
+        """
+        if data.dtype.names is None:
+            return data
+        fields = data.dtype.names
+        if len(fields) == 1:
+            return data[fields[0]]
+        return np.stack([data[name] for name in fields], axis=-1)
+
     def read_chip(
         self,
         row_start: int,
@@ -1836,7 +2145,9 @@ class SIDDReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Image chip data.
+            Image chip data.  Shape ``(rows, cols)`` for a single-band
+            product, ``(rows, cols, bands)`` for a multi-band one such
+            as ``RGB24I``.
 
         Raises
         ------
@@ -1850,11 +2161,15 @@ class SIDDReader(ImageReader):
 
         if self.backend == 'sarkit':
             if self._cached_image is None:
-                self._cached_image = self._read_image_sarkit()
+                self._cached_image = self._to_bands(
+                    self._read_image_sarkit(),
+                )
             return self._cached_image[row_start:row_end, col_start:col_end]
         else:
-            return self._reader[row_start:row_end, col_start:col_end,
-                                self.image_index]
+            return self._to_bands(
+                self._reader[row_start:row_end, col_start:col_end,
+                             self.image_index]
+            )
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the full SIDD product image.
@@ -1867,14 +2182,18 @@ class SIDDReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Full product image data.
+            Full product image data.  Shape ``(rows, cols)`` for a
+            single-band product, ``(rows, cols, bands)`` for a
+            multi-band one such as ``RGB24I``.
         """
         if self.backend == 'sarkit':
             if self._cached_image is None:
-                self._cached_image = self._read_image_sarkit()
+                self._cached_image = self._to_bands(
+                    self._read_image_sarkit(),
+                )
             return self._cached_image
         else:
-            return self._reader[:, :, self.image_index]
+            return self._to_bands(self._reader[:, :, self.image_index])
 
     def _read_image_sarkit(self) -> np.ndarray:
         """Read the SIDD pixel array via sarkit, decoding J2K if needed.
