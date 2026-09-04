@@ -72,11 +72,62 @@ with SICDReader('image.nitf') as reader:
 
 SAR imagery is natively collected in the **slant plane** -- pixel rows are azimuth samples, columns are range samples, and the scene appears squeezed and sheared relative to the map. Orthorectification projects each pixel through the sensor's range/Doppler geometry (plus a terrain model) onto a regular geographic grid, producing an image that can be overlaid on a map or compared to other imagery.
 
-The script [grdl/example/ortho/sicd_ortho_demo.py](grdl/example/ortho/sicd_ortho_demo.py) reads an UMBRA-05 SICD of the Port of Savannah (graze angle 45.6°), attaches a FABDEM terrain model to the `SICDGeolocation` object, and orthorectifies a 2048×2048 center chip with a single call to `orthorectify()`. The two figures below are its output:
+The figures below are an UMBRA-05 SICD of the Port of Savannah (graze angle 45.6°): a 2048×2048 centre chip, terrain-corrected against FABDEM, projected to WGS-84 in one `orthorectify()` call.
 
 | Slant range (native SAR geometry) | Orthorectified (WGS-84, DEM-corrected) |
 |---|---|
 | ![SICD slant range chip](docs/images/sicd_slant_range.png) | ![Orthorectified SICD](docs/images/sicd_orthorectified.png) |
+
+```python
+import numpy as np
+
+from grdl.IO.sar import SICDReader
+from grdl.data_prep import ChipExtractor
+from grdl.geolocation import ChipGeolocation
+from grdl.geolocation.elevation import open_elevation
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.image_processing.ortho import orthorectify
+
+with SICDReader('savannah.nitf') as reader:
+    meta = reader.metadata
+
+    region = ChipExtractor(nrows=meta.rows, ncols=meta.cols).chip_at_point(
+        meta.rows // 2, meta.cols // 2, row_width=2048, col_width=2048,
+    )
+
+    # The DEM belongs to the geolocation -- orthorectify() has no
+    # elevation parameter, and SICD's R/Rdot inverse reads it directly.
+    geo_full = SICDGeolocation.from_reader(reader)
+    geo_full.elevation = open_elevation('/data/fabdem/')
+
+    # Detect in slant range: resampling complex samples cancels phase.
+    mag = np.abs(reader.read_chip(
+        region.row_start, region.row_end,
+        region.col_start, region.col_end,
+    )).astype(np.float32)
+
+# The source array and its geolocation must share one pixel frame.
+geo = ChipGeolocation(
+    geo_full,
+    row_offset=region.row_start,
+    col_offset=region.col_start,
+    shape=mag.shape,
+)
+
+result = orthorectify(
+    geolocation=geo,
+    source_array=mag,
+    metadata=meta,          # pixel spacing auto-computed from SICD grid
+    interpolation='bilinear',
+    nodata=np.nan,
+)
+result.save_geotiff('savannah_ortho.tif')
+```
+
+Swapping the WGS-84 grid for local ENU metres is one keyword —
+`enu_grid=dict(pixel_size_m=0.5)`. See the [orthorectification
+module](grdl/image_processing/ortho/README.md) for output grids, tiled
+processing, and the DEM and pixel-frame contracts.
 
 Note how the dock structures and shipping containers -- which appear sheared in the slant-range chip -- reproject into a geographically meaningful layout once the SICD's R/Rdot projection is intersected with the terrain model.
 
@@ -219,6 +270,7 @@ GRDL/
 │   │   │   ├── crsd.py              #     CRSDReader (sarkit only)
 │   │   │   ├── sidd.py              #     SIDDReader (sarkit only)
 │   │   │   ├── sidd_writer.py       #     SIDDWriter
+│   │   │   ├── sidd_builder.py      #     build_sidd_metadata()
 │   │   │   ├── biomass.py           #     BIOMASSL1Reader, open_biomass()
 │   │   │   ├── biomass_catalog.py   #     BIOMASSCatalog, load_credentials()
 │   │   │   ├── sentinel1_slc.py     #     Sentinel1SLCReader
@@ -369,50 +421,12 @@ GRDL/
 │   │   ├── display.py               #   overlay_shape(s), burn_shape
 │   │   ├── rasterize.py             #   rasterize_polygon, rasterize_batch, to_pixels_batch
 │   │   └── backend.py               #   ComputeBackend (CuPy/numba/thread/process dispatch)
-│   ├── discovery/                   # Metadata scanning, in-memory catalog, beam footprints
-│   │   ├── base.py                  #   DiscoveryPlugin ABC, PluginRegistry
-│   │   ├── scanner.py               #   MetadataScanner, ScanResult, compute_beam_footprint
-│   │   ├── catalog.py               #   LocalCatalog (spatial/temporal queries, optional SQLite)
-│   │   ├── synthesizer.py           #   DataSynthesizer (synthetic test imagery)
-│   │   └── plugins.py               #   GRDLCatalogPlugin (bridge GRDL catalogs to plugin system)
-│   └── example/                     # Example scripts
-│       ├── catalog/
-│       │   ├── discover_and_download.py #   BIOMASS MAAP catalog search & download
-│       │   └── view_product.py          #   BIOMASS viewer with Pauli decomposition
-│       ├── geolocation/
-│       │   └── geolocation_overlay.py   #   Geolocation overlay visualization
-│       ├── interpolation/
-│       │   ├── polyphaseinterpolation.py #   Polyphase interpolation demo
-│       │   └── lfm_polyphase.py         #   LFM chirp polyphase resampling
-│       ├── IO/
-│       │   ├── sar/
-│       │   │   └── view_sicd.py         #   SICD magnitude viewer (linear)
-│       │   ├── eo/
-│       │   │   └── view_sentinel2.py    #   Sentinel-2 viewer
-│       │   ├── HDF5/
-│       │   │   └── load_earthdata.py    #   HDF5 EarthData loader
-│       │   └── test_file_loading.py     #   Generic file loading test
-│       ├── ortho/
-│       │   ├── chip_ortho.py            #   Ground-extent chip + ENU ortho
-│       │   ├── compare_sidd_ortho.py    #   Dual-SIDD ortho comparison + coregistration
-│       │   ├── ortho_biomass.py         #   Orthorectification with Pauli RGB
-│       │   ├── ortho_combined.py        #   Combined SICD/SIDD auto-detect ortho
-│       │   ├── ortho_sicd.py            #   SICD orthorectification
-│       │   ├── ortho_sidd.py            #   SIDD orthorectification
-│       │   ├── point_roi_ortho.py       #   Point-ROI ortho with auto contrast
-│       │   └── point_roi_ortho.yaml     #   Config for point_roi_ortho.py
-│       └── image_processing/
-│           ├── filtering/
-│           │   └── phase_gradient.py    #   Phase gradient filter demo
-│           └── sar/
-│               ├── sublook_compare.py       #   IO + data_prep + sublook integration
-│               ├── csi_detection_overlay.py #   CSI + dominance detection overlay
-│               ├── ifp_example.py           #   Image formation (PFA) example
-│               ├── ffbp_stripmap_example.py #   FFBP stripmap formation
-│               ├── rda_stripmap_example.py  #   RDA stripmap formation
-│               ├── dump_cphd_metadata.py    #   CPHD metadata inspector
-│               └── detection_workflow/
-│                   └── csi_detect_workflow.py #   Full CSI detection workflow
+│   └── discovery/                   # Metadata scanning, in-memory catalog, beam footprints
+│       ├── base.py                  #   DiscoveryPlugin ABC, PluginRegistry
+│       ├── scanner.py               #   MetadataScanner, ScanResult, compute_beam_footprint
+│       ├── catalog.py               #   LocalCatalog (spatial/temporal queries, optional SQLite)
+│       ├── synthesizer.py           #   DataSynthesizer (synthetic test imagery)
+│       └── plugins.py               #   GRDLCatalogPlugin (bridge GRDL catalogs to plugin system)
 ├── ground_truth/                    # Reference data for calibration & validation
 │   └── biomass_calibration_targets.geojson
 ├── tests/                           # Test suite (70 test files)
@@ -646,7 +660,7 @@ csi = CSIProcessor(meta, dimension='azimuth', normalization='log')
 csi_rgb = csi.apply(chip)                        # (rows, cols, 3) float32 [0, 1]
 ```
 
-See `grdl/example/image_processing/sar/csi_detection_overlay.py` for a full CLI example that overlays detection polygons on a CSI composite.
+See the [image processing module](grdl/image_processing/README.md) for composing CSI with dominance features and overlaying detection polygons.
 
 ### CFAR Detection
 
@@ -705,7 +719,7 @@ from grdl.image_processing.sar.image_formation import (
 )
 ```
 
-See `grdl/example/image_processing/sar/ifp_example.py` for a complete image formation example.
+See the [image processing module](grdl/image_processing/README.md) for complete image formation workflows.
 
 ### EO NITF Geolocation (RPC & RSM)
 
@@ -850,8 +864,10 @@ grid        = result.grid              # ENUGrid (bounds + pixel sizes)
 result.save_geotiff('roi_ortho.tif')
 ```
 
-See `grdl/example/ortho/point_roi_ortho.py` for a YAML-configured runnable
-example.
+See the [orthorectification module](grdl/image_processing/ortho/README.md)
+for the full `orthorectify_point_roi()` contract, and
+[`grdl.contrast`](grdl/contrast/README.md) for the display stretches that
+pair with it.
 
 ### Display Contrast (`grdl.contrast`)
 

@@ -272,25 +272,20 @@ metadata with the schema remains open work.
 
 ## 7. Comparison Tool
 
-A reusable CLI tool for comparing any two CRSD files is available at:
+The CLI wrapper that used to front this comparison lived in the
+examples directory, removed in `1ffe87c`.  Compare two CRSD files
+through the reader instead — `CRSDReader` carries the metadata the
+sections above are written against:
 
+```python
+from grdl.IO.sar import CRSDReader
+
+with CRSDReader('grdl_output.crsd') as a, CRSDReader('reference.crsd') as b:
+    print(a.metadata.extras['num_channels'],
+          b.metadata.extras['num_channels'])
+    print(a.get_shape(), b.get_shape())
+    print(a.metadata.reference_geometry, b.metadata.reference_geometry)
 ```
-grdl/example/IO/sar/compare_crsd.py
-```
-
-Usage:
-
-```bash
-python grdl/example/IO/sar/compare_crsd.py \
-    grdl_output.crsd reference.crsd \
-    --labels GRDL Reference \
-    --max-detail 3
-```
-
-Options:
-- `--labels A B` — custom labels for the two files
-- `--max-detail N` — number of channels to show detailed PVP
-  analysis (0 = summary only, -1 = all channels)
 
 ## 8. Scope and Attribution
 

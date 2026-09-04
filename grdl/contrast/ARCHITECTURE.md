@@ -158,7 +158,7 @@ def auto_select(metadata) -> str:
 The returned string is intentionally a **slug** (not an instance) so
 callers can route through their own dispatcher without coupling to a
 specific operator class. The example
-`grdl/example/ortho/point_roi_ortho.py` demonstrates the dispatch
+`orthorectify_point_roi()` demonstrates the dispatch
 pattern.
 
 ---

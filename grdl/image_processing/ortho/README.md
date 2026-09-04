@@ -112,7 +112,7 @@ band2 = ortho.apply(image_band2, nodata=np.nan)
 |--------|---------|
 | `Orthorectifier(geolocation, output_grid, interpolation='bilinear')` | Construct; `interpolation` is `'nearest'`/`'bilinear'`/`'bicubic'`/`'lanczos'`. |
 | `compute_mapping()` | Inverse-map every output pixel → source pixel; caches `source_rows`, `source_cols`, `valid_mask`. DEM sampled here (once). |
-| `apply(source, nodata=0.0, backend='auto', source_origin=None)` | Resample a pre-loaded array through the cached mapping. |
+| `apply(source, nodata=0.0, backend='auto', source_origin=None)` | Resample a pre-loaded array through the cached mapping.  `source` must cover the geolocation's own pixel frame, or carry `source_origin=(r0, c0)` to say where a chip sits inside it. |
 | `apply_from_reader(reader, ...)` | Read only the source chip the mapping needs, then resample (large files). |
 | `get_output_geolocation_metadata()` | CRS, affine transform, bounds, pixel sizes for the output grid. |
 
@@ -273,6 +273,62 @@ During mapping, each output grid pixel is:
 2. DEM height queried at that lat/lon
 3. `geolocation.latlon_to_image(lat, lon, height=dem_h)` gives the source pixel
 
+### The geolocation owns the DEM
+
+`orthorectify()` has no `elevation` parameter, by design. Terrain
+correction is a property of the sensor model, not of the resampler:
+SICD's and SIDD's R/Rdot inverses consult `self.elevation` inside their
+own iteration, where the orthorectifier cannot reach. Attach the DEM to
+the geolocation and it is used everywhere — ortho, footprints, shape
+projection, chip geolocation:
+
+```python
+geo.elevation = open_elevation(dted_path, geoid_path=geoid_path)
+result = orthorectify(geolocation=geo, reader=reader)   # terrain-corrected
+```
+
+Leave `geo.elevation` unset and every projection falls back to the
+ellipsoid at `default_hae`. The result still looks plausible — it is
+simply not terrain-corrected — so this is worth checking rather than
+eyeballing.
+
+Assigning to a `ChipGeolocation`'s `elevation` sets it on the parent it
+wraps; a chip owns no projection engine of its own, so a model held only
+by the chip would be reported back but never consulted.
+
+## Chips and the source pixel frame
+
+The inverse mapping is expressed in the geolocation's pixel
+coordinates. A source array and its geolocation therefore have to
+describe the same pixels: hand a 4096x4096 chip to a full-image
+geolocation and the mapped coordinates address the full image, land
+outside the chip, and the run returns an all-nodata grid.
+
+Wrap the full-image geolocation with `ChipGeolocation` so chip-local
+pixels are offset into the sensor model's frame:
+
+```python
+from grdl.geolocation import ChipGeolocation
+
+chip = reader.read_chip(r0, r1, c0, c1)
+chip_geo = ChipGeolocation(
+    geo, row_offset=r0, col_offset=c0, shape=chip.shape[-2:],
+)
+result = orthorectify(geolocation=chip_geo, source_array=chip)
+```
+
+A mismatch now raises `ValueError` naming both shapes rather than
+returning an empty grid. `Orthorectifier.apply()` also accepts
+`source_origin=(r0, c0)` to shift a cached mapping onto a pre-read chip;
+`ChipGeolocation` is the path to prefer, because it keeps the offset
+with the sensor model where footprints, DEM lookups and shape
+projection all see it. Do not use both at once — the offset would be
+applied twice.
+
+Reading through a `reader` instead of `source_array` sidesteps the
+question: the orthorectifier reads exactly the pixels the mapping
+needs, in full-image coordinates.
+
 ## Resampling Backends
 
 The `accelerated` module dispatches to the fastest available backend:
@@ -353,13 +409,78 @@ Must implement:
 Must implement:
 - `read_chip(row_start, row_end, col_start, col_end) -> ndarray`
 
-## Examples
+## Worked Example — SICD Chip to WGS-84 and ENU
 
-See `grdl/example/ortho/` for working scripts:
+End to end, with terrain correction. Every step uses the module that
+owns it: `ChipExtractor` plans the region, `SICDGeolocation` carries the
+sensor model, `open_elevation` builds the DEM, `ChipGeolocation` puts
+the chip and the sensor model in the same pixel frame.
 
-- `chip_ortho.py` — Ground-extent chip extraction + ENU ortho (CLI)
-- `compare_sidd_ortho.py` — Dual-SIDD ortho comparison with PCA, NCC, coregistration
-- `ortho_biomass.py` — BIOMASS ortho with Pauli RGB
-- `ortho_combined.py` — Auto-detect SICD/SIDD, WGS-84 + ENU output
-- `ortho_sicd.py` — SICD ortho with DEM and ENU
-- `ortho_sidd.py` — SIDD ortho with DEM and ENU
+```python
+import numpy as np
+
+from grdl.IO.sar import SICDReader
+from grdl.data_prep import ChipExtractor
+from grdl.geolocation import ChipGeolocation
+from grdl.geolocation.elevation import open_elevation
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.image_processing.ortho import orthorectify
+
+with SICDReader(path) as reader:
+    meta = reader.metadata
+
+    # 1. Plan the chip (never hand-roll the index arithmetic).
+    region = ChipExtractor(nrows=meta.rows, ncols=meta.cols).chip_at_point(
+        meta.rows // 2, meta.cols // 2,
+        row_width=4096, col_width=4096,
+    )
+
+    # 2. Sensor model for the FULL image, DEM attached to it.
+    geo_full = SICDGeolocation.from_reader(reader)
+    geo_full.elevation = open_elevation('/data/fabdem/')
+
+    # 3. Read the chip and detect in slant range, BEFORE resampling.
+    #    Resampling complex samples cancels phase; magnitude does not.
+    mag = np.abs(reader.read_chip(
+        region.row_start, region.row_end,
+        region.col_start, region.col_end,
+    )).astype(np.float32)
+
+# 4. Offset the sensor model into the chip's pixel frame.
+geo = ChipGeolocation(
+    geo_full,
+    row_offset=region.row_start,
+    col_offset=region.col_start,
+    shape=mag.shape,
+)
+
+# 5. WGS-84 grid, pixel spacing auto-computed from the SICD metadata.
+result = orthorectify(
+    geolocation=geo,
+    source_array=mag,
+    metadata=meta,
+    interpolation='bilinear',
+    nodata=np.nan,
+)
+
+# 6. Or ENU meters over the same chip — only the grid changes.
+result_enu = orthorectify(
+    geolocation=geo,
+    source_array=mag,
+    metadata=meta,
+    interpolation='bilinear',
+    nodata=np.nan,
+    enu_grid=dict(pixel_size_m=0.5),
+)
+```
+
+Steps 2 and 4 are the two that are easy to get wrong, and each has a
+section above: [the DEM belongs to the geolocation](#elevation--dem-integration),
+and [the source array and its geolocation share one pixel
+frame](#chips-and-the-source-pixel-frame).
+
+The same shape works for any modality — swap `SICDReader` /
+`SICDGeolocation` for the reader and geolocation of the format at hand,
+or let [`create_geolocation()`](../../geolocation/README.md) pick. For a
+point-centred ROI, `orthorectify_point_roi()` above does all six steps
+in one call.

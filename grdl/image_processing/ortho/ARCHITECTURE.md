@@ -244,7 +244,7 @@ All paths convert meters to degrees via `spacing_m / 111320` (lat) and
 
 4. **DEM integrates at mapping time, not resampling time.** Terrain heights are looked up once during `compute_mapping()` and baked into the source coordinates. The resampler sees only 2D fractional pixel coordinates.
 
-   **The DEM lives on the geolocation object, not the orthorectifier.** Neither `orthorectify()`, `OrthoBuilder`, nor `Orthorectifier` has an `elevation` parameter. Terrain correction flows entirely through `geo.elevation`, which the geolocation consults inside its own R/Rdot inverse during `latlon_to_image()`. When `geo.elevation` is unset, the projection falls back to the WGS-84 ellipsoid (height 0) — terrain-uncorrected output. This keeps a single source of truth for terrain and matches the GRDL "DEM / Elevation Ownership" rule.
+   **The DEM lives on the geolocation object, not the orthorectifier.** Neither `orthorectify()`, `OrthoBuilder`, nor `Orthorectifier` has an `elevation` parameter. Terrain correction flows entirely through `geo.elevation`, which the geolocation consults inside its own R/Rdot inverse during `latlon_to_image()`. When `geo.elevation` is unset, the projection falls back to the WGS-84 ellipsoid (height 0) — terrain-uncorrected output. This keeps a single source of truth for terrain and matches the GRDL "DEM / Elevation Ownership" rule.  It is not merely a style choice: SICD and SIDD resolve terrain inside their own R/Rdot iteration (`_handles_dem_internally`), which the orthorectifier cannot reach into, so a DEM passed to the pipeline could only be honoured for some geolocation types and silently dropped for the rest.  `ChipGeolocation` forwards `elevation` assignment to the parent it wraps for the same reason.
 
 5. **Backend dispatch is transparent.** `resample()` auto-detects the best backend. User code is identical regardless of whether numba, torch, or scipy runs underneath.
 
@@ -254,17 +254,10 @@ All paths convert meters to degrees via `spacing_m / 111320` (lat) and
 
 8. **Shared validation.** `validate_sub_grid_indices()` centralises the bounds-checking logic used by `GeographicGrid.sub_grid()`, `ENUGrid.sub_grid()`, `UTMGrid.sub_grid()`, and `WebMercatorGrid.sub_grid()`, preventing drift between implementations.
 
-## Examples
+9. **One pixel frame per run.** The inverse mapping is expressed in the geolocation's pixel coordinates, so the source array and its geolocation must describe the same pixels. `ChipGeolocation` is the single supported way to reconcile them, keeping the offset with the sensor model where footprints, DEM lookups and shape projection all see it. `Orthorectifier.apply(source_origin=...)` shifts a cached mapping onto a pre-read chip for direct low-level use; the two are alternatives, never combined. `apply()` rejects a frame mismatch rather than returning the all-nodata grid it used to produce.
 
-See `grdl/example/ortho/` for working scripts:
+## Worked Example
 
-| Script | Description |
-|--------|-------------|
-| `chip_ortho.py` | Ground-extent chip extraction + ENU ortho. CLI with lat/lon or pixel center. |
-| `compare_sidd_ortho.py` | Dual-SIDD comparison: ortho to shared ENU grid, PCA decomposition, NCC alignment, feature matching, red/blue difference overlay. |
-| `ortho_biomass.py` | BIOMASS L1A ortho with Pauli RGB composite (quad-pol). |
-| `ortho_combined.py` | Auto-detects SICD/SIDD, orthos to WGS-84 and ENU grids. |
-| `ortho_sicd.py` | SICD complex SAR ortho with DEM and ENU output. |
-| `ortho_sidd.py` | SIDD derived product ortho with DEM and ENU output. |
+See the [module README](README.md#worked-example--sicd-chip-to-wgs-84-and-enu) for the end-to-end SICD chip recipe — chip planning, sensor model, DEM, chip geolocation, and both WGS-84 and ENU output.
 
-All examples use `orthorectify()` as the recommended entry point. `OrthoBuilder` is available for advanced cases requiring partial configuration or builder reuse.
+`orthorectify()` is the recommended entry point. `OrthoBuilder` is available for advanced cases requiring partial configuration or builder reuse.
