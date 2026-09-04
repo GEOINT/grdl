@@ -11,6 +11,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.4] — 2026-09-04
+
+### Added
+
+- **SIDD 3.0 product output** (`grdl/IO/sar/sidd_builder.py`): New
+  `build_sidd_metadata()` builds complete SIDD 3.0 metadata from an
+  orthorectification output grid and the source SICD, populating every
+  required section plus every optional one derivable from the source --
+  ARP polynomial, collection geometry, resolution, polarization,
+  TimeCOAPoly, radiometric calibration and error statistics.  The
+  projection is exact rather than fitted: `ENUGrid` and `RotatedENUGrid`
+  become a `PlaneProjection`, `GeographicGrid` a `GeographicProjection`,
+  and any other grid a fitted `PolynomialProjection`.  Helpers
+  `infer_pixel_type()` and `to_display_samples()` convert a normalized
+  `[0, 1]` stretch to the pixel type's integer range.  Exported from
+  `grdl.IO.sar`.
+
+- **`OrthoResult.save_sidd()`**: Go from an ortho result to a SIDD NITF
+  in one call, taking geolocation and source metadata from the
+  orthorectifier.
+
+- **Expanded SICD metadata extraction**: Wider typed `SICDMetadata`
+  surface and reader coverage, so more of the collection is reachable
+  without going back to the raw backend object.  This is what lets the
+  SIDD builder fill the SAR sections from the source collect.
+
+### Performance
+
+- **Polynomial evaluation** (`grdl/IO/models/common.py`): `Poly1D` and
+  `Poly2D` evaluate by in-place Horner instead of `np.polyval`, which
+  allocated a fresh full-size array per coefficient.  That churn
+  profiled at **41% of the entire orthorectification mapping**.  The
+  replacement is **5.4x faster** on a 1 Mpx array and bit-identical.
+  Reducing allocator traffic also lifted thread scaling: the R/Rdot
+  mapping had been stuck near 6 effective cores of 32 and now reaches
+  12-14, cutting a strip from 2.56s to 1.63s.
+
+### Fixed
+
+- **SIDD polarization** (`sidd_builder.py`): Bare SICD tokens `OTHER`
+  and `UNKNOWN` now map to themselves on transmit and receive.  They
+  were dropped, and since `ExploitationFeatures/Product` requires a
+  `Polarization` before `North`, the omission emitted `North` into the
+  slot the schema reserves for `Polarization` -- so every product built
+  from a SICD reporting those tokens failed schema validation.
+
+- **Chip DEM assignment** (`grdl/geolocation/chip.py`):
+  `ChipGeolocation.elevation` delegated reads to the parent but pinned
+  assignments to the chip, so a DEM attached to a chip never reached the
+  projection engine and terrain was silently ignored.  Assignment now
+  delegates in the same direction reads already did.
+
+- **Source/geolocation frame mismatch** (`grdl/image_processing/ortho`):
+  Handing a chip to a full-image geolocation no longer returns a silent
+  all-nodata grid that reads as "no coverage".  `_check_source_shape()`
+  raises `ValueError` instead.
+
+- **`OrthoBuilder.estimate()`** now reports the path `run()` will
+  actually take.  It passed the raw `tile_size` while `run()`
+  substitutes `AUTO_TILE_SIZE` past `AUTO_TILE_THRESHOLD_PX`, so a
+  441 Mpx grid was reported as untiled at 29.46 GiB against an actual
+  tiled peak of 3.26 GiB -- an order of magnitude over, failing any
+  caller that gates on the estimate.  Both now resolve through
+  `_effective_tile_size()`.
+
+### Changed
+
+- **`orthorectify_point_roi()` fills with 0.0** instead of NaN, matching
+  `orthorectify`, `OrthoBuilder` and `Orthorectifier.apply`.  Every
+  ortho entry point now fills the same way, so a result can go straight
+  into an integer product without a separate NaN pass.  Pass
+  `float('nan')` to keep uncovered pixels distinguishable from genuine
+  zero-return samples.
+
+### Install
+
+```bash
+pip install grdl==0.7.4
+pip install grdl[sar]==0.7.4     # SICD/SIDD I/O (sarpy, sarkit)
+pip install grdl[all]==0.7.4
+```
+
+---
+
 ## [0.7.3] — 2026-08-25
 
 ### Added
