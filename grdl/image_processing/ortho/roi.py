@@ -158,7 +158,7 @@ def orthorectify_point_roi(
     band: int = 0,
     complex_mode: str = 'magnitude',
     elevation: Optional['ElevationModel'] = None,
-    nodata: float = float('nan'),
+    nodata: float = 0.0,
 ) -> PointRoiResult:
     """Orthorectify an NxM meter area centered on a geographic or pixel point.
 
@@ -216,8 +216,13 @@ def orthorectify_point_roi(
         ``ConstantElevation``, …).  Pass ``None`` to use the geolocation
         default height (SCP HAE for SICD, reference point HAE for SIDD,
         etc.).
-    nodata : float, default=NaN
-        Fill value for output pixels with no source coverage.
+    nodata : float, default=0.0
+        Fill value for output pixels with no source coverage.  Zero
+        matches ``orthorectify`` and ``Orthorectifier.apply``, so every
+        ortho entry point in GRDL now fills the same way and a result
+        can be written to an integer product without a separate NaN
+        pass.  Pass ``float('nan')`` to keep uncovered pixels
+        distinguishable from genuine zero-return samples.
 
     Returns
     -------
