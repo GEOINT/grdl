@@ -248,13 +248,52 @@ class TestChipDelegation:
         parent.elevation = ConstantElevation(height=5.0)
         assert chip.elevation is parent.elevation
 
-    def test_chip_override_detaches_from_parent(self):
+    def test_chip_assignment_reaches_parent(self):
+        """A DEM set on the chip must land on the parent.
+
+        The chip has no projection engine of its own: both transforms
+        delegate.  A model pinned to the chip alone would be reported
+        by the property yet ignored by every projection.
+        """
         parent = LinearGeolocation()
         parent.elevation = ConstantElevation(height=5.0)
         chip = ChipGeolocation(parent, 10, 10, (20, 20))
         chip.elevation = ConstantElevation(height=9.0)
         assert chip.elevation.get_elevation(0.0, 0.0) == 9.0
-        assert parent.elevation.get_elevation(0.0, 0.0) == 5.0
+        assert parent.elevation.get_elevation(0.0, 0.0) == 9.0
+
+    def test_chip_dem_reaches_an_internal_dem_projection(self):
+        """The DEM must reach a parent that resolves terrain itself.
+
+        SICD and SIDD set ``_handles_dem_internally``, so the base
+        class skips its own refinement loop and the parent's transform
+        reads the parent's ``elevation``.  This is the path on which a
+        chip-pinned model used to be dropped silently, orthorectifying
+        against the ellipsoid instead of the terrain.
+        """
+        class InternalDemGeo(LinearGeolocation):
+            _handles_dem_internally = True
+
+            def _image_to_latlon_array(self, rows, cols, height=0.0):
+                lats, lons, heights = super()._image_to_latlon_array(
+                    rows, cols, height,
+                )
+                if self.elevation is not None:
+                    heights = np.broadcast_to(
+                        np.asarray(
+                            self.elevation.get_elevation(lats, lons),
+                            dtype=float,
+                        ),
+                        lats.shape,
+                    ).astype(float)
+                return lats, lons, heights
+
+        parent = InternalDemGeo()
+        chip = ChipGeolocation(parent, 10, 10, (20, 20))
+        chip.elevation = ConstantElevation(height=1234.0)
+
+        coords = chip.image_to_latlon(np.array([[5.0, 5.0]]))
+        assert coords[0, 2] == pytest.approx(1234.0)
 
 
 # ── open_elevation_for ──────────────────────────────────────────────

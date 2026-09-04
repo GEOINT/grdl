@@ -24,6 +24,8 @@ Created
 
 Modified
 --------
+2026-09-04  Forward elevation assignment to the parent as well as reads,
+            so a DEM set on a chip reaches the projection engine.
 2026-08-31  Delegate elevation to the parent instead of copying it,
             so a chip never forces the parent's lazy DEM build.
 2026-03-27
@@ -94,27 +96,28 @@ class ChipGeolocation(Geolocation):
         # so building a chip never forces the parent's lazy DEM build.
         self._handles_dem_internally = geolocation._handles_dem_internally
 
-    _elevation_overridden: bool = False
-    """True once a caller has assigned to :attr:`elevation` on the chip,
-    which detaches it from the parent's model."""
-
     @property
     def elevation(self) -> Optional[Any]:
         """The parent geolocation's elevation model.
 
-        Delegated, not copied: the parent may build its DEM lazily, and
-        a DEM attached to the parent after the chip was created is still
-        seen here.  Assigning to this attribute detaches the chip and
-        pins it to the assigned model.
+        Delegated in both directions, not copied.  Reading sees a DEM
+        the parent builds lazily, or one attached to the parent after
+        the chip was created; assigning sets the model on the parent.
+
+        Assignment has to reach the parent because a chip owns no
+        projection engine of its own.  Both transforms delegate, and a
+        parent that resolves terrain internally
+        (``_handles_dem_internally`` -- SICD's and SIDD's R/Rdot
+        inverses) reads its *own* ``elevation`` while doing so.  A model
+        pinned to the chip alone would be reported by this property yet
+        ignored by every projection, silently leaving the output
+        uncorrected against the ellipsoid.
         """
-        if self._elevation_overridden:
-            return self._elevation
         return self._geo.elevation
 
     @elevation.setter
     def elevation(self, model: Optional[Any]) -> None:
-        self._elevation = model
-        self._elevation_overridden = True
+        self._geo.elevation = model
 
     @property
     def default_hae(self) -> float:
