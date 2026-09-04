@@ -555,11 +555,17 @@ class OrthoBuilder:
         This is the recommended path for SAR: compute magnitude or other
         real-valued products in slant range, then orthorectify the result.
 
+        The array must describe the same pixels as the geolocation.
+        To orthorectify a chip, wrap the full-image geolocation with
+        ``ChipGeolocation`` so chip-local coordinates are offset into
+        the sensor model's frame; passing the chip with the full-image
+        geolocation raises at ``run()``.
+
         Parameters
         ----------
         array : np.ndarray
             Source image data.  Shape ``(rows, cols)`` or
-            ``(bands, rows, cols)``.
+            ``(bands, rows, cols)``, matching ``geolocation.shape``.
 
         Returns
         -------
@@ -1164,6 +1170,10 @@ def orthorectify(
         Open imagery reader.  Mutually exclusive with ``source_array``.
     source_array : np.ndarray, optional
         Pre-loaded source array.  Mutually exclusive with ``reader``.
+        Must cover the same pixels as ``geolocation``: the mapping is
+        computed in the geolocation's own pixel frame, so a chip needs
+        its geolocation wrapped in ``ChipGeolocation`` rather than the
+        full-image one.  A mismatch raises ``ValueError``.
     metadata : Any, optional
         Reader metadata for auto-resolution (e.g. ``SICDMetadata``).
     output_grid : GeographicGrid or ENUGrid, optional

@@ -414,6 +414,79 @@ class TestBuilderChaining:
 
 
 # ---------------------------------------------------------------------------
+# Source / geolocation frame agreement
+# ---------------------------------------------------------------------------
+
+class TestSourceGeolocationAgreement:
+    """A source array must be in its geolocation's own pixel frame.
+
+    Handing a chip to a full-image geolocation used to succeed and
+    return an all-nodata grid: every mapped coordinate landed outside
+    the chip, which reads as "the scene has no coverage here" rather
+    than as the coordinate-frame mismatch it is.
+    """
+
+    def test_chip_with_full_image_geolocation_raises(self, geo):
+        chip = np.zeros((20, 40), dtype=np.float64)   # geo is 100x200
+        with pytest.raises(ValueError, match='geolocation describes'):
+            orthorectify(
+                geolocation=geo,
+                source_array=chip,
+                resolution=(0.01, 0.005),
+                interpolation='nearest',
+            )
+
+    def test_error_names_the_offending_shapes(self, geo):
+        chip = np.zeros((20, 40), dtype=np.float64)
+        with pytest.raises(ValueError) as exc:
+            orthorectify(
+                geolocation=geo,
+                source_array=chip,
+                resolution=(0.01, 0.005),
+                interpolation='nearest',
+            )
+        message = str(exc.value)
+        assert '20x40' in message
+        assert '100x200' in message
+        assert 'ChipGeolocation' in message
+
+    def test_multiband_frame_mismatch_raises(self, geo):
+        chip = np.zeros((3, 20, 40), dtype=np.float64)
+        with pytest.raises(ValueError, match='geolocation describes'):
+            orthorectify(
+                geolocation=geo,
+                source_array=chip,
+                resolution=(0.01, 0.005),
+                interpolation='nearest',
+            )
+
+    def test_chip_geolocation_is_accepted(self, geo, source_2d):
+        """The documented chip recipe still runs."""
+        from grdl.geolocation.chip import ChipGeolocation
+
+        chip = source_2d[10:60, 20:120]
+        chip_geo = ChipGeolocation(
+            geo, row_offset=10, col_offset=20, shape=chip.shape,
+        )
+        result = orthorectify(
+            geolocation=chip_geo,
+            source_array=chip,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
+        )
+        assert result.data.size > 0
+
+    def test_matching_shapes_are_accepted(self, geo, source_2d):
+        result = orthorectify(
+            geolocation=geo,
+            source_array=source_2d,
+            resolution=(0.01, 0.005),
+            interpolation='nearest',
+        )
+        assert result.data.size > 0
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 

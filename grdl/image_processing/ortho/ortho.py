@@ -776,6 +776,49 @@ class Orthorectifier(ImageTransform):
 
         return source_rows, source_cols, valid
 
+    def _check_source_shape(self, source: np.ndarray) -> None:
+        """Verify a source array matches the geolocation it is mapped by.
+
+        The inverse mapping is expressed in the geolocation's own pixel
+        coordinates, so an array of any other size is indexed with
+        coordinates that do not belong to it.  Handing a chip to a
+        full-image geolocation does not raise on its own -- every
+        mapped coordinate simply falls outside the chip and the run
+        returns an all-nodata grid, which reads as "no coverage"
+        rather than as the coordinate-frame mismatch it is.
+
+        Parameters
+        ----------
+        source : np.ndarray
+            Source image, ``(rows, cols)`` or ``(bands, rows, cols)``.
+
+        Raises
+        ------
+        ValueError
+            If the array's row/column extent differs from
+            ``self.geolocation.shape``.
+        """
+        geo_shape = getattr(self.geolocation, 'shape', None)
+        if geo_shape is None or len(geo_shape) < 2 or source.ndim < 2:
+            return
+
+        src_shape = tuple(int(n) for n in source.shape[-2:])
+        expected = (int(geo_shape[0]), int(geo_shape[1]))
+        if src_shape == expected:
+            return
+
+        raise ValueError(
+            f"Source array is {src_shape[0]}x{src_shape[1]} but its "
+            f"geolocation describes a {expected[0]}x{expected[1]} "
+            f"image.  The mapping is computed in the geolocation's "
+            f"pixel frame, so the two must agree.  To orthorectify a "
+            f"chip, wrap the full-image geolocation so chip-local "
+            f"pixels are offset into it:\n"
+            f"    from grdl.geolocation import ChipGeolocation\n"
+            f"    chip_geo = ChipGeolocation(geo, row_offset=r0, "
+            f"col_offset=c0, shape=chip.shape[-2:])"
+        )
+
     def apply(
         self,
         source: np.ndarray,
@@ -824,6 +867,9 @@ class Orthorectifier(ImageTransform):
         """
         if self._source_rows is None:
             self.compute_mapping()
+
+        if source_origin is None:
+            self._check_source_shape(source)
 
         source_rows = self._source_rows
         source_cols = self._source_cols
