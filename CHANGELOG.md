@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-09-09
+
+### Added
+- **Synthetic Data Generation Framework** (`grdl.synthetic`): Modular framework for generating synthetic imagery.
+  - `GeometricShapeGenerator`: Produces geometry and material descriptors.
+  - `GeometricEOInjector` & `GeometricSARInjector`: Inject 3D physical objects into raster chips based on modality.
+  - Annotation Writers: Support for GeoJSON, COCO, and YOLO formats.
+  - Registered components in `catalog.yaml`.
+
 ---
 
 ## [0.7.4] — 2026-09-04

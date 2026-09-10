@@ -158,6 +158,7 @@ try:
     _HAS_SARPY_SIDD = True
 except ImportError:
     _HAS_SARPY_SIDD = False
+    ProcessingModuleType = object
 
 logger = logging.getLogger(__name__)
 
