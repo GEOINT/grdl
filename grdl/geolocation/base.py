@@ -23,6 +23,9 @@ Created
 
 Modified
 --------
+2026-10-06  Robust DEM line-of-sight solve (fixed-point + secant), tighter
+            default tolerance, configurable tol/max_iter, NaN for
+            non-converged points, keep last valid height on DEM gaps.
 2026-08-31  Lazy, footprint-scoped elevation: dem_path is resolved on
             first use with a bbox derived from the sensor model, so DEM
             discovery never scans a whole archive.
@@ -42,6 +45,29 @@ import numpy as np
 
 if TYPE_CHECKING:
     from grdl.IO.base import ImageReader
+
+
+DEM_LOS_TOL: float = 0.05
+"""Default DEM line-of-sight convergence tolerance (meters)."""
+
+DEM_LOS_MAX_ITER: int = 20
+"""Default maximum DEM line-of-sight evaluations per point."""
+
+_MAX_SECANT_STEP_M: float = 1.0e4
+"""Secant steps larger than this fall back to the fixed-point step."""
+
+
+def _validate_dem_solver_params(max_iter: Any, tol: Any) -> None:
+    """Raise ValueError for invalid DEM solver settings."""
+    if (isinstance(max_iter, bool)
+            or not isinstance(max_iter, (int, np.integer))
+            or max_iter < 1):
+        raise ValueError(
+            f"max_iter must be a positive integer, got {max_iter!r}")
+    if (isinstance(tol, bool)
+            or not isinstance(tol, (int, float, np.integer, np.floating))
+            or not np.isfinite(tol) or tol <= 0):
+        raise ValueError(f"tol must be a positive finite number, got {tol!r}")
 
 
 def _is_scalar(val: Any) -> bool:
@@ -432,19 +458,35 @@ class Geolocation(ABC):
         rows: np.ndarray,
         cols: np.ndarray,
         height: float = 0.0,
-        max_iter: int = 5,
-        tol: float = 0.5,
+        max_iter: int = DEM_LOS_MAX_ITER,
+        tol: float = DEM_LOS_TOL,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Project pixels to ground with per-point iterative DEM refinement.
+        """Project pixels to ground with per-point DEM line-of-sight solve.
 
-        When an elevation model is configured, iterates per point:
-        project at current height → DEM lookup at that (lat, lon) →
-        re-project at DEM height → converge.  Each point tracks its
-        own height independently, correctly handling terrain variation
-        across the query.
+        When an elevation model is configured, each point solves the
+        scalar root problem ``f(h) = DEM(ground(h)) - h = 0``, where
+        ``ground(h)`` is the subclass projection of the pixel at height
+        ``h``.  The first step is a fixed-point step (``h <- DEM``);
+        subsequent steps use the secant method on ``f`` (superlinear
+        convergence, and it converges where plain fixed-point iteration
+        oscillates or diverges on steep slopes).  A secant step that is
+        degenerate (flat secant) or implausibly large falls back to the
+        fixed-point step.  Each point is solved independently and
+        vectorized over the active (not yet converged) subset.
+
+        Points that do not converge within ``max_iter`` evaluations
+        (e.g. a cliff edge with no line-of-sight/terrain crossing) are
+        returned as NaN in all three outputs rather than silently
+        returning an unconverged height.
+
+        If the DEM has no coverage at a point's current ground position,
+        that point keeps its last valid height (initially the caller's
+        height guess) and is treated as resolved, instead of being reset
+        to the original guess.
 
         When no elevation model is configured, falls through to the
-        subclass ``_image_to_latlon_array`` with the constant ``height``.
+        subclass ``_image_to_latlon_array`` with the constant ``height``
+        (``max_iter`` and ``tol`` are validated but unused).
 
         Parameters
         ----------
@@ -454,50 +496,88 @@ class Geolocation(ABC):
             Initial height above WGS-84 (meters).  Used as the starting
             guess for all points when DEM is configured.
         max_iter : int
-            Maximum DEM refinement iterations (default 5).
+            Maximum number of line-of-sight evaluations per point
+            (default 20).  Must be >= 1.
         tol : float
-            Height convergence tolerance in meters (default 0.5).
-            Iteration stops for a point once its height change is below
-            this threshold.
+            Convergence tolerance in meters on ``|DEM(ground(h)) - h|``
+            (default 0.05).  Must be > 0.
 
         Returns
         -------
         Tuple[np.ndarray, np.ndarray, np.ndarray]
-            (lats, lons, heights) in WGS-84.
+            (lats, lons, heights) in WGS-84.  NaN for non-converged
+            points.
+
+        Raises
+        ------
+        ValueError
+            If ``max_iter`` is not a positive integer or ``tol`` is not
+            a positive finite number.
         """
+        _validate_dem_solver_params(max_iter, tol)
+
         if self.elevation is None or self._handles_dem_internally:
             return self._image_to_latlon_array(rows, cols, height)
 
         n = len(rows)
-        initial_h = self._resolve_height(height)
-        h_arr = np.full(n, initial_h)
-        converged = np.zeros(n, dtype=bool)
+        h_cur = np.full(n, self._resolve_height(height))
+        h_prev = np.full(n, np.nan)
+        f_prev = np.full(n, np.nan)
+        out_h = np.full(n, np.nan)
+        active = np.arange(n)
 
         for _ in range(max_iter):
-            lats, lons, heights_out = self._image_to_latlon_array(
-                rows, cols, h_arr)
+            if active.size == 0:
+                break
+            h_a = h_cur[active]
+            lats, lons, _h = self._image_to_latlon_array(
+                rows[active], cols[active], h_a)
 
-            # Per-point DEM lookup
             dem_h = np.asarray(
                 self.elevation.get_elevation(lats, lons), dtype=np.float64)
             if dem_h.ndim == 0:
-                dem_h = np.full(n, float(dem_h))
+                dem_h = np.full(active.size, float(dem_h))
 
-            self._fill_nan_heights(dem_h, height)
+            # No DEM coverage: keep the last valid height (not the
+            # caller's original guess, which could re-enter a cycle).
+            no_cov = np.isnan(dem_h)
+            dem_h = np.where(no_cov, h_a, dem_h)
 
-            # Check per-point convergence
-            delta = np.abs(dem_h - h_arr)
-            newly_converged = delta < tol
-            converged |= newly_converged
+            f = dem_h - h_a
+            done = (np.abs(f) < tol) | no_cov
+            out_h[active[done]] = dem_h[done]
 
-            h_arr = dem_h
-
-            if np.all(converged):
+            keep = ~done
+            idx = active[keep]
+            if idx.size == 0:
+                active = idx
                 break
+            h_k, f_k = h_a[keep], f[keep]
+            hp, fp = h_prev[idx], f_prev[idx]
 
-        # Final projection at converged per-point heights
-        lats, lons, _ = self._image_to_latlon_array(rows, cols, h_arr)
-        return lats, lons, h_arr
+            # Fixed-point step, replaced by secant step where sound.
+            h_new = h_k + f_k
+            with np.errstate(divide='ignore', invalid='ignore'):
+                denom = f_k - fp
+                sec = h_k - f_k * (h_k - hp) / denom
+            ok = (np.isfinite(sec) & (np.abs(denom) > 1e-12)
+                  & (np.abs(sec - h_k) <= _MAX_SECANT_STEP_M))
+            h_new = np.where(ok, sec, h_new)
+
+            h_prev[idx], f_prev[idx] = h_k, f_k
+            h_cur[idx] = h_new
+            active = idx
+
+        # Whatever is still active did not converge: out_h stays NaN.
+        lats_out = np.full(n, np.nan)
+        lons_out = np.full(n, np.nan)
+        good = np.isfinite(out_h)
+        if np.any(good):
+            glat, glon, _ = self._image_to_latlon_array(
+                rows[good], cols[good], out_h[good])
+            lats_out[good] = glat
+            lons_out[good] = glon
+        return lats_out, lons_out, out_h
 
     def _latlon_to_image_with_dem(
         self,
@@ -546,6 +626,9 @@ class Geolocation(ABC):
         row_or_points: Union[float, np.ndarray],
         col: Optional[float] = None,
         height: float = 0.0,
+        *,
+        tol: float = DEM_LOS_TOL,
+        max_iter: int = DEM_LOS_MAX_ITER,
     ) -> np.ndarray:
         """
         Transform image coordinates to geographic coordinates.
@@ -560,18 +643,26 @@ class Geolocation(ABC):
         height : float, default=0.0
             Height above WGS84 ellipsoid (meters). Ignored when a DEM
             elevation model is configured (``dem_path`` in constructor).
+        tol : float, default=0.05
+            DEM line-of-sight convergence tolerance in meters.  Only
+            used when the base class solves the DEM intersection.
+        max_iter : int, default=20
+            Maximum DEM line-of-sight evaluations per point.  Points
+            that do not converge are returned as NaN.
 
         Returns
         -------
         np.ndarray
             Shape ``(3,)`` for scalar input: ``[lat, lon, height]``.
             Shape ``(N, 3)`` for array input: columns are
-            ``[lat, lon, height]``.
+            ``[lat, lon, height]``.  Rows are NaN for points whose DEM
+            intersection did not converge.
 
         Raises
         ------
         ValueError
-            If input shape is invalid.
+            If input shape is invalid, or ``tol``/``max_iter`` are not
+            positive.
         NotImplementedError
             If geolocation is not available.
 
@@ -597,7 +688,8 @@ class Geolocation(ABC):
             rows_arr = _to_array(row_or_points)
             cols_arr = _to_array(col)
             lats, lons, heights = self._image_to_latlon_with_dem(
-                rows_arr, cols_arr, height)
+                rows_arr, cols_arr, height,
+                max_iter=max_iter, tol=tol)
             result = np.column_stack([lats, lons, heights])
             return result[0] if scalar else result
         else:
@@ -611,7 +703,8 @@ class Geolocation(ABC):
             rows_arr = pts[:, 0]
             cols_arr = pts[:, 1]
             lats, lons, heights = self._image_to_latlon_with_dem(
-                rows_arr, cols_arr, height)
+                rows_arr, cols_arr, height,
+                max_iter=max_iter, tol=tol)
             return np.column_stack([lats, lons, heights])
 
     def latlon_to_image(
