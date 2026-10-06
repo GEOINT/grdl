@@ -28,7 +28,7 @@ Created
 
 Modified
 --------
-2026-05-26
+2026-10-06
 """
 
 import os
@@ -71,9 +71,12 @@ def _make_dted_tile(
         def value_fn(lat, lon):
             return 1000.0 + 10.0 * lon + 5.0 * lat
     path.parent.mkdir(parents=True, exist_ok=True)
+    # GDAL's DTED driver (PixelIsPoint) reports a corner-origin affine:
+    # post (0, 0) sits at the pixel *centre*, half a post inside the origin.
+    step = 1.0 / (size - 1)
     transform = RioAffine(
-        1.0 / (size - 1), 0.0, float(lon_floor),
-        0.0, -1.0 / (size - 1), float(lat_floor + 1),
+        step, 0.0, float(lon_floor) - step / 2,
+        0.0, -step, float(lat_floor + 1) + step / 2,
     )
     rows = np.arange(size)
     cols = np.arange(size)

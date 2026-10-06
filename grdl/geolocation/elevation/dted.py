@@ -58,6 +58,7 @@ Created
 
 Modified
 --------
+2026-10-06  Fix half-pixel DEM sampling offset (issue #62).
 2026-06-08  Add bbox-driven discovery of nested DTED archive layouts
             (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) alongside the
             standard layout; cache inverse transforms and padded tiles.
@@ -945,6 +946,9 @@ class DTEDElevation(ElevationModel):
             px_cols, px_rows = inv_transform * (batch_lons, batch_lats)
             px_cols = np.asarray(px_cols, dtype=np.float64)
             px_rows = np.asarray(px_rows, dtype=np.float64)
+            # Affine is corner-origin; array indices are pixel centres (issue #62).
+            px_cols = px_cols - 0.5
+            px_rows = px_rows - 0.5
 
             # Pad with adjacent tiles if any point needs cross-tile data
             needs_padding = (

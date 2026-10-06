@@ -44,6 +44,7 @@ Created
 
 Modified
 --------
+2026-10-06  Fix half-pixel DEM sampling offset (issue #62).
 2026-03-21
 """
 
@@ -643,6 +644,9 @@ class TiledGeoTIFFDEM(ElevationModel):
             px_cols, px_rows = meta.inv_transform * (batch_lons, batch_lats)
             px_cols = np.asarray(px_cols, dtype=np.float64)
             px_rows = np.asarray(px_rows, dtype=np.float64)
+            # Affine is corner-origin; array indices are pixel centres (issue #62).
+            px_cols = px_cols - 0.5
+            px_rows = px_rows - 0.5
 
             # Bounding window with margin for interpolation kernel
             r_min = int(np.floor(px_rows.min())) - margin
