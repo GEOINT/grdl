@@ -639,6 +639,25 @@ class TestNISARReaderRSLC:
             assert full.shape == (_RSLC_ROWS, _RSLC_COLS)
             np.testing.assert_array_equal(full, slc_hh)
 
+    def test_multi_pol_bands_selection(self, synthetic_nisar_rslc):
+        from grdl.IO.sar.nisar import NISARReader
+        filepath, slc_hh, slc_hv = synthetic_nisar_rslc
+        with NISARReader(filepath, polarizations='all') as reader:
+            cube = reader.read_chip(0, 5, 0, 5)
+            assert cube.shape == (2, 5, 5)
+            only_hv = reader.read_chip(0, 5, 0, 5, bands=[1])
+            assert only_hv.shape == (1, 5, 5)
+            np.testing.assert_array_equal(only_hv[0], slc_hv[:5, :5])
+            full = reader.read_full(bands=[0])
+            np.testing.assert_array_equal(full[0], slc_hh)
+
+    def test_multi_pol_bands_out_of_range(self, synthetic_nisar_rslc):
+        from grdl.IO.sar.nisar import NISARReader
+        filepath, _, _ = synthetic_nisar_rslc
+        with NISARReader(filepath, polarizations='all') as reader:
+            with pytest.raises(ValueError, match='out of range'):
+                reader.read_chip(0, 5, 0, 5, bands=[2])
+
     def test_get_shape(self, synthetic_nisar_rslc):
         from grdl.IO.sar.nisar import NISARReader
         filepath, _, _ = synthetic_nisar_rslc

@@ -30,7 +30,7 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated
+from typing import Annotated, Optional, Tuple
 
 # Third-party
 import numpy as np
@@ -87,6 +87,17 @@ class SARFilter(ImageTransform):
         validate_kernel_size(kernel_size)
         self.kernel_size = kernel_size
         self.enl = enl
+
+    @property
+    def tile_halo(self) -> Optional[Tuple[int, int]]:
+        """``kernel_size // 2``, or None when ENL is auto-estimated.
+
+        An image-wide ENL estimate differs per tile, so ``enl=0`` is global.
+        """
+        if self.enl <= 0.0:
+            return None
+        half = self.kernel_size // 2
+        return (half, half)
 
     @staticmethod
     def _estimate_enl(
