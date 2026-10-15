@@ -27,13 +27,74 @@ Modified
 """
 
 # Standard library
-from typing import List, Optional, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.data_prep.base import ChipBase, ChipRegion, _normalize_pair
+
+
+class HaloTile(NamedTuple):
+    """A tile core plus the padded region needed to process it.
+
+    Read ``read``, process it, then keep only ``crop`` of the result;
+    the cropped block covers exactly ``core``.
+
+    Attributes
+    ----------
+    core : ChipRegion
+        Pixels this tile is responsible for (a partition cell).
+    read : ChipRegion
+        ``core`` grown by the halo and clipped to the image bounds.
+    """
+
+    core: ChipRegion
+    read: ChipRegion
+
+    @property
+    def crop(self) -> Tuple[slice, slice]:
+        """Row and column slices selecting ``core`` inside a ``read`` block."""
+        return (
+            slice(self.core.row_start - self.read.row_start,
+                  self.core.row_end - self.read.row_start),
+            slice(self.core.col_start - self.read.col_start,
+                  self.core.col_end - self.read.col_start),
+        )
+
+
+def total_halo(*halos: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
+    """Sum per-step halos of a processing chain.
+
+    Parameters
+    ----------
+    *halos : int or Tuple[int, int]
+        Per-step ``(row, col)`` halos; an ``int`` applies to both axes.
+
+    Returns
+    -------
+    Tuple[int, int]
+        Combined ``(row_halo, col_halo)``.
+    """
+    rows = cols = 0
+    for h in halos:
+        r, c = _normalize_halo(h)
+        rows += r
+        cols += c
+    return rows, cols
+
+
+def _normalize_halo(halo: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
+    if isinstance(halo, (int, np.integer)):
+        pair = (int(halo), int(halo))
+    else:
+        pair = tuple(int(h) for h in halo)
+        if len(pair) != 2:
+            raise ValueError(f"halo must be an int or a pair, got {halo!r}")
+    if pair[0] < 0 or pair[1] < 0:
+        raise ValueError(f"halo must be non-negative, got {halo!r}")
+    return pair
 
 
 class Tiler(ChipBase):
@@ -198,6 +259,46 @@ class Tiler(ChipBase):
                 c1 = min(c0 + tc, self._ncols)
                 regions.append(ChipRegion(r0, c0, r1, c1))
         return regions
+
+    def halo_tiles(
+        self,
+        halo: Union[int, Tuple[int, int]],
+        overlapping: bool = False,
+    ) -> List[HaloTile]:
+        """Attach a halo to every tile cell.
+
+        By default cores form a partition (no overlap, every pixel once).
+        With ``overlapping=True`` cores follow :meth:`tile_positions`, so
+        neighbors overlap and results need blending, e.g. with
+        :class:`~grdl.data_prep.Stitcher`. Each ``read`` region extends
+        the core by ``halo`` pixels, clipped at the image edge so edge
+        behavior matches a full-image run.
+
+        Parameters
+        ----------
+        halo : int or Tuple[int, int]
+            ``(row_halo, col_halo)`` in pixels.
+        overlapping : bool
+            Use the stride-based overlapping layout instead of a partition.
+
+        Returns
+        -------
+        List[HaloTile]
+            Tiles in row-major order.
+        """
+        hr, hc = _normalize_halo(halo)
+        cores = self.tile_positions() if overlapping \
+            else self.partition_positions()
+        tiles = []
+        for core in cores:
+            read = ChipRegion(
+                max(0, core.row_start - hr),
+                max(0, core.col_start - hc),
+                min(self._nrows, core.row_end + hr),
+                min(self._ncols, core.col_end + hc),
+            )
+            tiles.append(HaloTile(core, read))
+        return tiles
 
     def __repr__(self) -> str:
         return (

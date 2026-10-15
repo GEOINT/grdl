@@ -516,6 +516,16 @@ class BIOMASSL1Reader(ImageReader):
             raise ValueError(f"Invalid band index: {band_index}")
         return self.polarizations[band_index]
 
+    def get_available_polarizations(self) -> List[str]:
+        """Return polarization labels in channel order.
+
+        Returns
+        -------
+        List[str]
+            E.g., ``['HH', 'HV', 'VH', 'VV']``.
+        """
+        return list(self.polarizations)
+
     def close(self) -> None:
         """Close the rasterio datasets."""
         if self.magnitude_dataset is not None:

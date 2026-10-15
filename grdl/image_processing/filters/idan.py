@@ -564,6 +564,10 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
     >>> c3_filt = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
     """
 
+    # The adaptive neighborhood has no fixed extent, so tiles cannot
+    # reproduce a full-image result exactly.
+    tile_halo = None
+
     max_pixels: Annotated[
         int,
         Range(min=5, max=500),

@@ -104,6 +104,7 @@ except ImportError:
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor, ImageTransform
 from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.tiling import WindowedTileHalo
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality, ProcessorCategory
 
@@ -547,7 +548,7 @@ def _make_matrix_channel_metadata(n: int, kind: str) -> list:
     category=ProcessorCategory.ENHANCE,
     description='Spatially-averaged polarimetric covariance matrix [C]',
 )
-class CovarianceMatrix(ImageProcessor):
+class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
     """Polarimetric covariance matrix [C2] or [C3].
 
     Computes the spatially-averaged Hermitian covariance matrix from the
@@ -689,7 +690,7 @@ class CovarianceMatrix(ImageProcessor):
     category=ProcessorCategory.ENHANCE,
     description='Spatially-averaged polarimetric coherency matrix [T]',
 )
-class CoherencyMatrix(ImageProcessor):
+class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
     """Polarimetric coherency matrix [T2] or [T3].
 
     Computes the spatially-averaged Hermitian coherency matrix from the
@@ -850,7 +851,7 @@ _A_MUELLER_INV: np.ndarray = np.conj(_A_MUELLER).T.copy()  # = A^H
     category=ProcessorCategory.ENHANCE,
     description='Spatially-averaged Stokes parameters for dual-pol or co-pol SAR channels',
 )
-class StokesVector(ImageProcessor):
+class StokesVector(WindowedTileHalo, ImageProcessor):
     """Spatially-averaged Stokes vector parameters from SAR polarimetric data.
 
     Computes the four Stokes parameters that describe the polarization state
@@ -1056,7 +1057,7 @@ class StokesVector(ImageProcessor):
     category=ProcessorCategory.ENHANCE,
     description='Spatially-averaged polarimetric Kennaugh matrix [K] (4×4 real)',
 )
-class KennaughMatrix(ImageProcessor):
+class KennaughMatrix(WindowedTileHalo, ImageProcessor):
     """Polarimetric Kennaugh matrix [K] (4×4 real symmetric).
 
     The Kennaugh matrix is a 4×4 real matrix that fully characterises the
