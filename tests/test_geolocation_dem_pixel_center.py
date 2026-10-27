@@ -40,6 +40,7 @@ rasterio = pytest.importorskip("rasterio")
 import rasterio.transform as rt
 from scipy.ndimage import map_coordinates
 
+from grdl.geolocation.elevation.base import _world_to_array_index
 from grdl.geolocation.elevation.dted import DTEDElevation
 from grdl.geolocation.elevation.geotiff_dem import GeoTIFFDEM
 from grdl.geolocation.elevation.tiled_geotiff_dem import TiledGeoTIFFDEM
@@ -151,3 +152,14 @@ def test_geotiff_dem_outside_extent_is_nan(tmp_path, Z):
         np.array([10.0]), np.array([10.0]),
     )
     assert np.all(np.isnan(got))
+
+
+def test_world_to_array_index_posts_are_integers():
+    """Helper maps a post's lon/lat to its integer array index."""
+    rows, cols = np.array([0, 100, 1200]), np.array([0, 200, 1200])
+    px_cols, px_rows = _world_to_array_index(
+        ~_transform(), -82 + RES * cols, 34 - RES * rows,
+    )
+    np.testing.assert_allclose(px_cols, cols, atol=1e-9)
+    np.testing.assert_allclose(px_rows, rows, atol=1e-9)
+    assert px_cols.dtype == np.float64

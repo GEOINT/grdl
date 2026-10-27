@@ -44,7 +44,10 @@ import numpy as np
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.geolocation.elevation._backend import require_elevation_backend
-from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.base import (
+    ElevationModel,
+    _world_to_array_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,12 +204,9 @@ class GeoTIFFDEM(ElevationModel):
             y_coords = lats.copy()
 
         # Inverse affine: map coordinates -> pixel coordinates
-        px_cols, px_rows = self._inv_transform * (x_coords, y_coords)
-        px_cols = np.asarray(px_cols, dtype=np.float64)
-        px_rows = np.asarray(px_rows, dtype=np.float64)
-        # Affine is corner-origin; array indices are pixel centres (issue #62).
-        px_cols = px_cols - 0.5
-        px_rows = px_rows - 0.5
+        px_cols, px_rows = _world_to_array_index(
+            self._inv_transform, x_coords, y_coords,
+        )
 
         # Margin needed around each query point for interpolation kernel.
         # Bilinear needs +1, bicubic needs +2, quintic needs +3.

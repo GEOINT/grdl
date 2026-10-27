@@ -79,7 +79,10 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
-from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.base import (
+    ElevationModel,
+    _world_to_array_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -943,12 +946,9 @@ class DTEDElevation(ElevationModel):
 
             # Fractional pixel coordinates via inverse affine (cached)
             inv_transform = self._get_inv_transform(key, transform)
-            px_cols, px_rows = inv_transform * (batch_lons, batch_lats)
-            px_cols = np.asarray(px_cols, dtype=np.float64)
-            px_rows = np.asarray(px_rows, dtype=np.float64)
-            # Affine is corner-origin; array indices are pixel centres (issue #62).
-            px_cols = px_cols - 0.5
-            px_rows = px_rows - 0.5
+            px_cols, px_rows = _world_to_array_index(
+                inv_transform, batch_lons, batch_lats,
+            )
 
             # Pad with adjacent tiles if any point needs cross-tile data
             needs_padding = (
