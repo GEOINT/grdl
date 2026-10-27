@@ -19,9 +19,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import h5py
 import numpy as np
 
+try:
+    import h5py
+    _HAS_H5PY = True
+except ImportError:
+    _HAS_H5PY = False
+
+from grdl.exceptions import DependencyError
 from grdl.IO.generic import open_any
 from grdl.IO.sar.nisar import NISARReader
 from grdl.IO.sar.sicd_writer import SICDWriter
@@ -74,6 +80,11 @@ def _is_nisar_h5(path: Path) -> bool:
     """Return True if path is a NISAR HDF5 product."""
     if path.suffix.lower() not in {'.h5', '.hdf5'}:
         return False
+    if not _HAS_H5PY:
+        raise DependencyError(
+            "h5py is required to read HDF5 inputs. "
+            "Install with: pip install h5py"
+        )
     try:
         with h5py.File(path, 'r') as f:
             science = f.get('science')
@@ -1063,6 +1074,11 @@ def write_compact_pol_c2_h5(
     metadata : dict, optional
         Extra key/value pairs stored as string attributes under ``/metadata``.
     """
+    if not _HAS_H5PY:
+        raise DependencyError(
+            "h5py is required to write compact-pol C2 HDF5 files. "
+            "Install with: pip install h5py"
+        )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows, cols = c11.shape
