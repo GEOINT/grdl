@@ -54,6 +54,13 @@ from grdl.discovery.catalog import LocalCatalog
 from grdl.discovery.synthesizer import DataSynthesizer
 from grdl.discovery.plugins import GRDLCatalogPlugin
 from grdl.discovery.gen_quicklooks import QuicklookGenerator
+from grdl.discovery.multi_channel_collections import (
+    CollectionDiscoveryReport,
+    DiscoveryProblem,
+    PolarizationCollection,
+    discover_polarization_collections,
+    group_sicd_collections,
+)
 from grdl._version import __version__
 
 __all__ = [
@@ -66,5 +73,9 @@ __all__ = [
     'DataSynthesizer',
     'GRDLCatalogPlugin',
     'QuicklookGenerator',
+    'CollectionDiscoveryReport',
+    'DiscoveryProblem',
+    'PolarizationCollection',
+    'discover_polarization_collections',
+    'group_sicd_collections',
 ]
-

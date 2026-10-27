@@ -33,7 +33,84 @@ beam = compute_beam_footprint(reader.metadata)            # from metadata
 beam = compute_beam_footprint(meta, threshold_db=-6.0)    # custom threshold
 ```
 
-## Supported Formats
+## Polarization Collection Discovery
+
+Discover candidate multi-polarization collections without loading image pixels:
+
+```python
+from grdl.discovery import discover_polarization_collections
+
+report = discover_polarization_collections("/data/imagery")
+for collection in report.collections:
+    print(collection.status, collection.polarizations, collection.filepaths)
+    for issue in collection.validation.issues:
+        print(issue.level, issue.code, issue.message)
+for problem in report.problems:
+    print(problem.level, problem.filepath, problem.code, problem.message)
+```
+
+**Supported inputs**
+
+- **Loose SICD files:** grouped using collector, acquisition time, scene center,
+  dimensions, sample spacing, side of track and available geometry. Filenames
+  and `core_name` are not grouping keys. Channels are ordered by polarization
+  label (`HH, HV, VH, VV` for quad-pol). The processed-image polarization takes
+  priority over the receive-channel list.
+- **NISAR:** one native product entry per available frequency, with
+  `polarizations='all'`; frequency A and B are never combined.
+- **Sentinel-1 SLC:** one entry per available swath.
+- **TerraSAR and BIOMASS:** native products retain their internal channels.
+  Separate native products are never merged.
+- Other formats are explicitly reported as unsupported, not interpreted as
+  polarimetric data simply because they have multiple bands.
+
+**Conservative grouping**
+
+SICD association requires collector, parseable acquisition time, finite scene
+center, positive image dimensions/sample spacing and side of track. Incomplete
+identity or unresolved polarization produces a rejected candidate, not an
+assumed match. Default tolerances are 1 second, 25 metres scene-center distance,
+0.001 relative spacing difference and 0.5 degrees geometry-angle difference.
+SICD timestamps without offsets are interpreted as UTC.
+
+Pairwise-compatible files form candidate groups. Duplicate polarizations or
+non-transitive matches (A matches B and B matches C, but A does not match C)
+are reported as `ambiguous`; no arbitrary subset is selected. Pair comparisons
+are quadratic within each collector. Remaining singleton files have status
+`single`, three linear channels `partial`, and validated dual/quad/compact
+candidates `ready`. Ready means **metadata-compatible**, not demonstrated
+co-registration, radiometric calibration or phase coherence. No reciprocity
+pixels are sampled during discovery.
+
+For already-scanned SICD records, use `group_sicd_collections(results)` with the
+same four threshold keywords. Results must contain fresh typed `metadata_ref`;
+SQLite-restored `LocalCatalog` records need rescanning before grouping.
+
+**Processing a ready SICD candidate**
+
+```python
+from grdl.IO.sar import open_sicd_collection, validate_collection
+
+for collection in report.collections:
+    if collection.status != "ready":
+        continue
+    if collection.reader != "grdl.IO.sar.SICDCollectionReader":
+        continue  # Native products use the reader/kwargs in their manifest.
+    with open_sicd_collection(
+        collection.filepaths, polarizations=collection.polarizations
+    ) as reader:
+        validate_collection(reader).raise_if_invalid()
+        cube = reader.read_chip(0, 512, 0, 512)
+```
+
+JSON manifests have `schema_version=1`, `collections` and `problems`. Each
+collection contains `source` (a SICD path list or a native product path),
+`reader` (fully qualified class), `reader_kwargs`, ordered `polarizations`,
+`mode`, `status` and validation issues. A runtime workflow can configure the
+indicated reader and pass `source` to `execute()`. Consumers must inspect status
+and issues, and should revalidate when opening the files for processing.
+
+## Supported Scanner Formats
 
 | Format | Reader | Metadata Type | Geospatial Features |
 |--------|--------|---------------|---------------------|
@@ -60,6 +137,7 @@ grdl/discovery/
     base.py              # DiscoveryPlugin ABC + PluginRegistry
     scanner.py           # MetadataScanner, ScanResult, compute_beam_footprint
     catalog.py           # LocalCatalog (filtering, spatial/temporal queries, GeoJSON, SQLite)
+    collections.py       # Polarization grouping, native products and JSON manifests
     synthesizer.py       # DataSynthesizer (test data generation)
     plugins/
         __init__.py

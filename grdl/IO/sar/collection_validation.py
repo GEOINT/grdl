@@ -34,7 +34,7 @@ import math
 import re
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Sequence, Tuple
 
 # Third-party
@@ -319,7 +319,12 @@ def _parse_time(value: Optional[str]) -> Optional[datetime]:
     text = value.strip().rstrip('Zz')
     text = re.sub(r'(\.\d{6})\d+', r'\1', text)
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
+        # SICD times without an offset are UTC. Normalize explicit offsets too
+        # so directory discovery can compare files from different writers.
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
     except ValueError:
         return None
 
