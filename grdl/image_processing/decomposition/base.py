@@ -41,12 +41,13 @@ import numpy as np
 
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.tiling import WindowedTileHalo
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
-class PolarimetricDecomposition(ImageProcessor):
+class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
     """
     Abstract base class for polarimetric decomposition methods.
 

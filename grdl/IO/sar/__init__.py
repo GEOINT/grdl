@@ -79,6 +79,12 @@ from grdl.IO.sar.compact_pol_c2 import (
 
 # SICD Collection (multi-polarization)
 from grdl.IO.sar.sicd_collection import SICDCollectionReader, open_sicd_collection
+from grdl.IO.sar.collection_validation import (
+    CollectionIssue, CollectionReport, CollectionValidationError,
+    ReciprocityError, ReciprocityResult, SICDPolarization, check_reciprocity,
+    check_reciprocity_reader, classify_polarizations, parse_tx_rcv,
+    sicd_polarization, validate_collection, validate_sicd_collection,
+)
 
 # Metadata models
 from grdl.IO.models import (
@@ -227,6 +233,19 @@ __all__ = [
     'Sentinel1SLCReader',
     'Sentinel1L0Reader',
     'SICDCollectionReader',
+    'CollectionIssue',
+    'CollectionReport',
+    'CollectionValidationError',
+    'ReciprocityError',
+    'ReciprocityResult',
+    'SICDPolarization',
+    'check_reciprocity',
+    'check_reciprocity_reader',
+    'classify_polarizations',
+    'parse_tx_rcv',
+    'sicd_polarization',
+    'validate_collection',
+    'validate_sicd_collection',
     'S1L0ReaderConfig',
     'open_safe_product',
     # TerraSAR-X / TanDEM-X

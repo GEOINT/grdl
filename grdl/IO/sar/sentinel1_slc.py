@@ -1013,13 +1013,15 @@ class Sentinel1SLCReader(ImageReader):
         col_end : int
             Ending column index (exclusive).
         bands : Optional[List[int]]
-            Ignored for SLC (single complex band).
+            0-based channel indices to read in multi-pol mode (default
+            all).  Ignored for a single-polarization reader.
 
         Returns
         -------
         np.ndarray
             Complex-valued image chip with shape ``(rows, cols)``
-            and dtype ``complex64``.
+            and dtype ``complex64``; ``(C, rows, cols)`` in multi-pol
+            mode.
 
         Raises
         ------
@@ -1039,11 +1041,25 @@ class Sentinel1SLCReader(ImageReader):
             col_end - col_start, row_end - row_start,
         )
         if self._multi_pol:
+            n = len(self._datasets)
+            indices = list(range(n)) if bands is None else list(bands)
+            invalid = [b for b in indices if b < 0 or b >= n]
+            if invalid:
+                raise ValueError(
+                    f"Band index/indices {invalid} out of range for "
+                    f"{n} channel(s)"
+                )
             chips = [
-                self._to_complex(ds.read(window=window))
-                for ds in self._datasets
+                self._to_complex(self._datasets[i].read(window=window))
+                for i in indices
             ]
-            return np.stack(chips, axis=0)   # (C, rows, cols)
+            cube = np.stack(chips, axis=0)   # (C, rows, cols)
+            if self._apply_valid_mask:
+                for chip in cube:
+                    self._mask_invalid_samples(
+                        chip, row_start, row_end, col_start, col_end,
+                    )
+            return cube
         raw = self._dataset.read(window=window)
         data = self._to_complex(raw)
         if self._apply_valid_mask:

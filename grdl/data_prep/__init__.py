@@ -11,6 +11,8 @@ Key Classes
 - ChipBase: ABC for image dimension management and coordinate clipping
 - ChipExtractor: Point-centered and whole-image chip region computation
 - Tiler: Stride-based overlapping tiles, plus non-overlapping partition
+  and halo-padded tiles (``halo_tiles``)
+- Stitcher: Assemble per-tile results with selectable overlap methods
 - ChipRegion: Named tuple for clipped image region bounds
 - Normalizer: Per-chip or per-image intensity normalization (incl. streaming)
 - StreamingStats: Online accumulator for full-image statistics
@@ -78,7 +80,8 @@ Modified
 
 from grdl.data_prep.base import ChipBase, ChipRegion
 from grdl.data_prep.chip_extractor import ChipExtractor
-from grdl.data_prep.tiler import Tiler
+from grdl.data_prep.tiler import HaloTile, Tiler, total_halo
+from grdl.data_prep.stitcher import Stitcher, memmap_sink
 from grdl.data_prep.normalizer import Normalizer
 from grdl.data_prep.streaming_stats import (
     StatsResult,
@@ -93,6 +96,10 @@ __all__ = [
     'ChipRegion',
     'ChipExtractor',
     'Tiler',
+    'HaloTile',
+    'total_halo',
+    'Stitcher',
+    'memmap_sink',
     'Normalizer',
     'StatsResult',
     'StreamingStats',

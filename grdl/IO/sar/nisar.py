@@ -761,13 +761,15 @@ class NISARReader(ImageReader):
         col_end : int
             Ending column index (exclusive).
         bands : Optional[List[int]]
-            Ignored (single polarization per reader instance).
+            0-based channel indices to read in multi-pol mode (default
+            all).  Ignored for a single-polarization reader.
 
         Returns
         -------
         np.ndarray
             Image chip with shape ``(rows, cols)`` and the native dtype
-            of the dataset (typically ``complex64``).
+            of the dataset (typically ``complex64``); ``(C, rows, cols)``
+            in multi-pol mode.
 
         Raises
         ------
@@ -784,11 +786,24 @@ class NISARReader(ImageReader):
 
         if self._multi_pol:
             chips = [
-                self._file[path][row_start:row_end, col_start:col_end]
-                for path in self._imagery_paths
+                self._file[self._imagery_paths[i]][
+                    row_start:row_end, col_start:col_end]
+                for i in self._channel_indices(bands)
             ]
             return np.stack(chips, axis=0)   # (C, rows, cols)
         return self._file[self._imagery_path][row_start:row_end, col_start:col_end]
+
+    def _channel_indices(self, bands: Optional[List[int]]) -> List[int]:
+        n = len(self._imagery_paths)
+        if bands is None:
+            return list(range(n))
+        invalid = [b for b in bands if b < 0 or b >= n]
+        if invalid:
+            raise ValueError(
+                f"Band index/indices {invalid} out of range for "
+                f"{n} channel(s)"
+            )
+        return list(bands)
 
     def read_full(self, bands: Optional[List[int]] = None) -> np.ndarray:
         """Read the entire image in a single h5py call.
@@ -796,7 +811,8 @@ class NISARReader(ImageReader):
         Parameters
         ----------
         bands : Optional[List[int]]
-            Ignored.  In multi-pol mode all polarizations are returned.
+            0-based channel indices in multi-pol mode (default all).
+            Ignored for a single-polarization reader.
 
         Returns
         -------
@@ -806,7 +822,8 @@ class NISARReader(ImageReader):
         """
         if self._multi_pol:
             return np.stack(
-                [self._file[path][()] for path in self._imagery_paths],
+                [self._file[self._imagery_paths[i]][()]
+                 for i in self._channel_indices(bands)],
                 axis=0,
             )
         return self._file[self._imagery_path][()]

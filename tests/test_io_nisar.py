@@ -274,6 +274,37 @@ def synthetic_nisar_rslc(tmp_path):
     return filepath, slc_hh, slc_hv
 
 
+@requires_h5py
+def test_discovery_separates_native_frequencies_without_pixel_reads(
+    synthetic_nisar_rslc, monkeypatch,
+):
+    from grdl.discovery import discover_polarization_collections
+    from grdl.IO.sar.nisar import NISARReader
+
+    filepath, _, _ = synthetic_nisar_rslc
+    with h5py.File(filepath, 'a') as product:
+        swaths = product['science/LSAR/RSLC/swaths']
+        product.copy(swaths['frequencyA'], swaths, name='frequencyB')
+        frequency_b = swaths['frequencyB']
+        frequency_b.move('HH', 'VV')
+        frequency_b.move('HV', 'VH')
+        frequency_b['listOfPolarizations'][...] = [b'VV', b'VH']
+
+    def no_pixels(*args, **kwargs):
+        pytest.fail("Discovery must not read image pixels")
+
+    monkeypatch.setattr(NISARReader, 'read_full', no_pixels)
+    monkeypatch.setattr(NISARReader, 'read_chip', no_pixels)
+    report = discover_polarization_collections(filepath.parent, max_workers=1)
+
+    assert not report.has_errors
+    assert not report.problems
+    assert [c.reader_kwargs['frequency'] for c in report.collections] == ['A', 'B']
+    assert [c.polarizations for c in report.collections] == [['HH', 'HV'], ['VV', 'VH']]
+    assert all(c.status == 'ready' for c in report.collections)
+    assert all(c.filepaths == [filepath.resolve()] for c in report.collections)
+
+
 @pytest.fixture
 def synthetic_nisar_gslc(tmp_path):
     """Create a minimal synthetic NISAR GSLC HDF5 file.
@@ -638,6 +669,25 @@ class TestNISARReaderRSLC:
             full = reader.read_full()
             assert full.shape == (_RSLC_ROWS, _RSLC_COLS)
             np.testing.assert_array_equal(full, slc_hh)
+
+    def test_multi_pol_bands_selection(self, synthetic_nisar_rslc):
+        from grdl.IO.sar.nisar import NISARReader
+        filepath, slc_hh, slc_hv = synthetic_nisar_rslc
+        with NISARReader(filepath, polarizations='all') as reader:
+            cube = reader.read_chip(0, 5, 0, 5)
+            assert cube.shape == (2, 5, 5)
+            only_hv = reader.read_chip(0, 5, 0, 5, bands=[1])
+            assert only_hv.shape == (1, 5, 5)
+            np.testing.assert_array_equal(only_hv[0], slc_hv[:5, :5])
+            full = reader.read_full(bands=[0])
+            np.testing.assert_array_equal(full[0], slc_hh)
+
+    def test_multi_pol_bands_out_of_range(self, synthetic_nisar_rslc):
+        from grdl.IO.sar.nisar import NISARReader
+        filepath, _, _ = synthetic_nisar_rslc
+        with NISARReader(filepath, polarizations='all') as reader:
+            with pytest.raises(ValueError, match='out of range'):
+                reader.read_chip(0, 5, 0, 5, bands=[2])
 
     def test_get_shape(self, synthetic_nisar_rslc):
         from grdl.IO.sar.nisar import NISARReader
