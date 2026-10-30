@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-30
+
+### Added
+
+- **SAR collection validation and preprocessing**: Added SAR collection
+  validation, antenna-polarization handling, halo-aware tiling, stitching
+  primitives, and the completed SAR Toolbox antenna-polarization port.
+- **ECF-to-SEZ conversion** (`grdl.geolocation.ecf_sez`): Added the
+  Earth-centered, Earth-fixed to south-east-zenith coordinate conversion
+  used by geolocation workflows.
+- **Polarization collection discovery**: Added deterministic SICD grouping,
+  native-product collection reporting, validation problem records, and
+  JSON-safe manifests for metadata-based discovery.
+- **Shared polarimetric filtering contract**: Wishart, Refined Lee, and IDAN
+  now share `PolarimetricFilter.apply()` and `.execute()` behavior. Filtering
+  supports CCYX matrix input, explicit CYX scattering channels, packed
+  Hermitian storage, reciprocal three-channel products, and quad-pol
+  four-channel products, with runtime parameter overrides.
+
+### Changed
+
+- **Polarimetric layouts and metadata**: Execution boundaries normalize
+  metadata-described YXC input to canonical CYX. Joint filtering requires an
+  explicit representation and formation basis, and outputs use canonical
+  layouts with richer matrix metadata.
+- **Polarimetric API**: Direct bandwise `apply()` calls now require canonical
+  CYX input. Use `nlook` for Refined Lee equivalent-look configuration.
+  Legacy `filter_matrix()` and `filter_channels()` adapters remain available
+  but emit deprecation warnings.
+- **DEM geolocation**: DEM line-of-sight solving is more robust and
+  configurable, and pixel-center indexing is now consistent across DTED,
+  GeoTIFF, and tiled backends.
+
+### Fixed
+
+- **Optional dependencies**: Importing `compact_pol_synthesis` no longer
+  requires `h5py` unless HDF5 functionality is used.
+- **DEM sampling**: Corrected half-pixel errors across DTED, GeoTIFF, and
+  tiled DEM backends.
+- **Wishart stability**: Regularization calculations now use `complex128`,
+  avoiding cofactor cancellation and determinant underflow for rank-one and
+  zero matrices.
+
+### Install
+
+```bash
+pip install grdl==0.8.0
+pip install grdl[sar]==0.8.0
+pip install grdl[all]==0.8.0
+```
+
 ## [0.7.5] - 2026-09-09
 
 ### Added
