@@ -58,6 +58,7 @@ Created
 
 Modified
 --------
+2026-10-06  Fix half-pixel DEM sampling offset (issue #62).
 2026-06-08  Add bbox-driven discovery of nested DTED archive layouts
             (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) alongside the
             standard layout; cache inverse transforms and padded tiles.
@@ -78,7 +79,10 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
-from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.base import (
+    ElevationModel,
+    _world_to_array_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -942,9 +946,9 @@ class DTEDElevation(ElevationModel):
 
             # Fractional pixel coordinates via inverse affine (cached)
             inv_transform = self._get_inv_transform(key, transform)
-            px_cols, px_rows = inv_transform * (batch_lons, batch_lats)
-            px_cols = np.asarray(px_cols, dtype=np.float64)
-            px_rows = np.asarray(px_rows, dtype=np.float64)
+            px_cols, px_rows = _world_to_array_index(
+                inv_transform, batch_lons, batch_lats,
+            )
 
             # Pad with adjacent tiles if any point needs cross-tile data
             needs_padding = (

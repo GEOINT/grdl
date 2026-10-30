@@ -24,18 +24,49 @@ Created
 
 Modified
 --------
+2026-10-06  Add ``_world_to_array_index`` (pixel-centre convention, #62).
 2026-03-27  Refactor stacked array input from (2, N) to (N, 2) convention.
 """
 
 # Standard library
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 # Third-party
 import numpy as np
 
 # GRDL internal
 from grdl.geolocation.base import _is_scalar, _to_array
+
+
+def _world_to_array_index(
+    inv_transform, x: np.ndarray, y: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Map world coordinates to fractional array (col, row) indices.
+
+    GDAL/rasterio affines are corner-origin (PixelIsArea): the centre of
+    array element ``(r, c)`` sits at ``(r + 0.5, c + 0.5)`` in affine pixel
+    space. Every DEM backend must sample through this function so the
+    half-pixel shift is applied in exactly one place (issue #62).
+
+    Parameters
+    ----------
+    inv_transform : affine.Affine
+        Inverse of the raster's georeferencing affine (world -> pixel).
+    x, y : np.ndarray
+        World coordinates (longitude, latitude), 1D.
+
+    Returns
+    -------
+    px_cols, px_rows : np.ndarray
+        Fractional column and row indices (float64) into the data array,
+        where integer values fall exactly on pixel centres (posts).
+    """
+    px_cols, px_rows = inv_transform * (x, y)
+    return (
+        np.asarray(px_cols, dtype=np.float64) - 0.5,
+        np.asarray(px_rows, dtype=np.float64) - 0.5,
+    )
 
 
 class ElevationModel(ABC):
