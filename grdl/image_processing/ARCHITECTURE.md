@@ -1,6 +1,6 @@
 # Image Processing Module — Architecture
 
-*Modified: 2026-03-10*
+*Modified: 2026-10-29*
 
 ## Overview
 
@@ -24,10 +24,17 @@ image_processing/
 ├── pipeline.py              # Pipeline (sequential transform composition)
 │
 ├── filters/                 # Spatial image filters
+│   ├── base.py              #   PolarimetricFilter: shared apply/execute contract
+│   ├── sar_base.py          #   SARFilter parameters and ENL helper
 │   ├── linear.py            #   MeanFilter, GaussianFilter
 │   ├── rank.py              #   MedianFilter, MinFilter, MaxFilter
 │   ├── statistical.py       #   StdDevFilter
-│   ├── speckle.py           #   LeeFilter, ComplexLeeFilter
+│   ├── standard_lee.py      #   LeeFilter, ComplexLeeFilter
+│   ├── enhanced_lee.py      #   EnhancedLeeFilter
+│   ├── lee_sigma.py         #   LeeSigmaFilter
+│   ├── refined_lee.py       #   RefinedLeeFilter matrix kernel
+│   ├── idan.py              #   IDANFilter matrix and scalar kernels
+│   ├── wishart.py           #   WishartFilter matrix kernel
 │   └── phase.py             #   PhaseGradientFilter
 │
 ├── ortho/                   # Geometric correction / orthorectification
@@ -89,7 +96,13 @@ ImageProcessor (ABC)
 │   │   ├── StdDevFilter        [FILTERS]
 │   │   ├── LeeFilter           [FILTERS, SAR]
 │   │   ├── ComplexLeeFilter    [FILTERS, SAR]
+│   │   ├── EnhancedLeeFilter   [FILTERS, SAR]
+│   │   ├── LeeSigmaFilter      [FILTERS, SAR]
 │   │   └── PhaseGradientFilter [FILTERS, SAR]
+│   ├── SARFilter -> PolarimetricFilter
+│   │   ├── RefinedLeeFilter    [FILTERS, SAR]
+│   │   ├── IDANFilter          [FILTERS, SAR; optional scalar mode]
+│   │   └── WishartFilter       [FILTERS, SAR]
 │   ├── ToDecibels              [ENHANCE]
 │   ├── PercentileStretch       [ENHANCE]
 │   ├── Orthorectifier          [GEOM_CORRECT]
@@ -280,17 +293,40 @@ class LeeFilter(BandwiseTransformMixin, ImageTransform):
   overrides.
 - grdk reads `__param_specs__` to generate UI controls.
 
-### 3. BandwiseTransformMixin
+### 3. Scalar and Polarimetric Filters
 
-All filters subclass `(BandwiseTransformMixin, ImageTransform)`:
+Scalar filters combine `BandwiseTransformMixin` with `ImageTransform` or
+`SARFilter`. Direct inputs are YX images or channel-first CYX stacks:
 
 ```
 apply(source)  →  if 3D: for each band → _apply_2d(band)
                   if 2D: _apply_2d(source)
 ```
 
-Subclasses implement only `_apply_2d()`. The mixin handles band
-iteration, dtype preservation, and shape validation.
+Subclasses implement `_apply_2d()`. The mixin handles band iteration and
+rejects unsupported ranks; output dtype belongs to each algorithm, not the mixin.
+It does not accept matrix tensors or silently interpret YXC as CYX.
+
+Refined Lee, IDAN, and Wishart inherit `filters.base.PolarimetricFilter`:
+
+```text
+apply(source, input_kind=..., matrix_type=...)
+  -> validate effective parameters
+  -> prepare_polarimetric_matrix() in decomposition/pol_matrix.py
+  -> concrete _filter_matrix(matrix, params) on CCYX
+  -> repack only when the input was explicitly packed storage
+```
+
+`input_kind` distinguishes matrices, raw channels, packed bands, and IDAN's
+independent-image mode. Raw channels require C2/T2/C3/T3 formation descriptors;
+formed C2/T2/C3/T3/C4/T4 matrices retain their basis and dtype. C4/T4 formation
+from raw channels is not implemented. Packing, channel formation, and matrix
+dimension validation are shared helpers, not concrete-filter responsibilities.
+The shared base also owns deprecated `filter_matrix()`/`filter_channels()`
+adapters. Refined Lee exposes `nlook`, not a separate `enl` control. Constructor and runtime settings for these joint filters use the same validated parameter specifications.
+
+See [filters/README.md](filters/README.md) for executable examples, the full
+support table, and remaining scalar-validation and tiling limitations.
 
 ### 4. Template Method (CFAR)
 
@@ -336,7 +372,13 @@ probes for `apply` / `detect` / `decompose`. Each ABC overrides it:
 
 - `ImageTransform.execute` delegates to `apply()` and rebuilds output
   metadata (rows/cols/bands/dtype/axis_order, channel descriptors) via
-  `_update_metadata_for_result` + `_infer_3d_axis_order`.
+  `_update_metadata_for_result`. Labelled external YXC input is normalized
+  before computation and restored at this generic adapter's output boundary.
+  Unlabelled non-bandwise transforms retain legacy behavior.
+- `PolarimetricFilter.execute` shares the transform input-normalization helper,
+  delegates to canonical `apply()`, and returns CYX/CCYX results. Matrix metadata
+  records N*N bands and row-major element descriptors; standalone apply() uses
+  explicit arguments rather than previous instance metadata.
 - `ImageDetector.execute` delegates to `detect()` and returns metadata
   unchanged (output is a `DetectionSet`).
 - `PolarimetricDecomposition.execute` extracts quad-pol channels from a

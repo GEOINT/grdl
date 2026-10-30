@@ -249,6 +249,7 @@ class HDF5Reader(ImageReader):
             cols=cols,
             dtype=str(ds.dtype),
             bands=bands,
+            axis_order='CYX' if bands > 1 else 'YX',
             extras=extras,
         )
 
@@ -326,7 +327,10 @@ class HDF5Reader(ImageReader):
         Returns
         -------
         np.ndarray
-            Full dataset.
+            YX array for one selected band, otherwise a CYX array. Three-
+            dimensional datasets are interpreted as stored CYX, not inferred
+            or transposed from arbitrary HDF5 axis conventions. Metadata
+            describes the complete dataset, not a per-read band selection.
         """
         ds = self._file[self.dataset_path]
 
@@ -349,7 +353,8 @@ class HDF5Reader(ImageReader):
         -------
         Tuple[int, ...]
             ``(rows, cols)`` for single band or
-            ``(rows, cols, bands)`` for multi-band.
+            ``(rows, cols, bands)`` for multi-band (legacy dimension order).
+            Read methods return channel-first CYX arrays instead.
         """
         if self.metadata['bands'] == 1:
             return (self.metadata['rows'], self.metadata['cols'])

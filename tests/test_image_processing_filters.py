@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Spatial Filter Tests - Tests for mean, median, Gaussian, min, max, std dev, Lee, and phase gradient filters.
+Spatial Filter Tests - General, SAR scalar, phase, IDAN, and Wishart filters.
 
 Tests correctness, shape preservation, parameter validation, bandwise
 dispatch, GPU compatibility flags, and cross-filter ordering properties
 using synthetic test data from conftest.py fixtures.
+Polarimetric adapter cases cover canonical matrix dispatch, packed Wishart
+input, and reciprocal three-channel C3/T3 formation. GPU flag assertions here
+are declarations, not device-residency or numerical-equivalence tests.
 
 Dependencies
 ------------
@@ -998,6 +1001,34 @@ class TestWishartFilter:
         assert out.shape == c3.shape
         assert np.iscomplexobj(out)
 
+    @pytest.mark.parametrize('input_kind', ['matrix', 'channels', 'packed'])
+    def test_apply_logs_effective_settings(self, caplog, input_kind):
+        """Each representation logs one processing message with call-time settings."""
+        from grdl.image_processing.decomposition.pol_matrix import pack_matrix
+
+        channels = np.stack(self._quad_pol_slc())
+        matrix = CoherencyMatrix(window_size=1).compute(channels)
+        source = {
+            'matrix': matrix,
+            'channels': channels,
+            'packed': pack_matrix(matrix),
+        }[input_kind]
+        filtering = WishartFilter(kernel_size=7)
+        logger_name = 'grdl.image_processing.filters.wishart'
+        with caplog.at_level('INFO', logger=logger_name):
+            filtering.apply(
+                source, input_kind=input_kind, matrix_type='T3',
+                kernel_size=3, sigma_range=2.0, min_weight_sum=0.25,
+            )
+
+        records = [record for record in caplog.records if record.name == logger_name]
+        assert len(records) == 1
+        assert records[0].getMessage() == (
+            'WishartFilter: processing 3x3 matrix image (8x8 pixels) '
+            'with kernel_size=3, sigma_range=2, min_weight_sum=0.25, dtype=complex64'
+        )
+        assert filtering.kernel_size == 7
+
     def test_filter_channels_c3_and_t3_shapes(self):
         """filter_channels returns (3,3,rows,cols) for C3 and T3."""
         shh, shv, svh, svv = self._quad_pol_slc(seed=125)
@@ -1028,11 +1059,24 @@ class TestWishartFilter:
             f.filter_channels(shh, shv, svh, svv, matrix_type='X4')
 
     def test_filter_channels_missing_quad_channels_raises(self):
-        """C3/T3 require all four quad-pol channels."""
+        """T3 cannot be formed from only two channels."""
         shh, shv, _, _ = self._quad_pol_slc(seed=128)
         f = WishartFilter(kernel_size=3, enl=1.0)
-        with pytest.raises(ValidationError, match='requires shh, shv, svh, and svv'):
+        with pytest.raises(ValidationError, match='requires.*3 reciprocal'):
             f.filter_channels(shh, shv, matrix_type='T3')
+
+    @pytest.mark.parametrize('matrix_type', ['C3', 'T3'])
+    def test_filter_channels_accepts_reciprocal_channels(self, matrix_type):
+        """The adapter accepts the same reciprocal cube as canonical apply."""
+        shh, shv, _, svv = self._quad_pol_slc(seed=128)
+        filtering = WishartFilter(kernel_size=3, enl=1.0)
+        expected = filtering.apply(
+            np.stack([shh, shv, svv]), input_kind='channels',
+            matrix_type=matrix_type,
+        )
+        with pytest.warns(DeprecationWarning):
+            actual = filtering.filter_channels(shh, shv, svv, matrix_type=matrix_type)
+        np.testing.assert_allclose(actual, expected)
 
     def test_filter_matrix_non_square_raises(self):
         """Non-square matrix dimensions raise ValidationError."""

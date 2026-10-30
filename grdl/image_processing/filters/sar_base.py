@@ -3,8 +3,8 @@
 SAR Filter Base - Abstract base class for SAR-specific spatial filters.
 
 Provides shared parameters (``kernel_size``, ``enl``) and the ``_estimate_enl``
-helper used by all SAR scalar filters.  Matrix-aware (polarimetric) filters
-inherit from this class and implement ``apply()`` directly; scalar (per-band)
+helper used by SAR scalar filters. Matrix-aware filters inherit through
+``PolarimetricFilter`` and implement ``_filter_matrix()``; scalar (per-band)
 filters combine this base with ``BandwiseTransformMixin`` and implement
 ``_apply_2d()``.
 
@@ -59,8 +59,8 @@ class SARFilter(ImageTransform):
 
     Scalar (per-band) subclasses add ``BandwiseTransformMixin`` to their
     inheritance and implement ``_apply_2d()``.  Matrix-aware (covariance /
-    coherency) subclasses inherit this class directly and implement
-    ``apply()`` themselves, since they must process all channels jointly.
+    coherency) subclasses use ``PolarimetricFilter`` for shared apply()
+    dispatch and metadata handling.
 
     Parameters
     ----------

@@ -18,13 +18,20 @@ General Filters (scalar, band-independent)
 SAR Scalar Filters (per-band; inherit ``BandwiseTransformMixin + SARFilter``)
     ``LeeFilter`` — Lee adaptive speckle filter for real-valued intensity
     ``ComplexLeeFilter`` — Lee adaptive speckle filter for complex SLC data
+    ``EnhancedLeeFilter`` — amplitude-domain smoothing with target protection
     ``LeeSigmaFilter`` — Lee Sigma filter with probability-based neighbour selection
 
 Phase Filters
     ``PhaseGradientFilter`` — windowed phase gradient for complex SAR data
 
-SAR Polarimetric Filters (matrix-aware; inherit ``SARFilter`` directly)
+SAR Polarimetric Filters (joint matrix processing via ``PolarimetricFilter``)
+    ``RefinedLeeFilter`` — directional MMSE filtering using polarimetric span
+    ``IDANFilter`` — adaptive neighborhoods; also supports independent image bands
     ``WishartFilter`` — Complex Wishart filter for polarimetric covariance matrices
+
+All filters expose apply(). Independent bands use YX/CYX arrays; joint
+polarimetric inputs use CCYX matrices or explicitly described CYX SLC cubes.
+See README.md in this directory for input kinds, examples, and migration notes.
 
 Dependencies
 ------------

@@ -87,29 +87,6 @@ logger = logging.getLogger(__name__)
 class EnhancedLeeFilter(BandwiseTransformMixin, SARFilter):
     """Enhanced Lee adaptive speckle filter (Lopes et al., 1990).
 
-    Classifies each pixel into one of three regimes based on the local
-    amplitude coefficient of variation ``ci = std_local(a) / mean_local(a)``::
-
-        cu   = 1 / sqrt(ENL)        — CV threshold: homogeneous speckle
-        cmax = sqrt(1 + 2 / ENL)    — CV threshold: isolated point target
-
-        ci <= cu    →  out = mean_local                  (fully smooth)
-        ci >= cmax  →  out = pixel                       (fully preserve)
-        cu < ci < cmax:
-            W   = exp(-damp * (ci - cu) / (cmax - ci))
-            out = mean_local * W + pixel * (1 - W)
-
-    Advantages over ``LeeFilter`` (MMSE):
-
-    * **Point-target protection** — ``cmax`` prevents any smoothing of
-      bright isolated pixels (ships, corner reflectors, buildings).
-    * **Sharper homogeneous smoothing** — ``cu`` hard threshold guarantees
-      the full local mean in pure speckle.
-    * **Smoother transitions** — exponential weight vs. linear MMSE weight.
-
-    For **complex SLC** input the filter is applied to amplitude ``|z|``
-    and the original interferometric phase is preserved exactly.
-
     Parameters
     ----------
     kernel_size : int

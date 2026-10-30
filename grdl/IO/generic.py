@@ -464,6 +464,7 @@ class GDALFallbackReader(ImageReader):
             cols=ds.width,
             dtype=str(ds.dtypes[0]),
             bands=ds.count,
+            axis_order='CYX' if ds.count > 1 else 'YX',
             crs=str(ds.crs) if ds.crs else None,
             nodata=ds.nodata,
             extras=extras,
@@ -555,7 +556,8 @@ class GDALFallbackReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Full image data.
+            YX array for one selected band, otherwise a CYX array. Metadata
+            labels the complete dataset, not a per-read band selection.
         """
         if bands is None:
             data = self._dataset.read()
@@ -573,7 +575,8 @@ class GDALFallbackReader(ImageReader):
         -------
         Tuple[int, ...]
             ``(rows, cols)`` for single band or
-            ``(rows, cols, bands)`` for multi-band.
+            ``(rows, cols, bands)`` for multi-band (legacy dimension order).
+            Read methods return channel-first CYX arrays instead.
         """
         if self.metadata.bands == 1:
             return (self.metadata.rows, self.metadata.cols)

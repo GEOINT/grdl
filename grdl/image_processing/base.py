@@ -399,6 +399,11 @@ class ImageTransform(ImageProcessor):
         inside ``apply()``, then delegates to ``apply()`` and returns
         metadata updated to reflect the output array's shape and dtype.
 
+        Labelled YXC stacks are normalized to CYX before apply() and restored
+        at this external output boundary. Unlabelled non-bandwise transforms
+        retain their legacy behavior. PolarimetricFilter provides its own
+        shared adapter and returns canonical CYX/CCYX output instead.
+
         Parameters
         ----------
         metadata : ImageMetadata
@@ -410,10 +415,92 @@ class ImageTransform(ImageProcessor):
         -------
         tuple[np.ndarray, ImageMetadata]
         """
+        legacy_unlabeled = (
+            source.ndim == 3
+            and getattr(metadata, 'axis_order', None) is None
+            and not isinstance(self, BandwiseTransformMixin)
+        )
+        output_axis_order = None if legacy_unlabeled else self._external_axis_order(
+            metadata, source
+        )
+        if not legacy_unlabeled:
+            source, metadata = self._canonicalize_source(metadata, source)
         self._metadata = metadata
-        result = self.apply(source, **kwargs)
+        apply_kwargs = dict(kwargs)
+        result = self.apply(source, **apply_kwargs)
+        if result.ndim == 3 and output_axis_order == 'YXC':
+            result = result.transpose(1, 2, 0)
+            metadata = dataclasses.replace(metadata, axis_order='YXC')
+        elif result.ndim == 3 and legacy_unlabeled:
+            metadata = dataclasses.replace(metadata, axis_order='YXC')
         updated = self._update_metadata_for_result(metadata, result)
         return result, updated
+
+    @staticmethod
+    def _external_axis_order(
+        metadata: 'ImageMetadata', source: np.ndarray,
+    ) -> Optional[str]:
+        """Return the requested external layout for a 3D source."""
+        if source.ndim != 3:
+            return None
+        axis_order = getattr(metadata, 'axis_order', None)
+        if axis_order in ('CYX', 'YXC'):
+            return axis_order
+        if (
+            source.shape[:2] == (metadata.rows, metadata.cols)
+            and metadata.bands is not None
+            and source.shape[2] == metadata.bands
+        ):
+            return 'YXC'
+        return 'CYX'
+
+    @staticmethod
+    def _canonicalize_source(
+        metadata: 'ImageMetadata', source: np.ndarray,
+    ) -> tuple[np.ndarray, 'ImageMetadata']:
+        """Normalize 3D CYX/YXC input and validate declared spatial/channel sizes.
+
+        Missing layout is resolved against metadata dimensions. Only 3D input
+        is handled here; domain adapters own matrix validation. Metadata is
+        copied when transposing YXC input; the caller's object is not mutated.
+        """
+        if source.ndim != 3:
+            return source, metadata
+        axis_order = getattr(metadata, 'axis_order', None)
+        if axis_order is None:
+            cyx_match = source.shape[0] == metadata.bands and source.shape[1:] == (
+                metadata.rows, metadata.cols
+            )
+            yxc_match = source.shape[:2] == (metadata.rows, metadata.cols) and (
+                source.shape[2] == metadata.bands
+            )
+            if yxc_match and not cyx_match:
+                axis_order = 'YXC'
+            elif cyx_match:
+                axis_order = 'CYX'
+            else:
+                raise ValueError(
+                    '3D input has no axis_order metadata and does not match '
+                    'the declared CYX dimensions'
+                )
+        if axis_order == 'YXC':
+            source = source.transpose(2, 0, 1)
+            metadata = dataclasses.replace(metadata, axis_order='CYX')
+        elif axis_order != 'CYX':
+            raise ValueError(
+                f'3D image input requires axis_order CYX or YXC, got {axis_order!r}'
+            )
+        if source.shape[1:] != (metadata.rows, metadata.cols):
+            raise ValueError(
+                f'CYX input spatial shape {source.shape[1:]} does not match '
+                f'metadata {(metadata.rows, metadata.cols)}'
+            )
+        if metadata.bands is not None and source.shape[0] != metadata.bands:
+            raise ValueError(
+                f'CYX input has {source.shape[0]} channels, metadata declares '
+                f'{metadata.bands}'
+            )
+        return source, metadata
 
     @staticmethod
     def _update_metadata_for_result(
@@ -431,7 +518,8 @@ class ImageTransform(ImageProcessor):
         Returns
         -------
         ImageMetadata
-            Copy of *metadata* with rows, cols, bands, dtype updated.
+            Copy of *metadata* with rows, cols, bands, dtype updated for 2D/3D
+            arrays. Domain adapters must handle 4D matrix shape/descriptors.
         """
         updates: Dict[str, Any] = {'dtype': str(result.dtype)}
 
@@ -440,19 +528,21 @@ class ImageTransform(ImageProcessor):
             updates['cols'] = result.shape[1]
             updates['bands'] = 1
             updates['axis_order'] = 'YX'
-            if getattr(metadata, 'channel_metadata', None):
-                updates['channel_metadata'] = metadata.channel_metadata[:1]
+            channel_metadata = getattr(metadata, 'channel_metadata', None)
+            if channel_metadata:
+                updates['channel_metadata'] = channel_metadata[:1]
         elif result.ndim == 3:
-            axis_order = ImageTransform._infer_3d_axis_order(metadata, result)
-            updates['axis_order'] = axis_order
-            if axis_order == 'CYX':
-                updates['bands'] = result.shape[0]
-                updates['rows'] = result.shape[1]
-                updates['cols'] = result.shape[2]
-            else:
+            output_axis_order = getattr(metadata, 'axis_order', None)
+            if output_axis_order == 'YXC':
+                updates['axis_order'] = 'YXC'
                 updates['rows'] = result.shape[0]
                 updates['cols'] = result.shape[1]
                 updates['bands'] = result.shape[2]
+            else:
+                updates['axis_order'] = 'CYX'
+                updates['bands'] = result.shape[0]
+                updates['rows'] = result.shape[1]
+                updates['cols'] = result.shape[2]
 
             channel_metadata = getattr(metadata, 'channel_metadata', None)
             if channel_metadata is not None:
@@ -539,9 +629,9 @@ class ImageTransform(ImageProcessor):
         Parameters
         ----------
         source : np.ndarray
-            Input image. Shape depends on the specific transform:
-            (rows, cols) for single-band, (bands, rows, cols) or
-            (rows, cols, bands) for multi-band.
+            Input image. Scalar filters expect (rows, cols) or canonical
+            (bands, rows, cols); polarimetric filters accept CCYX tensors.
+            Other transforms may define their own domain-specific shapes.
 
         Returns
         -------
@@ -559,7 +649,8 @@ class BandwiseTransformMixin:
     iterating over the band axis and applying the subclass's 2D
     implementation to each band independently.
 
-    2D inputs pass through unchanged. The mixin delegates to
+    2D inputs are filtered directly, not returned unchanged. Other ranks
+    are rejected. Direct apply() calls require CYX, not YXC. The mixin delegates to
     ``_apply_2d()``, which subclasses must implement (typically
     by renaming their existing ``apply()`` method or having it
     called by the mixin).
@@ -575,6 +666,7 @@ class BandwiseTransformMixin:
 
     When ``apply()`` is called with a ``(bands, rows, cols)`` array,
     the mixin calls ``_apply_2d()`` for each band and stacks results.
+    Output dtype is determined by the concrete algorithm, not this mixin.
     """
 
     def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
@@ -590,16 +682,30 @@ class BandwiseTransformMixin:
         np.ndarray
             Transformed image with same dimensionality as input.
         """
+        if source.ndim not in (2, 3):
+            raise ValueError(
+                f'{type(self).__name__} supports only 2D images or 3D '
+                f'channel stacks, got shape {source.shape}'
+            )
+
         if source.ndim == 3:
+            axis_order = kwargs.pop('axis_order', None)
+            if axis_order not in (None, 'CYX'):
+                raise ValueError(
+                    f'{type(self).__name__} requires canonical CYX input, '
+                    f'got {axis_order!r}'
+                )
             try:
                 import cupy as _cp
                 _xp = _cp if isinstance(source, _cp.ndarray) else np
             except ImportError:
                 _xp = np
             return _xp.stack(
-                [self._apply_2d(source[b], **kwargs)
-                 for b in range(source.shape[0])]
+                 [self._apply_2d(source[b], **kwargs)
+                  for b in range(source.shape[0])]
             )
+
+        kwargs.pop('axis_order', None)
         return self._apply_2d(source, **kwargs)
 
     @abstractmethod

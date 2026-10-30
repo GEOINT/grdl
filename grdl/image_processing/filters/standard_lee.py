@@ -266,6 +266,9 @@ class ComplexLeeFilter(BandwiseTransformMixin, SARFilter):
         source : np.ndarray
             2D complex-valued array, shape ``(rows, cols)``.
             Accepts cupy arrays.
+        **kwargs : Any
+            Runtime kernel_size and enl overrides. The bandwise apply()
+            interface supplies canonical CYX bands; 4D matrices are rejected.
 
         Returns
         -------
@@ -275,8 +278,13 @@ class ComplexLeeFilter(BandwiseTransformMixin, SARFilter):
         Raises
         ------
         ValidationError
-            If ``source`` is not complex-valued.
+            If ``source`` is not a complex-valued 2D band.
         """
+        if source.ndim != 2:
+            raise ValidationError(
+                'ComplexLeeFilter requires 2D bands or a 3D channel stack, '
+                f'not a matrix tensor; got shape {source.shape}'
+            )
         if not np.iscomplexobj(source):
             raise ValidationError(
                 "ComplexLeeFilter requires complex-valued input. "

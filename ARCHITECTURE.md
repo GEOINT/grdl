@@ -140,6 +140,9 @@ ImageProcessor (ABC)                           image_processing/base.py
 │   │   ├── MeanFilter, GaussianFilter, MedianFilter, ...
 │   │   ├── LeeFilter, ComplexLeeFilter             SAR speckle
 │   │   └── PhaseGradientFilter
+│   ├── SARFilter -> PolarimetricFilter             shared joint apply/execute
+│   │   ├── RefinedLeeFilter, WishartFilter          CCYX matrix kernels
+│   │   └── IDANFilter                              joint or independent image mode
 │   ├── ToDecibels, PercentileStretch
 │   ├── Orthorectifier                              @processor_version('0.1.0')
 │   └── Pipeline                                    sequential composition

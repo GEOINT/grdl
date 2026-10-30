@@ -87,10 +87,7 @@ except ImportError:
     _HAS_NUMBA = False
 
 # GRDL internal
-from grdl.image_processing.base import BandwiseTransformMixin
-from grdl.image_processing.filters._validation import validate_kernel_size
-from grdl.image_processing.filters.sar_base import SARFilter
-from grdl.image_processing.decomposition.pol_matrix import CovarianceMatrix, CoherencyMatrix
+from grdl.image_processing.filters.base import PolarimetricFilter
 from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.exceptions import ValidationError
 from grdl.image_processing.params import Desc, Range
@@ -507,7 +504,7 @@ def _idan_filter_matrix_impl(
 @processor_version('1.0.0')
 @processor_tags(category=ProcessorCategory.FILTERS,
                 modalities=[ImageModality.SAR])
-class IDANFilter(BandwiseTransformMixin, SARFilter):
+class IDANFilter(PolarimetricFilter):
     """Intensity-Driven Adaptive-Neighborhood (IDAN) speckle filter.
 
     Reduces speckle by filtering each pixel within its own adaptive
@@ -519,10 +516,12 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
 
     For polarimetric data (covariance or coherency matrix) the same
     adaptive neighborhood is used for every matrix element, preserving
-    inter-channel correlations.  Use ``filter_matrix()`` or
-    ``filter_channels()`` for the polarimetric path. The scalar
-    (per-band) path is inherited from ``BandwiseTransformMixin`` via
-    ``_apply_2d()``.
+    inter-channel correlations. Use ``apply(matrix, input_kind='matrix')``
+    for preformed C2/T2/C3/T3/C4/T4 tensors. Use ``input_kind='channels'``
+    and an explicit C2/T2/C3/T3 matrix_type to form a matrix from CYX SLC
+    channels. Other YX/CYX input defaults to independent image filtering;
+    a complex cube alone does not select joint polarimetric processing.
+    Both paths honor per-call parameter overrides without instance mutation.
 
     Parameters
     ----------
@@ -560,13 +559,15 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
 
     Polarimetric matrix filtering:
 
-    >>> c3_filtered = f.filter_matrix(c3)        # (3, 3, rows, cols)
-    >>> c3_filt = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
+    >>> c3_filtered = f.apply(c3, input_kind='matrix', matrix_type='C3')
+    >>> channels = np.stack([shh, shv, svh, svv])
+    >>> c3_filt = f.apply(channels, input_kind='channels', matrix_type='C3')
     """
 
     # The adaptive neighborhood has no fixed extent, so tiles cannot
     # reproduce a full-image result exactly.
     tile_halo = None
+    _supports_images = True
 
     max_pixels: Annotated[
         int,
@@ -587,22 +588,11 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
         similarity_threshold: float = 0.5,
         enl: float = 0.0,
     ) -> None:
-        validate_kernel_size(kernel_size)
-        if not (5 <= max_pixels <= 500):
-            raise ValidationError(
-                f'max_pixels must be in [5, 500], got {max_pixels}'
-            )
-        if not (0.0 < similarity_threshold <= 1.0):
-            raise ValidationError(
-                f'similarity_threshold must be in (0, 1], got {similarity_threshold}'
-            )
-        if enl < 0.0:
-            raise ValidationError(
-                f'enl must be >= 0 (0 = auto), got {enl}'
-            )
-        super().__init__(kernel_size=kernel_size, enl=enl)
+        self.kernel_size = kernel_size
+        self.enl = enl
         self.max_pixels = max_pixels
         self.similarity_threshold = similarity_threshold
+        self._resolve_params({})
 
     # ------------------------------------------------------------------
     # Scalar (per-band) path via BandwiseTransformMixin
@@ -615,23 +605,24 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
         Wraps the image in a pseudo 1×1×rows×cols polarimetric matrix
         to reuse the core IDAN loop, then unwraps the result.
         """
+        params = self._resolve_params(kwargs)
         rows, cols = image.shape
 
         # Auto-estimate ENL if needed
-        if self.enl == 0.0:
+        if params['enl'] == 0.0:
             amp = np.abs(image).astype(np.float64)
             mean2 = (np.mean(amp)) ** 2
             var = np.var(amp)
             ci2 = var / (mean2 + 1e-20)
             enl = self._estimate_enl(ci2 * np.ones(1))
         else:
-            enl = float(self.enl)
+            enl = float(params['enl'])
 
         # Wrap in pseudo-matrix (1, 1, rows, cols)
         mat = image.reshape(1, 1, rows, cols)
         filt = _idan_filter_matrix_impl(
-            mat, self.kernel_size, self.similarity_threshold,
-            self.max_pixels, enl
+            mat, params['kernel_size'], params['similarity_threshold'],
+            params['max_pixels'], enl
         )
         result = filt[0, 0]
 
@@ -643,53 +634,26 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
     # Polarimetric matrix paths
     # ------------------------------------------------------------------
 
-    def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
-        """Apply IDAN to a polarimetric matrix or a scalar image stack.
-
-        Dispatches on array dimensionality:
-        - 4D ``(N, N, rows, cols)``: treated as polarimetric matrix →
-          ``filter_matrix()``.
-        - 2D ``(rows, cols)`` or 3D ``(bands, rows, cols)``: per-band
-          scalar path via ``BandwiseTransformMixin``.
-
-        Prefer ``filter_matrix()`` or ``filter_channels()`` for explicit
-        polarimetric workflows.
-        """
-        if source.ndim == 4:
-            return self.filter_matrix(source)
-        # 2D / 3D: delegate to BandwiseTransformMixin → _apply_2d
-        return super().apply(source, **kwargs)
-
-    def filter_matrix(self, matrix: np.ndarray) -> np.ndarray:
+    def _filter_matrix(self, matrix: np.ndarray, params: dict[str, Any]) -> np.ndarray:
         """Filter a polarimetric covariance or coherency matrix.
 
         Parameters
         ----------
         matrix : np.ndarray
             Shape (N, N, rows, cols) where N ∈ {2, 3, 4}.
-            Complex-valued.
+            Validated real or complex polarimetric tensor.
+        params : dict[str, Any]
+            Validated kernel_size, max_pixels, similarity_threshold, and enl.
 
         Returns
         -------
         np.ndarray
-            Filtered matrix, same shape.
+            Filtered matrix with the same shape and dtype as input.
         """
-        if matrix.ndim != 4:
-            raise ValidationError(
-                f'Expected 4D matrix (N, N, rows, cols), got shape {matrix.shape}'
-            )
         n = matrix.shape[0]
-        if matrix.shape[1] != n:
-            raise ValidationError(
-                f'Matrix must be square in first two dims, got {matrix.shape[:2]}'
-            )
-        if n not in (2, 3, 4):
-            raise ValidationError(
-                f'Matrix dimension must be 2, 3, or 4, got {n}'
-            )
 
         # Auto-estimate ENL from span if needed
-        if self.enl == 0.0:
+        if params['enl'] == 0.0:
             span = np.zeros(matrix.shape[2:], dtype=np.float64)
             for i in range(n):
                 span += np.real(matrix[i, i])
@@ -698,57 +662,20 @@ class IDANFilter(BandwiseTransformMixin, SARFilter):
             )
             enl = max(enl, 1.0)
         else:
-            enl = float(self.enl)
+            enl = float(params['enl'])
 
         logger.debug(
             'IDANFilter: kernel_size=%d, max_pixels=%d, '
             'similarity_threshold=%.3f, enl=%.2f',
-            self.kernel_size, self.max_pixels,
-            self.similarity_threshold, enl,
+            params['kernel_size'], params['max_pixels'],
+            params['similarity_threshold'], enl,
         )
 
         return _idan_filter_matrix_impl(
             matrix.astype(np.complex128),
-            self.kernel_size,
-            self.similarity_threshold,
-            self.max_pixels,
+            params['kernel_size'],
+            params['similarity_threshold'],
+            params['max_pixels'],
             enl,
         ).astype(matrix.dtype)
 
-    def filter_channels(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: np.ndarray,
-        svv: np.ndarray,
-        matrix_type: str = 'C3',
-    ) -> np.ndarray:
-        """Build a polarimetric matrix from SLC channels and filter it.
-
-        Constructs the covariance [C3] or coherency [T3] matrix from
-        quad-pol SLC data then applies IDAN.
-
-        Parameters
-        ----------
-        shh, shv, svh, svv : np.ndarray
-            Complex SLC channels, each shape (rows, cols).
-        matrix_type : str
-            'C3' for covariance or 'T3' for coherency.  Default 'C3'.
-
-        Returns
-        -------
-        np.ndarray
-            Filtered matrix, shape (3, 3, rows, cols).
-        """
-        channels = np.stack([shh, shv, svh, svv], axis=0)
-
-        if matrix_type.upper() == 'C3':
-            matrix = CovarianceMatrix(window_size=1).compute(channels)
-        elif matrix_type.upper() == 'T3':
-            matrix = CoherencyMatrix(window_size=1).compute(channels)
-        else:
-            raise ValidationError(
-                f"matrix_type must be 'C3' or 'T3', got '{matrix_type}'"
-            )
-
-        return self.filter_matrix(matrix)
