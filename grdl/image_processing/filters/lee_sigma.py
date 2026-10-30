@@ -180,13 +180,27 @@ class LeeSigmaFilter(BandwiseTransformMixin, SARFilter):
         source : np.ndarray
             2D array, shape ``(rows, cols)``.  Real (amplitude) or complex
             (SLC).
+        **kwargs : Any
+            Runtime kernel_size, enl, sigma, and min_valid overrides.
+            Independent CYX stacks are split by the bandwise apply() method;
+            this CPU-only hook does not accept a joint matrix tensor.
 
         Returns
         -------
         np.ndarray
             Despeckled image, same shape.  dtype float64 for real input,
             complex128 for complex input.
+
+        Raises
+        ------
+        ValidationError
+            If the source is not a single 2D band or the kernel is invalid.
         """
+        if source.ndim != 2:
+            raise ValidationError(
+                'LeeSigmaFilter requires 2D bands or a 3D channel stack, '
+                f'not a matrix tensor; got shape {source.shape}'
+            )
         params = self._resolve_params(kwargs)
         ks = params['kernel_size']
         enl = params['enl']

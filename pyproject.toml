@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl"
-version = "0.7.5"
+version = "0.8.0"
 description = "GEOINT Rapid Development Library — modular building blocks for geospatial intelligence image processing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 authors = [
     {name = "Duane Smalley", email = "170194430+DDSmalls@users.noreply.github.com"},
     {name = "Steven Siebert"},
+    {name = "Jason Fritz"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

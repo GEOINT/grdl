@@ -10,6 +10,10 @@ GRDL solves this by providing a library of **small, focused modules** that each 
 
 ### Design Principles
 
+For spatial filtering, see the [filter usage guide](grdl/image_processing/filters/README.md)
+for the canonical `apply()` API, CYX/CCYX layouts, joint polarimetric examples,
+supported dtypes, GPU declarations, and migration from the older wrapper methods.
+
 - **Modular** -- Each module is self-contained with minimal cross-dependencies. Use only what you need.
 - **Verbose** -- Functions and classes document their inputs, outputs, assumptions, and units. No guessing what a parameter expects.
 - **Composable** -- Modules are designed to chain together. The output of one operation is a natural input to the next.

@@ -6,7 +6,7 @@ matrices for multi-polarization SAR data.
 The implementation is basis-agnostic for orthogonal polarization pairs
 (for example H/V, X/Y, or R/L) while preserving co-pol vs cross-pol role.
 
-Two classes are provided:
+Covariance and coherency construction are provided by:
 
 ``CovarianceMatrix``
     Computes the N×N covariance matrix **[C]** using the lexicographic
@@ -34,6 +34,11 @@ Two classes are provided:
         k_P = [ S_co + S_cross, S_co - S_cross ]^T / sqrt(2)
 
     T = < k_P * k_P^H > (spatial ensemble average).
+
+StokesVector and KennaughMatrix provide additional polarization products.
+Shared filter-boundary helpers validate matrix descriptors, prepare formed
+matrices or raw channels, and pack/unpack real upper-triangle storage. They
+do not implement covariance/coherency basis conversion or C4/T4 formation.
 
 Output format
 -------------
@@ -103,6 +108,7 @@ except ImportError:
 
 # GRDL internal
 from grdl.image_processing.base import ImageProcessor, ImageTransform
+from grdl.exceptions import ValidationError
 from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.tiling import WindowedTileHalo
 from grdl.image_processing.versioning import processor_version, processor_tags
@@ -118,6 +124,182 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+MATRIX_TYPES = ('C2', 'T2', 'C3', 'T3', 'C4', 'T4')
+
+
+def validate_matrix_type(matrix_type: Optional[str]) -> Optional[str]:
+    """Normalize a basis descriptor without inferring covariance versus coherency.
+
+    Parameters
+    ----------
+    matrix_type : str or None
+        C2/T2/C3/T3/C4/T4, case-insensitive. None and 'auto' mean unspecified.
+
+    Returns
+    -------
+    str or None
+        Uppercase descriptor, or None for an unspecified basis.
+
+    Raises
+    ------
+    ValidationError
+        If the descriptor is not supported. This does not inspect matrix data.
+    """
+    if matrix_type in (None, 'auto'):
+        return None
+    if not isinstance(matrix_type, str) or matrix_type.upper() not in MATRIX_TYPES:
+        raise ValidationError(f'Unsupported matrix_type {matrix_type!r}; expected {MATRIX_TYPES}')
+    return matrix_type.upper()
+
+
+def unpack_matrix(packed: np.ndarray) -> np.ndarray:
+    """Decode real CYX upper-triangle bands into a Hermitian CCYX tensor.
+
+    Parameters
+    ----------
+    packed : np.ndarray
+        Real cube with 4, 9, or 16 bands. For each matrix row, store its
+        diagonal followed by real/imaginary pairs for the upper triangle.
+        C2/T2 order is [M11, Re(M12), Im(M12), M22].
+
+    Returns
+    -------
+    np.ndarray
+        Complex (N, N, rows, cols) array with a conjugate lower triangle.
+        Precision follows np.result_type(packed.dtype, np.complex64).
+
+    Raises
+    ------
+    ValidationError
+        If rank, band count, or real-valued storage requirements are violated.
+        Use prepare_polarimetric_matrix() for finite-value and basis checks.
+    """
+    if packed.ndim != 3 or packed.shape[0] not in (4, 9, 16) or np.iscomplexobj(packed):
+        raise ValidationError('Packed matrices require 4, 9, or 16 real CYX bands')
+    dimension = int(np.sqrt(packed.shape[0]))
+    matrix = np.zeros(
+        (dimension, dimension, *packed.shape[1:]),
+        dtype=np.result_type(packed.dtype, np.complex64),
+    )
+    index = 0
+    for row in range(dimension):
+        matrix[row, row] = packed[index]
+        index += 1
+        for col in range(row + 1, dimension):
+            matrix[row, col] = packed[index] + 1j * packed[index + 1]
+            matrix[col, row] = matrix[row, col].conj()
+            index += 2
+    return matrix
+
+
+def pack_matrix(matrix: np.ndarray) -> np.ndarray:
+    """Encode a CCYX tensor as real CYX upper-triangle bands.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        Validated (N, N, rows, cols) Hermitian matrix tensor. The upper
+        triangle is authoritative; this helper does not validate Hermiticity.
+
+    Returns
+    -------
+    np.ndarray
+        N*N real bands: each diagonal followed by real/imaginary pairs for
+        that row's upper triangle. Diagonal imaginary parts are not stored.
+        The result uses the input's real-component dtype.
+    """
+    bands = []
+    for row in range(matrix.shape[0]):
+        bands.append(matrix[row, row].real)
+        for col in range(row + 1, matrix.shape[0]):
+            bands.extend((matrix[row, col].real, matrix[row, col].imag))
+    return np.stack(bands)
+
+
+def prepare_polarimetric_matrix(
+    source: np.ndarray,
+    *,
+    input_kind: str,
+    matrix_type: Optional[str] = None,
+    channel_metadata: Optional[list['ChannelMetadata']] = None,
+) -> np.ndarray:
+    """Validate CCYX matrices or form them once from canonical CYX channels.
+
+    Formed matrices are never converted between C and T bases. Raw channels
+    support C2/T2 and reciprocal C3/T3 only, in co/cross or HH,HV,[VH],VV order.
+    Channel descriptors, when supplied, take precedence over positional order.
+
+    Parameters
+    ----------
+    source : np.ndarray
+        Numeric finite CCYX tensor, complex CYX SLC cube, or real packed CYX
+        bands, as selected by input_kind.
+    input_kind : {'matrix', 'channels', 'packed'}
+        Input representation. Shape or dtype alone never selects C versus T.
+    matrix_type : str, optional
+        Required formation basis for channels; optional dimension descriptor
+        for formed or packed matrices. C4/T4 must be preformed or packed.
+    channel_metadata : list of ChannelMetadata, optional
+        Names/roles for ordering raw channels; ignored for formed matrices.
+
+    Returns
+    -------
+    np.ndarray
+        CCYX matrix. Formed input is returned without dtype or basis change.
+        Channels use CovarianceMatrix/CoherencyMatrix with window_size=1
+        (currently complex64), averaging HV/VH when four channels are supplied.
+        Packed input is decoded with unpack_matrix().
+
+    Raises
+    ------
+    ValidationError
+        If input representation, finite values, matrix dimension, descriptor,
+        or channel-count requirements are violated. Structural checks do not
+        certify Hermiticity, positive definiteness, or physical matrix basis.
+    """
+    kind = validate_matrix_type(matrix_type)
+    if source.dtype.kind not in 'fciub' or not np.isfinite(source).all():
+        raise ValidationError('Polarimetric input must be numeric and contain no non-finite values')
+    if input_kind == 'channels':
+        if source.ndim != 3 or not np.iscomplexobj(source):
+            raise ValidationError('SLC channels require a complex CYX cube')
+        if kind is None:
+            raise ValidationError('SLC channels require explicit matrix_type C2/T2/C3/T3')
+        expected = (2,) if kind.endswith('2') else (3, 4)
+        if kind.endswith('4') or source.shape[0] not in expected:
+            raise ValidationError(
+                f'{kind} requires {"2" if kind.endswith("2") else "4 or 3 reciprocal"} '
+                f'SLC channels, got {source.shape[0]}; C4/T4 formation is unsupported'
+            )
+        if channel_metadata is not None:
+            from grdl.IO.models.base import ImageMetadata
+
+            metadata = ImageMetadata(
+                format='array', rows=source.shape[1], cols=source.shape[2],
+                bands=source.shape[0], dtype=str(source.dtype), axis_order='CYX',
+                channel_metadata=channel_metadata,
+            )
+            source = _extract_channels(source, metadata)
+        if kind.startswith('C'):
+            return CovarianceMatrix(window_size=1).compute(source)
+        return CoherencyMatrix(window_size=1).compute(source)
+    if input_kind == 'packed':
+        source = unpack_matrix(source)
+    elif input_kind != 'matrix':
+        raise ValidationError(f'Unsupported polarimetric input_kind {input_kind!r}')
+    if source.ndim != 4:
+        raise ValidationError(f'Expected 4D matrix (N, N, rows, cols), got shape {source.shape}')
+    dimension = source.shape[0]
+    if source.shape[1] != dimension:
+        raise ValidationError(f'Matrix must be square in first two dims, got {source.shape[:2]}')
+    if dimension not in (2, 3, 4):
+        raise ValidationError(f'Matrix dimension must be 2, 3, or 4, got {dimension}')
+    if kind is not None and dimension != int(kind[1]):
+        raise ValidationError(f'matrix_type={kind} expects {kind[1]}x{kind[1]}, got {dimension}x{dimension}')
+    if any(size == 0 for size in source.shape):
+        raise ValidationError('Polarimetric matrices must have nonempty spatial dimensions')
+    return source
 
 def _smooth(arr: np.ndarray, ws: int, is_gpu: bool) -> np.ndarray:
     """Boxcar spatial average over a real or complex 2-D array."""
@@ -230,6 +412,29 @@ def _stack_channels(*channels: Optional[np.ndarray]) -> np.ndarray:
         return np.array([])
     xp = cp if (_HAS_CUPY and isinstance(valid[0], cp.ndarray)) else np
     return xp.stack(valid, axis=0)
+
+
+def _canonicalize_channel_cube(
+    source: np.ndarray,
+    metadata: 'ImageMetadata',
+) -> tuple[np.ndarray, 'ImageMetadata']:
+    """Normalize a labelled channel cube to CYX before matrix construction."""
+    if source.ndim != 3:
+        return source, metadata
+    axis_order = getattr(metadata, 'axis_order', None) or 'CYX'
+    if axis_order == 'YXC':
+        source = source.transpose(2, 0, 1)
+        metadata = dataclasses.replace(metadata, axis_order='CYX')
+    elif axis_order != 'CYX':
+        raise ValueError(
+            f'Channel input requires axis_order CYX or YXC, got {axis_order!r}'
+        )
+    if source.shape[1:] != (metadata.rows, metadata.cols):
+        raise ValueError(
+            f'CYX input spatial shape {source.shape[1:]} does not match '
+            f'metadata {(metadata.rows, metadata.cols)}'
+        )
+    return source, metadata
 
 
 def _extract_channels(
@@ -645,6 +850,7 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
             shape ``(N, N, rows, cols)`` and metadata carries
             ``axis_order='CCYX'``.
         """
+        source, metadata = _canonicalize_channel_cube(source, metadata)
         self._metadata = metadata
 
         channels = _pop_channel_stack(kwargs)
@@ -788,6 +994,7 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
             shape ``(N, N, rows, cols)`` and metadata carries
             ``axis_order='CCYX'``.
         """
+        source, metadata = _canonicalize_channel_cube(source, metadata)
         self._metadata = metadata
 
         channels = _pop_channel_stack(kwargs)

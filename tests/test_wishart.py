@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Test script for WishartFilter - validates basic functionality.
+Wishart regression tests and standalone synthetic packed-C2 demonstrations.
 
-This script creates synthetic C2 covariance matrix data and applies
-the Wishart filter to verify it works correctly.
+Includes metadata-aware SLC execution, formed matrices, packed storage,
+non-finite input rejection, and analytic inverse/log-determinant probes.
+The standalone demonstrations exercise packed covariance storage; packed bands
+must not be confused with a cube of raw scattering channels.
 """
 
 import numpy as np
+import pytest
 import sys
 from pathlib import Path
 
@@ -17,6 +20,140 @@ if str(grdl_path) not in sys.path:
     sys.path.insert(0, str(grdl_path))
 
 from grdl.image_processing.filters.wishart import WishartFilter
+
+
+@pytest.mark.parametrize('basis', ['C2', 'T2', 'C3', 'T3'])
+@pytest.mark.parametrize('axis_order', ['CYX', 'YXC'])
+def test_execute_slc_dispatch_and_matrix_metadata(basis, axis_order, monkeypatch):
+    from grdl.IO.models.base import ImageMetadata
+    from grdl.image_processing.decomposition.pol_matrix import CovarianceMatrix, CoherencyMatrix
+
+    n_channels = 2 if basis.endswith('2') else 4
+    rng = np.random.default_rng(42)
+    cube = (rng.normal(size=(n_channels, 9, 11))
+            + 1j * rng.normal(size=(n_channels, 9, 11))).astype(np.complex64)
+    filtering = WishartFilter(kernel_size=3, enl=2, matrix_type=basis)
+    constructor = CovarianceMatrix if basis.startswith('C') else CoherencyMatrix
+    expected = filtering.filter_matrix(constructor(window_size=1).compute(cube))
+    metadata = ImageMetadata(
+        format='SAR', rows=9, cols=11, bands=n_channels,
+        dtype='complex64', axis_order=axis_order,
+    )
+    source = cube if axis_order == 'CYX' else np.moveaxis(cube, 0, -1)
+
+    def reject_packed_apply(*args, **kwargs):
+        raise AssertionError('SLC channels must not enter packed apply()')
+
+    monkeypatch.setattr(filtering, 'apply', reject_packed_apply)
+    actual, updated = filtering.execute(metadata, source)
+    np.testing.assert_allclose(actual, expected)
+    n = 2 if n_channels == 2 else 3
+    assert actual.shape == (n, n, 9, 11)
+    assert updated.axis_order == 'CCYX' and updated.bands == n * n
+    assert updated.channel_metadata[0].name == f'{basis}[0,0]'
+
+
+def test_execute_preserves_formed_matrix_metadata():
+    from grdl.IO.models.base import ImageMetadata
+    from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix
+
+    metadata = ImageMetadata(
+        format='SAR', rows=9, cols=11, bands=4, dtype='complex64', axis_order='CYX',
+    )
+    cube = np.ones((4, 9, 11), dtype=np.complex64)
+    matrix, matrix_metadata = CoherencyMatrix(window_size=1).execute(metadata, cube)
+    filtering = WishartFilter(kernel_size=3, enl=2)
+    actual, updated = filtering.execute(matrix_metadata, matrix)
+    np.testing.assert_allclose(actual, filtering.filter_matrix(matrix))
+    assert updated.channel_metadata == matrix_metadata.channel_metadata
+    assert updated.axis_order == 'CCYX' and updated.bands == 9
+
+
+def test_execute_preserves_packed_band_api():
+    from grdl.IO.models.base import ImageMetadata
+
+    packed = np.zeros((4, 9, 11), dtype=np.float32)
+    packed[0] = packed[3] = 1
+    metadata = ImageMetadata(
+        format='SAR', rows=9, cols=11, bands=4, dtype='float32', axis_order='CYX',
+    )
+    filtering = WishartFilter(kernel_size=3, enl=2)
+    actual, updated = filtering.execute(metadata, packed)
+    np.testing.assert_allclose(actual, filtering.apply(packed))
+    assert actual.shape == packed.shape
+    assert updated.axis_order == 'CYX' and updated.bands == 4
+
+
+@pytest.mark.parametrize(
+    'basis,n_channels,axis_order,error',
+    [('auto', 4, 'CYX', 'explicit matrix_type'),
+     ('T3', 2, 'CYX', 'requires 4'),
+     ('T3', 4, 'CCYX', 'requires CYX or YXC')],
+)
+def test_execute_rejects_ambiguous_slc_inputs(basis, n_channels, axis_order, error):
+    from grdl.IO.models.base import ImageMetadata
+    from grdl.exceptions import ValidationError
+
+    metadata = ImageMetadata(
+        format='SAR', rows=9, cols=11, bands=n_channels,
+        dtype='complex64', axis_order=axis_order,
+    )
+    with pytest.raises(ValidationError, match=error):
+        WishartFilter(matrix_type=basis).execute(
+            metadata, np.ones((n_channels, 9, 11), dtype=np.complex64),
+        )
+
+
+def test_execute_rejects_nonfinite_slc():
+    from grdl.IO.models.base import ImageMetadata
+    from grdl.exceptions import ValidationError
+
+    metadata = ImageMetadata(
+        format='SAR', rows=9, cols=11, bands=4, dtype='complex64', axis_order='CYX',
+    )
+    cube = np.ones((4, 9, 11), dtype=np.complex64)
+    cube[0, 0, 0] = np.nan
+    with pytest.raises(ValidationError, match='non-finite'):
+        WishartFilter(matrix_type='T3').execute(metadata, cube)
+
+
+def test_complex_slc_is_not_misinterpreted_as_packed_c2():
+    from grdl.exceptions import ValidationError
+
+    with pytest.raises(ValidationError, match='filter_channels'):
+        WishartFilter().apply(np.ones((4, 9, 11), dtype=np.complex64))
+
+
+def test_regularized_zero_and_rank_one_t3_have_finite_inverse():
+    batch = np.zeros((2, 3, 3), dtype=np.complex64)
+    batch[1] = 1.0
+    with np.errstate(all='raise'):
+        inverse, logdet = WishartFilter._batch_inv_logdet(batch)
+    assert np.isfinite(inverse).all()
+    assert np.isfinite(logdet).all()
+    regularized = WishartFilter._regularise(batch)
+    np.testing.assert_allclose(
+        regularized @ inverse,
+        np.broadcast_to(np.eye(3), batch.shape),
+        atol=1e-4,
+    )
+
+
+def test_wishart_filters_quad_slc_with_zero_border_as_t3():
+    rng = np.random.default_rng(42)
+    cube = (rng.normal(size=(4, 9, 11)) + 1j * rng.normal(size=(4, 9, 11))).astype(
+        np.complex64
+    )
+    cube[2] = cube[1]
+    cube[:, :2] = 0
+    with np.errstate(divide='raise', invalid='raise', over='raise'):
+        filtered = WishartFilter(kernel_size=3, enl=2, matrix_type='T3').filter_channels(
+            cube[0], cube[1], cube[2], cube[3], matrix_type='T3'
+        )
+    assert filtered.shape == (3, 3, 9, 11)
+    assert filtered.dtype == np.complex64
+    assert np.isfinite(filtered).all()
+    np.testing.assert_allclose(filtered, filtered.swapaxes(0, 1).conj(), atol=1e-6)
 
 
 def create_synthetic_c2_covmat(rows: int = 256, cols: int = 256, add_speckle: bool = True) -> np.ndarray:

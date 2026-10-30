@@ -131,6 +131,7 @@ class GeoTIFFReader(ImageReader):
                 cols=self.dataset.width,
                 bands=self.dataset.count,
                 dtype=str(self.dataset.dtypes[0]),
+                axis_order='CYX' if self.dataset.count > 1 else 'YX',
                 crs=crs_str,
                 nodata=self.dataset.nodata,
                 transform=self.dataset.transform,
@@ -245,7 +246,9 @@ class GeoTIFFReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Full image data.
+            YX array for one selected band, otherwise a CYX array. Metadata
+            describes the complete dataset (YX for one band, CYX otherwise),
+            not a per-read band selection.
         """
         if bands is None:
             data = self.dataset.read()
@@ -263,7 +266,8 @@ class GeoTIFFReader(ImageReader):
         -------
         Tuple[int, ...]
             ``(rows, cols)`` for single band or
-            ``(rows, cols, bands)`` for multi-band.
+            ``(rows, cols, bands)`` for multi-band (legacy dimension order).
+            This is not the CYX array shape returned by read_full/read_chip.
         """
         if self.metadata['bands'] == 1:
             return (self.metadata['rows'], self.metadata['cols'])

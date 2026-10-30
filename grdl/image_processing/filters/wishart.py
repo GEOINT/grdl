@@ -1,36 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-Complex Wishart Filter - Multi-dimensional speckle filter for polarimetric SAR data.
+Complex Wishart Filter - Joint speckle filtering for polarimetric SAR data.
 
-The Wishart filter is specifically designed to smooth covariance or coherency matrix
-images from dual-pol or quad-pol synthetic aperture radar (SAR) data while preserving
-edges and polarimetric information. Unlike scalar filters that operate on intensity
-images, this filter operates on the full covariance matrix at each pixel.
+The Wishart filter smooths covariance or coherency matrix images from dual-pol
+or quad-pol synthetic aperture radar (SAR) data while retaining edge structure
+and inter-channel polarimetric information. Unlike scalar filters that process
+intensity images or independent bands, it applies the same spatial weights to
+all elements of the polarimetric matrix at each pixel.
 
-The complex Wishart distribution is the multivariate generalization of the gamma
-distribution for Hermitian positive-definite matrices. For polarimetric SAR data,
-each pixel's covariance matrix follows a scaled complex Wishart distribution.
+The complex Wishart distribution is the multivariate generalization of the
+gamma distribution for Hermitian positive-definite matrices. It provides a
+statistical model for multilook sample covariance matrices of complex Gaussian
+scattering vectors in homogeneous regions. Wishart-based matrix comparisons
+therefore provide a measure of similarity for polarimetric SAR processing.
 
-The filter performs weighted averaging of neighboring covariance matrices, where
-weights are computed based on the Wishart distance (statistical similarity) between
-the center pixel and each neighbor. This approach preserves edges while effectively
-reducing speckle in homogeneous regions.
+This implementation computes matrix distances over a local spatial window,
+derives an adaptive threshold from their median and median absolute deviation,
+and averages neighboring matrices with exponentially decaying weights. Neighbors
+beyond the threshold receive zero weight. Where accumulated weight is below
+min_weight_sum, the original matrix is retained. The weights are data-adaptive;
+the retained enl argument is informational and does not affect this calculation.
 
-Supported Matrix Formats
-------------------------
-- C2 (dual-pol): 2×2 covariance matrix with 4 bands [C11, C12_real, C12_imag, C22]
-- C3 (quad-pol): 3×3 covariance matrix (e.g., compact-pol)
-- C4 (full quad-pol): 4×4 covariance matrix (e.g., full-pol)
-- T3: 3×3 coherency matrix
-- T4: 4×4 coherency matrix
+Input Data Formats
+------------------
+Preformed C2/T2/C3/T3/C4/T4 matrices use canonical CCYX arrays with shape
+(N, N, rows, cols), where N is 2, 3, or 4. A matrix_type descriptor validates
+dimension but does not convert or establish the physical covariance/coherency
+basis. Complex CYX scattering-channel cubes can be formed into C2/T2 or
+reciprocal C3/T3 matrices by selecting input_kind='channels' and an explicit
+matrix_type. C4/T4 formation from raw channels is not implemented.
 
-Input Data Format
------------------
-The input array should have shape (bands, rows, cols) where:
-- For C2: bands = 4, representing [C11, C12_real, C12_imag, C22]
-- For C3: bands = 9, representing the upper triangle + diagonal in row-major order
-- For C4: bands = 16, representing the full 4×4 Hermitian matrix
-- For T3/T4: similar to C3/C4 but for coherency matrices
+Real packed CYX arrays with 4, 9, or 16 bands are also accepted at the storage
+boundary. Each matrix row contributes its diagonal followed by real/imaginary
+pairs for upper-triangle elements; C2/T2 order is [M11, Re(M12), Im(M12), M22].
+Packed matrix elements must not be interpreted as raw scattering channels.
+
+Channel formation, packed storage conversion, input validation, and execution
+metadata are owned by the shared polarimetric filter contract. The kernel uses
+the full matrix directly and preserves its floating/complex precision.
 
 References
 ----------
@@ -61,110 +68,87 @@ Created
 
 Modified
 --------
-2026-08-25
+2026-10-30
 """
 
-# Standard library
 import logging
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
+import warnings
 
-# Third-party
 import numpy as np
 
-# GRDL internal
-from grdl.image_processing.filters.sar_base import SARFilter
-from grdl.image_processing.decomposition.pol_matrix import CovarianceMatrix, CoherencyMatrix
-from grdl.image_processing.params import Desc, Options, Range
+from grdl.image_processing.decomposition.pol_matrix import validate_matrix_type
+from grdl.image_processing.filters.base import PolarimetricFilter
+from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_tags, processor_version
-from grdl.exceptions import ValidationError
 from grdl.vocabulary import ImageModality, ProcessorCategory
+
 
 logger = logging.getLogger(__name__)
 
 
-@processor_version('1.0.0')
-@processor_tags(category=ProcessorCategory.FILTERS,
-                modalities=[ImageModality.SAR])
-class WishartFilter(SARFilter):
-    """Complex Wishart adaptive filter for polarimetric SAR covariance matrices.
+@processor_version('2.0.0')
+@processor_tags(category=ProcessorCategory.FILTERS, modalities=[ImageModality.SAR])
+class WishartFilter(PolarimetricFilter):
+    """Adaptive Wishart-distance averaging of C2/T2/C3/T3/C4/T4 matrices.
 
-    This filter operates on multi-dimensional covariance or coherency matrix images
-    from polarimetric SAR data. It performs weighted averaging of neighboring
-    covariance matrices based on their statistical similarity (Wishart distance),
-    effectively reducing speckle while preserving edges and polarimetric information.
+    Smooth neighboring covariance or coherency matrices according to their
+    statistical similarity, applying common weights to every matrix element
+    rather than filtering polarization channels independently. A local
+    median/MAD distance threshold suppresses dissimilar neighbors to reduce
+    smoothing across edges. Matrix inversions use trace-scaled regularization
+    to accommodate singular or poorly conditioned inputs.
 
-    The filter automatically detects the matrix dimension (C2, C3, C4, T3, T4) from
-    the input band count and reconstructs the full Hermitian matrix at each pixel
-    for distance computation.
+    Use ``apply(matrix)`` for a formed CCYX matrix or
+    ``apply(cube, input_kind='channels', matrix_type='T3')`` for CYX SLC data.
+    Only C2/T2 and reciprocal C3/T3 can be formed from raw channels. Matrix
+    basis descriptors never trigger conversion of a preformed matrix.
 
     Parameters
     ----------
     kernel_size : int
-        Square kernel side length in pixels. Must be odd and >= 3.
-        Default is 7. Larger kernels provide more speckle reduction but may
-        blur edges.
+        Odd spatial window size in [3, 31], default 7.
     enl : float
-        Equivalent Number of Looks. Controls the noise threshold and weighting.
-        If 0.0, automatically estimated from the image statistics.
-        Default is 0.0 (auto-estimate). Higher ENL values assume less speckle.
+        Deprecated informational setting, default 0.0. It does not affect
+        the weights, and zero does not request automatic ENL estimation.
     matrix_type : str
-        Type of matrix representation: 'auto', 'C2', 'T2', 'C3', 'C4', 'T3', 'T4'.
-        Default is 'auto' (detect from band count).
-        - 'C2': 2×2 covariance matrix (4 bands)
-        - 'T2': 2×2 coherency matrix (4 bands)
-        - 'C3': 3×3 covariance matrix (9 bands)
-        - 'C4': 4×4 covariance matrix (16 bands)
-        - 'T3': 3×3 coherency matrix (9 bands)
-        - 'T4': 4×4 coherency matrix (16 bands)
+        Optional default input basis descriptor, not an algorithm parameter.
+        ``'auto'`` leaves the basis unspecified for preformed/packed input.
+        Raw channels require C2/T2/C3/T3, supplied here or to apply().
     sigma_range : float
-        Adaptive threshold for similarity weighting in units of standard deviations.
-        Default is 3.0. Pixels with Wishart distance beyond sigma_range * sigma
-        receive zero weight. Smaller values preserve edges better but reduce
-        smoothing; larger values increase smoothing but may blur edges.
+        Multiplier for the robust distance spread in the adaptive threshold,
+        in [0.5, 10], default 3. Smaller values exclude more dissimilar
+        neighbors; larger values allow more spatial smoothing.
     min_weight_sum : float
-        Minimum sum of weights required to perform filtering at a pixel.
-        If the weight sum is below this threshold, the original pixel is returned.
-        Default is 0.1. Prevents filtering in very heterogeneous regions.
-
-    Examples
-    --------
-    >>> from grdl.image_processing.filters import WishartFilter
-    >>> import numpy as np
-    >>> # Create a C2 covariance matrix image (4 bands: C11, C12_real, C12_imag, C22)
-    >>> covmat = np.random.rand(4, 512, 512).astype(np.float32)
-    >>> # Ensure the matrix is positive semi-definite
-    >>> covmat[0] = np.abs(covmat[0]) + 0.1  # C11 > 0
-    >>> covmat[3] = np.abs(covmat[3]) + 0.1  # C22 > 0
-    >>> filt = WishartFilter(kernel_size=7, enl=0.0)
-    >>> smoothed = filt.apply(covmat)
-    >>> print(smoothed.shape)  # (4, 512, 512)
+        Minimum accumulated weight in [0, 1], default 0.1. Pixels below this
+        threshold retain their original matrix instead of a weighted average.
 
     Notes
     -----
-    The Wishart filter is computationally intensive for large kernels and high-dimensional
-    matrices. For real-time applications, consider using smaller kernel sizes (5×5 or 7×7)
-    and/or downsampled data.
+    Legacy real packed CYX arrays remain supported at the input/output boundary.
+    The filtering kernel always operates directly on a CCYX tensor.
+    Construction and runtime overrides use the same Annotated constraints.
+    ENL does not affect the weights or require a scene-wide estimation pass.
+    Matrix input validation checks structure and finite values, not physical
+    Hermiticity or positive definiteness. Common nonnegative weights preserve
+    Hermitian structure for Hermitian inputs up to numerical precision.
+    Larger windows and matrix dimensions increase computational cost; the
+    distance buffer contains kernel_size**2 values per image pixel.
 
-    The filter preserves the Hermitian structure of the covariance/coherency matrices
-    and ensures the output matrices remain positive semi-definite.
+    Examples
+    --------
+    >>> filtering = WishartFilter(kernel_size=3)
+    >>> filtered = filtering.apply(t3, input_kind='matrix', matrix_type='T3')
+    >>> filtered = filtering.apply(cube, input_kind='channels', matrix_type='T3')
     """
 
-    matrix_type: Annotated[
-        str,
-        Options(['auto', 'C2', 'T2', 'C3', 'C4', 'T3', 'T4']),
-        Desc('Matrix type (auto=detect from bands)')
-    ] = 'auto'
+    _legacy_packed = True
 
     sigma_range: Annotated[
-        float,
-        Range(min=0.5, max=10.0),
-        Desc('Adaptive threshold for similarity (std devs)')
+        float, Range(min=0.5, max=10.0), Desc('Adaptive similarity threshold'),
     ] = 3.0
-
     min_weight_sum: Annotated[
-        float,
-        Range(min=0.0, max=1.0),
-        Desc('Minimum weight sum to apply filter')
+        float, Range(min=0.0, max=1.0), Desc('Minimum weight sum to apply filter'),
     ] = 0.1
 
     def __init__(
@@ -175,341 +159,179 @@ class WishartFilter(SARFilter):
         sigma_range: float = 3.0,
         min_weight_sum: float = 0.1,
     ) -> None:
-        super().__init__(kernel_size=kernel_size, enl=enl)
-        self.matrix_type = matrix_type.upper() if matrix_type != 'auto' else 'auto'
+        """Initialize an adaptive Wishart filter.
+
+        Parameters
+        ----------
+        kernel_size : int
+            Odd spatial window width and height. The supported range is
+            3 through 31; the default is 7. A window of width ``k`` uses
+            ``k**2`` neighbors for every output pixel.
+        enl : float
+            Deprecated informational equivalent number of looks. It is
+            retained for compatibility but does not enter the distance,
+            threshold, or weight equations. Nonzero values emit a
+            ``DeprecationWarning``.
+        matrix_type : str
+            Default matrix basis descriptor. ``'auto'`` leaves the basis
+            unspecified for preformed or packed matrices. Raw channels must
+            explicitly select a supported C2/T2/C3/T3 basis.
+        sigma_range : float
+            Nonnegative multiplier for the robust distance spread in the
+            adaptive threshold. The configured range is [0.5, 10.0].
+        min_weight_sum : float
+            Minimum accumulated neighbor weight required to replace the
+            center matrix. The configured range is [0.0, 1.0]. If the sum
+            is smaller, the original center matrix is retained.
+        """
+        self.kernel_size = kernel_size
+        self.enl = enl
+        self.matrix_type = validate_matrix_type(matrix_type)
         self.sigma_range = sigma_range
         self.min_weight_sum = min_weight_sum
+        self._resolve_params({})
+        if enl != 0:
+            warnings.warn(
+                'Wishart enl is informational and deprecated; it does not affect filtering',
+                DeprecationWarning, stacklevel=2,
+            )
 
-    def apply(self, source: np.ndarray, metadata: Optional[object] = None, **kwargs: Any) -> np.ndarray:
-        """Apply Wishart filter to polarimetric covariance/coherency data.
+    @property
+    def tile_halo(self) -> tuple[int, int]:
+        """Wishart weights have finite support and require no global estimate."""
+        return (self.kernel_size // 2, self.kernel_size // 2)
+
+    def _filter_matrix(self, matrix: np.ndarray, params: dict[str, Any]) -> np.ndarray:
+        """Apply adaptive Wishart weighting directly to a CCYX tensor.
 
         Parameters
         ----------
-        source : np.ndarray
-            Input covariance/coherency data.
-            Supported input layouts:
-            - Packed band stack: ``(bands, rows, cols)`` where bands are
-              [C11, Re(C12), Im(C12), ...] in the Wishart packed format.
-            - Matrix tensor: ``(N, N, rows, cols)`` (complex), compatible with
-              ``CovarianceMatrix.compute`` and ``CoherencyMatrix.compute`` outputs.
-        metadata : object, optional
-            Image metadata (not currently used by this filter).
-        **kwargs
-            Additional keyword arguments (not currently used).
+        matrix : numpy.ndarray
+            Matrix image with shape ``(n, n, rows, cols)``. The matrix is
+            padded by reflection at the spatial boundary.
+        params : dict[str, Any]
+            Resolved filter parameters containing ``kernel_size``,
+            ``sigma_range``, and ``min_weight_sum``.
 
         Returns
         -------
-        np.ndarray
-            Filtered image with the same shape as input.
+        numpy.ndarray
+            Filtered matrix image with the same shape and dtype as ``matrix``.
 
-        Raises
-        ------
-        ValueError
-            If the input shape is not a supported matrix layout.
+        Notes
+        -----
+        For each center matrix ``C`` and neighboring matrix ``N``, the
+        symmetric distance ``D(C, N)`` is computed first. Let ``m`` be the
+        median of the local distances and ``MAD`` their median absolute
+        deviation. The robust spread and acceptance threshold are
+
+        ``sigma = 1.4826 * MAD`` when ``MAD > 0``, otherwise
+        ``sigma = max(m, 1e-6)``,
+
+        ``threshold = m + sigma_range * sigma``.
+
+        Accepted neighbors receive weight
+
+        ``w = exp(-D / (sigma + 1e-10))`` when ``D <= threshold``;
+        otherwise ``w = 0``.
+
+        The output is the weighted matrix average
+
+        ``S = sum(w * N) / sum(w)``.
+
+        When ``sum(w) < min_weight_sum``, the center matrix ``C`` is used
+        instead. The same weights apply to every matrix element, preserving
+        the joint polarimetric structure rather than filtering channels
+        independently.
         """
-        if source.ndim == 4:
-            return self.filter_matrix(source)
-        if source.ndim != 3:
-            raise ValueError(
-                f'WishartFilter requires 3D packed bands or 4D matrix tensor, got shape {source.shape}'
-            )
-        return self._filter_band_stack(source)
-
-    def filter_matrix(self, matrix: np.ndarray) -> np.ndarray:
-        """Filter a covariance/coherency matrix tensor.
-
-        Parameters
-        ----------
-        matrix : np.ndarray
-            Complex matrix tensor of shape ``(N, N, rows, cols)``, where
-            ``N`` must be 2, 3, or 4.
-
-        Returns
-        -------
-        np.ndarray
-            Filtered matrix tensor with the same shape and dtype as input.
-        """
-        if matrix.ndim != 4:
-            raise ValidationError(
-                f'Expected 4D matrix (N, N, rows, cols), got shape {matrix.shape}'
-            )
-        n = matrix.shape[0]
-        if matrix.shape[1] != n:
-            raise ValidationError(
-                f'Matrix must be square in first two dims, got {matrix.shape[:2]}'
-            )
-        if n not in (2, 3, 4):
-            raise ValidationError(f'Matrix dimension must be 2, 3, or 4, got {n}')
-
-        packed = self._matrix_cube_to_bands(matrix)
-        filtered_packed = self._filter_band_stack(packed)
-        return self._bands_to_matrix_cube(filtered_packed, n).astype(matrix.dtype, copy=False)
-
-    def filter_channels(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: Optional[np.ndarray] = None,
-        svv: Optional[np.ndarray] = None,
-        matrix_type: str = 'C3',
-    ) -> np.ndarray:
-        """Build a matrix from SLC channels and apply Wishart filtering.
-
-        Parameters
-        ----------
-        shh, shv, svh, svv : np.ndarray
-            Complex SLC channels.
-            - For ``C2``/``T2`` pass ``shh`` and ``shv``.
-            - For ``C3``/``T3`` pass ``shh``, ``shv``, ``svh``, ``svv``.
-        matrix_type : str
-            One of ``'C2'``, ``'T2'``, ``'C3'``, ``'T3'``.
-
-        Returns
-        -------
-        np.ndarray
-            Filtered covariance/coherency matrix, shape ``(N, N, rows, cols)``.
-        """
-        kind = matrix_type.upper()
-        if kind in ('C2', 'T2'):
-            channels = np.stack([shh, shv], axis=0)
-        elif kind in ('C3', 'T3'):
-            if svh is None or svv is None:
-                raise ValidationError(
-                    f"matrix_type='{kind}' requires shh, shv, svh, and svv channels"
-                )
-            channels = np.stack([shh, shv, svh, svv], axis=0)
-        else:
-            raise ValidationError(
-                f"matrix_type must be one of 'C2', 'T2', 'C3', or 'T3', got '{matrix_type}'"
-            )
-
-        if kind.startswith('C'):
-            matrix = CovarianceMatrix(window_size=1).compute(channels)
-        else:
-            matrix = CoherencyMatrix(window_size=1).compute(channels)
-
-        return self.filter_matrix(matrix)
-
-    def _filter_band_stack(self, image: np.ndarray) -> np.ndarray:
-        """Apply Wishart filtering to packed band representation."""
-
-        n_bands, n_rows, n_cols = image.shape
-        matrix_dim = self._determine_matrix_dimension(n_bands)
-        
+        dimension, _, rows, cols = matrix.shape
+        kernel_size = params['kernel_size']
         logger.info(
-            f'WishartFilter: processing {matrix_dim}×{matrix_dim} matrix image '
-            f'({n_bands} bands, {n_rows}×{n_cols} pixels) with kernel_size={self.kernel_size}'
+            'WishartFilter: processing %dx%d matrix image (%dx%d pixels) '
+            'with kernel_size=%d, sigma_range=%g, min_weight_sum=%g, dtype=%s',
+            dimension, dimension, rows, cols, kernel_size,
+            params['sigma_range'], params['min_weight_sum'], matrix.dtype,
         )
-
-        # Determine or estimate ENL
-        enl = self.enl
-        if enl <= 0.0:
-            enl = self._estimate_enl_from_matrix(image, matrix_dim)
-            logger.info(f'WishartFilter: auto-estimated ENL = {enl:.2f}')
-
-        # Apply the Wishart filter
-        filtered = self._apply_wishart_filter(image, matrix_dim, enl)
-
-        return filtered
-
-    def _determine_matrix_dimension(self, n_bands: int) -> int:
-        """Determine the matrix dimension from band count.
-
-        Parameters
-        ----------
-        n_bands : int
-            Number of bands in the input image.
-
-        Returns
-        -------
-        int
-            Matrix dimension (2, 3, or 4).
-
-        Raises
-        ------
-        ValueError
-            If the band count doesn't correspond to a valid matrix dimension.
-        """
-        if self.matrix_type != 'auto':
-            expected_bands = {
-                'C2': 4, 'T2': 4, 'C3': 9, 'C4': 16, 'T3': 9, 'T4': 16
-            }
-            if n_bands != expected_bands[self.matrix_type]:
-                raise ValueError(
-                    f'matrix_type={self.matrix_type} expects {expected_bands[self.matrix_type]} '
-                    f'bands, got {n_bands}'
-                )
-            return {'C2': 2, 'T2': 2, 'C3': 3, 'C4': 4, 'T3': 3, 'T4': 4}[self.matrix_type]
-
-        # Auto-detect from band count
-        if n_bands == 4:
-            return 2  # C2
-        elif n_bands == 9:
-            return 3  # C3 or T3
-        elif n_bands == 16:
-            return 4  # C4 or T4
-        else:
-            raise ValueError(
-                f'Cannot auto-detect matrix dimension from {n_bands} bands. '
-                f'Expected 4 (C2), 9 (C3/T3), or 16 (C4/T4) bands. '
-                f'Specify matrix_type explicitly if using a custom format.'
-            )
-
-    def _estimate_enl_from_matrix(self, image: np.ndarray, matrix_dim: int) -> float:
-        """Estimate ENL from covariance matrix image statistics.
-
-        Uses the intensity channel (first diagonal element) to estimate ENL.
-
-        Parameters
-        ----------
-        image : np.ndarray
-            Input covariance matrix image (bands, rows, cols).
-        matrix_dim : int
-            Matrix dimension (2, 3, or 4).
-
-        Returns
-        -------
-        float
-            Estimated ENL.
-        """
-        # Use the first diagonal element (C11 or T11) as intensity proxy
-        intensity = image[0]
-        
-        # Compute coefficient of variation squared
-        mean_int = np.mean(intensity)
-        var_int = np.var(intensity)
-        
-        if mean_int > 0 and var_int > 0:
-            ci2 = var_int / (mean_int ** 2)
-            if ci2 > 0:
-                # For fully developed speckle: ENL ≈ 1/Ci²
-                enl_est = 1.0 / ci2
-                # Clip to reasonable range
-                return np.clip(enl_est, 1.0, 100.0)
-        
-        # Default fallback
-        return 4.0
-
-    def _apply_wishart_filter(
-        self,
-        image: np.ndarray,
-        matrix_dim: int,
-        enl: float
-    ) -> np.ndarray:
-        """Apply the Wishart filter to the covariance matrix image.
-
-        Fully vectorized two-pass implementation.  The first pass collects all
-        K×K per-pixel Wishart divergences simultaneously using batch numpy linear
-        algebra.  A per-pixel adaptive threshold is then computed from the median
-        and MAD of the divergence distribution across the kernel window (identical
-        to the reference algorithm but fully vectorized).  The second pass
-        accumulates the exponentially-weighted matrix sums.
-
-        Parameters
-        ----------
-        image : np.ndarray
-            Input covariance matrix image (bands, rows, cols).
-        matrix_dim : int
-            Matrix dimension (2, 3, or 4).
-        enl : float
-            Equivalent Number of Looks (currently informational; the adaptive
-            per-pixel threshold is derived from the distance distribution).
-
-        Returns
-        -------
-        np.ndarray
-            Filtered covariance matrix image.
-        """
-        n_bands, n_rows, n_cols = image.shape
-        half_k = self.kernel_size // 2
-        n = matrix_dim
-        RC = n_rows * n_cols
-        K = self.kernel_size
-
-        # Build complex (n, n, R, C) cube from packed bands once
-        center_cube = self._bands_to_matrix_cube(image, matrix_dim)
-
-        # Pad for border handling
-        padded_cube = np.pad(
-            center_cube,
-            ((0, 0), (0, 0), (half_k, half_k), (half_k, half_k)),
-            mode='reflect'
+        half = kernel_size // 2
+        pixel_count = rows * cols
+        padded = np.pad(
+            matrix, ((0, 0), (0, 0), (half, half), (half, half)), mode='reflect',
         )
-
-        # center_batch: (RC, n, n)
-        center_batch = center_cube.transpose(2, 3, 0, 1).reshape(RC, n, n)
-
-        # Precompute center matrix inverses and log-determinants once
-        center_inv, center_logdet = self._batch_inv_logdet(center_batch)
-
-        # ── Pass 1: compute all K² per-offset distance maps ──────────────────
-        # all_dists shape: (K*K, RC)
-        all_dists = np.empty((K * K, RC), dtype=np.float64)
-        for ki in range(K):
-            for kj in range(K):
-                nb_cube = padded_cube[:, :, ki:ki + n_rows, kj:kj + n_cols]
-                nb_batch = nb_cube.transpose(2, 3, 0, 1).reshape(RC, n, n)
-                all_dists[ki * K + kj] = self._batch_wishart_distance(
-                    center_batch, center_inv, center_logdet, nb_batch
+        center = matrix.transpose(2, 3, 0, 1).reshape(pixel_count, dimension, dimension)
+        center_inv, center_logdet = self._batch_inv_logdet(center)
+        distances = np.empty((kernel_size * kernel_size, pixel_count), dtype=np.float64)
+        for row_offset in range(kernel_size):
+            for col_offset in range(kernel_size):
+                neighbor = padded[
+                    :, :, row_offset:row_offset + rows, col_offset:col_offset + cols,
+                ].transpose(2, 3, 0, 1).reshape(pixel_count, dimension, dimension)
+                distances[row_offset * kernel_size + col_offset] = self._batch_wishart_distance(
+                    center, center_inv, center_logdet, neighbor,
                 )
-
-        # ── Adaptive per-pixel threshold (same logic as reference algorithm) ─
-        # Compute median and MAD across kernel positions for every pixel
-        median_dist = np.median(all_dists, axis=0)                          # (RC,)
-        mad = np.median(np.abs(all_dists - median_dist[np.newaxis, :]), axis=0)
-        sigma = np.where(mad > 0, 1.4826 * mad, median_dist.clip(min=1e-6))
-        threshold = median_dist + self.sigma_range * sigma                  # (RC,)
-
-        # ── Pass 2: weighted accumulation ────────────────────────────────────
-        weight_sum = np.zeros(RC, dtype=np.float64)
-        weighted_acc = np.zeros((RC, n, n), dtype=np.complex128)
-
-        for ki in range(K):
-            for kj in range(K):
-                dist = all_dists[ki * K + kj]                               # (RC,)
-                w = np.where(
-                    dist > threshold, 0.0,
-                    np.exp(-dist / (sigma + 1e-10))
+        median = np.median(distances, axis=0)
+        mad = np.median(np.abs(distances - median[np.newaxis, :]), axis=0)
+        sigma = np.where(mad > 0, 1.4826 * mad, median.clip(min=1e-6))
+        threshold = median + params['sigma_range'] * sigma
+        weight_sum = np.zeros(pixel_count, dtype=np.float64)
+        accumulated = np.zeros((pixel_count, dimension, dimension), dtype=np.complex128)
+        for row_offset in range(kernel_size):
+            for col_offset in range(kernel_size):
+                distance = distances[row_offset * kernel_size + col_offset]
+                weight = np.where(
+                    distance > threshold, 0.0, np.exp(-distance / (sigma + 1e-10)),
                 )
-
-                nb_cube = padded_cube[:, :, ki:ki + n_rows, kj:kj + n_cols]
-                nb_batch = nb_cube.transpose(2, 3, 0, 1).reshape(RC, n, n)
-
-                weight_sum += w
-                weighted_acc += w[:, np.newaxis, np.newaxis] * nb_batch
-
-        # Normalise; fall back to original pixel where weight sum is too low
-        low_weight = weight_sum < self.min_weight_sum
-        safe_ws = np.where(low_weight, 1.0, weight_sum)
-        result_batch = weighted_acc / safe_ws[:, np.newaxis, np.newaxis]
-        result_batch[low_weight] = center_batch[low_weight]
-
-        # (RC, n, n) → (n, n, R, C) and repack to bands
-        result_cube = result_batch.reshape(n_rows, n_cols, n, n).transpose(2, 3, 0, 1)
-        result_cube = result_cube.astype(center_cube.dtype, copy=False)
-        return self._matrix_cube_to_bands(result_cube)
+                neighbor = padded[
+                    :, :, row_offset:row_offset + rows, col_offset:col_offset + cols,
+                ].transpose(2, 3, 0, 1).reshape(pixel_count, dimension, dimension)
+                weight_sum += weight
+                accumulated += weight[:, np.newaxis, np.newaxis] * neighbor
+        low_weight = weight_sum < params['min_weight_sum']
+        safe_weight = np.where(low_weight, 1.0, weight_sum)
+        result = accumulated / safe_weight[:, np.newaxis, np.newaxis]
+        result[low_weight] = center[low_weight]
+        result = result.reshape(rows, cols, dimension, dimension).transpose(2, 3, 0, 1)
+        if not np.iscomplexobj(matrix):
+            result = result.real
+        return result.astype(matrix.dtype, copy=False)
 
     @staticmethod
     def _regularise(batch: np.ndarray) -> np.ndarray:
         """Add trace-scaled Tikhonov regularisation to avoid singular matrices.
 
+        Parameters
+        ----------
+        batch : numpy.ndarray
+            Batch of square matrices with shape ``(..., n, n)``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Complex128 matrices with a small diagonal term added.
+
+        Notes
+        -----
         Single-look coherency/covariance matrices are rank-1 and singular by
-        construction. Regularises each matrix by adding ``eps * trace(M) / n``
-        times the identity, which keeps eigenvalues positive while staying
+        construction. For each matrix ``M``, this adds
+
+        ``M_reg = M + (1e-6 * max(real(trace(M)), 1e-10) / n) * I``.
+
+        The trace scale keeps the perturbation relative to the matrix energy,
+        while the lower bound prevents zero matrices from producing a zero
+        regularizer. This keeps eigenvalues positive while staying
         small relative to the matrix scale.
         """
-        n = batch.shape[-1]
-        # Per-matrix trace: shape (M,), clamped to avoid zero
+        # Rank-one SLC matrices suffer cofactor cancellation in complex64;
+        # zero-matrix regularized determinants also underflow in that dtype.
+        batch = batch.astype(np.complex128, copy=False)
+        dimension = batch.shape[-1]
         trace = np.real(np.einsum('mii->m', batch)).clip(min=1e-10)
-        scale = trace / n * 1e-6  # (M,)
-        eye_n = np.eye(n, dtype=batch.dtype)
-        return batch + scale[:, np.newaxis, np.newaxis] * eye_n[np.newaxis]
+        scale = trace / dimension * 1e-6
+        identity = np.eye(dimension, dtype=batch.dtype)
+        return batch + scale[:, np.newaxis, np.newaxis] * identity[np.newaxis]
 
     @staticmethod
-    def _batch_inv_logdet(
-        batch: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch inverse and log-determinant for Hermitian positive-definite matrices.
+    def _batch_inv_logdet(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return inverses and log-determinants of regularized matrices.
 
         Uses analytic closed-form formulas for 2×2 and 3×3 matrices (pure
         element-wise numpy, no LAPACK) and falls back to ``np.linalg.inv`` for
@@ -518,75 +340,111 @@ class WishartFilter(SARFilter):
 
         Parameters
         ----------
-        batch : np.ndarray
-            Shape (M, n, n) complex array of positive-definite matrices.
+        batch : numpy.ndarray
+            Batch of square matrices with shape ``(..., n, n)``.
 
         Returns
         -------
-        inv_batch : np.ndarray
-            Shape (M, n, n) — matrix inverses.
-        logdet : np.ndarray
-            Shape (M,) — natural log of |det|.
+        tuple[numpy.ndarray, numpy.ndarray]
+            The regularized matrix inverses and the natural logarithm of the
+            absolute determinant for each matrix. Two- and three-dimensional
+            matrices use the explicit analytic helpers; other dimensions use
+            NumPy's batched inverse and sign-aware determinant routines.
         """
-        batch_reg = WishartFilter._regularise(batch)
-        n = batch_reg.shape[-1]
-        if n == 2:
-            return WishartFilter._inv_logdet_2x2(batch_reg)
-        if n == 3:
-            return WishartFilter._inv_logdet_3x3(batch_reg)
-        # 4×4: fall back to LAPACK
-        inv_batch = np.linalg.inv(batch_reg)
-        sign, logdet = np.linalg.slogdet(batch_reg)
-        logdet = np.where(sign != 0, logdet, -23.0)
-        return inv_batch, logdet
+        regularized = WishartFilter._regularise(batch)
+        dimension = regularized.shape[-1]
+        if dimension == 2:
+            return WishartFilter._inv_logdet_2x2(regularized)
+        if dimension == 3:
+            return WishartFilter._inv_logdet_3x3(regularized)
+        inverse = np.linalg.inv(regularized)
+        sign, logdet = np.linalg.slogdet(regularized)
+        return inverse, np.where(sign != 0, logdet, -23.0)
 
     @staticmethod
-    def _inv_logdet_2x2(
-        batch: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Analytic batch inverse and logdet for 2×2 complex matrices."""
-        a = batch[:, 0, 0]; b = batch[:, 0, 1]
-        c = batch[:, 1, 0]; d = batch[:, 1, 1]
-        det = a * d - b * c
-        inv = np.empty_like(batch)
-        inv_det = 1.0 / det
-        inv[:, 0, 0] = d * inv_det
-        inv[:, 0, 1] = -b * inv_det
-        inv[:, 1, 0] = -c * inv_det
-        inv[:, 1, 1] = a * inv_det
-        logdet = np.log(np.abs(det))
-        return inv, logdet.real
+    def _inv_logdet_2x2(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Compute analytic inverses and log-determinants for 2x2 matrices.
+
+        Parameters
+        ----------
+        batch : numpy.ndarray
+            Complex matrix batch with shape ``(m, 2, 2)``.
+
+        Returns
+        -------
+        tuple[numpy.ndarray, numpy.ndarray]
+            The inverse and ``log(abs(det(M)))`` for each matrix, using
+
+            ``det(M) = M00 * M11 - M01 * M10``
+
+            and ``M_inv = det(M)**-1 * [[M11, -M01], [-M10, M00]]``.
+        """
+        first = batch[:, 0, 0]
+        upper = batch[:, 0, 1]
+        lower = batch[:, 1, 0]
+        last = batch[:, 1, 1]
+        determinant = first * last - upper * lower
+        inverse = np.empty_like(batch)
+        inv_det = 1.0 / determinant
+        inverse[:, 0, 0] = last * inv_det
+        inverse[:, 0, 1] = -upper * inv_det
+        inverse[:, 1, 0] = -lower * inv_det
+        inverse[:, 1, 1] = first * inv_det
+        return inverse, np.log(np.abs(determinant))
 
     @staticmethod
-    def _inv_logdet_3x3(
-        batch: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Analytic batch inverse and logdet for 3×3 complex matrices.
+    def _inv_logdet_3x3(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Compute cofactor-based inverses and log-determinants for 3x3 matrices.
 
-        Computes cofactor matrix → adjugate → inverse without any LAPACK calls,
-        making it significantly faster than ``np.linalg.inv`` for large batches
-        of small matrices.
+        Parameters
+        ----------
+        batch : numpy.ndarray
+            Complex matrix batch with shape ``(m, 3, 3)``.
+
+        Returns
+        -------
+        tuple[numpy.ndarray, numpy.ndarray]
+            The inverse and ``log(abs(det(M)))`` for each matrix. The inverse
+            is ``adj(M) / det(M)``, where ``adj(M)`` is the transpose of the
+            signed cofactor matrix. The determinant is expanded across the
+            first row as ``sum(M[0, j] * cofactor[0, j])``.
         """
-        a = batch[:, 0, 0]; b = batch[:, 0, 1]; c = batch[:, 0, 2]
-        d = batch[:, 1, 0]; e = batch[:, 1, 1]; f = batch[:, 1, 2]
-        g = batch[:, 2, 0]; h = batch[:, 2, 1]; k = batch[:, 2, 2]
+        first = batch[:, 0, 0]
+        second = batch[:, 0, 1]
+        third = batch[:, 0, 2]
+        fourth = batch[:, 1, 0]
+        fifth = batch[:, 1, 1]
+        sixth = batch[:, 1, 2]
+        seventh = batch[:, 2, 0]
+        eighth = batch[:, 2, 1]
+        ninth = batch[:, 2, 2]
 
         # Cofactors (= minors with sign, no transpose yet)
-        A =  e * k - f * h;  B = -(d * k - f * g);  C =  d * h - e * g
-        D = -(b * k - c * h); E =  a * k - c * g;  F = -(a * h - b * g)
-        G =  b * f - c * e;  H = -(a * f - c * d);  K =  a * e - b * d
+        cofactor_00 = fifth * ninth - sixth * eighth
+        cofactor_01 = -(fourth * ninth - sixth * seventh)
+        cofactor_02 = fourth * eighth - fifth * seventh
+        cofactor_10 = -(second * ninth - third * eighth)
+        cofactor_11 = first * ninth - third * seventh
+        cofactor_12 = -(first * eighth - second * seventh)
+        cofactor_20 = second * sixth - third * fifth
+        cofactor_21 = -(first * sixth - third * fourth)
+        cofactor_22 = first * fifth - second * fourth
 
-        det = a * A + b * B + c * C
-        inv_det = 1.0 / det
+        determinant = first * cofactor_00 + second * cofactor_01 + third * cofactor_02
+        inv_det = 1.0 / determinant
 
-        inv = np.empty_like(batch)
+        inverse = np.empty_like(batch)
         # adjugate = cofactor^T → swap row/col indices
-        inv[:, 0, 0] = A * inv_det;  inv[:, 0, 1] = D * inv_det;  inv[:, 0, 2] = G * inv_det
-        inv[:, 1, 0] = B * inv_det;  inv[:, 1, 1] = E * inv_det;  inv[:, 1, 2] = H * inv_det
-        inv[:, 2, 0] = C * inv_det;  inv[:, 2, 1] = F * inv_det;  inv[:, 2, 2] = K * inv_det
-
-        logdet = np.log(np.abs(det))
-        return inv, logdet.real
+        inverse[:, 0, 0] = cofactor_00 * inv_det
+        inverse[:, 0, 1] = cofactor_10 * inv_det
+        inverse[:, 0, 2] = cofactor_20 * inv_det
+        inverse[:, 1, 0] = cofactor_01 * inv_det
+        inverse[:, 1, 1] = cofactor_11 * inv_det
+        inverse[:, 1, 2] = cofactor_21 * inv_det
+        inverse[:, 2, 0] = cofactor_02 * inv_det
+        inverse[:, 2, 1] = cofactor_12 * inv_det
+        inverse[:, 2, 2] = cofactor_22 * inv_det
+        return inverse, np.log(np.abs(determinant))
 
     @staticmethod
     def _batch_wishart_distance(
@@ -595,123 +453,49 @@ class WishartFilter(SARFilter):
         center_logdet: np.ndarray,
         neighbor: np.ndarray,
     ) -> np.ndarray:
-        """Symmetric Wishart distance for all pixels simultaneously.
+        """Compute the symmetric Wishart distance for matrix pairs.
 
+        Parameters
+        ----------
+        center : numpy.ndarray
+            Center matrices with shape ``(m, n, n)``.
+        center_inv : numpy.ndarray
+            Inverses of the regularized center matrices.
+        center_logdet : numpy.ndarray
+            Log absolute determinants of the regularized center matrices.
+        neighbor : numpy.ndarray
+            Neighbor matrices with the same shape as ``center``.
+
+        Returns
+        -------
+        numpy.ndarray
+            One nonnegative distance per matrix pair.
+
+        Notes
+        -----
         Uses the full symmetric formula (identical to the reference per-pixel
-        algorithm) but operates on entire image batches at once:
+        algorithm) but operates on entire image batches at once.
+        The neighbor is regularized before its inverse and determinant are
+        computed. For center matrix ``C`` and neighbor ``N`` of dimension
+        ``n``, the implemented symmetric statistic is
 
             d(C, N) = ln|det(C)| + ln|det(N)| + tr(C⁻¹N) + tr(N⁻¹C) − 2p
 
         The neighbor inverse is computed analytically (no LAPACK for 2×2/3×3),
         so this is fast even though both inverses are required.
 
-        Parameters
-        ----------
-        center : np.ndarray
-            Shape (M, n, n) center matrices.
-        center_inv : np.ndarray
-            Shape (M, n, n) inverses of center matrices.
-        center_logdet : np.ndarray
-            Shape (M,) log-determinants of center matrices.
-        neighbor : np.ndarray
-            Shape (M, n, n) neighbor matrices.
-
-        Returns
-        -------
-        np.ndarray
-            Shape (M,) non-negative Wishart distances.
+        The absolute value keeps numerical roundoff from producing negative
+        distances while preserving the existing symmetric formulation.
         """
         neighbor_reg = WishartFilter._regularise(neighbor)
-        nb_inv, nb_logdet = WishartFilter._batch_inv_logdet(neighbor_reg)
+        neighbor_inv, neighbor_logdet = WishartFilter._batch_inv_logdet(neighbor_reg)
 
         # tr(C⁻¹N) + tr(N⁻¹C) via batch einsum: tr(A@B) = ΣᵢⱼAᵢⱼBⱼᵢ
         trace_cn = np.einsum('mij,mji->m', center_inv, neighbor_reg).real
-        trace_nc = np.einsum('mij,mji->m', nb_inv, center).real
-
-        dist = center_logdet + nb_logdet + trace_cn + trace_nc - 2 * center.shape[-1]
-        return np.abs(dist)
-
-    @staticmethod
-    def _matrix_cube_to_bands(matrix: np.ndarray) -> np.ndarray:
-        """Convert matrix tensor (N,N,Y,X) into packed Wishart band format."""
-        n = matrix.shape[0]
-        rows, cols = matrix.shape[2], matrix.shape[3]
-        if n == 2:
-            return np.stack(
-                [
-                    np.real(matrix[0, 0]).astype(np.float32),
-                    np.real(matrix[0, 1]).astype(np.float32),
-                    np.imag(matrix[0, 1]).astype(np.float32),
-                    np.real(matrix[1, 1]).astype(np.float32),
-                ],
-                axis=0,
-            )
-        if n == 3:
-            return np.stack(
-                [
-                    np.real(matrix[0, 0]).astype(np.float32),
-                    np.real(matrix[0, 1]).astype(np.float32),
-                    np.imag(matrix[0, 1]).astype(np.float32),
-                    np.real(matrix[0, 2]).astype(np.float32),
-                    np.imag(matrix[0, 2]).astype(np.float32),
-                    np.real(matrix[1, 1]).astype(np.float32),
-                    np.real(matrix[1, 2]).astype(np.float32),
-                    np.imag(matrix[1, 2]).astype(np.float32),
-                    np.real(matrix[2, 2]).astype(np.float32),
-                ],
-                axis=0,
-            )
-        if n == 4:
-            bands = np.zeros((16, rows, cols), dtype=np.float32)
-            idx = 0
-            for row in range(4):
-                bands[idx] = np.real(matrix[row, row]).astype(np.float32)
-                idx += 1
-                for col in range(row + 1, 4):
-                    bands[idx] = np.real(matrix[row, col]).astype(np.float32)
-                    bands[idx + 1] = np.imag(matrix[row, col]).astype(np.float32)
-                    idx += 2
-            return bands
-        raise ValidationError(f'Unsupported matrix dimension {n} for Wishart packing')
-
-    @staticmethod
-    def _bands_to_matrix_cube(bands: np.ndarray, matrix_dim: int) -> np.ndarray:
-        """Convert packed Wishart band format to matrix tensor (N,N,Y,X)."""
-        rows, cols = bands.shape[1], bands.shape[2]
-        out = np.zeros((matrix_dim, matrix_dim, rows, cols), dtype=np.complex64)
-        if matrix_dim == 2:
-            c12 = bands[1] + 1j * bands[2]
-            out[0, 0] = bands[0]
-            out[0, 1] = c12
-            out[1, 0] = np.conj(c12)
-            out[1, 1] = bands[3]
-            return out
-        if matrix_dim == 3:
-            c12 = bands[1] + 1j * bands[2]
-            c13 = bands[3] + 1j * bands[4]
-            c23 = bands[6] + 1j * bands[7]
-            out[0, 0] = bands[0]
-            out[0, 1] = c12
-            out[1, 0] = np.conj(c12)
-            out[0, 2] = c13
-            out[2, 0] = np.conj(c13)
-            out[1, 1] = bands[5]
-            out[1, 2] = c23
-            out[2, 1] = np.conj(c23)
-            out[2, 2] = bands[8]
-            return out
-        if matrix_dim == 4:
-            idx = 0
-            for row in range(4):
-                out[row, row] = bands[idx]
-                idx += 1
-                for col in range(row + 1, 4):
-                    val = bands[idx] + 1j * bands[idx + 1]
-                    out[row, col] = val
-                    out[col, row] = np.conj(val)
-                    idx += 2
-            return out
-        raise ValidationError(f'Unsupported matrix dimension {matrix_dim}')
+        trace_nc = np.einsum('mij,mji->m', neighbor_inv, center).real
+        distance = center_logdet + neighbor_logdet + trace_cn + trace_nc - 2 * center.shape[-1]
+        
+        return np.abs(distance)
 
 
 __all__ = ['WishartFilter']

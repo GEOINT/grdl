@@ -50,16 +50,15 @@ Modified
 
 # Standard library
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 # Third-party
 import numpy as np
 from scipy.ndimage import uniform_filter
 
 # GRDL internal
-from grdl.image_processing.filters.sar_base import SARFilter
-from grdl.image_processing.filters._validation import validate_kernel_size
-from grdl.image_processing.decomposition.pol_matrix import CovarianceMatrix, CoherencyMatrix
+from grdl.image_processing.filters.base import PolarimetricFilter
+from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.exceptions import ValidationError
 from grdl.vocabulary import ImageModality, ProcessorCategory
@@ -310,7 +309,7 @@ def _compute_masked_means(
 @processor_version('1.0.0')
 @processor_tags(category=ProcessorCategory.FILTERS,
                 modalities=[ImageModality.SAR])
-class RefinedLeeFilter(SARFilter):
+class RefinedLeeFilter(PolarimetricFilter):
     """Refined Lee polarimetric speckle filter.
 
     Edge-preserving filter for polarimetric covariance or coherency
@@ -321,6 +320,12 @@ class RefinedLeeFilter(SARFilter):
     This filter operates on the full polarimetric matrix (C3, T3, C2, etc.)
     rather than individual channels, preserving inter-channel correlations
     and polarimetric information.
+
+    The inherited ``apply()`` accepts preformed C2/T2/C3/T3/C4/T4 CCYX
+    tensors or complex CYX channels with ``input_kind='channels'`` and an
+    explicit C2/T2/C3/T3 basis. Formed matrices are never basis-converted.
+    Runtime ``kernel_size`` and ``nlook`` overrides do not mutate the instance;
+    ``enl`` is not a tunable parameter of this filter.
 
     Parameters
     ----------
@@ -344,54 +349,35 @@ class RefinedLeeFilter(SARFilter):
 
     >>> from grdl.image_processing.filters import RefinedLeeFilter
     >>> rlf = RefinedLeeFilter(kernel_size=7)
-    >>> c3_filtered = rlf.filter_matrix(c3)  # (3, 3, rows, cols)
+    >>> c3_filtered = rlf.apply(c3, input_kind='matrix', matrix_type='C3')
 
     Filter from raw SLC channels and feed to Freeman-Durden:
 
-    >>> c3_filt = rlf.filter_channels(shh, shv, svh, svv, matrix_type='C3')
+    >>> channels = np.stack([shh, shv, svh, svv])
+    >>> c3_filt = rlf.apply(channels, input_kind='channels', matrix_type='C3')
     >>> from grdl.image_processing.decomposition import FreemanDurden3C
     >>> fd = FreemanDurden3C()
     >>> result = fd.decompose_from_c3(c3_filt)
     """
+
+    enl: float = 1.0
+    nlook: Annotated[float, Range(min=0.0), Desc('Number of looks (strictly positive)')] = 1.0
 
     def __init__(
         self,
         kernel_size: int = 7,
         nlook: float = 1.0,
     ) -> None:
-        if kernel_size not in _WINDOW_PARAMS:
-            raise ValidationError(
-                f"kernel_size must be odd and in [3, 31], got {kernel_size}"
-            )
-        nlook = float(nlook)
-        if nlook <= 0.0:
-            raise ValidationError(
-                f"nlook must be > 0, got {nlook}"
-            )
-        super().__init__(kernel_size=kernel_size, enl=nlook)
+        self.kernel_size = kernel_size
         self.nlook = nlook
+        self._resolve_params({})
 
-    def apply(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
-        """Apply Refined Lee filter to a polarimetric matrix.
+    @property
+    def tile_halo(self) -> tuple[int, int]:
+        """Directional filtering has finite kernel support and no global estimate."""
+        return (self.kernel_size // 2, self.kernel_size // 2)
 
-        This is the ``ImageTransform`` interface. For most uses, prefer
-        ``filter_matrix()`` or ``filter_channels()`` which have clearer
-        semantics.
-
-        Parameters
-        ----------
-        source : np.ndarray
-            Polarimetric matrix, shape (N, N, rows, cols) where N is
-            the matrix dimension (2, 3, or 4). Complex-valued.
-
-        Returns
-        -------
-        np.ndarray
-            Filtered matrix, same shape and dtype.
-        """
-        return self.filter_matrix(source)
-
-    def filter_matrix(self, matrix: np.ndarray) -> np.ndarray:
+    def _filter_matrix(self, matrix: np.ndarray, params: dict[str, Any]) -> np.ndarray:
         """Filter a polarimetric covariance or coherency matrix.
 
         Parameters
@@ -400,28 +386,18 @@ class RefinedLeeFilter(SARFilter):
             Shape (N, N, rows, cols) where N ∈ {2, 3, 4}.
             The matrix should already be spatially averaged (boxcar or
             otherwise) if desired before edge-directed filtering.
+        params : dict[str, Any]
+            Validated effective kernel_size and nlook for this call.
 
         Returns
         -------
         np.ndarray
-            Filtered matrix, same shape. Complex-valued.
+            Filtered matrix with the same shape and dtype as input.
         """
-        if matrix.ndim != 4:
-            raise ValidationError(
-                f"Expected 4D matrix (N, N, rows, cols), got shape {matrix.shape}"
-            )
         n = matrix.shape[0]
-        if matrix.shape[1] != n:
-            raise ValidationError(
-                f"Matrix must be square in first two dims, got {matrix.shape[:2]}"
-            )
-        if n not in (2, 3, 4):
-            raise ValidationError(
-                f"Matrix dimension must be 2, 3, or 4, got {n}"
-            )
 
         rows, cols = matrix.shape[2], matrix.shape[3]
-        ks = self.kernel_size
+        ks = params['kernel_size']
         half = ks // 2
 
         # Compute span (trace of diagonal)
@@ -441,7 +417,7 @@ class RefinedLeeFilter(SARFilter):
 
         # Compute MMSE coefficient from span statistics
         coeff = _compute_masked_stats(
-            span_padded, masks, mask_index, ks, self.nlook
+            span_padded, masks, mask_index, ks, params['nlook']
         )
 
         # Apply filter to each matrix element
@@ -467,42 +443,3 @@ class RefinedLeeFilter(SARFilter):
 
         return out
 
-    def filter_channels(
-        self,
-        shh: np.ndarray,
-        shv: np.ndarray,
-        svh: np.ndarray,
-        svv: np.ndarray,
-        matrix_type: str = 'C3',
-    ) -> np.ndarray:
-        """Build a polarimetric matrix from SLC channels and filter it.
-
-        Convenience method that constructs the covariance [C3] or
-        coherency [T3] matrix from quad-pol SLC data then applies the Refined Lee filter.
-
-        Parameters
-        ----------
-        shh, shv, svh, svv : np.ndarray
-            Complex SLC channels, each shape (rows, cols).
-        matrix_type : str
-            'C3' for covariance matrix or 'T3' for coherency matrix.
-            Default is 'C3'.
-
-        Returns
-        -------
-        np.ndarray
-            Filtered matrix, shape (3, 3, rows, cols).
-        """
-
-        channels = np.stack([shh, shv, svh, svv], axis=0)
-
-        if matrix_type.upper() == 'C3':
-            matrix = CovarianceMatrix(window_size=1).compute(channels)
-        elif matrix_type.upper() == 'T3':
-            matrix = CoherencyMatrix(window_size=1).compute(channels)
-        else:
-            raise ValidationError(
-                f"matrix_type must be 'C3' or 'T3', got '{matrix_type}'"
-            )
-
-        return self.filter_matrix(matrix)

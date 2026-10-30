@@ -209,7 +209,7 @@ components = fd.decompose(shh, shv, svh, svv)
 
 # Advanced flow: apply Refined Lee filter before decomposition
 c3 = CovarianceMatrix(window_size=1).compute(channels)
-c3_filtered = RefinedLeeFilter(kernel_size=7).filter_matrix(c3)
+c3_filtered = RefinedLeeFilter(kernel_size=7).apply(c3, input_kind='matrix', matrix_type='C3')
 components = fd.decompose_from_c3(c3_filtered)
 ```
 
