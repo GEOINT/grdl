@@ -239,7 +239,7 @@ for each point independently:
   project at initial height
     → DEM lookup at projected (lat, lon)
     → re-project at DEM height
-    → repeat until height converges (< 0.5 m tolerance, max 5 iterations)
+    → repeat until height converges (fixed-point + secant; default 0.05 m tolerance, max 20 evaluations; NaN if not converged)
 ```
 
 This handles height-dependent projections (RPC, RSM) where the ground
@@ -414,7 +414,7 @@ pixels (N, 2) [row, col]
 | `default_hae` (property) | Scene reference height; overridden per subclass (SICD → SCP HAE, SIDD → measurement reference point HAE, Corner → construction `height`, others → 0.0) |
 | `_resolve_height(height)` | Returns explicit height if non-zero, else `default_hae` |
 | `_fill_nan_heights(dem_h, fallback)` | Fills NaN DEM gaps with `fallback` (if non-zero) else `default_hae` |
-| `_image_to_latlon_with_dem(..., max_iter=5, tol=0.5)` | Per-point iterative DEM refinement (bypassed when `_handles_dem_internally`) |
+| `_image_to_latlon_with_dem(..., max_iter=20, tol=0.05)` | Per-point iterative DEM refinement (bypassed when `_handles_dem_internally`) |
 | `_latlon_to_image_with_dem(...)` | Single DEM lookup on the inverse path |
 
 ### Construction Factories
