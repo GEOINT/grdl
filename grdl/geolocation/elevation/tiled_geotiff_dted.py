@@ -61,6 +61,7 @@ Created
 
 Modified
 --------
+2026-10-06  Fix half-pixel DEM sampling offset (issue #62).
 2026-07-20  Lazy tile metadata: index paths only at construction and
             resolve transform/dims/nodata on first sample.
 2026-06-08  Share DTED discovery with DTEDElevation: nested archive
@@ -80,7 +81,10 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
-from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.base import (
+    ElevationModel,
+    _world_to_array_index,
+)
 from grdl.geolocation.elevation.dted import (
     _CaseInsensitiveDirCache,
     _discover_dted_tiles,
@@ -547,9 +551,9 @@ class TiledGeoDTED(ElevationModel):
         batch_lats = lats[idx]
         batch_lons = lons[idx]
 
-        px_cols, px_rows = meta.inv_transform * (batch_lons, batch_lats)
-        px_cols = np.asarray(px_cols, dtype=np.float64)
-        px_rows = np.asarray(px_rows, dtype=np.float64)
+        px_cols, px_rows = _world_to_array_index(
+            meta.inv_transform, batch_lons, batch_lats,
+        )
 
         margin = self._margin
         r_min = int(np.floor(px_rows.min())) - margin

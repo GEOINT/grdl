@@ -44,6 +44,7 @@ Created
 
 Modified
 --------
+2026-10-06  Fix half-pixel DEM sampling offset (issue #62).
 2026-03-21
 """
 
@@ -59,7 +60,10 @@ import numpy as np
 
 # GRDL internal
 from grdl.geolocation.elevation._backend import require_elevation_backend
-from grdl.geolocation.elevation.base import ElevationModel
+from grdl.geolocation.elevation.base import (
+    ElevationModel,
+    _world_to_array_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -640,9 +644,9 @@ class TiledGeoTIFFDEM(ElevationModel):
             batch_lons = lons[idx_arr]
 
             # Compute pixel coordinates in this tile
-            px_cols, px_rows = meta.inv_transform * (batch_lons, batch_lats)
-            px_cols = np.asarray(px_cols, dtype=np.float64)
-            px_rows = np.asarray(px_rows, dtype=np.float64)
+            px_cols, px_rows = _world_to_array_index(
+                meta.inv_transform, batch_lons, batch_lats,
+            )
 
             # Bounding window with margin for interpolation kernel
             r_min = int(np.floor(px_rows.min())) - margin

@@ -122,7 +122,7 @@ result = orthorectify(geolocation=geo, elevation=dem, ...)  # does not exist
 - Projects pixel -> ground at initial height
 - Queries DEM at projected lat/lon
 - Re-projects at DEM height
-- Converges in up to 5 iterations
+- Solves DEM(ground(h)) - h = 0 per point (fixed-point + secant); defaults tol=0.05 m, max_iter=20, configurable via `image_to_latlon(..., tol=, max_iter=)`; non-converged points return NaN
 - Subclasses that handle DEM internally set `_handles_dem_internally = True` to bypass
 
 ---
