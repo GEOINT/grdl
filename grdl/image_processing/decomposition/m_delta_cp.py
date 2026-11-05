@@ -6,7 +6,8 @@ from typing import Annotated, Dict, List, Optional, TYPE_CHECKING, Tuple
 import numpy as np
 
 from grdl.image_processing.decomposition.compact_pol_base import CompactPolDecompositionBase
-from grdl.image_processing.decomposition.compact_pol_utils import safe_divide
+from grdl.image_processing.decomposition.compact_pol_utils import compact_handedness_s3
+from grdl.image_processing.decomposition.pol_matrix import stokes_degree_of_polarization
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
 
 
-@processor_version('1.0.0')
+@processor_version('1.1.0')
 @processor_tags(modalities=[ImageModality.SAR])
 class CompactPolMDelta(CompactPolDecompositionBase):
     """M-delta decomposition for compact-pol C2."""
@@ -30,10 +31,11 @@ class CompactPolMDelta(CompactPolDecompositionBase):
 
     def decompose_compact(self, c11, c12, c21, c22) -> Dict[str, np.ndarray]:
         self._validate_c2_inputs(c11, c12, c21, c22)
-        s0, s1, s2, s3 = self._stokes_from_c2(c11, c12, c21, c22, self.chi, self.window_size)
+        s0, s1, s2, s3 = self._stokes_from_c2(c11, c12, c21, c22, self.window_size)
+        s3 = compact_handedness_s3(s3, self.chi)
 
         s0_abs = np.abs(s0)
-        m = safe_divide(np.sqrt(s1 ** 2 + s2 ** 2 + s3 ** 2), s0_abs)
+        m = stokes_degree_of_polarization(s0_abs, s1, s2, s3)
         delta_rad = np.arctan2(s3, s2)
 
         surface = np.sqrt(np.clip((m * s0_abs * (1.0 + np.sin(delta_rad))) / 2.0, 0.0, None))

@@ -91,23 +91,22 @@ Created
 # Standard library
 import dataclasses
 import logging
-from typing import Annotated, Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Annotated, Any, Dict, Iterator, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
 
 try:
     import cupy as cp
-    import cupyx.scipy.ndimage as _cupyx_ndimage
     _HAS_CUPY = True
 except ImportError:
     _HAS_CUPY = False
     cp = None
-    _cupyx_ndimage = None
 
 # GRDL internal
+from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 from grdl.image_processing.base import ImageProcessor, ImageTransform
+from grdl.image_processing.filters.linear import boxcar_mean
 from grdl.exceptions import ValidationError
 from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.tiling import WindowedTileHalo
@@ -248,7 +247,7 @@ def prepare_polarimetric_matrix(
     np.ndarray
         CCYX matrix. Formed input is returned without dtype or basis change.
         Channels use CovarianceMatrix/CoherencyMatrix with window_size=1
-        (currently complex64), averaging HV/VH when four channels are supplied.
+        (preserving input precision), averaging HV/VH when four channels are supplied.
         Packed input is decoded with unpack_matrix().
 
     Raises
@@ -280,7 +279,9 @@ def prepare_polarimetric_matrix(
                 bands=source.shape[0], dtype=str(source.dtype), axis_order='CYX',
                 channel_metadata=channel_metadata,
             )
-            source = _extract_channels(source, metadata)
+            source = extract_channels(source, metadata)
+            if source.shape[0] not in expected:
+                raise ValidationError(f'{kind} channel descriptors resolve incompatible raw count {source.shape[0]}')
         if kind.startswith('C'):
             return CovarianceMatrix(window_size=1).compute(source)
         return CoherencyMatrix(window_size=1).compute(source)
@@ -301,66 +302,59 @@ def prepare_polarimetric_matrix(
         raise ValidationError('Polarimetric matrices must have nonempty spatial dimensions')
     return source
 
-def _smooth(arr: np.ndarray, ws: int, is_gpu: bool) -> np.ndarray:
-    """Boxcar spatial average over a real or complex 2-D array."""
-    if not is_gpu:
-        if np.iscomplexobj(arr):
-            return (
-                uniform_filter(arr.real, size=ws).astype(arr.real.dtype)
-                + 1j * uniform_filter(arr.imag, size=ws).astype(arr.imag.dtype)
-            )
-        return uniform_filter(arr, size=ws)
-    ndi = _cupyx_ndimage.uniform_filter
-    if cp.iscomplexobj(arr):
-        return (
-            ndi(arr.real, size=ws).astype(arr.real.dtype)
-            + 1j * ndi(arr.imag, size=ws).astype(arr.imag.dtype)
-        )
-    return ndi(arr, size=ws)
+def smooth(arr: np.ndarray, ws: int, is_gpu: bool) -> np.ndarray:
+    """Delegate reflected boxcar averaging; the array selects its backend."""
+    return boxcar_mean(arr, ws, mode='reflect')
 
 
-def _build_target_vector_c(channels: np.ndarray) -> list:
+def target_components(channels: np.ndarray | list[np.ndarray]) -> list[np.ndarray]:
+    """Promote component views to one complex precision without stacking them."""
+    dtype = np.result_type(np.complex64, *(channel.dtype for channel in channels))
+    return [channel.astype(dtype, copy=False) for channel in channels]
+
+
+def build_target_vector_c(channels: np.ndarray | list[np.ndarray]) -> list:
     """Lexicographic target vector components.
 
     Dual-pol:  [s_co, s_cross]
     Quad-pol:  [sxx, sqrt(2)*mean(sxy,syx), syy]  (reciprocal)
     """
-    n = channels.shape[0]
-    if n == 2:
-        return [channels[0], channels[1]]
-    xp = cp if (_HAS_CUPY and isinstance(channels, cp.ndarray)) else np
-    if n == 3:
+    channels = target_components(channels)
+    if len(channels) == 2:
+        return channels
+    scalar = np.finfo(channels[0].dtype).dtype.type
+    norm = scalar(np.sqrt(2.0))
+    if len(channels) == 3:
         cross = channels[1]
-        return [channels[0], xp.float32(np.sqrt(2.0)) * cross, channels[2]]
-    cross = (channels[1] + channels[2]) * xp.float32(0.5)
-    norm = xp.float32(np.sqrt(2.0))
+        return [channels[0], norm * cross, channels[2]]
+    cross = (channels[1] + channels[2]) * scalar(0.5)
     return [channels[0], norm * cross, channels[3]]
 
 
-def _build_target_vector_t(channels: np.ndarray) -> list:
+def build_target_vector_t(channels: np.ndarray | list[np.ndarray]) -> list:
     """Pauli target vector components (1/sqrt(2) factor included).
 
     Dual-pol:  [(s_co + s_cross), (s_co - s_cross)] / sqrt(2)
     Quad-pol:  [(sxx + syy), (sxx - syy), 2*mean(sxy,syx)] / sqrt(2)
     """
-    xp = cp if (_HAS_CUPY and isinstance(channels, cp.ndarray)) else np
-    norm = xp.float32(1.0 / np.sqrt(2.0))
-    n = channels.shape[0]
-    if n == 2:
+    channels = target_components(channels)
+    scalar = np.finfo(channels[0].dtype).dtype.type
+    norm = scalar(1.0 / np.sqrt(2.0))
+    if len(channels) == 2:
         return [
             (channels[0] + channels[1]) * norm,
             (channels[0] - channels[1]) * norm,
         ]
-    if n == 3:
+    if len(channels) == 3:
         cross = channels[1]
-        two_cross = cross * xp.float32(2.0)
+        two_cross = cross * scalar(2.0)
         return [
             (channels[0] + channels[2]) * norm,
             (channels[0] - channels[2]) * norm,
             two_cross * norm,
         ]
-    cross = (channels[1] + channels[2]) * xp.float32(0.5)
-    two_cross = cross * xp.float32(2.0)
+    cross = (channels[1] + channels[2]) * scalar(0.5)
+    two_cross = cross * scalar(2.0)
     return [
         (channels[0] + channels[3]) * norm,
         (channels[0] - channels[3]) * norm,
@@ -368,7 +362,37 @@ def _build_target_vector_t(channels: np.ndarray) -> list:
     ]
 
 
-def _compute_matrix(
+def iter_matrix_elements(
+    components: list[np.ndarray],
+    window_size: int,
+) -> Iterator[tuple[int, int, np.ndarray]]:
+    """Yield averaged upper-triangle elements without a full matrix temporary.
+
+    Diagonals are real power arrays. Off-diagonal products are formed once
+    and averaged after multiplication, not by averaging scattering fields.
+    """
+    components = target_components(components)
+    xp: Any = np
+    if cp is not None and isinstance(components[0], cp.ndarray):
+        xp = cp
+    for row, component in enumerate(components):
+        for col in range(row, len(components)):
+            product = (xp.abs(component) ** 2 if row == col
+                       else component * components[col].conj())
+            yield row, col, boxcar_mean(product, window_size, mode='reflect')
+
+
+def compute_dual_elements(
+    components: list[np.ndarray],
+    window_size: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return real diagonals and the complex upper off-diagonal of C2/T2."""
+    first, cross, second = (element for _, _, element in
+                            iter_matrix_elements(components, window_size))
+    return first, cross, second
+
+
+def compute_matrix(
     components: list,
     window_size: int,
     is_gpu: bool,
@@ -387,25 +411,118 @@ def _compute_matrix(
     Returns
     -------
     np.ndarray
-        Complex array, shape ``(N, N, rows, cols)``.
+        Complex array, shape ``(N, N, rows, cols)``, preserving component
+        precision with exactly real diagonals.
     """
     n = len(components)
     rows, cols = components[0].shape
-    xp = cp if is_gpu else np
-    mat = xp.zeros((n, n, rows, cols), dtype=np.complex64)
+    xp: Any = cp if is_gpu else np
+    dtype = np.result_type(np.complex64, *(component.dtype for component in components))
+    mat = xp.empty((n, n, rows, cols), dtype=dtype)
 
-    for i in range(n):
-        for j in range(i, n):
-            elem = _smooth(components[i] * xp.conj(components[j]),
-                           window_size, is_gpu)
-            mat[i, j] = elem
-            if i != j:
-                mat[j, i] = xp.conj(elem)
+    for row, col, element in iter_matrix_elements(components, window_size):
+        mat[row, col] = element
+        if row != col:
+            mat[col, row] = element.conj()
 
     return mat
 
 
-def _stack_channels(*channels: Optional[np.ndarray]) -> np.ndarray:
+def stokes_from_c2(
+    c11: np.ndarray,
+    c12: np.ndarray,
+    c22: np.ndarray,
+    c21: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Canonical Stokes with S3 = -2 Im(C12) for Hermitian C2.
+
+    When C21 is supplied, use both off-diagonals independently, preserving
+    the compact-pol interface for inputs that are not exactly Hermitian.
+    """
+    elements = [c11, c12, c22] if c21 is None else [c11, c12, c22, c21]
+    dtype = np.finfo(np.result_type(np.complex64, *(value.dtype for value in elements))).dtype
+    first, second = c11.real.astype(dtype, copy=False), c22.real.astype(dtype, copy=False)
+    if c21 is None:
+        s2 = 2.0 * c12.real.astype(dtype, copy=False)
+        s3 = -2.0 * c12.imag.astype(dtype, copy=False)
+    else:
+        s2 = c12.real.astype(dtype, copy=False) + c21.real.astype(dtype, copy=False)
+        s3 = c21.imag.astype(dtype, copy=False) - c12.imag.astype(dtype, copy=False)
+    return first + second, first - second, s2, s3
+
+
+def divide_by_power(value: np.ndarray, power: np.ndarray) -> np.ndarray:
+    """Normalize without a low-power cutoff; exactly zero power yields zero."""
+    dtype = np.result_type(np.float32, value.dtype, power.dtype)
+    if cp is not None and isinstance(value, cp.ndarray):
+        nonzero = power != 0
+        denominator = cp.where(nonzero, power, 1)
+        return cp.where(nonzero, value / denominator, 0).astype(dtype, copy=False)
+    return np.divide(value, power, out=np.zeros_like(value, dtype=dtype), where=power != 0)
+
+
+def stokes_degree_of_polarization(
+    s0: np.ndarray,
+    s1: np.ndarray,
+    s2: np.ndarray,
+    s3: np.ndarray,
+) -> np.ndarray:
+    """Stokes norm normalized before squaring, preserving real precision.
+
+    A zero vector returns zero: a numerical undefined-power policy, not a
+    physical assertion of unpolarization. Negative-power and NaN inputs
+    retain the existing clipped-ratio behavior.
+    """
+    xp: Any = np
+    if cp is not None and isinstance(s0, cp.ndarray):
+        xp = cp
+    first = divide_by_power(s1, s0)
+    second = divide_by_power(s2, s0)
+    third = divide_by_power(s3, s0)
+    dop = xp.hypot(xp.hypot(first, second), third)
+    zero_power_limit = xp.sign(xp.hypot(xp.hypot(s1, s2), s3))
+    dop = xp.where(s0 == 0, zero_power_limit, dop)
+    return xp.clip(xp.where(s0 < 0, 0, dop), 0.0, 1.0)
+
+
+def c2_degree_of_polarization(
+    c11: np.ndarray,
+    c12: np.ndarray,
+    c22: np.ndarray,
+    c21: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Barakat degree of polarization for covariance matrix C2.
+    C2 purity with stable power normalization and zero-vector DoP = 0.
+
+    Normalize each element by the trace before forming the determinant,
+    avoiding squared-power underflow/overflow. An explicit C21 is retained
+    rather than replaced by conj(C12). No nonzero-power threshold is used.
+    """
+    xp: Any = np
+    if cp is not None and isinstance(c11, cp.ndarray):
+        xp = cp
+    if c21 is None:
+        c21 = c12.conj()
+    dtype = np.result_type(np.float32, c11.dtype, c12.dtype, c21.dtype, c22.dtype)
+    c11, c12, c21, c22 = (value.astype(dtype, copy=False) for value in (c11, c12, c21, c22))
+    trace = c11 + c22
+    first, cross, lower, second = (
+        divide_by_power(value, trace) for value in (c11, c12, c21, c22)
+    )
+    radicand = (1.0 - 4.0 * (first * second - cross * lower)).real
+    zero_matrix = (c11 == 0) & (c12 == 0) & (c21 == 0) & (c22 == 0)
+    invalid_zero_trace = (trace == 0) & ~zero_matrix
+    if xp.any(invalid_zero_trace):
+        with xp.errstate(divide='ignore', invalid='ignore', over='ignore'):
+            determinant = (c11[invalid_zero_trace] * c22[invalid_zero_trace]
+                           - c12[invalid_zero_trace] * c21[invalid_zero_trace])
+            radicand[invalid_zero_trace] = (
+                1.0 - 4.0 * determinant / np.finfo(np.float64).tiny
+            ).real
+    return xp.where(zero_matrix, 0.0, xp.sqrt(xp.clip(radicand, 0.0, 1.0)))
+
+
+def stack_channels(*channels: Optional[np.ndarray]) -> np.ndarray:
     """Stack non-None channels into shape (n, rows, cols)."""
     valid = [c for c in channels if c is not None]
     if not valid:
@@ -414,301 +531,44 @@ def _stack_channels(*channels: Optional[np.ndarray]) -> np.ndarray:
     return xp.stack(valid, axis=0)
 
 
-def _canonicalize_channel_cube(
+def canonicalize_channel_cube(
     source: np.ndarray,
     metadata: 'ImageMetadata',
 ) -> tuple[np.ndarray, 'ImageMetadata']:
     """Normalize a labelled channel cube to CYX before matrix construction."""
-    if source.ndim != 3:
-        return source, metadata
-    axis_order = getattr(metadata, 'axis_order', None) or 'CYX'
-    if axis_order == 'YXC':
+    axis = channel_axis(source.shape, metadata)
+    if axis == 2:
         source = source.transpose(2, 0, 1)
-        metadata = dataclasses.replace(metadata, axis_order='CYX')
-    elif axis_order != 'CYX':
-        raise ValueError(
-            f'Channel input requires axis_order CYX or YXC, got {axis_order!r}'
-        )
-    if source.shape[1:] != (metadata.rows, metadata.cols):
-        raise ValueError(
-            f'CYX input spatial shape {source.shape[1:]} does not match '
-            f'metadata {(metadata.rows, metadata.cols)}'
-        )
-    return source, metadata
+    return source, dataclasses.replace(metadata, axis_order='CYX')
 
 
-def _extract_channels(
+def extract_channels(
     source: np.ndarray,
     metadata: 'ImageMetadata',
+    indices: tuple[int, ...] | None = None,
 ) -> np.ndarray:
-    """Extract polarimetric channels as a stacked ndarray.
-
-    Returns a stacked ndarray of shape (n, rows, cols) where n is the number
-    of channels extracted (2, 3, or 4 for dual, reciprocal, or full quad).
-    Channel order: [co_pol_a, cross_pol, cross_pol_2, co_pol_b].
-
-    Preferred extraction uses channel metadata roles/names so the method remains
-    agnostic to specific orthogonal bases (H/V, X/Y, R/L). If channel names
-    are unavailable or ambiguous, index-based fallback is used.
-    """
-    if source.ndim != 3:
-        return np.array([])  # Empty array signals extraction failure
-
-    axis_order = getattr(metadata, 'axis_order', None)
-    channel_metadata = getattr(metadata, 'channel_metadata', None)
-    bands = getattr(metadata, 'bands', source.shape[0])
-
-    # Determine if channels-first
-    if axis_order == 'CYX':
-        chs_first = True
-    elif axis_order == 'YXC':
-        chs_first = False
-    else:
-        chs_first = (source.shape[0] == bands and source.shape[-1] != bands)
-
-    n = source.shape[0] if chs_first else source.shape[-1]
-    if n < 2:
-        return np.array([])  # Empty array signals extraction failure
-
-    def _input_descriptors() -> list:
-        desc: list = []
-        for i in range(n):
-            if channel_metadata and len(channel_metadata) > i:
-                cm = channel_metadata[i]
-                name = getattr(cm, 'name', None)
-                pol = getattr(cm, 'polarization', None)
-                tx_pol = getattr(cm, 'tx_polarization', None)
-                rx_pol = getattr(cm, 'rcv_polarization', None)
-                role = getattr(cm, 'role', None)
-                parts = [f'idx={i}']
-                if name:
-                    parts.append(f'name={name}')
-                if pol:
-                    parts.append(f'pol={pol}')
-                elif tx_pol and rx_pol:
-                    parts.append(f'pol={tx_pol}{rx_pol}')
-                if role:
-                    parts.append(f'role={role}')
-                desc.append(' '.join(parts))
-            else:
-                desc.append(f'idx={i}')
-        return desc
-
-    def _log_resolved(strategy: str, resolved: list) -> None:
-        if not _log.isEnabledFor(logging.INFO):
-            return
-        _log.info(
-            'pol_matrix channel extraction: strategy=%s axis_order=%s n=%d input=%s resolved=%s',
-            strategy,
-            axis_order,
-            n,
-            _input_descriptors(),
-            resolved,
-        )
-
-    def ch(i):
-        return source[i] if chs_first else source[..., i]
-
-    def _norm_role(role: Optional[str]) -> str:
-        if not role:
-            return ''
-        return ''.join(c for c in role.lower() if c.isalnum() or c == '_')
-
-    def _role_kind(role: Optional[str]) -> Optional[str]:
-        r = _norm_role(role)
-        if not r:
-            return None
-        if r in {'copol', 'co_pol', 'co_pol_a', 'co_pol_b', 'parallelpol', 'parallel_pol'}:
-            return 'co'
-        if r in {'crosspol', 'cross_pol', 'cross_pol_2', 'xpol', 'x_pol'}:
-            return 'cross'
-        return None
-
-    def _norm_token(name: str) -> Optional[str]:
-        if not name:
-            return None
-        up = ''.join(c for c in name.upper() if c.isalnum())
-        for tok in (
-            'HH', 'HV', 'VH', 'VV',
-            'XX', 'XY', 'YX', 'YY',
-            'RR', 'RL', 'LR', 'LL',
-        ):
-            if tok in up:
-                return tok
-        return None
-
-    def _is_co(token: str) -> bool:
-        return len(token) == 2 and token[0] == token[1]
-
-    def _is_cross(token: str) -> bool:
-        return len(token) == 2 and token[0] != token[1]
-
-    if channel_metadata and len(channel_metadata) >= n:
-        role_co: list = []
-        role_cross: list = []
-
-        for i in range(n):
-            cm = channel_metadata[i]
-            extras = getattr(cm, 'extras', None) or {}
-            role_candidates = [
-                getattr(cm, 'role', None),
-                extras.get('polarimetric_role'),
-                extras.get('pol_role'),
-                extras.get('role'),
-            ]
-            kind = next((_role_kind(r) for r in role_candidates if _role_kind(r)), None)
-            if kind == 'co':
-                role_co.append((i, ch(i)))
-            elif kind == 'cross':
-                role_cross.append((i, ch(i)))
-
-        if len(role_co) >= 2 and len(role_cross) >= 1:
-            c0_idx, c0 = role_co[0]
-            c1_idx, c1 = role_co[1]
-            x0_idx, x0 = role_cross[0]
-            x1_idx, x1 = role_cross[1] if len(role_cross) > 1 else (None, None)
-            _log_resolved(
-                'metadata_role',
-                [
-                    f'co_pol_a<-idx={c0_idx}',
-                    f'cross_pol<-idx={x0_idx}',
-                    f'cross_pol_2<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
-                    f'co_pol_b<-idx={c1_idx}',
-                ],
-            )
-            return _stack_channels(c0, x0, x1, c1)
-        if len(role_co) >= 1 and len(role_cross) >= 1:
-            c0_idx, c0 = role_co[0]
-            x0_idx, x0 = role_cross[0]
-            x1_idx, x1 = role_cross[1] if len(role_cross) > 1 else (None, None)
-            _log_resolved(
-                'metadata_role',
-                [
-                    f'co_pol_a<-idx={c0_idx}',
-                    f'cross_pol<-idx={x0_idx}',
-                    f'cross_pol_2<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
-                ],
-            )
-            return _stack_channels(c0, x0, x1)
-
-        by_token: Dict[str, Tuple[int, np.ndarray]] = {}
-        for i in range(n):
-            cm = channel_metadata[i]
-            name = getattr(cm, 'name', None)
-            pol = getattr(cm, 'polarization', None)
-            tx_pol = getattr(cm, 'tx_polarization', None)
-            rx_pol = getattr(cm, 'rcv_polarization', None)
-            tok = (
-                _norm_token(name or '')
-                or _norm_token(pol or '')
-                or _norm_token(f'{tx_pol}{rx_pol}' if tx_pol and rx_pol else '')
-            )
-            if tok and tok not in by_token:
-                by_token[tok] = (i, ch(i))
-
-        # Prefer canonical orthogonal bases with explicit co/cross roles.
-        for co_a, co_b, cross_pref in (
-            ('HH', 'VV', ('HV', 'VH')),
-            ('XX', 'YY', ('XY', 'YX')),
-            ('RR', 'LL', ('RL', 'LR')),
-        ):
-            if co_a in by_token and co_b in by_token:
-                x1 = next((by_token[t] for t in cross_pref if t in by_token), None)
-                x2 = next((by_token[t] for t in cross_pref[::-1] if t in by_token), None)
-                if x1 is not None:
-                    if x2 is x1:
-                        x2 = None
-                    c0_idx, c0 = by_token[co_a]
-                    c1_idx, c1 = by_token[co_b]
-                    x0_idx, x0 = x1
-                    if x2 is not None:
-                        x1_idx, x1_arr = x2
-                    else:
-                        x1_idx, x1_arr = (None, None)
-                    _log_resolved(
-                        'token_canonical',
-                        [
-                            f'co_pol_a({co_a})<-idx={c0_idx}',
-                            f'cross_pol<-idx={x0_idx}',
-                            f'cross_pol_2<-idx={x1_idx}' if x1_arr is not None else 'cross_pol_2<-None',
-                            f'co_pol_b({co_b})<-idx={c1_idx}',
-                        ],
-                    )
-                    return _stack_channels(c0, x0, x1_arr, c1)
-
-        co_tokens = [t for t in by_token if _is_co(t)]
-        cross_tokens = [t for t in by_token if _is_cross(t)]
-        co_tokens.sort()
-        cross_tokens.sort()
-        if len(co_tokens) >= 2 and len(cross_tokens) >= 1:
-            c0_idx, c0 = by_token[co_tokens[0]]
-            c1_idx, c1 = by_token[co_tokens[1]]
-            x0_idx, x0 = by_token[cross_tokens[0]]
-            if len(cross_tokens) > 1:
-                x1_idx, x1 = by_token[cross_tokens[1]]
-            else:
-                x1_idx, x1 = (None, None)
-            _log_resolved(
-                'token_generic',
-                [
-                    f'co_pol_a({co_tokens[0]})<-idx={c0_idx}',
-                    f'cross_pol({cross_tokens[0]})<-idx={x0_idx}',
-                    f'cross_pol_2({cross_tokens[1]})<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
-                    f'co_pol_b({co_tokens[1]})<-idx={c1_idx}',
-                ],
-            )
-            return _stack_channels(c0, x0, x1, c1)
-        if len(co_tokens) >= 1 and len(cross_tokens) >= 1:
-            c0_idx, c0 = by_token[co_tokens[0]]
-            x0_idx, x0 = by_token[cross_tokens[0]]
-            if len(cross_tokens) > 1:
-                x1_idx, x1 = by_token[cross_tokens[1]]
-            else:
-                x1_idx, x1 = (None, None)
-            _log_resolved(
-                'token_generic',
-                [
-                    f'co_pol_a({co_tokens[0]})<-idx={c0_idx}',
-                    f'cross_pol({cross_tokens[0]})<-idx={x0_idx}',
-                    f'cross_pol_2({cross_tokens[1]})<-idx={x1_idx}' if x1 is not None else 'cross_pol_2<-None',
-                ],
-            )
-            return _stack_channels(c0, x0, x1)
-
-    # Index-based fallback
-    if n >= 4:
-        _log_resolved(
-            'index_fallback',
-            ['co_pol_a<-idx=0', 'cross_pol<-idx=1', 'cross_pol_2<-idx=2', 'co_pol_b<-idx=3'],
-        )
-        return _stack_channels(ch(0), ch(1), ch(2), ch(3))
-    if n == 3:
-        # Common cube layout for reciprocal quad-pol products:
-        # [co_pol_a, cross_pol, co_pol_b] with one cross-pol channel.
-        _log_resolved(
-            'index_fallback',
-            ['co_pol_a<-idx=0', 'cross_pol<-idx=1', 'co_pol_b<-idx=2'],
-        )
-        return _stack_channels(ch(0), ch(1), ch(2))
-    if n == 2:
-        _log_resolved(
-            'index_fallback',
-            ['co_pol_a<-idx=0', 'cross_pol<-idx=1'],
-        )
-        return _stack_channels(ch(0), ch(1))
-    return np.array([])
+    """Stack resolved raw channels in canonical co/cross order as CYX."""
+    axis = channel_axis(source.shape, metadata)
+    cube = source if axis == 0 else source.transpose(2, 0, 1)
+    if indices is None:
+        indices = resolve_raw_indices(cube.shape[0], metadata)
+    return stack_channels(*(cube[index] for index in indices))
 
 
-def _pop_channel_stack(kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
+def pop_channel_stack(kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
     """Pop explicit channel kwargs and return a stacked channel ndarray."""
+    explicit = any(name in kwargs for name in (
+        'sxx', 'shh', 'co_pol_a', 'co_pol', 'sxy', 'shv', 'cross_pol',
+        'syx', 'svh', 'cross_pol_2', 'syy', 'svv', 'co_pol_b',
+    ))
     sxx = kwargs.pop('sxx', kwargs.pop('shh', kwargs.pop('co_pol_a', kwargs.pop('co_pol', None))))
-    if sxx is None:
-        return None
     sxy = kwargs.pop('sxy', kwargs.pop('shv', kwargs.pop('cross_pol', None)))
     syx = kwargs.pop('syx', kwargs.pop('svh', kwargs.pop('cross_pol_2', None)))
     syy = kwargs.pop('syy', kwargs.pop('svv', kwargs.pop('co_pol_b', None)))
-    if sxy is None:
-        raise ValueError('At least one co-pol and one cross-pol channel are required.')
+    if not explicit:
+        return None
+    if sxx is None or sxy is None or (syx is not None and syy is None):
+        raise ValueError('Explicit channels require co-pol and cross-pol; a second cross requires co_pol_b.')
     if _log.isEnabledFor(logging.INFO):
         _log.info(
             'pol_matrix explicit channels: resolved=%s',
@@ -719,13 +579,26 @@ def _pop_channel_stack(kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
                 'co_pol_b<-provided' if syy is not None else 'co_pol_b<-None',
             ],
         )
-    return _stack_channels(sxx, sxy, syx, syy)
+    return stack_channels(sxx, sxy, syx, syy)
 
 
-def _make_matrix_channel_metadata(n: int, kind: str) -> list:
+def make_matrix_channel_metadata(
+    n: int, kind: str, source_indices: tuple[int, ...] | None = None,
+) -> list:
     """Flat channel descriptors for the N×N matrix (row-major)."""
     from grdl.IO.models.base import ChannelMetadata
 
+    dependencies = [[] for _ in range(n)]
+    if source_indices is not None:
+        indices = list(source_indices)
+        if kind == 'C':
+            dependencies = ([[indices[0]], [indices[1]]] if n == 2 else
+                            [[indices[0]], indices[1:-1], [indices[-1]]])
+        elif kind == 'T':
+            dependencies = ([indices, indices] if n == 2 else
+                            [[indices[0], indices[-1]], [indices[0], indices[-1]], indices[1:-1]])
+        else:
+            dependencies = [indices for _ in range(n)]
     descriptors = []
     idx = 0
     for i in range(n):
@@ -736,7 +609,7 @@ def _make_matrix_channel_metadata(n: int, kind: str) -> list:
                     index=idx,
                     name=name,
                     role='polarimetric_matrix',
-                    source_indices=[i, j],
+                    source_indices=list(dict.fromkeys(dependencies[i] + dependencies[j])),
                 )
             )
             idx += 1
@@ -747,7 +620,7 @@ def _make_matrix_channel_metadata(n: int, kind: str) -> list:
 # CovarianceMatrix
 # ---------------------------------------------------------------------------
 
-@processor_version('0.1.0')
+@processor_version('0.2.0')
 @processor_tags(
     modalities=[ImageModality.SAR],
     category=ProcessorCategory.ENHANCE,
@@ -781,7 +654,8 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
     -------
     np.ndarray
         Complex array, shape ``(N, N, rows, cols)`` (``axis_order='CCYX'``),
-        dtype complex64. N=2 for dual-pol, N=3 for quad-pol.
+        dtype complex64 or complex128 following input precision.
+        N=2 for dual-pol, N=3 for quad-pol.
 
     Examples
     --------
@@ -827,8 +701,8 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
                 'channels must have shape (n, rows, cols) with n in {2,3,4}.'
             )
         is_gpu = _HAS_CUPY and isinstance(channels, cp.ndarray)
-        components = _build_target_vector_c(channels)
-        return _compute_matrix(components, self.window_size, is_gpu)
+        components = build_target_vector_c(channels)
+        return compute_matrix(components, self.window_size, is_gpu)
 
     def execute(
         self,
@@ -850,12 +724,14 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
             shape ``(N, N, rows, cols)`` and metadata carries
             ``axis_order='CCYX'``.
         """
-        source, metadata = _canonicalize_channel_cube(source, metadata)
         self._metadata = metadata
 
-        channels = _pop_channel_stack(kwargs)
+        channels = pop_channel_stack(kwargs)
+        indices = None
         if channels is None:
-            channels = _extract_channels(source, metadata)
+            source, metadata = canonicalize_channel_cube(source, metadata)
+            indices = resolve_raw_indices(source.shape[0], metadata)
+            channels = extract_channels(source, metadata, indices)
         if channels.size == 0:
             raise ValueError('Channel extraction failed; provide explicit channels')
 
@@ -876,8 +752,9 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
         updated = dataclasses.replace(
             metadata,
             bands=n * n,
+            rows=result.shape[2], cols=result.shape[3],
             axis_order='CCYX',
-            channel_metadata=_make_matrix_channel_metadata(n, 'C'),
+            channel_metadata=make_matrix_channel_metadata(n, 'C', indices),
             dtype=str(result.dtype),
         )
         return result, updated
@@ -890,7 +767,7 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
 # CoherencyMatrix
 # ---------------------------------------------------------------------------
 
-@processor_version('0.1.0')
+@processor_version('0.2.0')
 @processor_tags(
     modalities=[ImageModality.SAR],
     category=ProcessorCategory.ENHANCE,
@@ -924,7 +801,8 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
     -------
     np.ndarray
         Complex array, shape ``(N, N, rows, cols)`` (``axis_order='CCYX'``),
-        dtype complex64. N=2 for dual-pol, N=3 for quad-pol.
+        dtype complex64 or complex128 following input precision.
+        N=2 for dual-pol, N=3 for quad-pol.
 
     Examples
     --------
@@ -972,8 +850,8 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
                 'channels must have shape (n, rows, cols) with n in {2,3,4}.'
             )
         is_gpu = _HAS_CUPY and isinstance(channels, cp.ndarray)
-        components = _build_target_vector_t(channels)
-        return _compute_matrix(components, self.window_size, is_gpu)
+        components = build_target_vector_t(channels)
+        return compute_matrix(components, self.window_size, is_gpu)
 
     def execute(
         self,
@@ -994,12 +872,14 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
             shape ``(N, N, rows, cols)`` and metadata carries
             ``axis_order='CCYX'``.
         """
-        source, metadata = _canonicalize_channel_cube(source, metadata)
         self._metadata = metadata
 
-        channels = _pop_channel_stack(kwargs)
+        channels = pop_channel_stack(kwargs)
+        indices = None
         if channels is None:
-            channels = _extract_channels(source, metadata)
+            source, metadata = canonicalize_channel_cube(source, metadata)
+            indices = resolve_raw_indices(source.shape[0], metadata)
+            channels = extract_channels(source, metadata, indices)
         if channels.size == 0:
             raise ValueError('Channel extraction failed; provide explicit channels')
 
@@ -1020,8 +900,9 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
         updated = dataclasses.replace(
             metadata,
             bands=n * n,
+            rows=result.shape[2], cols=result.shape[3],
             axis_order='CCYX',
-            channel_metadata=_make_matrix_channel_metadata(n, 'T'),
+            channel_metadata=make_matrix_channel_metadata(n, 'T', indices),
             dtype=str(result.dtype),
         )
         return result, updated
@@ -1052,7 +933,7 @@ _A_MUELLER_INV: np.ndarray = np.conj(_A_MUELLER).T.copy()  # = A^H
 # ---------------------------------------------------------------------------
 
 
-@processor_version('0.1.0')
+@processor_version('0.2.0')
 @processor_tags(
     modalities=[ImageModality.SAR],
     category=ProcessorCategory.ENHANCE,
@@ -1090,7 +971,8 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
     Returns
     -------
     np.ndarray
-        Float32 array, shape ``(4, rows, cols)`` (``axis_order='CYX'``).
+        Float32/float64 array matching input precision, shape ``(4, rows, cols)``
+        (``axis_order='CYX'``).
         Channels ordered [S0, S1, S2, S3].
 
     Examples
@@ -1130,19 +1012,13 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
         Returns
         -------
         np.ndarray
-            Float32 array, shape ``(4, rows, cols)``.
+            Float32/float64 array matching input precision, shape ``(4, rows, cols)``.
         """
-        is_gpu = _HAS_CUPY and isinstance(e_x, cp.ndarray)
-        xp = cp if is_gpu else np
-        ws = self.window_size
-
-        cross = e_x * xp.conj(e_y)
-        S0 = _smooth(xp.abs(e_x) ** 2 + xp.abs(e_y) ** 2,      ws, is_gpu)
-        S1 = _smooth(xp.abs(e_x) ** 2 - xp.abs(e_y) ** 2,      ws, is_gpu)
-        S2 = _smooth(2.0 * xp.real(cross),                       ws, is_gpu)
-        S3 = _smooth(-2.0 * xp.imag(cross),                      ws, is_gpu)
-
-        return xp.stack([S0, S1, S2, S3], axis=0).astype(xp.float32)
+        xp: Any = np
+        if cp is not None and isinstance(e_x, cp.ndarray):
+            xp = cp
+        c11, c12, c22 = compute_dual_elements([e_x, e_y], self.window_size)
+        return xp.stack(stokes_from_c2(c11, c12, c22), axis=0)
 
     def degree_of_polarization(self, stokes: np.ndarray) -> np.ndarray:
         """Per-pixel degree of polarization in ``[0, 1]``.
@@ -1155,13 +1031,11 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
         Returns
         -------
         np.ndarray
-            Float32, shape ``(rows, cols)``.  0 = unpolarized, 1 = fully polarized.
+            Float32/float64 matching input precision, shape ``(rows, cols)``.
+            Zero power returns 0 as a numerical policy for undefined DoP,
+            not a physical assertion that an absent signal is unpolarized.
         """
-        xp = cp if (_HAS_CUPY and isinstance(stokes, cp.ndarray)) else np
-        S0, S1, S2, S3 = stokes[0], stokes[1], stokes[2], stokes[3]
-        eps = xp.finfo(xp.float32).tiny
-        dop = xp.sqrt(S1 ** 2 + S2 ** 2 + S3 ** 2) / (S0 + eps)
-        return xp.clip(dop, 0.0, 1.0).astype(xp.float32)
+        return stokes_degree_of_polarization(stokes[0], stokes[1], stokes[2], stokes[3])
 
     # ------------------------------------------------------------------
     # ImageProcessor protocol
@@ -1192,32 +1066,25 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
         """
         self._metadata = metadata
 
+        explicit = any(name in kwargs for name in ('e_x', 'e_y', 'e_h', 'e_v'))
         e_x = kwargs.pop('e_x', kwargs.pop('e_h', None))
         e_y = kwargs.pop('e_y', kwargs.pop('e_v', None))
 
-        if e_x is None:
-            extracted = _extract_channels(source, metadata)
-            if extracted.size == 0:
-                raise ValueError('Channel extraction failed; provide explicit e_x/e_y')
-            # Unstack: extracted has shape (n, rows, cols)
-            n = extracted.shape[0]
-            if n >= 4:
-                e_x, e_y = extracted[0], extracted[3]  # quad-pol: co-pol pair
-            elif n == 3:
-                e_x, e_y = extracted[0], extracted[2]  # reciprocal: co-pol pair
-            elif n == 2:
-                e_x, e_y = extracted[0], extracted[1]  # dual-pol
-            else:
-                raise ValueError(f'Invalid number of channels extracted: {n}')
+        source_idx = []
+        if not explicit:
+            axis = channel_axis(source.shape, metadata)
+            cube = source if axis == 0 else source.transpose(2, 0, 1)
+            source_idx = list(resolve_raw_indices(cube.shape[0], metadata, 'stokes'))
+            e_x, e_y = (cube[index] for index in source_idx)
             if _log.isEnabledFor(logging.INFO):
                 _log.info(
                     '%s execute: extracted_channels=%d window_size=%d',
                     self.__class__.__name__,
-                    int(n),
+                    int(cube.shape[0]),
                     self.window_size,
                 )
         else:
-            if e_y is None:
+            if e_x is None or e_y is None:
                 raise ValueError('Both e_x and e_y must be provided when bypassing extraction.')
             if _log.isEnabledFor(logging.INFO):
                 _log.info(
@@ -1230,7 +1097,6 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
         rows, cols = result.shape[1], result.shape[2]
 
         from grdl.IO.models.base import ChannelMetadata as _CM
-        source_idx = [0, 1, 2, 3]
         channel_meta = [
             _CM(index=0, name='S0', role='stokes', source_indices=source_idx),
             _CM(index=1, name='S1', role='stokes', source_indices=source_idx),
@@ -1245,7 +1111,7 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
             bands=4,
             axis_order='CYX',
             channel_metadata=channel_meta,
-            dtype='float32',
+            dtype=str(result.dtype),
         )
         return result, updated
 
@@ -1258,7 +1124,7 @@ class StokesVector(WindowedTileHalo, ImageProcessor):
 # ---------------------------------------------------------------------------
 
 
-@processor_version('0.1.0')
+@processor_version('0.1.1')
 @processor_tags(
     modalities=[ImageModality.SAR],
     category=ProcessorCategory.ENHANCE,
@@ -1358,8 +1224,7 @@ class KennaughMatrix(WindowedTileHalo, ImageProcessor):
             c4_channels = [channels[0], channels[1], channels[2], channels[3]]
 
         # Build 4×4 lexicographic covariance C4 (from 4 channels, no √2 rescaling)
-        C4 = _compute_matrix(c4_channels, self.window_size, is_gpu)
-        # C4: (4, 4, rows, cols)  complex64
+        C4 = compute_matrix(c4_channels, self.window_size, is_gpu)
 
         # Promote to complex128 for numerical precision in the basis change
         C4_d = C4.astype(np.complex128)
@@ -1395,9 +1260,12 @@ class KennaughMatrix(WindowedTileHalo, ImageProcessor):
         """
         self._metadata = metadata
 
-        channels = _pop_channel_stack(kwargs)
+        channels = pop_channel_stack(kwargs)
+        indices = None
         if channels is None:
-            channels = _extract_channels(source, metadata)
+            source, metadata = canonicalize_channel_cube(source, metadata)
+            indices = resolve_raw_indices(source.shape[0], metadata)
+            channels = extract_channels(source, metadata, indices)
         if channels.size == 0:
             raise ValueError('Channel extraction failed; provide explicit channels')
 
@@ -1421,7 +1289,7 @@ class KennaughMatrix(WindowedTileHalo, ImageProcessor):
             cols=cols,
             bands=16,
             axis_order='KKYX',
-            channel_metadata=_make_matrix_channel_metadata(4, 'K'),
+            channel_metadata=make_matrix_channel_metadata(4, 'K', indices),
             dtype='float32',
         )
         return result, updated

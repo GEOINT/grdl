@@ -25,6 +25,8 @@ Created
 
 from typing import Any, Dict, Optional, Tuple
 
+import dataclasses
+
 import numpy as np
 import pytest
 from shapely.geometry import box
@@ -347,6 +349,7 @@ class TestDecompositionExecute:
     def test_delegates_to_decompose_via_bands(self, meta):
         """execute() extracts channels from 4-band source array."""
         source = np.random.rand(10, 12, 4).astype(np.complex64)
+        meta = dataclasses.replace(meta, bands=4, dtype='complex64', axis_order='YXC')
         dec = StubDecomposition()
         result, out_meta = dec.execute(meta, source)
         assert isinstance(result, dict)
@@ -386,6 +389,7 @@ class TestDecompositionExecute:
     def test_metadata_bands_updated(self, meta):
         """Returned metadata bands = number of components."""
         source = np.random.rand(10, 12, 4).astype(np.complex64)
+        meta = dataclasses.replace(meta, bands=4, dtype='complex64', axis_order='YXC')
         dec = StubDecomposition()
         _, out_meta = dec.execute(meta, source)
         assert out_meta.bands == 2  # alpha, beta

@@ -6,7 +6,8 @@ from typing import Annotated, Dict, Tuple, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from grdl.image_processing.decomposition.compact_pol_base import CompactPolDecompositionBase
-from grdl.image_processing.decomposition.compact_pol_utils import safe_divide
+from grdl.image_processing.decomposition.pol_matrix import c2_degree_of_polarization
+from grdl.image_processing.filters.linear import boxcar_mean
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
@@ -15,10 +16,10 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
 
 
-@processor_version('1.0.0')
+@processor_version('1.1.0')
 @processor_tags(modalities=[ImageModality.SAR])
 class CompactPolDegreeOfPolarization(CompactPolDecompositionBase):
-    """Barakat degree of polarization for compact-pol C2."""
+    """C2 DoP preserving input precision; undefined zero-power DoP returns 0."""
 
     window_size: Annotated[int, Range(min=1, max=31), Desc('Boxcar averaging window size')] = 7
     chi: Annotated[float, Range(min=-90.0, max=90.0), Desc('Ellipticity angle of transmitted wave')] = 45.0
@@ -30,15 +31,12 @@ class CompactPolDegreeOfPolarization(CompactPolDecompositionBase):
 
     def decompose_compact(self, c11, c12, c21, c22) -> Dict[str, np.ndarray]:
         self._validate_c2_inputs(c11, c12, c21, c22)
-        c11s = self._boxcar_complex(c11, self.window_size)
-        c12s = self._boxcar_complex(c12, self.window_size)
-        c21s = self._boxcar_complex(c21, self.window_size)
-        c22s = self._boxcar_complex(c22, self.window_size)
+        c11s = boxcar_mean(c11, self.window_size, mode='reflect')
+        c12s = boxcar_mean(c12, self.window_size, mode='reflect')
+        c21s = boxcar_mean(c21, self.window_size, mode='reflect')
+        c22s = boxcar_mean(c22, self.window_size, mode='reflect')
 
-        det = c11s * c22s - c12s * c21s
-        trace = c11s + c22s
-        dop = np.sqrt(np.clip(np.real(1.0 - 4.0 * safe_divide(det, trace ** 2)), 0.0, 1.0))
-        return {'dop': np.real(dop)}
+        return {'dop': c2_degree_of_polarization(c11s, c12s, c22s, c21s)}
 
     def to_rgb(
         self,

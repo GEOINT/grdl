@@ -33,6 +33,41 @@ from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.image_processing.decomposition.h_alpha_dp import DualPolHAlpha
 
 
+@pytest.mark.parametrize('axis_order', ['CYX', 'YXC'])
+def test_execute_reversed_descriptors(halpha, copol_only, axis_order):
+    s_co, s_cross = copol_only
+    cube = np.stack([s_cross, s_co])
+    if axis_order == 'YXC':
+        cube = cube.transpose(1, 2, 0)
+    metadata = ImageMetadata(
+        format='test', rows=64, cols=64, bands=2, dtype='complex64',
+        axis_order=axis_order,
+        channel_metadata=[ChannelMetadata(index=0, name='HV'),
+                          ChannelMetadata(index=1, name='HH')],
+    )
+    result, updated = halpha.execute(metadata, cube)
+    expected = halpha.decompose_dual(s_co, s_cross)
+    for name, value in result.items():
+        np.testing.assert_array_equal(value, expected[name])
+    assert updated.axis_order == 'CYX'
+    assert updated.dtype == str(np.result_type(*(value.dtype for value in result.values())))
+    assert [channel.name for channel in updated.channel_metadata] == list(result)
+    assert all(channel.source_indices == [1, 0] for channel in updated.channel_metadata)
+
+
+def test_execute_explicit_dual_bypasses_source(halpha, copol_only):
+    s_co, s_cross = copol_only
+    metadata = ImageMetadata(format='test', rows=1, cols=1, bands=9, dtype='float32',
+                             axis_order='CCYX')
+    result, updated = halpha.execute(metadata, np.zeros((2, 3, 4)),
+                                    s_co=s_co, s_cross=s_cross)
+    assert updated.rows == 64
+    assert all(channel.source_indices == [] for channel in updated.channel_metadata)
+    np.testing.assert_array_equal(result['span'], halpha.decompose_dual(s_co, s_cross)['span'])
+    with pytest.raises(ValueError, match='Explicit dual-pol'):
+        halpha.execute(metadata, np.zeros((2, 3, 4)), s_cross=s_cross)
+
+
 # ===================================================================
 # Fixtures
 # ===================================================================

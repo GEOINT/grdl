@@ -31,8 +31,9 @@ from grdl.image_processing.decomposition import (
     Yamaguchi4C,
 )
 from grdl.image_processing.filters import (
-    ComplexLeeFilter, IDANFilter, LeeFilter, MedianFilter, RefinedLeeFilter,
+    ComplexLeeFilter, IDANFilter, LeeFilter, MeanFilter, MedianFilter, RefinedLeeFilter,
 )
+from grdl.image_processing.filters.linear import boxcar_mean
 from grdl.image_processing.tiling import get_tile_halo
 
 ROWS, COLS = 83, 101
@@ -66,6 +67,7 @@ class TestDeclaredHalos:
         (CoherencyMatrix(window_size=1), (0, 0)),
         (PauliDecomposition(window_size=5), (2, 2)),
         (FreemanDurden3C(window_size=9), (4, 4)),
+        (MeanFilter(kernel_size=7), (3, 3)),
         (RefinedLeeFilter(kernel_size=7), (3, 3)),
         (LeeFilter(kernel_size=5, enl=4.0), (2, 2)),
     ])
@@ -79,6 +81,9 @@ class TestDeclaredHalos:
     def test_idan_is_global(self):
         assert get_tile_halo(IDANFilter(kernel_size=7, enl=2.0)) is None
 
+    def test_mean_wrap_is_global(self):
+        assert get_tile_halo(MeanFilter(kernel_size=7, mode='wrap')) is None
+
     def test_undeclared_is_global(self):
         assert get_tile_halo(MedianFilter(kernel_size=3)) is None
         assert get_tile_halo(object()) is None
@@ -91,6 +96,27 @@ class TestDeclaredHalos:
 
 
 class TestHaloEquivalence:
+
+    @pytest.mark.parametrize('dtype', [np.float32, np.float64])
+    @pytest.mark.parametrize('window', [3, 7])
+    @pytest.mark.parametrize('mode', ['reflect', 'constant', 'nearest'])
+    def test_mean_filter(self, quad, dtype, window, mode):
+        source = np.abs(quad[0]).astype(dtype)
+        proc = MeanFilter(kernel_size=window, mode=mode)
+        full = proc.apply(source)
+        tiled = _tiled(proc, source, proc.apply, tile=29)
+        tolerance = 1e-6 if dtype == np.float32 else 1e-12
+        np.testing.assert_allclose(tiled, full, rtol=tolerance, atol=tolerance)
+
+    @pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
+    @pytest.mark.parametrize('window', [1, 7])
+    def test_complex_boxcar(self, quad, dtype, window):
+        source = quad[0].astype(dtype)
+        proc = CovarianceMatrix(window_size=window)
+        full = boxcar_mean(source, window)
+        tiled = _tiled(proc, source, lambda block: boxcar_mean(block, window), tile=29)
+        tolerance = 1e-6 if dtype == np.complex64 else 1e-12
+        np.testing.assert_allclose(tiled, full, rtol=tolerance, atol=tolerance)
 
     @pytest.mark.parametrize('cls', [CovarianceMatrix, CoherencyMatrix])
     @pytest.mark.parametrize('ws', [1, 7])

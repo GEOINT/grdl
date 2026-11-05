@@ -41,6 +41,7 @@ from grdl.IO.models.common import (
     XYZPoly,
 )
 from grdl.IO.models.nisar import NISARMetadata
+from grdl.IO.models.polarization import channel_axis, resolve_quad_pol_mapping
 from grdl.IO.models.sicd import (
     SICDCollectionInfo,
     SICDCollectionMetadata,
@@ -125,23 +126,11 @@ def _read_source_cube(
 # ---------------------------------------------------------------------------
 
 def _channel_map_from_metadata(metadata: object) -> Dict[str, int]:
-    """Map HH/HV/VH/VV polarizations to channel indices from reader metadata."""
+    """Resolve a complete exact quad-pol descriptor mapping, without fallback."""
     channel_metadata = getattr(metadata, 'channel_metadata', None)
     if not channel_metadata:
         return {}
-    mapping: Dict[str, int] = {}
-    for i, ch in enumerate(channel_metadata):
-        pol = getattr(ch, 'polarization', None)
-        name = getattr(ch, 'name', None)
-        token = (pol or name or '').upper().replace('_', '')
-        for key in ('HH', 'HV', 'VH', 'VV'):
-            if key in token and key not in mapping:
-                mapping[key] = i
-                break
-    return mapping
-
-
-_FALLBACK_MAP = {'HH': 0, 'HV': 1, 'VH': 2, 'VV': 3}
+    return resolve_quad_pol_mapping(len(channel_metadata), metadata)
 
 
 def _extract_quad_pol(
@@ -152,36 +141,12 @@ def _extract_quad_pol(
     vh_band: Optional[int],
     vv_band: Optional[int],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, int]]:
-    if cube.ndim != 3:
-        raise ValueError(f'Expected 3D image cube, got shape {cube.shape}')
-
-    axis_order = getattr(metadata, 'axis_order', None)
-    bands = int(getattr(metadata, 'bands', cube.shape[0]))
-    if axis_order == 'CYX':
-        byx = cube
-    elif axis_order == 'YXC':
-        byx = np.moveaxis(cube, -1, 0)
-    else:
-        byx = cube if cube.shape[0] == bands else np.moveaxis(cube, -1, 0)
-
-    if byx.shape[0] < 4:
-        raise ValueError(
-            f'Quad-pol synthesis requires at least 4 channels (HH/HV/VH/VV), '
-            f'got {byx.shape[0]}.  Ensure the input is a quad-pol product.'
-        )
-
-    mapping = _channel_map_from_metadata(metadata)
-    for k, v in {'HH': hh_band, 'HV': hv_band, 'VH': vh_band, 'VV': vv_band}.items():
-        if v is not None:
-            idx = int(v) - 1
-            if not (0 <= idx < byx.shape[0]):
-                raise ValueError(f'{k} band override out of range: {v}')
-            mapping[k] = idx
-    for k, default in _FALLBACK_MAP.items():
-        mapping.setdefault(k, default)
-
-    if len({mapping[k] for k in _FALLBACK_MAP}) != 4:
-        raise ValueError(f'Duplicate band indices in mapping: {mapping}')
+    axis = channel_axis(cube.shape, metadata)
+    byx = cube if axis == 0 else np.moveaxis(cube, -1, 0)
+    mapping = resolve_quad_pol_mapping(
+        byx.shape[0], metadata,
+        {'HH': hh_band, 'HV': hv_band, 'VH': vh_band, 'VV': vv_band},
+    )
 
     return (
         byx[mapping['HH']],

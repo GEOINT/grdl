@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Tests for compact-pol decomposition processors."""
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -11,6 +13,51 @@ from grdl.image_processing.decomposition.model_free_cp import CompactPolModelFre
 from grdl.image_processing.decomposition.s_omega_cp import CompactPolSOmega
 from grdl.image_processing.decomposition.m_chi_cp import CompactPolMChi
 from grdl.image_processing.decomposition.m_delta_cp import CompactPolMDelta
+from grdl.image_processing.decomposition.pol_matrix import StokesVector
+
+
+@pytest.mark.parametrize('chi', [-45.0, 0.0, 45.0])
+@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
+def test_compact_canonical_stokes(chi, dtype):
+    fields = [np.ones((3, 5), dtype=dtype), np.full((3, 5), 1j, dtype=dtype)]
+    c11, c22 = np.abs(fields[0]) ** 2, np.abs(fields[1]) ** 2
+    c12 = fields[0] * fields[1].conj()
+    proc = CompactPolMChi(window_size=1, chi=chi)
+    result = proc._stokes_from_c2(c11, c12, c12.conj(), c22, window_size=1)
+    np.testing.assert_array_equal(np.stack(result), StokesVector(1).compute(*fields))
+    assert all(value.dtype == np.finfo(dtype).dtype for value in result)
+
+
+@pytest.mark.parametrize('processor,names,negative,nonnegative', [
+    (CompactPolMChi, ('surface', 'double_bounce', 'volume', 'm_cp', 'chi_cp'),
+     (1.2840106300379734, .4986815597658628, 1.7614293638687224,
+      .3794733192202055, -23.774922228554335),
+     (.4986815597658628, 1.2840106300379734, 1.7614293638687224,
+      .3794733192202055, 23.774922228554335)),
+    (CompactPolMDelta, ('surface', 'double_bounce', 'volume', 'm_cp', 'delta_cp'),
+     (1.3313042723701018, .35354706966702604, 1.2455186477726803,
+      .3794733192202055, 60.25511870305777),
+     (.35354706966702604, 1.3313042723701018, 1.2455186477726803,
+      .3794733192202055, -60.25511870305777)),
+    (CompactPolModelFree3C, ('surface', 'double_bounce', 'volume', 'theta_cp'),
+     (1.4470100397602799, .450356556340748, 3.102633403898972, 15.843631736063516),
+     (.450356556340748, 1.4470100397602799, 3.102633403898972, -15.843631736063516)),
+    (CompactPolSOmega, ('surface', 'double_bounce', 'volume'),
+     (2.1264842659301326, .44958338727379543, 2.423932346796072),
+     (.44958338727379543, 2.1264842659301326, 2.423932346796072)),
+])
+@pytest.mark.parametrize('chi', [-45., 0., 45.])
+def test_compact_physical_outputs_before_stokes_refactor(processor, names, negative,
+                                                        nonnegative, chi):
+    """Freeze outputs captured before canonical Stokes/handedness separation."""
+    elements = [np.full((3, 5), value) for value in (3., .4 + .7j, .4 - .7j, 2.)]
+    result = processor(window_size=1, chi=chi).decompose_compact(*elements)
+    expected = negative if chi < 0 else nonnegative
+    if processor is CompactPolSOmega and chi == 0:
+        expected = (.4494733192202055, 1.9649988441973174, 2.585527836582477)
+    assert set(result) == set(names)
+    for name, value in zip(names, expected, strict=True):
+        np.testing.assert_allclose(result[name], value, rtol=1e-12, atol=1e-12)
 
 
 @pytest.fixture
@@ -45,6 +92,51 @@ def c2_metadata():
 def _cube_from_c2(c2_random):
     c11, c12, _, c22 = c2_random
     return np.stack([c11, c12.real, c12.imag, c22], axis=0)
+
+
+@pytest.mark.parametrize('axis_order', ['CYX', 'YXC'])
+def test_shuffled_packed_c2(c2_random, c2_metadata, axis_order):
+    order = [3, 2, 0, 1]
+    cube = _cube_from_c2(c2_random)[order]
+    metadata = dataclasses.replace(
+        c2_metadata, axis_order=axis_order,
+        channel_metadata=[dataclasses.replace(c2_metadata.channel_metadata[index], index=slot)
+                          for slot, index in enumerate(order)],
+    )
+    if axis_order == 'YXC':
+        cube = cube.transpose(1, 2, 0)
+    proc = CompactPolMChi(window_size=3)
+    result, updated = proc.execute(metadata, cube)
+    expected = proc.decompose_compact(*c2_random)
+    for name in result:
+        np.testing.assert_array_equal(result[name], expected[name])
+    assert updated.axis_order == 'CYX'
+    assert updated.dtype == str(np.result_type(*(value.dtype for value in result.values())))
+    assert [channel.name for channel in updated.channel_metadata] == list(result)
+    assert all(channel.source_indices == [2, 3, 1, 0] for channel in updated.channel_metadata)
+
+
+def test_compact_rejects_raw_labels(c2_random, c2_metadata):
+    metadata = dataclasses.replace(c2_metadata, channel_metadata=[
+        ChannelMetadata(index=index, name=name)
+        for index, name in enumerate(('HH', 'HV', 'VH', 'VV'))
+    ])
+    with pytest.raises(ValueError, match='Raw scattering'):
+        CompactPolMChi().execute(metadata, _cube_from_c2(c2_random))
+
+
+def test_explicit_compact_bypasses_source(c2_random, c2_metadata):
+    metadata = dataclasses.replace(c2_metadata, axis_order='CCYX', rows=1, cols=1)
+    proc = CompactPolMChi(window_size=3)
+    inputs = dict(zip(('c11', 'c12', 'c21', 'c22'), c2_random, strict=True))
+    result, updated = proc.execute(metadata, np.zeros((2, 3, 4)), **inputs)
+    expected = proc.decompose_compact(*c2_random)
+    for name in result:
+        np.testing.assert_array_equal(result[name], expected[name])
+    assert updated.rows == 48
+    assert all(channel.source_indices == [] for channel in updated.channel_metadata)
+    with pytest.raises(ValueError, match='Explicit compact-pol'):
+        proc.execute(c2_metadata, _cube_from_c2(c2_random), c22=c2_random[-1])
 
 
 class TestCompactPolBase:

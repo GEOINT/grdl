@@ -49,6 +49,17 @@ phase_preserved = ComplexLeeFilter(kernel_size=3, enl=2.0).apply(slc)
 applying a scalar complex filter to each polarization is not equivalent to
 joint polarimetric matrix filtering. Do not send a 4D tensor to a scalar filter.
 
+## Shared Spatial Mean
+
+`filters.linear.boxcar_mean(source, window_size, mode='reflect')` is the
+real/complex numerical kernel used by MeanFilter and polarimetric callers.
+It preserves floating precision and NumPy/CuPy residency; window 1 returns
+the input without copying. Callers must not mutate that aliased result.
+For tiled execution, read a half-window halo, filter, then crop the tile core.
+MeanFilter declares half-kernel halos for reflect/constant/nearest and a global
+requirement for wrap. Pauli smooths amplitudes before mixing; covariance and
+coherency builders smooth outer products instead.
+
 ## Joint Polarimetric Filtering
 
 Wishart, Refined Lee, and IDAN inherit the same interface from
@@ -93,13 +104,24 @@ joint = IDANFilter(kernel_size=3, max_pixels=8, enl=2.0).apply(
 ```
 
 Formation uses the existing `CovarianceMatrix` or `CoherencyMatrix` with
-`window_size=1`, once before filtering. The builders currently return complex64.
+`window_size=1`, once before filtering. Builders preserve complex64/complex128
+input precision. C2/T2 element-only helpers and full matrix builders share the
+same target-vector and upper-triangle calculations; dual-pol decompositions
+do not allocate a full matrix solely to obtain its three independent elements.
+Diagonals are real powers, and the lower triangle is formed by conjugation.
 Dual-pol C2/T2 needs two channels in co/cross order. Reciprocal C3/T3 accepts
 three channels `[HH, HV, VV]` or four `[HH, HV, VH, VV]`; four-channel formation
 averages HV and VH, i.e., the monostatic assumption. Optional `ChannelMetadata` 
 names/roles resolve channel order for other supported orthogonal polarization 
 labels. Layout and polarization order are different concepts: descriptors do not
 make a YXC array CYX.
+
+`StokesVector` uses the same averaged independent elements and preserves the
+matching real precision. Its canonical convention is `S3 = -2 Im(C12)`;
+compact algorithms apply transmit-handedness conversion explicitly. Stokes,
+dual-pol and compact-pol DoP share stable power normalization. Exactly zero
+valid power returns 0 as a numerical undefined-power policy, not a physical
+claim of unpolarization. Full-pol T3 DoP is unchanged.
 
 ### Filter a Preformed Matrix
 
@@ -160,7 +182,7 @@ boundary combination has been validated. Joint filters are currently CPU-only.
 
 | Filter | Input domain | Output dtype | GPU | Declared halo/global behavior |
 |---|---|---|---|---|
-| Mean | Real images | float32, or float64 for float64 input | Yes | Global/undeclared |
+| Mean | Real images | float32, or float64 for float64 input | Yes | Half kernel; global for wrap |
 | Gaussian | Real images | float32, or float64 for float64 input | Yes | Global/undeclared |
 | Median / Min / Max | Real images | Input dtype | Yes | Global/undeclared |
 | StdDev | Real images | float64 | Yes | Global/undeclared |

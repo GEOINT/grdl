@@ -28,10 +28,17 @@ from typing import Any, Dict, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
 
 # GRDL internal
+from grdl.IO.models.base import ChannelMetadata
+from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.decomposition.pol_matrix import (
+    build_target_vector_c,
+    build_target_vector_t,
+    compute_dual_elements,
+    stokes_from_c2,
+)
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
@@ -85,29 +92,31 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
     ) -> tuple:
         """Execute via universal protocol using dual-pol channel extraction."""
         self._metadata = metadata
+        explicit = any(name in kwargs for name in ('s_co', 's_cross'))
         s_co = kwargs.pop('s_co', None)
         s_cross = kwargs.pop('s_cross', None)
-        if s_co is None and source.ndim == 3:
-            axis_order = getattr(metadata, 'axis_order', None)
-            if axis_order == 'CYX' and source.shape[0] >= 2:
-                s_co = source[0]
-                s_cross = source[1]
-            elif axis_order == 'YXC' and source.shape[-1] >= 2:
-                s_co = source[..., 0]
-                s_cross = source[..., 1]
-            else:
-                channel_metadata = getattr(metadata, 'channel_metadata', None)
-                bands = getattr(metadata, 'bands', None)
-                n_channels = len(channel_metadata) if channel_metadata else bands
-                if n_channels == 2 and source.shape[0] == 2 and source.shape[-1] != 2:
-                    s_co = source[0]
-                    s_cross = source[1]
-                elif source.shape[-1] >= 2:
-                    s_co = source[..., 0]
-                    s_cross = source[..., 1]
+        source_indices = []
+        if explicit:
+            if s_co is None or s_cross is None:
+                raise ValueError('Explicit dual-pol inputs require s_co and s_cross')
+        else:
+            axis = channel_axis(source.shape, metadata)
+            cube = source if axis == 0 else source.transpose(2, 0, 1)
+            source_indices = list(resolve_raw_indices(cube.shape[0], metadata, 'dual'))
+            s_co, s_cross = (cube[index] for index in source_indices)
 
         components = self.decompose_dual(s_co, s_cross)
-        updated = dataclasses.replace(metadata, bands=len(components))
+        first = next(iter(components.values()))
+        updated = dataclasses.replace(
+            metadata, bands=len(components), rows=first.shape[0], cols=first.shape[1],
+            dtype=str(np.result_type(*(value.dtype for value in components.values()))),
+            axis_order='CYX',
+            channel_metadata=[
+                ChannelMetadata(index=index, name=name, role='decomposition',
+                                source_indices=list(source_indices))
+                for index, name in enumerate(components)
+            ],
+        )
         return components, updated
 
     @staticmethod
@@ -138,12 +147,9 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         window_size: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute averaged dual-pol covariance matrix elements (C2)."""
-        c11 = uniform_filter(np.abs(s_co) ** 2, size=window_size)
-        c22 = uniform_filter(np.abs(s_cross) ** 2, size=window_size)
-        c12_real = uniform_filter(np.real(s_co * np.conj(s_cross)), size=window_size)
-        c12_imag = uniform_filter(np.imag(s_co * np.conj(s_cross)), size=window_size)
-        c12 = c12_real + 1j * c12_imag
-        return c11, c12, c22
+        return compute_dual_elements(
+            build_target_vector_c([s_co, s_cross]), window_size,
+        )
 
     @staticmethod
     def _compute_t2(
@@ -152,16 +158,9 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         window_size: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute averaged dual-pol coherency matrix elements (T2)."""
-        inv_sqrt2 = 1.0 / np.sqrt(2.0)
-        k1 = (s_co + s_cross) * inv_sqrt2
-        k2 = (s_co - s_cross) * inv_sqrt2
-
-        t11 = uniform_filter(np.abs(k1) ** 2, size=window_size)
-        t22 = uniform_filter(np.abs(k2) ** 2, size=window_size)
-        t12_real = uniform_filter(np.real(k1 * np.conj(k2)), size=window_size)
-        t12_imag = uniform_filter(np.imag(k1 * np.conj(k2)), size=window_size)
-        t12 = t12_real + 1j * t12_imag
-        return t11, t12, t22
+        return compute_dual_elements(
+            build_target_vector_t([s_co, s_cross]), window_size,
+        )
 
     @staticmethod
     def _normalized_stokes(
@@ -171,11 +170,8 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Compute Stokes terms and percentile-normalized |S1|, |S2|, |S3|."""
-        s0 = c11 + c22
-        s1 = c11 - c22
-        s2 = 2.0 * np.real(c12)
-        s3 = 2.0 * np.imag(c12)
+        """Canonical Stokes and percentile-normalized magnitudes (not physical DoP)."""
+        s0, s1, s2, s3 = stokes_from_c2(c11, c12, c22)
 
         s1_abs = np.abs(s1)
         s2_abs = np.abs(s2)

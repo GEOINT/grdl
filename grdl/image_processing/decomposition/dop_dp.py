@@ -12,6 +12,7 @@ from typing import Annotated, Dict, Tuple, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from grdl.image_processing.decomposition.dual_pol_base import DualPolDecompositionBase
+from grdl.image_processing.decomposition.pol_matrix import c2_degree_of_polarization
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
@@ -20,10 +21,12 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
 
 
-@processor_version('1.0.0')
+@processor_version('1.1.0')
 @processor_tags(modalities=[ImageModality.SAR])
 class DegreeOfPolarizationDP(DualPolDecompositionBase):
-    """Barakat degree of polarization for dual-pol covariance matrix C2."""
+    """Barakat degree of polarization for dual-pol covariance matrix C2.
+    C2 DoP preserving input precision; undefined zero-power DoP returns 0.
+    """
 
     window_size: Annotated[int, Range(min=1, max=31),
                            Desc('Boxcar averaging window size')] = 7
@@ -36,15 +39,7 @@ class DegreeOfPolarizationDP(DualPolDecompositionBase):
         self._validate_dual_inputs(s_co, s_cross)
         c11, c12, c22 = self._compute_c2(s_co, s_cross, self.window_size)
 
-        det_c2 = c11 * c22 - np.abs(c12) ** 2
-        trace_c2 = c11 + c22
-        eps = np.finfo(np.float64).tiny
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            radicand = 1.0 - 4.0 * det_c2 / (trace_c2 ** 2 + eps)
-        dop = np.sqrt(np.clip(np.real(radicand), 0.0, 1.0))
-
-        return {'dop': dop}
+        return {'dop': c2_degree_of_polarization(c11, c12, c22)}
 
     def to_rgb(
         self,

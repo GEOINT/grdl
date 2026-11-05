@@ -34,6 +34,7 @@ Modified
 """
 
 # Standard library
+from numbers import Integral
 from typing import Annotated, Any
 
 # Third-party
@@ -59,6 +60,43 @@ from grdl.image_processing.filters._validation import (
     validate_mode,
 )
 from grdl.vocabulary import ProcessorCategory
+
+
+def boxcar_mean(source: np.ndarray, window_size: int, mode: str = 'reflect') -> np.ndarray:
+    """Average a 2D array, preserving dtype, backend and the source values.
+
+    This is the shared normalized boxcar kernel used by ``MeanFilter``.
+    Complex averaging filters real and imaginary components independently.
+    A unit window returns the input without copying; callers must not mutate
+    the result unless they intentionally want to mutate that input.
+    Processor-specific dtype promotion and window restrictions belong to
+    the caller. Boundary modes follow scipy.ndimage semantics.
+
+    For an odd window, tile callers must read ``window_size // 2`` extra
+    pixels on each side and crop the filtered result to the tile core.
+    The kernel neither reads halo pixels nor stitches tiles. Local padding
+    cannot reproduce whole-image ``wrap`` boundaries on clipped edge tiles.
+    """
+    if source.ndim != 2:
+        raise ValueError(f'Boxcar averaging requires a 2D array, got {source.shape}')
+    if isinstance(window_size, bool) or not isinstance(window_size, Integral) or window_size < 1:
+        raise ValueError('Boxcar window_size must be a positive integer')
+    if mode not in ('reflect', 'constant', 'nearest', 'wrap', 'mirror'):
+        raise ValueError(f'Unsupported boxcar boundary mode {mode!r}')
+    if window_size == 1:
+        return source
+    xp: Any = np
+    average: Any = _scipy_uniform_filter
+    if cp is not None and _cupyx_ndimage is not None and isinstance(source, cp.ndarray):
+        xp = cp
+        average = _cupyx_ndimage.uniform_filter
+    result = xp.empty_like(source)
+    if xp.iscomplexobj(source):
+        average(xp.real(source), size=window_size, mode=mode, output=xp.real(result))
+        average(xp.imag(source), size=window_size, mode=mode, output=xp.imag(result))
+    else:
+        average(source, size=window_size, mode=mode, output=result)
+    return result
 
 
 @processor_version('1.0.0')
@@ -99,6 +137,19 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         self.kernel_size = kernel_size
         self.mode = mode
 
+    @property
+    def tile_halo(self) -> tuple[int, int] | None:
+        """Finite boxcar support, or whole-image processing for wrap mode.
+
+        Halo-aware callers read neighboring pixels and crop to the core.
+        Periodic padding requires opposite image edges, not local padding.
+        Runtime overrides require planning with the effective parameters.
+        """
+        if self.mode == 'wrap':
+            return None
+        half = self.kernel_size // 2
+        return (half, half)
+
     def _apply_2d(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply mean filter to a single 2D band.
 
@@ -120,15 +171,12 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
 
         _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
         xp = cp if _is_gpu else np
-        ndi = _cupyx_ndimage if _is_gpu else None
 
         if source.dtype == xp.float64:
-            working = source.astype(xp.float64)
+            working = source.astype(xp.float64, copy=False)
         else:
-            working = source.astype(xp.float32)
-        if _is_gpu:
-            return ndi.uniform_filter(working, size=ks, mode=mode)
-        return _scipy_uniform_filter(working, size=ks, mode=mode)
+            working = source.astype(xp.float32, copy=False)
+        return boxcar_mean(working, ks, mode=mode)
 
 
 @processor_version('1.0.0')

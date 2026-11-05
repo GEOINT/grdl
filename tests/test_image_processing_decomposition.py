@@ -30,6 +30,11 @@ import numpy as np
 import pytest
 
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
+from grdl.IO.models.polarization import (
+    channel_axis,
+    resolve_packed_c2_indices,
+    resolve_raw_indices,
+)
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pauli import PauliDecomposition
 from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix, CovarianceMatrix
@@ -103,6 +108,17 @@ def quad_pol_phased():
 
 class TestABCContract:
     """Verify PauliDecomposition satisfies the ABC contract."""
+
+    def test_execute_incomplete_explicit_fails_before_decompose(self, pauli, monkeypatch):
+        def unexpected_decompose(*args):
+            pytest.fail('Incomplete explicit input reached numerical decomposition')
+
+        monkeypatch.setattr(pauli, 'decompose', unexpected_decompose)
+        metadata = ImageMetadata(format='test', rows=8, cols=8, bands=4,
+                                 dtype='complex64', axis_order='CYX')
+        with pytest.raises(ValueError, match='Explicit full-pol'):
+            pauli.execute(metadata, np.ones((4, 8, 8), dtype=np.complex64),
+                          shv=np.ones((8, 8), dtype=np.complex64))
 
     def test_is_subclass(self):
         assert issubclass(PauliDecomposition, PolarimetricDecomposition)
@@ -552,3 +568,211 @@ class TestConversions:
     def test_to_rgb_missing_keys(self, pauli):
         with pytest.raises(ValueError, match="Missing"):
             pauli.to_rgb({'surface': np.zeros((2, 2))})
+
+
+def _phase2_metadata(labels, *, order: str | None = 'CYX', rows=7, cols=9):
+    return ImageMetadata(
+        format='test', rows=rows, cols=cols, dtype='complex64', bands=len(labels),
+        axis_order=order,
+        channel_metadata=[ChannelMetadata(index=index, name=label)
+                          for index, label in enumerate(labels)],
+    )
+
+
+@pytest.mark.parametrize('basis', ['HV', 'XY', 'RL'])
+def test_phase2_shuffled_raw_indices(basis):
+    first, second = basis
+    labels = [second * 2, second + first, first * 2, first + second]
+    meta = _phase2_metadata(labels)
+    assert resolve_raw_indices(4, meta, 'full') == (2, 3, 1, 0)
+    assert resolve_raw_indices(4, meta, 'matrix') == (2, 3, 1, 0)
+    assert resolve_raw_indices(4, meta, 'dual') == (2, 3)
+    assert resolve_raw_indices(4, meta, 'stokes') == (2, 0)
+
+
+def test_phase2_named_role_order():
+    meta = _phase2_metadata(['band_0', 'band_1', 'band_2', 'band_3'])
+    assert meta.channel_metadata is not None
+    for channel, role in zip(meta.channel_metadata,
+                             ['co_pol_b', 'cross_pol_2', 'co_pol_a', 'cross_pol'], strict=True):
+        channel.role = role
+    assert resolve_raw_indices(4, meta, 'full') == (2, 3, 1, 0)
+
+
+@pytest.mark.parametrize('labels, error', [
+    (['HH', 'unknown', 'VH', 'VV'], 'Missing'),
+    (['HH', 'HV', 'HV', 'VV'], 'Duplicate'),
+    (['HH', 'HV', 'LR', 'LL'], 'Mixed'),
+    (['C11', 'C12_real', 'C12_imag', 'C22'], 'Packed'),
+])
+def test_phase2_invalid_raw_descriptors(labels, error):
+    with pytest.raises(ValueError, match=error):
+        resolve_raw_indices(4, _phase2_metadata(labels), 'full')
+
+
+@pytest.mark.parametrize('field, value', [
+    ('polarization', 'HV'), ('role', 'cross_pol'),
+])
+def test_phase2_conflicting_descriptor(field, value):
+    meta = _phase2_metadata(['HH', 'HV', 'VH', 'VV'])
+    assert meta.channel_metadata is not None
+    setattr(meta.channel_metadata[0], field, value)
+    with pytest.raises(ValueError, match='Conflicting'):
+        resolve_raw_indices(4, meta, 'full')
+
+
+def test_phase2_txrx_and_explicit_polarization():
+    meta = _phase2_metadata(['band_0', 'band_1'])
+    assert meta.channel_metadata is not None
+    meta.channel_metadata[0].polarization = 'RHC:RHC'
+    meta.channel_metadata[1].tx_polarization = 'RHC'
+    meta.channel_metadata[1].rcv_polarization = 'LHC'
+    assert resolve_raw_indices(2, meta, 'dual') == (0, 1)
+    meta.channel_metadata[1].polarization = 'LR'
+    with pytest.raises(ValueError, match='Conflicting'):
+        resolve_raw_indices(2, meta)
+
+
+@pytest.mark.parametrize('count', [2, 3, 4])
+def test_phase2_canonical_unlabelled(count):
+    meta = _phase2_metadata([f'band_{index}' for index in range(count)])
+    assert resolve_raw_indices(count, meta) == tuple(range(count))
+    assert resolve_raw_indices(count, meta, 'stokes') == (0, count - 1)
+
+
+def test_phase2_surplus_requires_labels():
+    meta = _phase2_metadata(['VV', 'VH', 'noise', 'HH', 'HV'])
+    assert resolve_raw_indices(5, meta, 'full') == (3, 4, 1, 0)
+    meta.channel_metadata = None
+    with pytest.raises(ValueError, match='canonical'):
+        resolve_raw_indices(5, meta, 'full')
+
+
+def test_phase2_reciprocal_and_dual_requirements():
+    meta = _phase2_metadata(['VV', 'VH', 'HH'])
+    assert resolve_raw_indices(3, meta) == (2, 1, 0)
+    assert resolve_raw_indices(3, meta, 'dual') == (2, 1)
+    assert resolve_raw_indices(3, meta, 'stokes') == (2, 0)
+    with pytest.raises(ValueError, match='Missing'):
+        resolve_raw_indices(3, meta, 'full')
+    meta = _phase2_metadata(['HV', 'HH'])
+    assert resolve_raw_indices(2, meta) == (1, 0)
+
+
+@pytest.mark.parametrize('order', ['CYX', 'YXC', None])
+def test_phase2_execute_reorders_views_and_lineage(order, pauli):
+    meta = _phase2_metadata(['VV', 'VH', 'HH', 'HV'], order=order)
+    cube = np.broadcast_to(np.array([4, 3, 1, 2], dtype=np.complex128)[:, None, None],
+                           (4, 7, 9)).copy()
+    source = cube.transpose(1, 2, 0) if order == 'YXC' else cube
+    before = source.copy()
+    result, updated = pauli.execute(meta, source)
+    expected = pauli.decompose(cube[2], cube[3], cube[1], cube[0])
+    for name in result:
+        np.testing.assert_array_equal(result[name], expected[name])
+    np.testing.assert_array_equal(source, before)
+    assert updated.channel_metadata[0].source_indices == [2, 0]
+    assert updated.channel_metadata[2].source_indices == [3, 1]
+    assert updated.dtype == 'complex128'
+    assert updated.axis_order == 'CYX'
+
+
+def test_phase2_explicit_kwargs_bypass_source_shape(pauli):
+    meta = _phase2_metadata(['HH', 'HV', 'VH', 'VV'], rows=4, cols=4, order=None)
+    field = np.ones((7, 9), dtype=np.complex128)
+    _, updated = pauli.execute(meta, np.empty((4, 4, 4)),
+                              shh=field, shv=field, svh=field, svv=field)
+    assert (updated.rows, updated.cols) == field.shape
+    assert all(channel.source_indices == [] for channel in updated.channel_metadata)
+
+
+def test_phase2_layout_ambiguity_and_consistency():
+    meta = _phase2_metadata(['HH', 'HV', 'VH', 'VV'], rows=4, cols=4, order=None)
+    with pytest.raises(ValueError, match='Ambiguous'):
+        channel_axis((4, 4, 4), meta)
+    meta.axis_order = 'YXC'
+    assert channel_axis((4, 4, 4), meta) == 2
+    meta.bands = 3
+    with pytest.raises(ValueError, match='inconsistent'):
+        channel_axis((4, 4, 4), meta)
+
+
+def test_phase2_packed_c2_independent_descriptors():
+    meta = _phase2_metadata(['C22', 'Im(C12)', 'C11', 'Re(C12)'])
+    assert resolve_packed_c2_indices(4, meta) == (2, 3, 1, 0)
+    with pytest.raises(ValueError, match='Packed'):
+        resolve_raw_indices(4, meta)
+    with pytest.raises(ValueError, match='Raw'):
+        resolve_packed_c2_indices(4, _phase2_metadata(['HH', 'HV', 'VH', 'VV']))
+
+
+@pytest.mark.parametrize('basis', ['HV', 'XY', 'RL'])
+def test_phase2_single_field_stokes_pair(basis):
+    meta = _phase2_metadata(list(basis[::-1]))
+    assert resolve_raw_indices(2, meta, 'stokes') == (1, 0)
+    assert meta.channel_metadata is not None
+    for channel in meta.channel_metadata:
+        channel.polarization = channel.name
+        channel.name = 'measurement'
+    assert resolve_raw_indices(2, meta, 'stokes') == (1, 0)
+    with pytest.raises(ValueError, match='Single-field'):
+        resolve_raw_indices(2, meta, 'dual')
+
+
+def test_phase2_scattering_aliases():
+    meta = _phase2_metadata(['S_VV', 'SVH', 'S_HH', 'SHV'])
+    assert resolve_raw_indices(4, meta, 'full') == (2, 3, 1, 0)
+
+
+@pytest.mark.parametrize('role', ['covariance', 'coherency'])
+def test_phase2_matrix_roles_never_raw_fallback(role):
+    meta = _phase2_metadata(['band_0', 'band_1', 'band_2', 'band_3'])
+    assert meta.channel_metadata is not None
+    for channel in meta.channel_metadata:
+        channel.role = role
+    with pytest.raises(ValueError, match='Packed'):
+        resolve_raw_indices(4, meta)
+
+
+def test_phase2_duplicate_named_roles():
+    meta = _phase2_metadata(['band_0', 'band_1', 'band_2', 'band_3'])
+    assert meta.channel_metadata is not None
+    for channel, role in zip(meta.channel_metadata,
+                             ['co_pol_a', 'co_pol_a', 'cross_pol', 'co_pol_b'], strict=True):
+        channel.role = role
+    with pytest.raises(ValueError, match='Duplicate'):
+        resolve_raw_indices(4, meta)
+
+
+@pytest.mark.parametrize('labels, error', [
+    (['C11', 'C12_real', 'unknown', 'C22'], 'Missing'),
+    (['C11', 'C12_real', 'C12_real', 'C22'], 'Duplicate'),
+    (['T11', 'T12_real', 'T12_imag', 'T22'], 'Unsupported'),
+])
+def test_phase2_invalid_packed_descriptors(labels, error):
+    with pytest.raises(ValueError, match=error):
+        resolve_packed_c2_indices(4, _phase2_metadata(labels))
+
+
+def test_phase2_layout_infers_from_spatial_shape():
+    meta = _phase2_metadata(['HH', 'HV', 'VH', 'VV'], order=None, rows=4, cols=9)
+    assert channel_axis((4, 9, 4), meta) == 2
+    meta.bands = None
+    meta.channel_metadata = None
+    assert channel_axis((4, 4, 9), meta) == 0
+    with pytest.raises(ValueError, match='inconsistent'):
+        channel_axis((4, 8, 9), meta)
+
+
+def test_phase2_execute_requires_actual_full_channels(pauli):
+    meta = _phase2_metadata(['HH', 'HV', 'VV'])
+    with pytest.raises(ValueError, match='Missing'):
+        pauli.execute(meta, np.ones((3, 7, 9), dtype=np.complex64))
+
+
+def test_phase2_execute_selects_labelled_surplus(pauli):
+    meta = _phase2_metadata(['VV', 'VH', 'noise', 'HH', 'HV'])
+    cube = np.ones((5, 7, 9), dtype=np.complex64)
+    _, updated = pauli.execute(meta, cube)
+    assert updated.channel_metadata[0].source_indices == [3, 0]
+    assert updated.channel_metadata[2].source_indices == [4, 1]

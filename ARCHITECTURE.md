@@ -1,6 +1,6 @@
 # GRDL — Library Architecture
 
-*Modified: 2026-04-26*
+*Modified: 2026-11-04*
 
 ## Overview
 
@@ -16,6 +16,25 @@ the application wires them together.
 ~29,000 lines of tests. Nine primary domains.
 
 ---
+
+## Polarimetric Processing Ownership
+
+- `IO.models.polarization` resolves raw-channel descriptors, packed C2 indices,
+    and cube layout without importing image processing or numerical filters.
+- `image_processing.filters.linear.boxcar_mean` owns real/complex spatial mean
+    filtering for MeanFilter and polarimetric consumers. Tile callers read the
+    half-window halo, filter the expanded array, then crop the core. Wrap mode
+    needs opposite global edges. Pauli averages amplitudes; matrix products
+    average outer products, not amplitudes.
+- `image_processing.decomposition.pol_matrix` owns public covariance/coherence (C/T)
+    target-vector,
+    upper-triangle, matrix preparation/packing, canonical Stokes, and two-component
+    DoP functions. Dual helpers materialize only three independent elements.
+    Matrix builders allocate the full tensor once and conjugate the lower triangle.
+- Complex64/complex128 inputs retain matching precision; mixed inputs promote
+    before products. Canonical Stokes `S3 = -2 Im(C12)` does not depend on transmit
+    handedness; compact algorithms adapt handedness at their own boundaries.
+    Valid zero-power two-component degree of polarization (DoP) returns zero as a numerical policy, without a nonzero-power cutoff. Full-pol T3 Barakat DoP remains independent.
 
 ## Module Map
 

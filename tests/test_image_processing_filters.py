@@ -57,6 +57,30 @@ from grdl.image_processing.filters._validation import (
     validate_kernel_size,
     validate_mode,
 )
+from grdl.image_processing.filters.linear import boxcar_mean
+
+
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+@pytest.mark.parametrize('window', [3, 7])
+@pytest.mark.parametrize('mode', ['reflect', 'constant', 'nearest', 'wrap'])
+def test_mean_and_boxcar_share_kernel(dtype, window, mode):
+    source = np.random.default_rng(17).normal(size=(9, 11)).astype(dtype)
+    original = source.copy()
+    mean = MeanFilter(kernel_size=window, mode=mode)
+    np.testing.assert_array_equal(mean.apply(source), boxcar_mean(source, window, mode))
+    complex_source = source + 1j * source[::-1]
+    result = boxcar_mean(complex_source, window, mode)
+    expected = mean.apply(complex_source.real) + 1j * mean.apply(complex_source.imag)
+    np.testing.assert_array_equal(result, expected)
+    assert result.dtype == complex_source.dtype
+    np.testing.assert_array_equal(source, original)
+
+
+def test_boxcar_unit_window_and_reflected_edge():
+    source = np.zeros((5, 5), dtype=np.float64)
+    source[0, 0] = 9
+    assert boxcar_mean(source, 1) is source
+    np.testing.assert_array_equal(boxcar_mean(source, 3)[:2, :2], [[4, 2], [2, 1]])
 
 
 # ---------------------------------------------------------------------------

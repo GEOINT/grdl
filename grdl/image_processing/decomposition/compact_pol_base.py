@@ -15,10 +15,13 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
 
 # GRDL internal
+from grdl.IO.models.base import ChannelMetadata
+from grdl.IO.models.polarization import channel_axis, resolve_packed_c2_indices
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
+from grdl.image_processing.filters.linear import boxcar_mean
+from grdl.image_processing.decomposition.pol_matrix import stokes_from_c2
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
@@ -51,6 +54,8 @@ class CompactPolDecompositionBase(PolarimetricDecomposition):
         """
         self._metadata = metadata
 
+        explicit = any(name in kwargs for name in
+                   ('c11', 'c12', 'c21', 'c22', 'c12_real', 'c12_imag'))
         c11 = kwargs.pop('c11', None)
         c12 = kwargs.pop('c12', None)
         c21 = kwargs.pop('c21', None)
@@ -58,28 +63,16 @@ class CompactPolDecompositionBase(PolarimetricDecomposition):
         c12_real = kwargs.pop('c12_real', None)
         c12_imag = kwargs.pop('c12_imag', None)
 
-        if c11 is None and source.ndim == 3:
-            axis_order = getattr(metadata, 'axis_order', None)
-            if axis_order == 'CYX' and source.shape[0] >= 4:
-                c11 = source[0]
-                c12_real = source[1]
-                c12_imag = source[2]
-                c22 = source[3]
-            elif axis_order == 'YXC' and source.shape[-1] >= 4:
-                c11 = source[..., 0]
-                c12_real = source[..., 1]
-                c12_imag = source[..., 2]
-                c22 = source[..., 3]
-            elif source.shape[0] >= 4:
-                c11 = source[0]
-                c12_real = source[1]
-                c12_imag = source[2]
-                c22 = source[3]
-            elif source.shape[-1] >= 4:
-                c11 = source[..., 0]
-                c12_real = source[..., 1]
-                c12_imag = source[..., 2]
-                c22 = source[..., 3]
+        source_indices = []
+        if not explicit:
+            axis = channel_axis(source.shape, metadata)
+            cube = source if axis == 0 else source.transpose(2, 0, 1)
+            source_indices = list(resolve_packed_c2_indices(cube.shape[0], metadata))
+            c11, c12_real, c12_imag, c22 = (cube[index] for index in source_indices)
+        elif (c11 is None or c22 is None or
+              (c12 is None and (c12_real is None or c12_imag is None)) or
+              ((c12_real is None) != (c12_imag is None))):
+            raise ValueError('Explicit compact-pol inputs require c11, c22 and complete c12')
 
         if c12 is None and c12_real is not None and c12_imag is not None:
             c12 = np.asarray(c12_real) + 1j * np.asarray(c12_imag)
@@ -93,11 +86,18 @@ class CompactPolDecompositionBase(PolarimetricDecomposition):
             )
 
         components = self.decompose_compact(c11, c12, c21, c22)
+        first = next(iter(components.values()))
         updated = dataclasses.replace(
             metadata,
             bands=len(components),
+            rows=first.shape[0], cols=first.shape[1],
+            dtype=str(np.result_type(*(value.dtype for value in components.values()))),
             axis_order='CYX',
-            channel_metadata=self._build_component_metadata(metadata),
+            channel_metadata=[
+                ChannelMetadata(index=index, name=name, role='decomposition',
+                                source_indices=list(source_indices))
+                for index, name in enumerate(components)
+            ],
         )
         return components, updated
 
@@ -142,39 +142,21 @@ class CompactPolDecompositionBase(PolarimetricDecomposition):
                     f"c11 has shape {shape}, but {name} has shape {arr.shape}"
                 )
 
-    def _boxcar_complex(self, arr: np.ndarray, window_size: int) -> np.ndarray:
-        """Apply boxcar averaging to real or complex arrays."""
-        if window_size <= 1:
-            return np.asarray(arr)
-
-        arr = np.asarray(arr)
-        if np.iscomplexobj(arr):
-            real = uniform_filter(np.real(arr), size=window_size)
-            imag = uniform_filter(np.imag(arr), size=window_size)
-            return real + 1j * imag
-        return uniform_filter(arr, size=window_size)
-
     def _stokes_from_c2(
         self,
         c11: np.ndarray,
         c12: np.ndarray,
         c21: np.ndarray,
         c22: np.ndarray,
-        chi: float,
         window_size: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Compute averaged Stokes parameters from compact-pol C2."""
-        c11s = self._boxcar_complex(c11, window_size)
-        c12s = self._boxcar_complex(c12, window_size)
-        c21s = self._boxcar_complex(c21, window_size)
-        c22s = self._boxcar_complex(c22, window_size)
+        """Canonical averaged Stokes, independent of transmit handedness."""
+        c11s = boxcar_mean(c11, window_size, mode='reflect')
+        c12s = boxcar_mean(c12, window_size, mode='reflect')
+        c21s = boxcar_mean(c21, window_size, mode='reflect')
+        c22s = boxcar_mean(c22, window_size, mode='reflect')
 
-        s0 = np.real(c11s + c22s)
-        s1 = np.real(c11s - c22s)
-        s2 = np.real(c12s + c21s)
-        s3 = np.where(chi >= 0, 1j * (c12s - c21s), -1j * (c12s - c21s))
-        s3 = np.real(s3)
-        return s0, s1, s2, s3
+        return stokes_from_c2(c11s, c12s, c22s, c21s)
 
     @abstractmethod
     def decompose_compact(

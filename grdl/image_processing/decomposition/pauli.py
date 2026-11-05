@@ -49,11 +49,11 @@ from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
 
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix
+from grdl.image_processing.filters.linear import boxcar_mean
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.image_processing.params import Range, Desc
 from grdl.vocabulary import ImageModality
@@ -269,9 +269,9 @@ class PauliDecomposition(PolarimetricDecomposition):
         )
 
         if self.window_size > 1:
-            shh = self._boxcar_complex(shh, self.window_size)
-            cross_pol_term = self._boxcar_complex(cross_pol_term, self.window_size)
-            svv = self._boxcar_complex(svv, self.window_size)
+            shh = boxcar_mean(shh, self.window_size, mode='reflect')
+            cross_pol_term = boxcar_mean(cross_pol_term, self.window_size, mode='reflect')
+            svv = boxcar_mean(svv, self.window_size, mode='reflect')
 
         # Normalization constant in matching precision to avoid
         # silent upcast from complex64 to complex128.
@@ -297,12 +297,6 @@ class PauliDecomposition(PolarimetricDecomposition):
             float(np.max(np.abs(result['volume']))),
         )
         return result
-
-    @staticmethod
-    def _boxcar_complex(arr: np.ndarray, window_size: int) -> np.ndarray:
-        re = uniform_filter(np.real(arr), size=window_size, mode='reflect')
-        im = uniform_filter(np.imag(arr), size=window_size, mode='reflect')
-        return (re + 1j * im).astype(arr.dtype, copy=False)
 
     def decompose_from_t3(self, t3: np.ndarray) -> Dict[str, np.ndarray]:
         """Decompose from a precomputed coherency matrix [T3].

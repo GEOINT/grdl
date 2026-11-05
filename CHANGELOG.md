@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Polarimetric matrix formation**: C2/T2 element-only helpers and C2/T2/C3/T3
+  builders now share target-vector and upper-triangle calculations. Builders
+  preserve complex64/complex128 input precision, mixed inputs are promoted
+  before multiplication, and diagonal elements have exactly zero imaginary
+  part. CovarianceMatrix and CoherencyMatrix processor versions are 0.2.0.
+- **Polarization conventions and precision**: StokesVector 0.2.0 and dual/compact
+  helpers share canonical `S3 = -2 Im(C12)`. Compact algorithms explicitly adapt
+  transmit handedness, preserving their component meanings at negative, zero,
+  and positive ellipticity. Stokes and two-component DoP preserve float32/float64;
+  valid zero-power DoP returns 0 as a numerical undefined-power policy. Stable
+  normalization avoids squared-power underflow/overflow. Affected dual/compact
+  processors are version 1.1.0; full-pol Barakat DoP remains separate.
+- **Shared numerical APIs**: Module-level functions in `decomposition.pol_matrix`
+  now have public names without leading underscores; callers and tests use the
+  new names. Class-method names are unchanged.
+- **Shared spatial averaging**: MeanFilter and polarimetric boxcars use
+  `filters.linear.boxcar_mean`, preserving reflected complex filtering and
+  Pauli's amplitude-before-mixing semantics. MeanFilter declares finite halo
+  requirements except for wrap boundaries.
+
+### Fixed
+
+- **CUDA Stokes DoP**: GPU power normalization no longer passes the unsupported
+  `where` keyword to CuPy division. Safe denominators and explicit masking retain
+  zero-power behavior and device residency.
+
+### Tests
+
+- Added compact handedness baseline, explicit C21, malformed-power, metadata,
+  and CUDA Stokes/DoP regressions plus precision-matched polarimetric kernel
+  benchmarks with traced peak allocations. See the workspace redundancy report
+  for measurements and baseline failure classification; full-suite and static
+  analysis gates are not clean.
+
 ## [0.8.0] — 2026-10-30
 
 ### Added

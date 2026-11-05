@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 
 # GRDL internal
+from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.tiling import WindowedTileHalo
 
@@ -88,7 +89,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
         Quad-pol scattering matrix channels can be provided as keyword
         arguments (``shh``, ``shv``, ``svh``, ``svv``) or extracted from
-        a 4-band source array (last axis).
+        a labelled CYX/YXC cube or an unlabelled canonical 4-band cube.
 
         Parameters
         ----------
@@ -103,58 +104,40 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         tuple[Dict[str, np.ndarray], ImageMetadata]
         """
         self._metadata = metadata
+        explicit = any(name in kwargs for name in ('shh', 'shv', 'svh', 'svv'))
         shh = kwargs.pop('shh', None)
         shv = kwargs.pop('shv', None)
         svh = kwargs.pop('svh', None)
         svv = kwargs.pop('svv', None)
-        if shh is None and source.ndim == 3:
-            axis_order = getattr(metadata, 'axis_order', None)
-
-            if axis_order in ('CYX', 'YXC'):
-                inferred_order = axis_order
-            else:
-                inferred_order = None
-                channel_metadata = getattr(metadata, 'channel_metadata', None)
-                if channel_metadata is not None:
-                    n_channels = len(channel_metadata)
-                    if source.shape[0] == n_channels and source.shape[-1] != n_channels:
-                        inferred_order = 'CYX'
-                    elif source.shape[-1] == n_channels and source.shape[0] != n_channels:
-                        inferred_order = 'YXC'
-                if inferred_order is None:
-                    bands = getattr(metadata, 'bands', None)
-                    if bands is not None:
-                        if source.shape[0] == bands and source.shape[-1] != bands:
-                            inferred_order = 'CYX'
-                        elif source.shape[-1] == bands and source.shape[0] != bands:
-                            inferred_order = 'YXC'
-
-            if inferred_order == 'CYX' and source.shape[0] >= 4:
-                shh = source[0]
-                shv = source[1]
-                svh = source[2]
-                svv = source[3]
-            elif inferred_order == 'YXC' and source.shape[-1] >= 4:
-                shh = source[..., 0]
-                shv = source[..., 1]
-                svh = source[..., 2]
-                svv = source[..., 3]
-            elif source.shape[0] >= 4:
-                shh = source[0]
-                shv = source[1]
-                svh = source[2]
-                svv = source[3]
-            elif source.shape[-1] >= 4:
-                shh = source[..., 0]
-                shv = source[..., 1]
-                svh = source[..., 2]
-                svv = source[..., 3]
+        resolved = None
+        if explicit and any(channel is None for channel in (shh, shv, svh, svv)):
+            raise ValueError('Explicit full-pol inputs require shh, shv, svh and svv')
+        if not explicit:
+            axis = channel_axis(source.shape, metadata)
+            resolved = resolve_raw_indices(source.shape[axis], metadata, 'full')
+            cube = source if axis == 0 else source.transpose(2, 0, 1)
+            shh, shv, svh, svv = (cube[index] for index in resolved)
         components = self.decompose(shh, shv, svh, svv)
+        channels = self._build_component_metadata(metadata)
+        channels = [
+            dataclasses.replace(
+                channel,
+                source_indices=(
+                    [resolved[index] for index in channel.source_indices]
+                    if channel.source_indices else list(resolved)
+                ) if resolved is not None else [],
+            )
+            for channel in channels
+        ]
+        output_shape = next(iter(components.values())).shape
         updated = dataclasses.replace(
             metadata,
+            rows=output_shape[0],
+            cols=output_shape[1],
+            dtype=str(np.result_type(*(value.dtype for value in components.values()))),
             bands=len(components),
             axis_order='CYX',
-            channel_metadata=self._build_component_metadata(metadata),
+            channel_metadata=channels,
         )
         return components, updated
 

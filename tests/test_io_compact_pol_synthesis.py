@@ -16,7 +16,11 @@ from grdl.IO.models.nisar import (
     NISAROrbit,
     NISARSwathParameters,
 )
-from grdl.IO.sar.compact_pol_synthesis import _build_compact_pol_sicd_metadata
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
+from grdl.IO.sar.compact_pol_synthesis import (
+    _build_compact_pol_sicd_metadata,
+    _extract_quad_pol,
+)
 from grdl.geolocation.sar.sicd import SICDGeolocation
 
 
@@ -128,3 +132,74 @@ def test_build_compact_pol_sicd_metadata_from_nisar_is_geolocatable():
     assert center.shape == (3,)
     assert center[0] == pytest.approx(meta.geo_data.scp.llh.lat, abs=0.2)
     assert center[1] == pytest.approx(meta.geo_data.scp.llh.lon, abs=0.2)
+
+
+def _phase2_synthesis_input(labels, order: str | None = 'CYX'):
+    meta = ImageMetadata(
+        format='test', rows=7, cols=9, dtype='complex64', bands=len(labels),
+        axis_order=order,
+        channel_metadata=[ChannelMetadata(index=index, name=label)
+                          for index, label in enumerate(labels)],
+    )
+    cube = np.broadcast_to(np.arange(len(labels), dtype=np.complex64)[:, None, None],
+                           (len(labels), 7, 9)).copy()
+    return (cube.transpose(1, 2, 0) if order == 'YXC' else cube), meta
+
+
+@pytest.mark.parametrize('order', ['CYX', 'YXC', None])
+def test_phase2_synthesis_shuffled_labelled_views(order):
+    cube, meta = _phase2_synthesis_input(['VV', 'VH', 'noise', 'HH', 'HV'], order)
+    *fields, mapping = _extract_quad_pol(cube, meta, None, None, None, None)
+    assert mapping == {'HH': 3, 'HV': 4, 'VH': 1, 'VV': 0}
+    for field, index in zip(fields, mapping.values()):
+        assert np.all(field == index)
+        assert np.shares_memory(field, cube)
+
+
+@pytest.mark.parametrize('labels, error', [
+    (['HH', 'unknown', 'VH', 'VV'], 'Missing'),
+    (['HH', 'HV', 'HV', 'VV'], 'Duplicate'),
+    (['XX', 'XY', 'YX', 'YY'], 'Missing'),
+    (['C11', 'C12_real', 'C12_imag', 'C22'], 'Packed'),
+    (['unknown'] * 5, 'exactly four'),
+])
+def test_phase2_synthesis_rejects_unsafe_fallback(labels, error):
+    cube, meta = _phase2_synthesis_input(labels)
+    with pytest.raises(ValueError, match=error):
+        _extract_quad_pol(cube, meta, None, None, None, None)
+
+
+@pytest.mark.parametrize('value', [0, -1, 5, 1.5, '1', True])
+def test_phase2_synthesis_validates_1_based_overrides(value):
+    cube, meta = _phase2_synthesis_input(['HH', 'HV', 'VH', 'VV'])
+    with pytest.raises(ValueError, match='override'):
+        _extract_quad_pol(cube, meta, value, None, None, None)
+
+
+def test_phase2_synthesis_complete_override_authoritative():
+    cube, meta = _phase2_synthesis_input(['HH', 'HH', 'HH', 'HH'])
+    *_, mapping = _extract_quad_pol(cube, meta, 4, 3, 2, 1)
+    assert mapping == {'HH': 3, 'HV': 2, 'VH': 1, 'VV': 0}
+    with pytest.raises(ValueError, match='Duplicate band indices'):
+        _extract_quad_pol(cube, meta, 1, 1, 2, 3)
+
+
+def test_phase2_synthesis_partial_override_no_fallback_fill():
+    cube, meta = _phase2_synthesis_input(['HH', 'unknown', 'VH', 'VV'])
+    *_, mapping = _extract_quad_pol(cube, meta, None, 2, None, None)
+    assert mapping == {'HH': 0, 'HV': 1, 'VH': 2, 'VV': 3}
+    with pytest.raises(ValueError, match='Missing'):
+        _extract_quad_pol(cube, meta, 1, None, None, None)
+
+
+def test_phase2_synthesis_unlabelled_canonical():
+    cube, meta = _phase2_synthesis_input(['band_0', 'band_1', 'band_2', 'band_3'])
+    *_, mapping = _extract_quad_pol(cube, meta, None, None, None, None)
+    assert mapping == {'HH': 0, 'HV': 1, 'VH': 2, 'VV': 3}
+
+
+def test_phase2_synthesis_ambiguous_shape_rejected():
+    _, meta = _phase2_synthesis_input(['HH', 'HV', 'VH', 'VV'], None)
+    meta.rows = meta.cols = 4
+    with pytest.raises(ValueError, match='Ambiguous'):
+        _extract_quad_pol(np.ones((4, 4, 4)), meta, 1, 2, 3, 4)

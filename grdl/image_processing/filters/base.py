@@ -36,7 +36,7 @@ from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.exceptions import ValidationError
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
 from grdl.image_processing.decomposition.pol_matrix import (
-    _make_matrix_channel_metadata,
+    make_matrix_channel_metadata,
     pack_matrix,
     prepare_polarimetric_matrix,
     validate_matrix_type,
@@ -189,7 +189,7 @@ class PolarimetricFilter(SARFilter):
         kind = validate_matrix_type(options.get('matrix_type', self.matrix_type))
         descriptors = canonical_metadata.channel_metadata if source.ndim == 4 else None
         if descriptors is None or len(descriptors) != dimension * dimension:
-            descriptors = _make_matrix_channel_metadata(dimension, kind or 'M')
+            descriptors = make_matrix_channel_metadata(dimension, kind or 'M')
         updated = dataclasses.replace(
             canonical_metadata, rows=result.shape[-2], cols=result.shape[-1],
             bands=dimension * dimension, axis_order='CCYX', dtype=str(result.dtype),
