@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-05
+
+### Added
+
+- **Shared polarization channel resolution**: Centralized polarization channel
+  handling in `IO.models.polarization` for polarimetric processing and compact
+  polarization synthesis.
+- **Ndimage adapter design recommendation**: Documented a proposed
+  runtime-configurable filter adapter with an approved operation registry,
+  CPU/GPU mappings, parameter validation, spatial halo rules, user-provided
+  kernels, and PolSAR matrix-smoothing constraints. This is a design document,
+  not an implemented API.
+
 ### Changed
 
 - **Polarimetric matrix formation**: C2/T2 element-only helpers and C2/T2/C3/T3
@@ -30,9 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `filters.linear.boxcar_mean`, preserving reflected complex filtering and
   Pauli's amplitude-before-mixing semantics. MeanFilter declares finite halo
   requirements except for wrap boundaries.
+- **Gaussian tiling**: GaussianFilter declares a finite spatial halo based on
+  `sigma` and `truncate`. Periodic `wrap` boundaries require global execution.
+- **Matrix execution logging**: CovarianceMatrix and CoherencyMatrix channel,
+  window, and output-shape diagnostics now log at DEBUG rather than INFO.
 
 ### Fixed
 
+- **Complex-valued smoothing**: MeanFilter and GaussianFilter no longer cast
+  complex inputs to real values on CPU or GPU. Filtering retains imaginary
+  components and complex64/complex128 precision, with independent bandwise
+  dispatch for multichannel inputs.
 - **CUDA Stokes DoP**: GPU power normalization no longer passes the unsupported
   `where` keyword to CuPy division. Safe denominators and explicit masking retain
   zero-power behavior and device residency.
@@ -41,9 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added compact handedness baseline, explicit C21, malformed-power, metadata,
   and CUDA Stokes/DoP regressions plus precision-matched polarimetric kernel
-  benchmarks with traced peak allocations. See the workspace redundancy report
-  for measurements and baseline failure classification; full-suite and static
-  analysis gates are not clean.
+  benchmarks with traced peak allocations.
+- Added complex multichannel filtering, independent SciPy Gaussian-reference,
+  tile-halo, and matrix logging-level regressions.
+- Full-suite and static-analysis gates are not clean; focused regression
+  coverage does not imply a clean full-project validation run.
+
+### Install
+
+```bash
+pip install grdl==0.8.1
+pip install grdl[sar]==0.8.1
+pip install grdl[all]==0.8.1
+```
 
 ## [0.8.0] — 2026-10-30
 
