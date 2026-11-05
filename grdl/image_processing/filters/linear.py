@@ -161,7 +161,8 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         Returns
         -------
         np.ndarray
-            Smoothed image, same shape, float32 or float64.
+            Smoothed image, same shape. Complex inputs retain their precision;
+            real inputs return float32 or float64.
         """
         params = self._resolve_params(kwargs)
         ks = params['kernel_size']
@@ -169,10 +170,13 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         validate_kernel_size(ks)
         validate_mode(mode)
 
-        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
-        xp = cp if _is_gpu else np
+        xp: Any = np
+        if cp is not None and isinstance(source, cp.ndarray):
+            xp = cp
 
-        if source.dtype == xp.float64:
+        if xp.iscomplexobj(source):
+            working = source
+        elif source.dtype == xp.float64:
             working = source.astype(xp.float64, copy=False)
         else:
             working = source.astype(xp.float32, copy=False)
@@ -226,6 +230,14 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
         self.truncate = truncate
         self.mode = mode
 
+    @property
+    def tile_halo(self) -> tuple[int, int] | None:
+        """Gaussian support radius, or global processing for periodic edges."""
+        if self.mode == 'wrap':
+            return None
+        radius = int(self.truncate * self.sigma + 0.5)
+        return (radius, radius)
+
     def _apply_2d(self, source: np.ndarray, **kwargs: Any) -> np.ndarray:
         """Apply Gaussian filter to a single 2D band.
 
@@ -237,28 +249,26 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
         Returns
         -------
         np.ndarray
-            Smoothed image, same shape, float32 or float64.
+            Smoothed image, same shape. Complex inputs retain their precision;
+            real inputs return float32 or float64.
         """
         params = self._resolve_params(kwargs)
         mode = params['mode']
         validate_mode(mode)
 
-        _is_gpu = _HAS_CUPY and isinstance(source, cp.ndarray)
-        xp = cp if _is_gpu else np
-        ndi = _cupyx_ndimage if _is_gpu else None
+        xp: Any = np
+        average: Any = _scipy_gaussian_filter
+        if cp is not None and _cupyx_ndimage is not None and isinstance(source, cp.ndarray):
+            xp = cp
+            average = _cupyx_ndimage.gaussian_filter
 
-        if source.dtype == xp.float64:
-            working = source.astype(xp.float64)
+        if xp.iscomplexobj(source):
+            working = source
+        elif source.dtype == xp.float64:
+            working = source.astype(xp.float64, copy=False)
         else:
-            working = source.astype(xp.float32)
-        if _is_gpu:
-            return ndi.gaussian_filter(
-                working,
-                sigma=params['sigma'],
-                truncate=params['truncate'],
-                mode=mode,
-            )
-        return _scipy_gaussian_filter(
+            working = source.astype(xp.float32, copy=False)
+        return average(
             working,
             sigma=params['sigma'],
             truncate=params['truncate'],

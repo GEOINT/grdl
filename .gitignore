@@ -150,6 +150,7 @@ Thumbs.db
 *.nc
 *.zarr/
 *.cphd
+*.npy
 
 # Model weights and checkpoints
 *.pt

@@ -13,6 +13,8 @@ Covers:
 - Window size validation
 """
 
+import logging
+
 import numpy as np
 import pytest
 import dataclasses
@@ -35,6 +37,22 @@ from grdl.image_processing.decomposition.dual_pol_base import DualPolDecompositi
 from grdl.image_processing.decomposition.dop_dp import DegreeOfPolarizationDP
 from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
 from scipy.ndimage import uniform_filter
+
+
+@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix])
+@pytest.mark.parametrize('level', [logging.INFO, logging.DEBUG])
+def test_matrix_execution_diagnostics_are_debug(processor, level, quad_pol, quad_meta, caplog):
+    with caplog.at_level(level, logger='grdl.image_processing.decomposition.pol_matrix'):
+        processor(window_size=1).execute(quad_meta, np.stack(quad_pol))
+    messages = [record for record in caplog.records if record.name ==
+                'grdl.image_processing.decomposition.pol_matrix']
+    if level == logging.INFO:
+        assert messages == []
+    else:
+        assert len(messages) == 2
+        assert all(record.levelno == logging.DEBUG for record in messages)
+        assert 'input_channels=4 window_size=1' in messages[0].getMessage()
+        assert 'output_matrix=3x3 axis_order=CCYX' in messages[1].getMessage()
 
 
 @pytest.mark.parametrize('dtype', [np.complex64, np.complex128])

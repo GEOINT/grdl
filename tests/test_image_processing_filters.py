@@ -35,6 +35,8 @@ Modified
 
 import pytest
 import numpy as np
+import warnings
+from scipy.ndimage import gaussian_filter
 
 from grdl.exceptions import ValidationError
 from grdl.image_processing.filters import (
@@ -72,8 +74,39 @@ def test_mean_and_boxcar_share_kernel(dtype, window, mode):
     result = boxcar_mean(complex_source, window, mode)
     expected = mean.apply(complex_source.real) + 1j * mean.apply(complex_source.imag)
     np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(mean.apply(complex_source), expected)
+    assert mean.apply(complex_source).dtype == complex_source.dtype
     assert result.dtype == complex_source.dtype
     np.testing.assert_array_equal(source, original)
+
+
+@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
+@pytest.mark.parametrize('processor', [
+    MeanFilter(kernel_size=5), GaussianFilter(sigma=1.2),
+    ComplexLeeFilter(kernel_size=5, enl=4), LeeSigmaFilter(kernel_size=5, enl=4),
+    EnhancedLeeFilter(kernel_size=5, enl=4),
+])
+def test_complex_filters_dispatch_every_channel(processor, dtype):
+    rng = np.random.default_rng(41)
+    source = (rng.normal(size=(4, 17, 19)) +
+              1j * rng.normal(size=(4, 17, 19))).astype(dtype)
+    original = source.copy()
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', np.exceptions.ComplexWarning)
+        result = processor.apply(source)
+        expected = np.stack([processor.apply(band) for band in source])
+    assert np.iscomplexobj(result)
+    assert result.shape == source.shape
+    assert np.all(np.max(np.abs(result.imag), axis=(1, 2)) > 0)
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(source, original)
+    if isinstance(processor, GaussianFilter):
+        reference = np.stack([
+            gaussian_filter(band.real, sigma=1.2) +
+            1j * gaussian_filter(band.imag, sigma=1.2) for band in source
+        ])
+        assert result.dtype == dtype
+        np.testing.assert_allclose(result, reference, rtol=1e-5, atol=1e-6)
 
 
 def test_boxcar_unit_window_and_reflected_edge():

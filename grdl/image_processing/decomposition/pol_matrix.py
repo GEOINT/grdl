@@ -735,8 +735,8 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
         if channels.size == 0:
             raise ValueError('Channel extraction failed; provide explicit channels')
 
-        if _log.isEnabledFor(logging.INFO):
-            _log.info(
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(
                 '%s execute: input_channels=%d window_size=%d',
                 self.__class__.__name__,
                 int(channels.shape[0]),
@@ -746,8 +746,8 @@ class CovarianceMatrix(WindowedTileHalo, ImageProcessor):
         result = self.compute(channels)
         n = result.shape[0]
 
-        if _log.isEnabledFor(logging.INFO):
-            _log.info('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
 
         updated = dataclasses.replace(
             metadata,
@@ -883,8 +883,8 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
         if channels.size == 0:
             raise ValueError('Channel extraction failed; provide explicit channels')
 
-        if _log.isEnabledFor(logging.INFO):
-            _log.info(
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(
                 '%s execute: input_channels=%d window_size=%d',
                 self.__class__.__name__,
                 int(channels.shape[0]),
@@ -894,8 +894,8 @@ class CoherencyMatrix(WindowedTileHalo, ImageProcessor):
         result = self.compute(channels)
         n = result.shape[0]
 
-        if _log.isEnabledFor(logging.INFO):
-            _log.info('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug('%s execute: output_matrix=%dx%d axis_order=CCYX', self.__class__.__name__, n, n)
 
         updated = dataclasses.replace(
             metadata,
