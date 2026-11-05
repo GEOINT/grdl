@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Image Processing Base Classes - Abstract interfaces for image processors.
 
@@ -31,23 +30,23 @@ Modified
 """
 
 # Standard library
+import dataclasses
 import logging
 import warnings
 from abc import ABC, abstractmethod
-import dataclasses
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 # Third-party
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
-from grdl.image_processing.params import ParamSpec, collect_param_specs, _make_init
+from grdl.image_processing.params import ParamSpec, _make_init, collect_param_specs
 
 if TYPE_CHECKING:
-    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
-    from grdl.image_processing.versioning import DetectionInputSpec
     from grdl.image_processing.detection.models import DetectionSet
+    from grdl.image_processing.versioning import DetectionInputSpec
+    from grdl.IO.models.base import ChannelMetadata, ImageMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class ImageProcessor(ABC):
@@ -92,13 +91,13 @@ class ImageProcessor(ABC):
 
     #: Tuple of :class:`~grdl.image_processing.params.ParamSpec` built
     #: automatically by ``__init_subclass__`` from ``Annotated`` fields.
-    __param_specs__: Tuple[ParamSpec, ...] = ()
+    __param_specs__: tuple[ParamSpec, ...] = ()
 
     # -----------------------------------------------------------------
     # Subclass hook: collect Annotated params & generate __init__
     # -----------------------------------------------------------------
     #: Tuple of method names decorated with ``@globalprocessor``.
-    __global_callbacks__: Tuple[str, ...] = ()
+    __global_callbacks__: tuple[str, ...] = ()
 
     #: Whether this processor class has any global-pass callbacks.
     __has_global_pass__: bool = False
@@ -122,34 +121,30 @@ class ImageProcessor(ABC):
         cls.__param_specs__ = collect_param_specs(cls)
         # Auto-generate __init__ only when the subclass has Annotated
         # params and did NOT define its own __init__.
-        if cls.__param_specs__ and '__init__' not in cls.__dict__:
-            cls.__init__ = _make_init(cls.__param_specs__)
+        if cls.__param_specs__ and "__init__" not in cls.__dict__:
+            initializer = _make_init(cls.__param_specs__)
+            setattr(cls, initializer.__name__, initializer)
 
         # Collect @globalprocessor-decorated methods
         new_callbacks = []
         for name in list(cls.__dict__):
             attr = cls.__dict__[name]
-            if callable(attr) and getattr(attr, '__is_global_callback__', False):
+            if callable(attr) and getattr(attr, "__is_global_callback__", False):
                 new_callbacks.append(name)
-        parent_callbacks = getattr(
-            super(cls, cls), '__global_callbacks__', ()
-        )
+        parent_callbacks = getattr(super(cls, cls), "__global_callbacks__", ())
         # Preserve order: parent callbacks first, then new ones (dedup)
-        all_callbacks = tuple(
-            dict.fromkeys((*parent_callbacks, *new_callbacks))
-        )
+        all_callbacks = tuple(dict.fromkeys((*parent_callbacks, *new_callbacks)))
         cls.__global_callbacks__ = all_callbacks
         cls.__has_global_pass__ = bool(all_callbacks)
 
     # -----------------------------------------------------------------
     # Version checking (fires once per class at first instantiation)
     # -----------------------------------------------------------------
-    def __new__(cls, *args: Any, **kwargs: Any) -> 'ImageProcessor':
+    def __new__(cls, *args: Any, **kwargs: Any) -> "ImageProcessor":
         if cls not in ImageProcessor._version_warned_classes:
             ImageProcessor._version_warned_classes.add(cls)
-            if (
-                not getattr(cls, '__processor_version__', None)
-                and not getattr(cls, '__abstractmethods__', None)
+            if not getattr(cls, "__processor_version__", None) and not getattr(
+                cls, "__abstractmethods__", None
             ):
                 warnings.warn(
                     f"{cls.__qualname__} does not declare a processor version. "
@@ -164,7 +159,7 @@ class ImageProcessor(ABC):
     # Detection input specs (unchanged)
     # -----------------------------------------------------------------
     @property
-    def detection_input_specs(self) -> Tuple['DetectionInputSpec', ...]:
+    def detection_input_specs(self) -> tuple["DetectionInputSpec", ...]:
         """
         Declare detection inputs this processor accepts.
 
@@ -180,7 +175,7 @@ class ImageProcessor(ABC):
         """
         return ()
 
-    def _validate_detection_inputs(self, kwargs: Dict[str, Any]) -> None:
+    def _validate_detection_inputs(self, kwargs: dict[str, Any]) -> None:
         """
         Check that required detection inputs are present in *kwargs*.
 
@@ -204,9 +199,7 @@ class ImageProcessor(ABC):
                     f"Description: {spec.description}"
                 )
 
-    def _get_detection_input(
-        self, name: str, kwargs: Dict[str, Any]
-    ) -> Optional['DetectionSet']:
+    def _get_detection_input(self, name: str, kwargs: dict[str, Any]) -> Optional["DetectionSet"]:
         """
         Extract a named detection input from *kwargs*.
 
@@ -227,7 +220,7 @@ class ImageProcessor(ABC):
     # -----------------------------------------------------------------
     # Tunable parameter resolution
     # -----------------------------------------------------------------
-    def _resolve_params(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_params(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Merge instance defaults with runtime *kwargs* overrides.
 
         For each declared parameter in ``__param_specs__``:
@@ -257,12 +250,9 @@ class ImageProcessor(ABC):
         ValueError
             If a value violates range or choices constraints.
         """
-        resolved: Dict[str, Any] = {}
+        resolved: dict[str, Any] = {}
         for spec in type(self).__param_specs__:
-            if spec.name in kwargs:
-                value = kwargs[spec.name]
-            else:
-                value = getattr(self, spec.name)
+            value = kwargs[spec.name] if spec.name in kwargs else getattr(self, spec.name)
             spec.validate(value)
             resolved[spec.name] = value
         return resolved
@@ -270,9 +260,7 @@ class ImageProcessor(ABC):
     # -----------------------------------------------------------------
     # Progress reporting (unchanged)
     # -----------------------------------------------------------------
-    def _report_progress(
-        self, kwargs: Dict[str, Any], fraction: float
-    ) -> None:
+    def _report_progress(self, kwargs: dict[str, Any], fraction: float) -> None:
         """Report progress to an optional callback.
 
         Call this from long-running ``apply()`` or ``detect()`` methods.
@@ -287,7 +275,7 @@ class ImageProcessor(ABC):
         fraction : float
             Progress fraction in [0.0, 1.0].
         """
-        cb = kwargs.get('progress_callback')
+        cb = kwargs.get("progress_callback")
         if cb is not None:
             cb(float(fraction))
 
@@ -298,10 +286,12 @@ class ImageProcessor(ABC):
     #: Current image metadata, set by execute() before domain method dispatch.
     #: Not annotated as a class-level type hint to avoid breaking
     #: get_type_hints() / collect_param_specs() with the forward reference.
+    if TYPE_CHECKING:
+        _metadata: ImageMetadata | None
     _metadata = None
 
     @property
-    def metadata(self) -> Optional['ImageMetadata']:
+    def metadata(self) -> Optional["ImageMetadata"]:
         """Image metadata for the current execution context.
 
         Set automatically by ``execute()`` before calling the domain-specific
@@ -320,7 +310,7 @@ class ImageProcessor(ABC):
 
     def execute(
         self,
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         source: np.ndarray,
         **kwargs: Any,
     ) -> tuple:
@@ -362,14 +352,13 @@ class ImageProcessor(ABC):
             If no known domain method is found.
         """
         self._metadata = metadata
-        for method_name in ('apply', 'detect', 'decompose'):
+        for method_name in ("apply", "detect", "decompose"):
             method = getattr(self, method_name, None)
             if method is not None and callable(method):
                 result = method(source, **kwargs)
                 return result, metadata
         raise NotImplementedError(
-            f"{type(self).__name__} has no execute(), apply(), detect(), "
-            f"or decompose() method"
+            f"{type(self).__name__} has no execute(), apply(), detect(), " f"or decompose() method"
         )
 
 
@@ -389,7 +378,7 @@ class ImageTransform(ImageProcessor):
 
     def execute(
         self,
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         source: np.ndarray,
         **kwargs: Any,
     ) -> tuple:
@@ -417,47 +406,49 @@ class ImageTransform(ImageProcessor):
         """
         legacy_unlabeled = (
             source.ndim == 3
-            and getattr(metadata, 'axis_order', None) is None
+            and getattr(metadata, "axis_order", None) is None
             and not isinstance(self, BandwiseTransformMixin)
         )
-        output_axis_order = None if legacy_unlabeled else self._external_axis_order(
-            metadata, source
+        output_axis_order = (
+            None if legacy_unlabeled else self._external_axis_order(metadata, source)
         )
         if not legacy_unlabeled:
             source, metadata = self._canonicalize_source(metadata, source)
         self._metadata = metadata
         apply_kwargs = dict(kwargs)
         result = self.apply(source, **apply_kwargs)
-        if result.ndim == 3 and output_axis_order == 'YXC':
+        if result.ndim == 3 and output_axis_order == "YXC":
             result = result.transpose(1, 2, 0)
-            metadata = dataclasses.replace(metadata, axis_order='YXC')
+            metadata = dataclasses.replace(metadata, axis_order="YXC")
         elif result.ndim == 3 and legacy_unlabeled:
-            metadata = dataclasses.replace(metadata, axis_order='YXC')
+            metadata = dataclasses.replace(metadata, axis_order="YXC")
         updated = self._update_metadata_for_result(metadata, result)
         return result, updated
 
     @staticmethod
     def _external_axis_order(
-        metadata: 'ImageMetadata', source: np.ndarray,
-    ) -> Optional[str]:
+        metadata: "ImageMetadata",
+        source: np.ndarray,
+    ) -> str | None:
         """Return the requested external layout for a 3D source."""
         if source.ndim != 3:
             return None
-        axis_order = getattr(metadata, 'axis_order', None)
-        if axis_order in ('CYX', 'YXC'):
+        axis_order = metadata.axis_order
+        if axis_order in ("CYX", "YXC"):
             return axis_order
         if (
             source.shape[:2] == (metadata.rows, metadata.cols)
             and metadata.bands is not None
             and source.shape[2] == metadata.bands
         ):
-            return 'YXC'
-        return 'CYX'
+            return "YXC"
+        return "CYX"
 
     @staticmethod
     def _canonicalize_source(
-        metadata: 'ImageMetadata', source: np.ndarray,
-    ) -> tuple[np.ndarray, 'ImageMetadata']:
+        metadata: "ImageMetadata",
+        source: np.ndarray,
+    ) -> tuple[np.ndarray, "ImageMetadata"]:
         """Normalize 3D CYX/YXC input and validate declared spatial/channel sizes.
 
         Missing layout is resolved against metadata dimensions. Only 3D input
@@ -466,46 +457,45 @@ class ImageTransform(ImageProcessor):
         """
         if source.ndim != 3:
             return source, metadata
-        axis_order = getattr(metadata, 'axis_order', None)
+        axis_order = getattr(metadata, "axis_order", None)
         if axis_order is None:
             cyx_match = source.shape[0] == metadata.bands and source.shape[1:] == (
-                metadata.rows, metadata.cols
+                metadata.rows,
+                metadata.cols,
             )
             yxc_match = source.shape[:2] == (metadata.rows, metadata.cols) and (
                 source.shape[2] == metadata.bands
             )
             if yxc_match and not cyx_match:
-                axis_order = 'YXC'
+                axis_order = "YXC"
             elif cyx_match:
-                axis_order = 'CYX'
+                axis_order = "CYX"
             else:
                 raise ValueError(
-                    '3D input has no axis_order metadata and does not match '
-                    'the declared CYX dimensions'
+                    "3D input has no axis_order metadata and does not match "
+                    "the declared CYX dimensions"
                 )
-        if axis_order == 'YXC':
+        if axis_order == "YXC":
             source = source.transpose(2, 0, 1)
-            metadata = dataclasses.replace(metadata, axis_order='CYX')
-        elif axis_order != 'CYX':
-            raise ValueError(
-                f'3D image input requires axis_order CYX or YXC, got {axis_order!r}'
-            )
+            metadata = dataclasses.replace(metadata, axis_order="CYX")
+        elif axis_order != "CYX":
+            raise ValueError(f"3D image input requires axis_order CYX or YXC, got {axis_order!r}")
         if source.shape[1:] != (metadata.rows, metadata.cols):
             raise ValueError(
-                f'CYX input spatial shape {source.shape[1:]} does not match '
-                f'metadata {(metadata.rows, metadata.cols)}'
+                f"CYX input spatial shape {source.shape[1:]} does not match "
+                f"metadata {(metadata.rows, metadata.cols)}"
             )
         if metadata.bands is not None and source.shape[0] != metadata.bands:
             raise ValueError(
-                f'CYX input has {source.shape[0]} channels, metadata declares '
-                f'{metadata.bands}'
+                f"CYX input has {source.shape[0]} channels, metadata declares " f"{metadata.bands}"
             )
         return source, metadata
 
     @staticmethod
     def _update_metadata_for_result(
-        metadata: 'ImageMetadata', result: np.ndarray,
-    ) -> 'ImageMetadata':
+        metadata: "ImageMetadata",
+        result: np.ndarray,
+    ) -> "ImageMetadata":
         """Return metadata reflecting the transform's output shape/dtype.
 
         Parameters
@@ -521,80 +511,80 @@ class ImageTransform(ImageProcessor):
             Copy of *metadata* with rows, cols, bands, dtype updated for 2D/3D
             arrays. Domain adapters must handle 4D matrix shape/descriptors.
         """
-        updates: Dict[str, Any] = {'dtype': str(result.dtype)}
+        updates: dict[str, Any] = {"dtype": str(result.dtype)}
 
         if result.ndim == 2:
-            updates['rows'] = result.shape[0]
-            updates['cols'] = result.shape[1]
-            updates['bands'] = 1
-            updates['axis_order'] = 'YX'
-            channel_metadata = getattr(metadata, 'channel_metadata', None)
+            updates["rows"] = result.shape[0]
+            updates["cols"] = result.shape[1]
+            updates["bands"] = 1
+            updates["axis_order"] = "YX"
+            channel_metadata = getattr(metadata, "channel_metadata", None)
             if channel_metadata:
-                updates['channel_metadata'] = channel_metadata[:1]
+                updates["channel_metadata"] = channel_metadata[:1]
         elif result.ndim == 3:
-            output_axis_order = getattr(metadata, 'axis_order', None)
-            if output_axis_order == 'YXC':
-                updates['axis_order'] = 'YXC'
-                updates['rows'] = result.shape[0]
-                updates['cols'] = result.shape[1]
-                updates['bands'] = result.shape[2]
+            output_axis_order = getattr(metadata, "axis_order", None)
+            if output_axis_order == "YXC":
+                updates["axis_order"] = "YXC"
+                updates["rows"] = result.shape[0]
+                updates["cols"] = result.shape[1]
+                updates["bands"] = result.shape[2]
             else:
-                updates['axis_order'] = 'CYX'
-                updates['bands'] = result.shape[0]
-                updates['rows'] = result.shape[1]
-                updates['cols'] = result.shape[2]
+                updates["axis_order"] = "CYX"
+                updates["bands"] = result.shape[0]
+                updates["rows"] = result.shape[1]
+                updates["cols"] = result.shape[2]
 
-            channel_metadata = getattr(metadata, 'channel_metadata', None)
+            channel_metadata = getattr(metadata, "channel_metadata", None)
             if channel_metadata is not None:
-                expected = updates['bands']
+                expected = updates["bands"]
                 if len(channel_metadata) == expected:
-                    updates['channel_metadata'] = channel_metadata
+                    updates["channel_metadata"] = channel_metadata
                 else:
-                    updates['channel_metadata'] = ImageTransform._make_derived_channels(
-                        names=[f'C{i}' for i in range(expected)],
+                    updates["channel_metadata"] = ImageTransform._make_derived_channels(
+                        names=[f"C{i}" for i in range(expected)],
                         source_indices=[[i] for i in range(expected)],
-                        role='derived',
+                        role="derived",
                     )
         return dataclasses.replace(metadata, **updates)
 
     @staticmethod
     def _infer_3d_axis_order(
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         result: np.ndarray,
     ) -> str:
         """Infer whether a 3D result uses CYX or YXC layout."""
-        axis_order = getattr(metadata, 'axis_order', None)
-        if axis_order in ('CYX', 'YXC'):
+        axis_order = metadata.axis_order
+        if axis_order in ("CYX", "YXC"):
             return axis_order
 
-        channel_metadata = getattr(metadata, 'channel_metadata', None)
+        channel_metadata = getattr(metadata, "channel_metadata", None)
         if channel_metadata is not None:
             num_channels = len(channel_metadata)
             if result.shape[0] == num_channels and result.shape[2] != num_channels:
-                return 'CYX'
+                return "CYX"
             if result.shape[2] == num_channels and result.shape[0] != num_channels:
-                return 'YXC'
+                return "YXC"
 
-        bands = getattr(metadata, 'bands', None)
+        bands = getattr(metadata, "bands", None)
         if bands is not None:
             if result.shape[0] == bands and result.shape[2] != bands:
-                return 'CYX'
+                return "CYX"
             if result.shape[2] == bands and result.shape[0] != bands:
-                return 'YXC'
+                return "YXC"
             if result.shape[0] == bands:
-                return 'CYX'
+                return "CYX"
             if result.shape[2] == bands:
-                return 'YXC'
+                return "YXC"
 
-        return 'CYX'
+        return "CYX"
 
     @staticmethod
     def _select_channel_metadata(
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         indices: list[int],
-    ) -> Optional[list['ChannelMetadata']]:
+    ) -> list["ChannelMetadata"] | None:
         """Select and reindex channel metadata for a subset of channels."""
-        channel_metadata = getattr(metadata, 'channel_metadata', None)
+        channel_metadata = getattr(metadata, "channel_metadata", None)
         if channel_metadata is None:
             return None
         return [
@@ -607,7 +597,7 @@ class ImageTransform(ImageProcessor):
         names: list[str],
         source_indices: list[list[int]],
         role: str,
-    ) -> list['ChannelMetadata']:
+    ) -> list["ChannelMetadata"]:
         """Construct new channel descriptors for derived outputs."""
         from grdl.IO.models.base import ChannelMetadata
 
@@ -618,7 +608,7 @@ class ImageTransform(ImageProcessor):
                 role=role,
                 source_indices=src,
             )
-            for i, (name, src) in enumerate(zip(names, source_indices))
+            for i, (name, src) in enumerate(zip(names, source_indices, strict=True))
         ]
 
     @abstractmethod
@@ -684,28 +674,28 @@ class BandwiseTransformMixin:
         """
         if source.ndim not in (2, 3):
             raise ValueError(
-                f'{type(self).__name__} supports only 2D images or 3D '
-                f'channel stacks, got shape {source.shape}'
+                f"{type(self).__name__} supports only 2D images or 3D "
+                f"channel stacks, got shape {source.shape}"
             )
 
         if source.ndim == 3:
-            axis_order = kwargs.pop('axis_order', None)
-            if axis_order not in (None, 'CYX'):
+            axis_order = kwargs.pop("axis_order", None)
+            if axis_order not in (None, "CYX"):
                 raise ValueError(
-                    f'{type(self).__name__} requires canonical CYX input, '
-                    f'got {axis_order!r}'
+                    f"{type(self).__name__} requires canonical CYX input, " f"got {axis_order!r}"
                 )
             try:
                 import cupy as _cp
+
                 _xp = _cp if isinstance(source, _cp.ndarray) else np
             except ImportError:
                 _xp = np
-            return _xp.stack(
-                 [self._apply_2d(source[b], **kwargs)
-                  for b in range(source.shape[0])]
+            return cast(
+                np.ndarray,
+                _xp.stack([self._apply_2d(source[b], **kwargs) for b in range(source.shape[0])]),
             )
 
-        kwargs.pop('axis_order', None)
+        kwargs.pop("axis_order", None)
         return self._apply_2d(source, **kwargs)
 
     @abstractmethod

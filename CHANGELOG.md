@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CUDA Stokes DoP**: GPU power normalization no longer passes the unsupported
   `where` keyword to CuPy division. Safe denominators and explicit masking retain
   zero-power behavior and device residency.
+- **SICD antenna polarization**: Corrected position-helper calls, ECF-to-SEZ
+  arguments and vector shapes, and antenna polynomial coefficient ordering.
+  Dictionary and dataclass metadata now share required-field validation and
+  processed/receive-channel polarization resolution.
 
 ### Tests
 
@@ -65,8 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   benchmarks with traced peak allocations.
 - Added complex multichannel filtering, independent SciPy Gaussian-reference,
   tile-halo, and matrix logging-level regressions.
-- Full-suite and static-analysis gates are not clean; focused regression
-  coverage does not imply a clean full-project validation run.
+- Completed synthetic antenna geometry fixtures and aligned Wishart execution
+  tests with the shared channel-dispatch API. Added polynomial-order,
+  dictionary/dataclass parity, and ECF-to-SEZ shape regressions.
+- Full suite in `grdx` with benchmark timing disabled: **3,764 passed,
+  53 skipped, 1 failed**. The remaining failure is
+  `test_burst_reader_preserves_original_packet_indices` in the Sentinel-1
+  Level-0 reader tests, outside this PolSAR cleanup.
+- Scoped static checks: Black passes for 32 changed/related Python files;
+  mypy passes for 20 source files with `--follow-imports=silent`. Ruff retains
+  one unsuppressed `B024` finding on the common `ImageProcessor` abstract base.
+  Repository-wide formatting, lint, and type-check debt remains deferred.
 
 ### Install
 

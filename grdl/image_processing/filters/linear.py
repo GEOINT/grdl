@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Linear Spatial Filters - Mean (box) and Gaussian smoothing filters.
 
@@ -35,7 +34,7 @@ Modified
 
 # Standard library
 from numbers import Integral
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 # Third-party
 import numpy as np
@@ -45,6 +44,7 @@ from scipy.ndimage import uniform_filter as _scipy_uniform_filter
 try:
     import cupy as cp
     import cupyx.scipy.ndimage as _cupyx_ndimage
+
     _HAS_CUPY = True
 except ImportError:
     _HAS_CUPY = False
@@ -53,16 +53,16 @@ except ImportError:
 
 # GRDL internal
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
-from grdl.image_processing.params import Desc, Options, Range
-from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.image_processing.filters._validation import (
     validate_kernel_size,
     validate_mode,
 )
+from grdl.image_processing.params import Desc, Options, Range
+from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.vocabulary import ProcessorCategory
 
 
-def boxcar_mean(source: np.ndarray, window_size: int, mode: str = 'reflect') -> np.ndarray:
+def boxcar_mean(source: np.ndarray, window_size: int, mode: str = "reflect") -> np.ndarray:
     """Average a 2D array, preserving dtype, backend and the source values.
 
     This is the shared normalized boxcar kernel used by ``MeanFilter``.
@@ -78,11 +78,11 @@ def boxcar_mean(source: np.ndarray, window_size: int, mode: str = 'reflect') -> 
     cannot reproduce whole-image ``wrap`` boundaries on clipped edge tiles.
     """
     if source.ndim != 2:
-        raise ValueError(f'Boxcar averaging requires a 2D array, got {source.shape}')
+        raise ValueError(f"Boxcar averaging requires a 2D array, got {source.shape}")
     if isinstance(window_size, bool) or not isinstance(window_size, Integral) or window_size < 1:
-        raise ValueError('Boxcar window_size must be a positive integer')
-    if mode not in ('reflect', 'constant', 'nearest', 'wrap', 'mirror'):
-        raise ValueError(f'Unsupported boxcar boundary mode {mode!r}')
+        raise ValueError("Boxcar window_size must be a positive integer")
+    if mode not in ("reflect", "constant", "nearest", "wrap", "mirror"):
+        raise ValueError(f"Unsupported boxcar boundary mode {mode!r}")
     if window_size == 1:
         return source
     xp: Any = np
@@ -99,7 +99,7 @@ def boxcar_mean(source: np.ndarray, window_size: int, mode: str = 'reflect') -> 
     return result
 
 
-@processor_version('1.0.0')
+@processor_version("1.0.0")
 @processor_tags(category=ProcessorCategory.FILTERS)
 class MeanFilter(BandwiseTransformMixin, ImageTransform):
     """Spatial mean (box) filter using separable uniform convolution.
@@ -126,12 +126,12 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
 
     __gpu_compatible__ = True
 
-    kernel_size: Annotated[int, Range(min=3, max=101),
-                           Desc('Square kernel side length (odd)')] = 3
-    mode: Annotated[str, Options('reflect', 'constant', 'nearest', 'wrap'),
-                    Desc('Boundary handling mode')] = 'reflect'
+    kernel_size: Annotated[int, Range(min=3, max=101), Desc("Square kernel side length (odd)")] = 3
+    mode: Annotated[
+        str, Options("reflect", "constant", "nearest", "wrap"), Desc("Boundary handling mode")
+    ] = "reflect"
 
-    def __init__(self, kernel_size: int = 3, mode: str = 'reflect') -> None:
+    def __init__(self, kernel_size: int = 3, mode: str = "reflect") -> None:
         validate_kernel_size(kernel_size)
         validate_mode(mode)
         self.kernel_size = kernel_size
@@ -145,7 +145,7 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         Periodic padding requires opposite image edges, not local padding.
         Runtime overrides require planning with the effective parameters.
         """
-        if self.mode == 'wrap':
+        if self.mode == "wrap":
             return None
         half = self.kernel_size // 2
         return (half, half)
@@ -165,8 +165,8 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
             real inputs return float32 or float64.
         """
         params = self._resolve_params(kwargs)
-        ks = params['kernel_size']
-        mode = params['mode']
+        ks = params["kernel_size"]
+        mode = params["mode"]
         validate_kernel_size(ks)
         validate_mode(mode)
 
@@ -183,7 +183,7 @@ class MeanFilter(BandwiseTransformMixin, ImageTransform):
         return boxcar_mean(working, ks, mode=mode)
 
 
-@processor_version('1.0.0')
+@processor_version("1.0.0")
 @processor_tags(category=ProcessorCategory.FILTERS)
 class GaussianFilter(BandwiseTransformMixin, ImageTransform):
     """Gaussian smoothing filter using separable convolution.
@@ -212,18 +212,19 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
 
     __gpu_compatible__ = True
 
-    sigma: Annotated[float, Range(min=0.1, max=100.0),
-                     Desc('Gaussian standard deviation')] = 1.0
-    truncate: Annotated[float, Range(min=1.0, max=10.0),
-                        Desc('Truncate filter at this many sigmas')] = 4.0
-    mode: Annotated[str, Options('reflect', 'constant', 'nearest', 'wrap'),
-                    Desc('Boundary handling mode')] = 'reflect'
+    sigma: Annotated[float, Range(min=0.1, max=100.0), Desc("Gaussian standard deviation")] = 1.0
+    truncate: Annotated[
+        float, Range(min=1.0, max=10.0), Desc("Truncate filter at this many sigmas")
+    ] = 4.0
+    mode: Annotated[
+        str, Options("reflect", "constant", "nearest", "wrap"), Desc("Boundary handling mode")
+    ] = "reflect"
 
     def __init__(
         self,
         sigma: float = 1.0,
         truncate: float = 4.0,
-        mode: str = 'reflect',
+        mode: str = "reflect",
     ) -> None:
         validate_mode(mode)
         self.sigma = sigma
@@ -233,7 +234,7 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
     @property
     def tile_halo(self) -> tuple[int, int] | None:
         """Gaussian support radius, or global processing for periodic edges."""
-        if self.mode == 'wrap':
+        if self.mode == "wrap":
             return None
         radius = int(self.truncate * self.sigma + 0.5)
         return (radius, radius)
@@ -253,7 +254,7 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
             real inputs return float32 or float64.
         """
         params = self._resolve_params(kwargs)
-        mode = params['mode']
+        mode = params["mode"]
         validate_mode(mode)
 
         xp: Any = np
@@ -268,9 +269,10 @@ class GaussianFilter(BandwiseTransformMixin, ImageTransform):
             working = source.astype(xp.float64, copy=False)
         else:
             working = source.astype(xp.float32, copy=False)
-        return average(
+        result = average(
             working,
-            sigma=params['sigma'],
-            truncate=params['truncate'],
+            sigma=params["sigma"],
+            truncate=params["truncate"],
             mode=mode,
         )
+        return cast(np.ndarray, result)

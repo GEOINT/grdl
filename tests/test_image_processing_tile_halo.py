@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tests that declared tile halos reproduce full-image results.
 
@@ -27,11 +26,19 @@ import pytest
 
 from grdl.data_prep import Stitcher, Tiler
 from grdl.image_processing.decomposition import (
-    CoherencyMatrix, CovarianceMatrix, FreemanDurden3C, PauliDecomposition,
+    CoherencyMatrix,
+    CovarianceMatrix,
+    FreemanDurden3C,
+    PauliDecomposition,
     Yamaguchi4C,
 )
 from grdl.image_processing.filters import (
-    ComplexLeeFilter, IDANFilter, LeeFilter, MeanFilter, MedianFilter, RefinedLeeFilter,
+    ComplexLeeFilter,
+    IDANFilter,
+    LeeFilter,
+    MeanFilter,
+    MedianFilter,
+    RefinedLeeFilter,
 )
 from grdl.image_processing.filters.linear import boxcar_mean
 from grdl.image_processing.tiling import get_tile_halo
@@ -39,7 +46,7 @@ from grdl.image_processing.tiling import get_tile_halo
 ROWS, COLS = 83, 101
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def quad():
     rng = np.random.default_rng(7)
     shape = (4, ROWS, COLS)
@@ -55,22 +62,25 @@ def _tiled(proc, data, fn, tile=32):
     st = Stitcher(ROWS, COLS)
     for t in Tiler(ROWS, COLS, tile_size=tile).halo_tiles(halo):
         r = t.read
-        block = data[..., r.row_start:r.row_end, r.col_start:r.col_end]
+        block = data[..., r.row_start : r.row_end, r.col_start : r.col_end]
         st.add_halo_tile(t, fn(block))
     return st.finalize()
 
 
 class TestDeclaredHalos:
 
-    @pytest.mark.parametrize('proc,expected', [
-        (CovarianceMatrix(window_size=7), (3, 3)),
-        (CoherencyMatrix(window_size=1), (0, 0)),
-        (PauliDecomposition(window_size=5), (2, 2)),
-        (FreemanDurden3C(window_size=9), (4, 4)),
-        (MeanFilter(kernel_size=7), (3, 3)),
-        (RefinedLeeFilter(kernel_size=7), (3, 3)),
-        (LeeFilter(kernel_size=5, enl=4.0), (2, 2)),
-    ])
+    @pytest.mark.parametrize(
+        "proc,expected",
+        [
+            (CovarianceMatrix(window_size=7), (3, 3)),
+            (CoherencyMatrix(window_size=1), (0, 0)),
+            (PauliDecomposition(window_size=5), (2, 2)),
+            (FreemanDurden3C(window_size=9), (4, 4)),
+            (MeanFilter(kernel_size=7), (3, 3)),
+            (RefinedLeeFilter(kernel_size=7), (3, 3)),
+            (LeeFilter(kernel_size=5, enl=4.0), (2, 2)),
+        ],
+    )
     def test_halo_values(self, proc, expected):
         assert get_tile_halo(proc) == expected
 
@@ -82,7 +92,7 @@ class TestDeclaredHalos:
         assert get_tile_halo(IDANFilter(kernel_size=7, enl=2.0)) is None
 
     def test_mean_wrap_is_global(self):
-        assert get_tile_halo(MeanFilter(kernel_size=7, mode='wrap')) is None
+        assert get_tile_halo(MeanFilter(kernel_size=7, mode="wrap")) is None
 
     def test_undeclared_is_global(self):
         assert get_tile_halo(MedianFilter(kernel_size=3)) is None
@@ -92,14 +102,15 @@ class TestDeclaredHalos:
         class P:
             def tile_halo(self):
                 return (1, 2)
+
         assert get_tile_halo(P()) == (1, 2)
 
 
 class TestHaloEquivalence:
 
-    @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-    @pytest.mark.parametrize('window', [3, 7])
-    @pytest.mark.parametrize('mode', ['reflect', 'constant', 'nearest'])
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    @pytest.mark.parametrize("window", [3, 7])
+    @pytest.mark.parametrize("mode", ["reflect", "constant", "nearest"])
     def test_mean_filter(self, quad, dtype, window, mode):
         source = np.abs(quad[0]).astype(dtype)
         proc = MeanFilter(kernel_size=window, mode=mode)
@@ -108,8 +119,8 @@ class TestHaloEquivalence:
         tolerance = 1e-6 if dtype == np.float32 else 1e-12
         np.testing.assert_allclose(tiled, full, rtol=tolerance, atol=tolerance)
 
-    @pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-    @pytest.mark.parametrize('window', [1, 7])
+    @pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+    @pytest.mark.parametrize("window", [1, 7])
     def test_complex_boxcar(self, quad, dtype, window):
         source = quad[0].astype(dtype)
         proc = CovarianceMatrix(window_size=window)
@@ -118,8 +129,8 @@ class TestHaloEquivalence:
         tolerance = 1e-6 if dtype == np.complex64 else 1e-12
         np.testing.assert_allclose(tiled, full, rtol=tolerance, atol=tolerance)
 
-    @pytest.mark.parametrize('cls', [CovarianceMatrix, CoherencyMatrix])
-    @pytest.mark.parametrize('ws', [1, 7])
+    @pytest.mark.parametrize("cls", [CovarianceMatrix, CoherencyMatrix])
+    @pytest.mark.parametrize("ws", [1, 7])
     def test_matrix_builders(self, quad, cls, ws):
         proc = cls(window_size=ws)
         full = proc.compute(quad)
@@ -154,13 +165,11 @@ class TestHaloEquivalence:
         st = Stitcher(ROWS, COLS)
         for t in Tiler(ROWS, COLS, tile_size=tile).halo_tiles(halo):
             r = t.read
-            sl = (slice(None), slice(r.row_start, r.row_end),
-                  slice(r.col_start, r.col_end))
+            sl = (slice(None), slice(r.row_start, r.row_end), slice(r.col_start, r.col_end))
             st.add_halo_tile(t, proc.decompose(*quad[sl]))
         tiled = st.finalize()
         for key, value in full.items():
-            np.testing.assert_allclose(tiled[key], value, rtol=rtol,
-                                       atol=1e-3, err_msg=key)
+            np.testing.assert_allclose(tiled[key], value, rtol=rtol, atol=1e-3, err_msg=key)
 
     def test_pauli_with_window(self, quad):
         proc = PauliDecomposition(window_size=5)
@@ -169,10 +178,8 @@ class TestHaloEquivalence:
         st = Stitcher(ROWS, COLS)
         for t in Tiler(ROWS, COLS, tile_size=40).halo_tiles(halo):
             r = t.read
-            sl = (slice(None), slice(r.row_start, r.row_end),
-                  slice(r.col_start, r.col_end))
+            sl = (slice(None), slice(r.row_start, r.row_end), slice(r.col_start, r.col_end))
             st.add_halo_tile(t, proc.decompose(*quad[sl]))
         tiled = st.finalize()
         for key, value in full.items():
-            np.testing.assert_allclose(tiled[key], value, rtol=1e-4,
-                                       atol=1e-4, err_msg=key)
+            np.testing.assert_allclose(tiled[key], value, rtol=1e-4, atol=1e-4, err_msg=key)

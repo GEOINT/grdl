@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 """Compact-pol model-free 3-component decomposition (MF3CC)."""
 
-from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import numpy as np
 
@@ -9,38 +8,42 @@ from grdl.image_processing.decomposition.compact_pol_base import CompactPolDecom
 from grdl.image_processing.decomposition.compact_pol_utils import compact_handedness_s3, safe_divide
 from grdl.image_processing.decomposition.pol_matrix import c2_degree_of_polarization
 from grdl.image_processing.filters.linear import boxcar_mean
-from grdl.image_processing.versioning import processor_version, processor_tags
-from grdl.image_processing.params import Range, Desc
+from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.vocabulary import ImageModality
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
 
 
-@processor_version('1.1.0')
+@processor_version("1.1.0")
 @processor_tags(modalities=[ImageModality.SAR])
 class CompactPolModelFree3C(CompactPolDecompositionBase):
     """Model-free 3-component compact-pol decomposition."""
 
-    window_size: Annotated[int, Range(min=1, max=31), Desc('Boxcar averaging window size')] = 7
-    chi: Annotated[float, Range(min=-90.0, max=90.0), Desc('Ellipticity angle of transmitted wave')] = 45.0
-    psi: Annotated[float, Range(min=-90.0, max=90.0), Desc('Orientation angle of transmitted wave')] = 0.0
+    window_size: Annotated[int, Range(min=1, max=31), Desc("Boxcar averaging window size")] = 7
+    chi: Annotated[
+        float, Range(min=-90.0, max=90.0), Desc("Ellipticity angle of transmitted wave")
+    ] = 45.0
+    psi: Annotated[
+        float, Range(min=-90.0, max=90.0), Desc("Orientation angle of transmitted wave")
+    ] = 0.0
 
     @property
-    def component_names(self) -> Tuple[str, ...]:
-        return ('surface', 'double_bounce', 'volume', 'theta_cp')
+    def component_names(self) -> tuple[str, ...]:
+        return ("surface", "double_bounce", "volume", "theta_cp")
 
-    def decompose_compact(self, c11, c12, c21, c22) -> Dict[str, np.ndarray]:
+    def decompose_compact(self, c11, c12, c21, c22) -> dict[str, np.ndarray]:
         self._validate_c2_inputs(c11, c12, c21, c22)
         # Apply spatial averaging up front so that det, trace, and m are all
         # computed from the same windowed data.  Previously det/trace used the
         # raw (unwindowed) inputs while s0/s3 came from _stokes_from_c2 which
         # applies boxcar internally — that mismatch caused m ≈ 1 (single-pixel
         # C2 is rank-1 → det ≈ 0) and therefore pv ≈ 0.
-        c11 = boxcar_mean(c11, self.window_size, mode='reflect')
-        c12 = boxcar_mean(c12, self.window_size, mode='reflect')
-        c21 = boxcar_mean(c21, self.window_size, mode='reflect')
-        c22 = boxcar_mean(c22, self.window_size, mode='reflect')
+        c11 = boxcar_mean(c11, self.window_size, mode="reflect")
+        c12 = boxcar_mean(c12, self.window_size, mode="reflect")
+        c21 = boxcar_mean(c21, self.window_size, mode="reflect")
+        c22 = boxcar_mean(c22, self.window_size, mode="reflect")
         s0, _, _, s3 = self._stokes_from_c2(c11, c12, c21, c22, 1)
         s3 = compact_handedness_s3(s3, self.chi)
 
@@ -51,7 +54,7 @@ class CompactPolModelFree3C(CompactPolDecompositionBase):
         h = ((s0 + s3) / 2.0) - ((s0 - s3) / 2.0)
         sc = (s0 - s3) / 2.0
         oc = (s0 + s3) / 2.0
-        denom = sc * oc + (m ** 2) * (s0 ** 2)
+        denom = sc * oc + (m**2) * (s0**2)
         theta = np.arctan(safe_divide(m * s0 * h, denom))
 
         ps = np.clip(m * c2_trace * (1.0 + np.sin(2.0 * theta)) / 2.0, 0.0, None)
@@ -59,26 +62,26 @@ class CompactPolModelFree3C(CompactPolDecompositionBase):
         pv = np.clip(c2_trace * (1.0 - m), 0.0, None)
 
         return {
-            'surface': np.real(np.nan_to_num(ps)),
-            'double_bounce': np.real(np.nan_to_num(pd)),
-            'volume': np.real(np.nan_to_num(pv)),
-            'theta_cp': np.degrees(np.real(theta)),
+            "surface": np.real(np.nan_to_num(ps)),
+            "double_bounce": np.real(np.nan_to_num(pd)),
+            "volume": np.real(np.nan_to_num(pv)),
+            "theta_cp": np.degrees(np.real(theta)),
         }
 
     _RGB_CHANNELS = [
-        ('double_bounce', 'rgb_red'),
-        ('volume',        'rgb_green'),
-        ('surface',       'rgb_blue'),
+        ("double_bounce", "rgb_red"),
+        ("volume", "rgb_green"),
+        ("surface", "rgb_blue"),
     ]
 
     def to_rgb(
         self,
-        components: Dict[str, np.ndarray],
-        representation: str = 'db',
+        components: dict[str, np.ndarray],
+        representation: str = "db",
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-        channels: Optional[List[str]] = None,
-    ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        channels: list[str] | None = None,
+    ) -> tuple[np.ndarray, "ImageMetadata"]:
         """Create an RGB composite from MF3CC components.
 
         Standard convention (same as Freeman-Durden):
@@ -108,7 +111,11 @@ class CompactPolModelFree3C(CompactPolDecompositionBase):
             ``(rgb, metadata)`` — rgb shape ``(3, rows, cols)``, float32.
         """
         return self._build_power_rgb(
-            components, self._RGB_CHANNELS, 'CpMF3CCRGB',
-            representation, percentile_low, percentile_high, channels=channels,
+            components,
+            self._RGB_CHANNELS,
+            "CpMF3CCRGB",
+            representation,
+            percentile_low,
+            percentile_high,
+            channels=channels,
         )
-

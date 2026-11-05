@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ECF (Earth-Centered-Fixed) to SEZ (East-South-Zenith) coordinate transformation functions.
 
@@ -30,11 +29,12 @@ Bate, R. R., Mueller, D. D., & White, J. E. (1971). Fundamentals of Astrodynamic
 
 """
 
-from typing import Union
+from typing import cast
+
 import numpy as np
 
 
-def ecf_to_sez(ecf_coords: Union[np.ndarray, list, tuple], lat_deg: float, lon_deg: float) -> np.ndarray:
+def ecf_to_sez(ecf_coords: np.ndarray | list | tuple, lat_deg: float, lon_deg: float) -> np.ndarray:
     """
     Convert Earth-Centered-Fixed (ECF) coordinates to East-South-Zenith (SEZ) coordinates.
 
@@ -54,7 +54,7 @@ def ecf_to_sez(ecf_coords: Union[np.ndarray, list, tuple], lat_deg: float, lon_d
     """
 
     # Convert input coordinates and angles to appropriate formats
-    ecf_coords = np.asarray(ecf_coords).reshape(3, 1)
+    ecf_coords = np.asarray(ecf_coords)
     lat = np.deg2rad(lat_deg)
     lon = np.deg2rad(lon_deg)
 
@@ -77,12 +77,14 @@ def ecf_to_sez(ecf_coords: Union[np.ndarray, list, tuple], lat_deg: float, lon_d
     # Rotation matrix from ECF to SEZ
     # 1st row corresponds to South, 2nd row to East, 3rd row to Zenith
     # Note: 1st row negative to match the SAR Toolbox conversion
-    ecf2sez = np.array([
-        [sin_lat * cos_lon, sin_lat * sin_lon,  -cos_lat],
-        [-sin_lon,            cos_lon,           0      ],
-        [ cos_lat * cos_lon,  cos_lat * sin_lon, sin_lat]
-    ])
+    ecf2sez = np.array(
+        [
+            [sin_lat * cos_lon, sin_lat * sin_lon, -cos_lat],
+            [-sin_lon, cos_lon, 0],
+            [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat],
+        ]
+    )
 
     # Apply rotation matrix to convert ECF to SEZ coordinates
     sez_coords = ecf_coords @ ecf2sez.T
-    return sez_coords.flatten()
+    return cast(np.ndarray, sez_coords.flatten())

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Unit tests for CovarianceMatrix and CoherencyMatrix.
 
@@ -13,50 +12,53 @@ Covers:
 - Window size validation
 """
 
+import dataclasses
 import logging
 
 import numpy as np
 import pytest
-import dataclasses
-
-from grdl.IO.models.base import ChannelMetadata, ImageMetadata
-from grdl.image_processing.decomposition.pol_matrix import (
-    CovarianceMatrix,
-    CoherencyMatrix,
-    StokesVector,
-    KennaughMatrix,
-    pack_matrix,
-    unpack_matrix,
-    prepare_polarimetric_matrix,
-    stokes_from_c2,
-    stokes_degree_of_polarization,
-    c2_degree_of_polarization,
-)
-from grdl.exceptions import ValidationError
-from grdl.image_processing.decomposition.dual_pol_base import DualPolDecompositionBase
-from grdl.image_processing.decomposition.dop_dp import DegreeOfPolarizationDP
-from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
 from scipy.ndimage import uniform_filter
 
+from grdl.exceptions import ValidationError
+from grdl.image_processing.decomposition.dop_cp import CompactPolDegreeOfPolarization
+from grdl.image_processing.decomposition.dop_dp import DegreeOfPolarizationDP
+from grdl.image_processing.decomposition.dual_pol_base import DualPolDecompositionBase
+from grdl.image_processing.decomposition.pol_matrix import (
+    CoherencyMatrix,
+    CovarianceMatrix,
+    KennaughMatrix,
+    StokesVector,
+    c2_degree_of_polarization,
+    pack_matrix,
+    prepare_polarimetric_matrix,
+    stokes_degree_of_polarization,
+    stokes_from_c2,
+    unpack_matrix,
+)
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
-@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix])
-@pytest.mark.parametrize('level', [logging.INFO, logging.DEBUG])
+
+@pytest.mark.parametrize("processor", [CovarianceMatrix, CoherencyMatrix])
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
 def test_matrix_execution_diagnostics_are_debug(processor, level, quad_pol, quad_meta, caplog):
-    with caplog.at_level(level, logger='grdl.image_processing.decomposition.pol_matrix'):
+    with caplog.at_level(level, logger="grdl.image_processing.decomposition.pol_matrix"):
         processor(window_size=1).execute(quad_meta, np.stack(quad_pol))
-    messages = [record for record in caplog.records if record.name ==
-                'grdl.image_processing.decomposition.pol_matrix']
+    messages = [
+        record
+        for record in caplog.records
+        if record.name == "grdl.image_processing.decomposition.pol_matrix"
+    ]
     if level == logging.INFO:
         assert messages == []
     else:
         assert len(messages) == 2
         assert all(record.levelno == logging.DEBUG for record in messages)
-        assert 'input_channels=4 window_size=1' in messages[0].getMessage()
-        assert 'output_matrix=3x3 axis_order=CCYX' in messages[1].getMessage()
+        assert "input_channels=4 window_size=1" in messages[0].getMessage()
+        assert "output_matrix=3x3 axis_order=CCYX" in messages[1].getMessage()
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('window', [1, 3, 7])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("window", [1, 3, 7])
 def test_canonical_stokes_precision_and_sign(dtype, window):
     rng = np.random.default_rng(103)
     fields = (rng.normal(size=(2, 9, 11)) + 1j * rng.normal(size=(2, 9, 11))).astype(dtype)
@@ -72,48 +74,56 @@ def test_canonical_stokes_precision_and_sign(dtype, window):
     dual = DualPolDecompositionBase._normalized_stokes(c11, c12, c22)
     np.testing.assert_allclose(np.stack(dual[:4]), expected, rtol=tolerance, atol=tolerance)
     np.testing.assert_array_equal(
-        dual[-1], DualPolDecompositionBase._normalized_stokes(c11, c12.conj(), c22)[-1])
-    circular = StokesVector(1).compute(np.ones((2, 3), dtype=dtype),
-                                     np.full((2, 3), 1j, dtype=dtype))
+        dual[-1], DualPolDecompositionBase._normalized_stokes(c11, c12.conj(), c22)[-1]
+    )
+    circular = StokesVector(1).compute(
+        np.ones((2, 3), dtype=dtype), np.full((2, 3), 1j, dtype=dtype)
+    )
     np.testing.assert_array_equal(circular[3], 2)
-    reversed_fields = StokesVector(1).compute(np.full((2, 3), 1j, dtype=dtype),
-                                            np.ones((2, 3), dtype=dtype))
+    reversed_fields = StokesVector(1).compute(
+        np.full((2, 3), 1j, dtype=dtype), np.ones((2, 3), dtype=dtype)
+    )
     np.testing.assert_array_equal(reversed_fields[3], -2)
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
 def test_two_component_dop_power_extremes(dtype):
     real_dtype = np.finfo(dtype).dtype
-    powers = np.array([0, 1e-30, 1, 1e30] if dtype == np.complex64 else
-                      [0, 1e-200, 1, 1e200], dtype=real_dtype)[None, :]
+    powers = np.array(
+        [0, 1e-30, 1, 1e30] if dtype == np.complex64 else [0, 1e-200, 1, 1e200], dtype=real_dtype
+    )[None, :]
     fields = np.sqrt(powers).astype(dtype)
     zeros = np.zeros_like(fields)
     proc = StokesVector(1)
-    with np.errstate(all='raise'):
+    with np.errstate(all="raise"):
         stokes = proc.compute(fields, zeros)
         result = proc.degree_of_polarization(stokes)
-        dual = DegreeOfPolarizationDP(window_size=1).decompose_dual(fields, zeros)['dop']
+        dual = DegreeOfPolarizationDP(window_size=1).decompose_dual(fields, zeros)["dop"]
         compact = CompactPolDegreeOfPolarization(window_size=1).decompose_compact(
-            powers, zeros, zeros, np.zeros_like(powers))['dop']
+            powers, zeros, zeros, np.zeros_like(powers)
+        )["dop"]
     for dop in (result, dual, compact):
         assert dop.dtype == real_dtype
         np.testing.assert_allclose(dop, [[0, 1, 1, 1]], rtol=2e-6, atol=2e-6)
-    with np.errstate(all='raise'):
-        incoherent = np.stack([2 * powers, np.zeros_like(powers),
-                               np.zeros_like(powers), np.zeros_like(powers)])
+    with np.errstate(all="raise"):
+        incoherent = np.stack(
+            [2 * powers, np.zeros_like(powers), np.zeros_like(powers), np.zeros_like(powers)]
+        )
         result = proc.degree_of_polarization(incoherent)
         compact = CompactPolDegreeOfPolarization(window_size=1).decompose_compact(
-            powers, zeros, zeros, powers)['dop']
+            powers, zeros, zeros, powers
+        )["dop"]
     np.testing.assert_array_equal(result, 0)
     np.testing.assert_array_equal(compact, 0)
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
 def test_explicit_c21_is_not_replaced(dtype):
-    first, cross, lower, second = [np.full((3, 5), value, dtype=dtype)
-                                  for value in (3, .4 + .7j, .1 - .2j, 2)]
+    first, cross, lower, second = [
+        np.full((3, 5), value, dtype=dtype) for value in (3, 0.4 + 0.7j, 0.1 - 0.2j, 2)
+    ]
     result = stokes_from_c2(first, cross, second, lower)
-    for actual, expected in zip(result, (5, 1, .5, -.9), strict=True):
+    for actual, expected in zip(result, (5, 1, 0.5, -0.9), strict=True):
         np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-6)
     expected = np.sqrt((1 - 4 * (first * second - cross * lower) / (first + second) ** 2).real)
     actual = c2_degree_of_polarization(first, cross, second, lower)
@@ -123,33 +133,39 @@ def test_explicit_c21_is_not_replaced(dtype):
 
 
 def test_malformed_power_policies_are_preserved():
-    first = np.array([[0., 1., 0., -3., np.nan]])
-    second = np.array([[0., -1., 0., -2., 2.]])
-    cross = np.array([[0., 0., 1., 0., 0.]])
+    first = np.array([[0.0, 1.0, 0.0, -3.0, np.nan]])
+    second = np.array([[0.0, -1.0, 0.0, -2.0, 2.0]])
+    cross = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]])
     lower = -cross
-    np.testing.assert_allclose(c2_degree_of_polarization(first, cross, second, lower),
-                               [[0, 1, 0, .2, np.nan]], atol=1e-14, equal_nan=True)
-    power = np.array([[0., 0., -1., np.nan]])
-    polarized = np.array([[0., 1., 1., 1.]])
+    np.testing.assert_allclose(
+        c2_degree_of_polarization(first, cross, second, lower),
+        [[0, 1, 0, 0.2, np.nan]],
+        atol=1e-14,
+        equal_nan=True,
+    )
+    power = np.array([[0.0, 0.0, -1.0, np.nan]])
+    polarized = np.array([[0.0, 1.0, 1.0, 1.0]])
     zeros = np.zeros_like(power)
-    np.testing.assert_array_equal(stokes_degree_of_polarization(power, polarized, zeros, zeros),
-                                  [[0, 1, 0, np.nan]])
+    np.testing.assert_array_equal(
+        stokes_degree_of_polarization(power, polarized, zeros, zeros), [[0, 1, 0, np.nan]]
+    )
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('layout', ['CYX', 'YXC'])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("layout", ["CYX", "YXC"])
 def test_stokes_execute_precision_metadata(dtype, layout):
     source = np.stack([np.ones((9, 11), dtype=dtype), np.full((9, 11), 1j, dtype=dtype)])
-    metadata = ImageMetadata(format='test', rows=9, cols=11, bands=2,
-                             dtype=np.dtype(dtype).name, axis_order=layout)
-    if layout == 'YXC':
+    metadata = ImageMetadata(
+        format="test", rows=9, cols=11, bands=2, dtype=np.dtype(dtype).name, axis_order=layout
+    )
+    if layout == "YXC":
         source = source.transpose(1, 2, 0)
     result, updated = StokesVector(1).execute(metadata, source)
     assert result.dtype == np.finfo(dtype).dtype
     assert updated.dtype == str(result.dtype)
-    assert updated.axis_order == 'CYX'
+    assert updated.axis_order == "CYX"
     assert (updated.bands, updated.rows, updated.cols) == (4, 9, 11)
-    assert [channel.name for channel in updated.channel_metadata] == ['S0', 'S1', 'S2', 'S3']
+    assert [channel.name for channel in updated.channel_metadata] == ["S0", "S1", "S2", "S3"]
     assert all(channel.source_indices == [0, 1] for channel in updated.channel_metadata)
     np.testing.assert_array_equal(result[3], 2)
 
@@ -157,30 +173,38 @@ def test_stokes_execute_precision_metadata(dtype, layout):
 def _reference_target(channels, kind):
     channels = [channel.astype(np.result_type(*channels), copy=False) for channel in channels]
     if len(channels) == 2:
-        if kind == 'C':
+        if kind == "C":
             return channels
-        return [(channels[0] + channels[1]) / np.sqrt(2.0),
-                (channels[0] - channels[1]) / np.sqrt(2.0)]
+        return [
+            (channels[0] + channels[1]) / np.sqrt(2.0),
+            (channels[0] - channels[1]) / np.sqrt(2.0),
+        ]
     cross = channels[1] if len(channels) == 3 else (channels[1] + channels[2]) / 2.0
-    if kind == 'C':
+    if kind == "C":
         return [channels[0], np.sqrt(2.0) * cross, channels[-1]]
-    return [(channels[0] + channels[-1]) / np.sqrt(2.0),
-            (channels[0] - channels[-1]) / np.sqrt(2.0), np.sqrt(2.0) * cross]
+    return [
+        (channels[0] + channels[-1]) / np.sqrt(2.0),
+        (channels[0] - channels[-1]) / np.sqrt(2.0),
+        np.sqrt(2.0) * cross,
+    ]
 
 
 def _reference_element(first, second, window):
     product = first * second.conj()
-    return (uniform_filter(product.real, size=window, mode='reflect')
-            + 1j * uniform_filter(product.imag, size=window, mode='reflect'))
+    return uniform_filter(product.real, size=window, mode="reflect") + 1j * uniform_filter(
+        product.imag, size=window, mode="reflect"
+    )
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('window', [1, 3, 7])
-@pytest.mark.parametrize('count', [2, 3, 4])
-@pytest.mark.parametrize('processor,kind', [(CovarianceMatrix, 'C'), (CoherencyMatrix, 'T')])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("window", [1, 3, 7])
+@pytest.mark.parametrize("count", [2, 3, 4])
+@pytest.mark.parametrize("processor,kind", [(CovarianceMatrix, "C"), (CoherencyMatrix, "T")])
 def test_matrix_element_reference_and_precision(dtype, window, count, processor, kind):
     rng = np.random.default_rng(43)
-    channels = (rng.normal(size=(count, 9, 11)) + 1j * rng.normal(size=(count, 9, 11))).astype(dtype)
+    channels = (rng.normal(size=(count, 9, 11)) + 1j * rng.normal(size=(count, 9, 11))).astype(
+        dtype
+    )
     result = processor(window_size=window).compute(channels)
     assert result.dtype == dtype
     components = _reference_target(channels, kind)
@@ -192,25 +216,30 @@ def test_matrix_element_reference_and_precision(dtype, window, count, processor,
         np.testing.assert_array_equal(result[row, row].imag, 0)
 
 
-@pytest.mark.parametrize('dtypes', [(np.complex64, np.complex64),
-                                   (np.complex128, np.complex128),
-                                   (np.complex64, np.complex128)])
-@pytest.mark.parametrize('window', [1, 3, 7])
-@pytest.mark.parametrize('kind', ['C', 'T'])
+@pytest.mark.parametrize(
+    "dtypes",
+    [(np.complex64, np.complex64), (np.complex128, np.complex128), (np.complex64, np.complex128)],
+)
+@pytest.mark.parametrize("window", [1, 3, 7])
+@pytest.mark.parametrize("kind", ["C", "T"])
 def test_dual_elements_reference_precision_without_matrix(monkeypatch, dtypes, window, kind):
     from grdl.image_processing.decomposition import pol_matrix
 
     def reject_matrix(*args, **kwargs):
-        raise AssertionError('Dual helpers must not allocate a full matrix')
+        raise AssertionError("Dual helpers must not allocate a full matrix")
 
     rng = np.random.default_rng(71)
-    channels = [(rng.normal(size=(9, 11)) + 1j * rng.normal(size=(9, 11))).astype(dtype)
-                for dtype in dtypes]
-    processor = CovarianceMatrix if kind == 'C' else CoherencyMatrix
+    channels = [
+        (rng.normal(size=(9, 11)) + 1j * rng.normal(size=(9, 11))).astype(dtype) for dtype in dtypes
+    ]
+    processor = CovarianceMatrix if kind == "C" else CoherencyMatrix
     matrix = processor(window_size=window).compute(np.stack(channels))
-    monkeypatch.setattr(pol_matrix, 'compute_matrix', reject_matrix)
-    compute = (DualPolDecompositionBase._compute_c2 if kind == 'C'
-               else DualPolDecompositionBase._compute_t2)
+    monkeypatch.setattr(pol_matrix, "compute_matrix", reject_matrix)
+    compute = (
+        DualPolDecompositionBase._compute_c2
+        if kind == "C"
+        else DualPolDecompositionBase._compute_t2
+    )
     first, cross, second = compute(channels[0], channels[1], window)
     dtype = np.result_type(*channels)
     assert cross.dtype == dtype
@@ -223,27 +252,30 @@ def test_dual_elements_reference_precision_without_matrix(monkeypatch, dtypes, w
         np.testing.assert_array_equal(result, matrix[row, col])
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('kind,count', [('C2', 2), ('T2', 2), ('C3', 3),
-                                      ('T3', 3), ('C3', 4), ('T3', 4)])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize(
+    "kind,count", [("C2", 2), ("T2", 2), ("C3", 3), ("T3", 3), ("C3", 4), ("T3", 4)]
+)
 def test_raw_matrix_preparation_precision(dtype, kind, count):
     rng = np.random.default_rng(83)
-    channels = (rng.normal(size=(count, 9, 11)) + 1j * rng.normal(size=(count, 9, 11))).astype(dtype)
-    result = prepare_polarimetric_matrix(channels, input_kind='channels', matrix_type=kind)
-    processor = CovarianceMatrix if kind.startswith('C') else CoherencyMatrix
+    channels = (rng.normal(size=(count, 9, 11)) + 1j * rng.normal(size=(count, 9, 11))).astype(
+        dtype
+    )
+    result = prepare_polarimetric_matrix(channels, input_kind="channels", matrix_type=kind)
+    processor = CovarianceMatrix if kind.startswith("C") else CoherencyMatrix
     np.testing.assert_array_equal(result, processor(window_size=1).compute(channels))
     assert result.dtype == dtype
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("processor", [CovarianceMatrix, CoherencyMatrix])
 def test_matrix_element_gpu_parity(dtype, processor):
-    cupy = pytest.importorskip('cupy')
+    cupy = pytest.importorskip("cupy")
     try:
         if cupy.cuda.runtime.getDeviceCount() == 0:
-            pytest.skip('No CUDA device available')
+            pytest.skip("No CUDA device available")
     except cupy.cuda.runtime.CUDARuntimeError:
-        pytest.skip('CUDA runtime unavailable')
+        pytest.skip("CUDA runtime unavailable")
     rng = np.random.default_rng(89)
     channels = (rng.normal(size=(4, 9, 11)) + 1j * rng.normal(size=(4, 9, 11))).astype(dtype)
     proc = processor(window_size=3)
@@ -251,19 +283,20 @@ def test_matrix_element_gpu_parity(dtype, processor):
     assert isinstance(result, cupy.ndarray)
     assert result.dtype == dtype
     tolerance = 2e-6 if dtype == np.complex64 else 5e-14
-    np.testing.assert_allclose(cupy.asnumpy(result), proc.compute(channels),
-                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        cupy.asnumpy(result), proc.compute(channels), rtol=tolerance, atol=tolerance
+    )
 
 
-@pytest.mark.parametrize('dtype', [np.complex64, np.complex128])
-@pytest.mark.parametrize('window', [1, 7])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("window", [1, 7])
 def test_stokes_gpu_precision_and_power_policy(dtype, window):
-    cupy = pytest.importorskip('cupy')
+    cupy = pytest.importorskip("cupy")
     try:
         if cupy.cuda.runtime.getDeviceCount() == 0:
-            pytest.skip('No CUDA device available')
+            pytest.skip("No CUDA device available")
     except cupy.cuda.runtime.CUDARuntimeError:
-        pytest.skip('CUDA runtime unavailable')
+        pytest.skip("CUDA runtime unavailable")
     rng = np.random.default_rng(109)
     fields = (rng.normal(size=(2, 9, 11)) + 1j * rng.normal(size=(2, 9, 11))).astype(dtype)
     device_fields = cupy.asarray(fields)
@@ -273,47 +306,55 @@ def test_stokes_gpu_precision_and_power_policy(dtype, window):
     assert isinstance(actual, cupy.ndarray)
     assert actual.dtype == np.finfo(dtype).dtype
     tolerance = 2e-6 if dtype == np.complex64 else 5e-14
-    np.testing.assert_allclose(cupy.asnumpy(actual), expected,
-                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(cupy.asnumpy(actual), expected, rtol=tolerance, atol=tolerance)
     dop = processor.degree_of_polarization(actual)
     assert isinstance(dop, cupy.ndarray)
     assert dop.dtype == actual.dtype
-    np.testing.assert_allclose(cupy.asnumpy(dop), processor.degree_of_polarization(expected),
-                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        cupy.asnumpy(dop),
+        processor.degree_of_polarization(expected),
+        rtol=tolerance,
+        atol=tolerance,
+    )
     zero = cupy.zeros((4, 3, 5), dtype=actual.dtype)
     np.testing.assert_array_equal(cupy.asnumpy(processor.degree_of_polarization(zero)), 0)
     np.testing.assert_array_equal(cupy.asnumpy(device_fields), fields)
 
 
-@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix])
+@pytest.mark.parametrize("processor", [CovarianceMatrix, CoherencyMatrix])
 def test_matrix_execute_preserves_complex128_metadata(processor):
     channels = np.ones((2, 5, 7), dtype=np.complex128)
-    metadata = ImageMetadata(format='array', rows=5, cols=7, bands=2,
-                             dtype='complex128', axis_order='CYX')
+    metadata = ImageMetadata(
+        format="array", rows=5, cols=7, bands=2, dtype="complex128", axis_order="CYX"
+    )
     result, updated = processor().execute(metadata, channels)
     assert result.dtype == np.complex128
-    assert updated.dtype == 'complex128'
+    assert updated.dtype == "complex128"
 
 
-@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix, KennaughMatrix])
-@pytest.mark.parametrize('axis_order', ['CYX', 'YXC', None])
-@pytest.mark.parametrize('descriptor', ['polarization', 'role', 'txrx'])
+@pytest.mark.parametrize("processor", [CovarianceMatrix, CoherencyMatrix, KennaughMatrix])
+@pytest.mark.parametrize("axis_order", ["CYX", "YXC", None])
+@pytest.mark.parametrize("descriptor", ["polarization", "role", "txrx"])
 def test_shuffled_matrix_descriptors(quad_pol, quad_meta, processor, axis_order, descriptor):
     order = [3, 2, 0, 1]
-    roles = ['co_pol_a', 'cross_pol', 'cross_pol_2', 'co_pol_b']
-    tokens = ['XX', 'XY', 'YX', 'YY']
+    roles = ["co_pol_a", "cross_pol", "cross_pol_2", "co_pol_b"]
+    tokens = ["XX", "XY", "YX", "YY"]
     descriptors = []
     for slot, index in enumerate(order):
-        descriptors.append(ChannelMetadata(
-            index=slot, name=f'band_{slot}', source_indices=[90 + index],
-            polarization=tokens[index] if descriptor == 'polarization' else None,
-            role=roles[index] if descriptor == 'role' else 'measurement',
-            tx_polarization=tokens[index][0] if descriptor == 'txrx' else None,
-            rcv_polarization=tokens[index][1] if descriptor == 'txrx' else None,
-        ))
+        descriptors.append(
+            ChannelMetadata(
+                index=slot,
+                name=f"band_{slot}",
+                source_indices=[90 + index],
+                polarization=tokens[index] if descriptor == "polarization" else None,
+                role=roles[index] if descriptor == "role" else "measurement",
+                tx_polarization=tokens[index][0] if descriptor == "txrx" else None,
+                rcv_polarization=tokens[index][1] if descriptor == "txrx" else None,
+            )
+        )
     metadata = dataclasses.replace(quad_meta, axis_order=axis_order, channel_metadata=descriptors)
     cube = np.stack(quad_pol)[order]
-    if axis_order == 'YXC':
+    if axis_order == "YXC":
         cube = cube.transpose(1, 2, 0)
     proc = processor(window_size=3)
     result, updated = proc.execute(metadata, cube)
@@ -328,23 +369,33 @@ def test_shuffled_matrix_descriptors(quad_pol, quad_meta, processor, axis_order,
         assert updated.channel_metadata[8].source_indices == [3, 1]
         assert updated.channel_metadata[2].source_indices == [2, 0, 3, 1]
     else:
-        assert all(channel.source_indices == [2, 3, 1, 0]
-                   for channel in updated.channel_metadata)
+        assert all(channel.source_indices == [2, 3, 1, 0] for channel in updated.channel_metadata)
 
 
-@pytest.mark.parametrize('labels,selected', [
-    (['V', 'H'], [1, 0]), (['Y', 'X'], [1, 0]), (['L', 'R'], [1, 0]),
-    (['VV', 'HH'], [1, 0]), (['VV', 'HV', 'HH'], [2, 0]),
-    (['VH', 'VV', 'HH', 'HV'], [2, 1]),
-])
-@pytest.mark.parametrize('axis_order', ['CYX', 'YXC'])
+@pytest.mark.parametrize(
+    "labels,selected",
+    [
+        (["V", "H"], [1, 0]),
+        (["Y", "X"], [1, 0]),
+        (["L", "R"], [1, 0]),
+        (["VV", "HH"], [1, 0]),
+        (["VV", "HV", "HH"], [2, 0]),
+        (["VH", "VV", "HH", "HV"], [2, 1]),
+    ],
+)
+@pytest.mark.parametrize("axis_order", ["CYX", "YXC"])
 def test_stokes_labelled_fields(quad_meta, labels, selected, axis_order):
     cube = np.stack([_complex(index) for index in range(len(labels))])
     expected = StokesVector(3).compute(cube[selected[0]], cube[selected[1]])
-    metadata = dataclasses.replace(quad_meta, bands=len(labels), axis_order=axis_order,
-                                  channel_metadata=[ChannelMetadata(index=index, name=label)
-                                                    for index, label in enumerate(labels)])
-    if axis_order == 'YXC':
+    metadata = dataclasses.replace(
+        quad_meta,
+        bands=len(labels),
+        axis_order=axis_order,
+        channel_metadata=[
+            ChannelMetadata(index=index, name=label) for index, label in enumerate(labels)
+        ],
+    )
+    if axis_order == "YXC":
         cube = cube.transpose(1, 2, 0)
     result, updated = StokesVector(3).execute(metadata, cube)
     np.testing.assert_array_equal(result, expected)
@@ -352,73 +403,103 @@ def test_stokes_labelled_fields(quad_meta, labels, selected, axis_order):
     assert updated.dtype == str(result.dtype)
 
 
-@pytest.mark.parametrize('processor', [CovarianceMatrix, CoherencyMatrix, KennaughMatrix, StokesVector])
+@pytest.mark.parametrize(
+    "processor", [CovarianceMatrix, CoherencyMatrix, KennaughMatrix, StokesVector]
+)
 def test_explicit_arrays_bypass_bad_source(quad_pol, quad_meta, processor):
-    metadata = dataclasses.replace(quad_meta, axis_order='CCYX', rows=1, cols=1,
-                                  channel_metadata=[ChannelMetadata(index=0, name='C11')])
+    metadata = dataclasses.replace(
+        quad_meta,
+        axis_order="CCYX",
+        rows=1,
+        cols=1,
+        channel_metadata=[ChannelMetadata(index=0, name="C11")],
+    )
     proc = processor(3)
-    inputs = (dict(zip(('shh', 'shv', 'svh', 'svv'), quad_pol, strict=True))
-              if processor is not StokesVector else {'e_x': quad_pol[0], 'e_y': quad_pol[3]})
+    inputs = (
+        dict(zip(("shh", "shv", "svh", "svv"), quad_pol, strict=True))
+        if processor is not StokesVector
+        else {"e_x": quad_pol[0], "e_y": quad_pol[3]}
+    )
     result, updated = proc.execute(metadata, np.zeros((2, 3, 4)), **inputs)
-    expected = (proc.compute(np.stack(quad_pol)) if processor is not StokesVector else
-                proc.compute(quad_pol[0], quad_pol[3]))
+    expected = (
+        proc.compute(np.stack(quad_pol))
+        if processor is not StokesVector
+        else proc.compute(quad_pol[0], quad_pol[3])
+    )
     np.testing.assert_array_equal(result, expected)
     assert (updated.rows, updated.cols) == SHAPE
     assert all(channel.source_indices == [] for channel in updated.channel_metadata)
-    incomplete = {'shv': quad_pol[1]} if processor is not StokesVector else {'e_y': quad_pol[3]}
-    with pytest.raises(ValueError, match='Explicit|Both'):
+    incomplete = {"shv": quad_pol[1]} if processor is not StokesVector else {"e_y": quad_pol[3]}
+    with pytest.raises(ValueError, match="Explicit|Both"):
         proc.execute(quad_meta, np.stack(quad_pol), **incomplete)
 
 
-@pytest.mark.parametrize('labels', [
-    ['HH', 'HH', 'VH', 'VV'], ['HH', 'HV', 'VH', 'band'],
-    ['HH', 'XY', 'VH', 'VV'], ['C11', 'C12_real', 'C12_imag', 'C22'],
-])
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ["HH", "HH", "VH", "VV"],
+        ["HH", "HV", "VH", "band"],
+        ["HH", "XY", "VH", "VV"],
+        ["C11", "C12_real", "C12_imag", "C22"],
+    ],
+)
 def test_matrix_rejects_invalid_descriptors(quad_pol, quad_meta, labels):
-    metadata = dataclasses.replace(quad_meta, channel_metadata=[
-        ChannelMetadata(index=index, name=label) for index, label in enumerate(labels)
-    ])
+    metadata = dataclasses.replace(
+        quad_meta,
+        channel_metadata=[
+            ChannelMetadata(index=index, name=label) for index, label in enumerate(labels)
+        ],
+    )
     with pytest.raises(ValueError):
         CovarianceMatrix().execute(metadata, np.stack(quad_pol))
 
 
 def test_matrix_rejects_ambiguous_layout_and_unlabelled_surplus(quad_meta):
     metadata = dataclasses.replace(quad_meta, rows=4, cols=4, axis_order=None)
-    with pytest.raises(ValueError, match='Ambiguous'):
+    with pytest.raises(ValueError, match="Ambiguous"):
         CovarianceMatrix().execute(metadata, np.ones((4, 4, 4), dtype=np.complex64))
     metadata = dataclasses.replace(quad_meta, bands=5, channel_metadata=None)
-    with pytest.raises(ValueError, match='Unlabelled'):
+    with pytest.raises(ValueError, match="Unlabelled"):
         CovarianceMatrix().execute(metadata, np.ones((5, *SHAPE), dtype=np.complex64))
 
 
 def test_prepare_preserves_raw_counts_finite_and_basis_contract(quad_pol):
     raw = np.stack(quad_pol)
     shuffled = raw[[3, 2, 0, 1]]
-    descriptors = [ChannelMetadata(index=index, name=name)
-                   for index, name in enumerate(('VV', 'VH', 'HH', 'HV'))]
+    descriptors = [
+        ChannelMetadata(index=index, name=name)
+        for index, name in enumerate(("VV", "VH", "HH", "HV"))
+    ]
     expected = CovarianceMatrix().compute(raw)
-    actual = prepare_polarimetric_matrix(shuffled, input_kind='channels', matrix_type='C3',
-                                        channel_metadata=descriptors)
+    actual = prepare_polarimetric_matrix(
+        shuffled, input_kind="channels", matrix_type="C3", channel_metadata=descriptors
+    )
     np.testing.assert_array_equal(actual, expected)
     packed = pack_matrix(actual)
     np.testing.assert_allclose(unpack_matrix(packed), actual, atol=3e-7)
     np.testing.assert_array_equal(pack_matrix(unpack_matrix(packed)), packed)
-    assert prepare_polarimetric_matrix(actual, input_kind='matrix', matrix_type='T3') is actual
-    for kind in ('C4', 'T4', 'C2'):
+    assert prepare_polarimetric_matrix(actual, input_kind="matrix", matrix_type="T3") is actual
+    for kind in ("C4", "T4", "C2"):
         with pytest.raises(ValidationError):
-            prepare_polarimetric_matrix(raw, input_kind='channels', matrix_type=kind)
+            prepare_polarimetric_matrix(raw, input_kind="channels", matrix_type=kind)
     with pytest.raises(ValidationError):
-        prepare_polarimetric_matrix(np.concatenate([raw, raw[:1]]),
-                                   input_kind='channels', matrix_type='C3')
-    with pytest.raises(ValidationError, match='incompatible raw count'):
-        prepare_polarimetric_matrix(raw, input_kind='channels', matrix_type='C3',
-                                   channel_metadata=[ChannelMetadata(index=index, name=name)
-                                                     for index, name in enumerate(
-                                                         ('HH', 'HV', 'band', 'band'))])
+        prepare_polarimetric_matrix(
+            np.concatenate([raw, raw[:1]]), input_kind="channels", matrix_type="C3"
+        )
+    with pytest.raises(ValidationError, match="incompatible raw count"):
+        prepare_polarimetric_matrix(
+            raw,
+            input_kind="channels",
+            matrix_type="C3",
+            channel_metadata=[
+                ChannelMetadata(index=index, name=name)
+                for index, name in enumerate(("HH", "HV", "band", "band"))
+            ],
+        )
     invalid = raw.copy()
     invalid[0, 0, 0] = np.nan
-    with pytest.raises(ValidationError, match='non-finite'):
-        prepare_polarimetric_matrix(invalid, input_kind='channels', matrix_type='C3')
+    with pytest.raises(ValidationError, match="non-finite"):
+        prepare_polarimetric_matrix(invalid, input_kind="channels", matrix_type="C3")
 
 
 # ---------------------------------------------------------------------------
@@ -447,13 +528,17 @@ def dual_pol():
 @pytest.fixture
 def quad_meta():
     return ImageMetadata(
-        format='test', rows=SHAPE[0], cols=SHAPE[1],
-        dtype='complex64', bands=4, axis_order='CYX',
+        format="test",
+        rows=SHAPE[0],
+        cols=SHAPE[1],
+        dtype="complex64",
+        bands=4,
+        axis_order="CYX",
         channel_metadata=[
-            ChannelMetadata(index=0, name='HH'),
-            ChannelMetadata(index=1, name='HV'),
-            ChannelMetadata(index=2, name='VH'),
-            ChannelMetadata(index=3, name='VV'),
+            ChannelMetadata(index=0, name="HH"),
+            ChannelMetadata(index=1, name="HV"),
+            ChannelMetadata(index=2, name="VH"),
+            ChannelMetadata(index=3, name="VV"),
         ],
     )
 
@@ -461,11 +546,15 @@ def quad_meta():
 @pytest.fixture
 def dual_meta():
     return ImageMetadata(
-        format='test', rows=SHAPE[0], cols=SHAPE[1],
-        dtype='complex64', bands=2, axis_order='CYX',
+        format="test",
+        rows=SHAPE[0],
+        cols=SHAPE[1],
+        dtype="complex64",
+        bands=2,
+        axis_order="CYX",
         channel_metadata=[
-            ChannelMetadata(index=0, name='VV'),
-            ChannelMetadata(index=1, name='VH'),
+            ChannelMetadata(index=0, name="VV"),
+            ChannelMetadata(index=1, name="VH"),
         ],
     )
 
@@ -473,6 +562,7 @@ def dual_meta():
 # ---------------------------------------------------------------------------
 # CovarianceMatrix
 # ---------------------------------------------------------------------------
+
 
 class TestCovarianceMatrix:
 
@@ -516,19 +606,19 @@ class TestCovarianceMatrix:
         cmat = CovarianceMatrix(window_size=3)
         C, out_meta = cmat.execute(quad_meta, cube)
         assert C.shape == (3, 3, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
         assert out_meta.bands == 9
         assert out_meta.channel_metadata is not None
         assert len(out_meta.channel_metadata) == 9
-        assert out_meta.channel_metadata[0].name == 'C[0,0]'
-        assert out_meta.channel_metadata[4].name == 'C[1,1]'
+        assert out_meta.channel_metadata[0].name == "C[0,0]"
+        assert out_meta.channel_metadata[4].name == "C[1,1]"
 
     def test_execute_dual_pol_cyx(self, dual_pol, dual_meta):
         cube = np.stack(dual_pol, axis=0)  # (2, rows, cols)
         cmat = CovarianceMatrix(window_size=3)
         C, out_meta = cmat.execute(dual_meta, cube)
         assert C.shape == (2, 2, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
         assert out_meta.bands == 4
 
     def test_execute_three_channel_cube(self, quad_pol, quad_meta):
@@ -538,15 +628,15 @@ class TestCovarianceMatrix:
             quad_meta,
             bands=3,
             channel_metadata=[
-                ChannelMetadata(index=0, name='HH'),
-                ChannelMetadata(index=1, name='HV'),
-                ChannelMetadata(index=2, name='VV'),
+                ChannelMetadata(index=0, name="HH"),
+                ChannelMetadata(index=1, name="HV"),
+                ChannelMetadata(index=2, name="VV"),
             ],
         )
         cmat = CovarianceMatrix(window_size=3)
         C, out_meta = cmat.execute(meta3, cube)
         assert C.shape == (3, 3, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
 
     def test_execute_generic_kwargs_aliases(self, quad_pol, quad_meta):
         shh, shv, svh, svv = quad_pol
@@ -568,38 +658,40 @@ class TestCovarianceMatrix:
             quad_meta,
             bands=3,
             channel_metadata=[
-                ChannelMetadata(index=0, name='chan_a', role='co_pol'),
-                ChannelMetadata(index=1, name='chan_b', role='cross_pol'),
-                ChannelMetadata(index=2, name='chan_c', role='co_pol'),
+                ChannelMetadata(index=0, name="chan_a", role="co_pol"),
+                ChannelMetadata(index=1, name="chan_b", role="cross_pol"),
+                ChannelMetadata(index=2, name="chan_c", role="co_pol"),
             ],
         )
         cmat = CovarianceMatrix(window_size=3)
         C, out_meta = cmat.execute(meta3, cube)
         assert C.shape == (3, 3, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
 
     def test_execute_kwargs_interface(self, quad_pol, quad_meta):
         shh, shv, svh, svv = quad_pol
         cmat = CovarianceMatrix(window_size=3)
-        C, _ = cmat.execute(quad_meta, np.zeros((SHAPE[0], SHAPE[1])),
-                            shh=shh, shv=shv, svh=svh, svv=svv)
+        C, _ = cmat.execute(
+            quad_meta, np.zeros((SHAPE[0], SHAPE[1])), shh=shh, shv=shv, svh=svh, svv=svv
+        )
         assert C.shape == (3, 3, *SHAPE)
 
     def test_repr(self):
-        assert repr(CovarianceMatrix(7)) == 'CovarianceMatrix(window_size=7)'
+        assert repr(CovarianceMatrix(7)) == "CovarianceMatrix(window_size=7)"
 
     def test_invalid_window_even(self):
-        with pytest.raises(ValueError, match='odd'):
+        with pytest.raises(ValueError, match="odd"):
             CovarianceMatrix(window_size=4)
 
     def test_invalid_window_small(self):
-        with pytest.raises(ValueError, match='odd'):
+        with pytest.raises(ValueError, match="odd"):
             CovarianceMatrix(window_size=2)
 
 
 # ---------------------------------------------------------------------------
 # CoherencyMatrix
 # ---------------------------------------------------------------------------
+
 
 class TestCoherencyMatrix:
 
@@ -645,23 +737,23 @@ class TestCoherencyMatrix:
         tmat = CoherencyMatrix(window_size=3)
         T, out_meta = tmat.execute(quad_meta, cube)
         assert T.shape == (3, 3, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
         assert out_meta.bands == 9
-        assert out_meta.channel_metadata[0].name == 'T[0,0]'
+        assert out_meta.channel_metadata[0].name == "T[0,0]"
 
     def test_execute_dual_pol_cyx(self, dual_pol, dual_meta):
         cube = np.stack(dual_pol, axis=0)
         tmat = CoherencyMatrix(window_size=3)
         T, out_meta = tmat.execute(dual_meta, cube)
         assert T.shape == (2, 2, *SHAPE)
-        assert out_meta.axis_order == 'CCYX'
+        assert out_meta.axis_order == "CCYX"
         assert out_meta.bands == 4
 
     def test_repr(self):
-        assert repr(CoherencyMatrix(5)) == 'CoherencyMatrix(window_size=5)'
+        assert repr(CoherencyMatrix(5)) == "CoherencyMatrix(window_size=5)"
 
     def test_invalid_window_even(self):
-        with pytest.raises(ValueError, match='odd'):
+        with pytest.raises(ValueError, match="odd"):
             CoherencyMatrix(window_size=6)
 
 
@@ -669,10 +761,15 @@ class TestCoherencyMatrix:
 # Import sanity
 # ---------------------------------------------------------------------------
 
+
 def test_importable_from_decomposition_package():
     from grdl.image_processing.decomposition import (
-        CovarianceMatrix, CoherencyMatrix, StokesVector, KennaughMatrix,
+        CoherencyMatrix,
+        CovarianceMatrix,
+        KennaughMatrix,
+        StokesVector,
     )
+
     assert CovarianceMatrix is not None
     assert CoherencyMatrix is not None
     assert StokesVector is not None
@@ -682,6 +779,7 @@ def test_importable_from_decomposition_package():
 # ---------------------------------------------------------------------------
 # StokesVector
 # ---------------------------------------------------------------------------
+
 
 class TestStokesVector:
 
@@ -741,26 +839,26 @@ class TestStokesVector:
     def test_execute_metadata_axis_order(self, quad_pol, quad_meta):
         cube = np.stack(quad_pol, axis=0)
         _, out_meta = StokesVector(window_size=3).execute(quad_meta, cube)
-        assert out_meta.axis_order == 'CYX'
+        assert out_meta.axis_order == "CYX"
         assert out_meta.bands == 4
 
     def test_execute_channel_names(self, quad_pol, quad_meta):
         cube = np.stack(quad_pol, axis=0)
         _, out_meta = StokesVector(window_size=3).execute(quad_meta, cube)
         names = [cm.name for cm in out_meta.channel_metadata]
-        assert names == ['S0', 'S1', 'S2', 'S3']
+        assert names == ["S0", "S1", "S2", "S3"]
 
     def test_execute_channel_roles(self, quad_pol, quad_meta):
         cube = np.stack(quad_pol, axis=0)
         _, out_meta = StokesVector(window_size=3).execute(quad_meta, cube)
         for cm in out_meta.channel_metadata:
-            assert cm.role == 'stokes'
+            assert cm.role == "stokes"
 
     def test_repr(self):
-        assert repr(StokesVector(5)) == 'StokesVector(window_size=5)'
+        assert repr(StokesVector(5)) == "StokesVector(window_size=5)"
 
     def test_invalid_window_even(self):
-        with pytest.raises(ValueError, match='odd'):
+        with pytest.raises(ValueError, match="odd"):
             StokesVector(window_size=4)
 
     def test_invalid_window_too_small(self):
@@ -778,6 +876,7 @@ class TestStokesVector:
 # ---------------------------------------------------------------------------
 # KennaughMatrix
 # ---------------------------------------------------------------------------
+
 
 class TestKennaughMatrix:
 
@@ -840,7 +939,7 @@ class TestKennaughMatrix:
 
     def test_missing_svv_raises(self, quad_pol):
         sxx, sxy = quad_pol[0], quad_pol[1]
-        with pytest.raises(ValueError, match='channels'):
+        with pytest.raises(ValueError, match="channels"):
             KennaughMatrix(window_size=3).compute(np.stack([sxx, sxy], axis=0))
 
     def test_execute_cyx_extraction(self, quad_pol, quad_meta):
@@ -848,18 +947,18 @@ class TestKennaughMatrix:
         km = KennaughMatrix(window_size=3)
         K, out_meta = km.execute(quad_meta, cube)
         assert K.shape == (4, 4, *SHAPE)
-        assert out_meta.axis_order == 'KKYX'
+        assert out_meta.axis_order == "KKYX"
         assert out_meta.bands == 16
 
     def test_execute_channel_names(self, quad_pol, quad_meta):
         cube = np.stack(quad_pol, axis=0)
         _, out_meta = KennaughMatrix(window_size=3).execute(quad_meta, cube)
-        assert out_meta.channel_metadata[0].name == 'K[0,0]'
-        assert out_meta.channel_metadata[5].name == 'K[1,1]'
+        assert out_meta.channel_metadata[0].name == "K[0,0]"
+        assert out_meta.channel_metadata[5].name == "K[1,1]"
 
     def test_repr(self):
-        assert repr(KennaughMatrix(5)) == 'KennaughMatrix(window_size=5)'
+        assert repr(KennaughMatrix(5)) == "KennaughMatrix(window_size=5)"
 
     def test_invalid_window_even(self):
-        with pytest.raises(ValueError, match='odd'):
+        with pytest.raises(ValueError, match="odd"):
             KennaughMatrix(window_size=6)

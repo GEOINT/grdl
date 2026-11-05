@@ -1,5 +1,6 @@
-# -*- coding: utf-8 -*-
 """Utility helpers for compact-pol decomposition implementations."""
+
+from typing import cast
 
 import numpy as np
 
@@ -16,4 +17,4 @@ def compact_handedness_s3(s3: np.ndarray, chi: float) -> np.ndarray:
 def safe_divide(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
     """Safely divide arrays with tiny-value protection on denominator."""
     eps = np.finfo(np.float64).tiny
-    return numerator / np.where(np.abs(denominator) > eps, denominator, eps)
+    return cast(np.ndarray, numerator / np.where(np.abs(denominator) > eps, denominator, eps))

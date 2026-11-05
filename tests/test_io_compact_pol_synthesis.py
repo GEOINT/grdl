@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Compact-pol synthesis metadata tests.
 
@@ -9,6 +8,8 @@ inputs includes the geometry needed for geolocation.
 import numpy as np
 import pytest
 
+from grdl.geolocation.sar.sicd import SICDGeolocation
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.IO.models.nisar import (
     NISARGeolocationGrid,
     NISARIdentification,
@@ -16,12 +17,10 @@ from grdl.IO.models.nisar import (
     NISAROrbit,
     NISARSwathParameters,
 )
-from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.IO.sar.compact_pol_synthesis import (
     _build_compact_pol_sicd_metadata,
     _extract_quad_pol,
 )
-from grdl.geolocation.sar.sicd import SICDGeolocation
 
 
 def _make_nisar_metadata(rows: int = 11, cols: int = 13) -> NISARMetadata:
@@ -36,27 +35,29 @@ def _make_nisar_metadata(rows: int = 11, cols: int = 13) -> NISARMetadata:
     lon_grid = -147.0 + 0.02 * az + 0.35 * rg
     inc_grid = 35.0 + 2.0 * az + 0.5 * rg
 
-    reference_epoch = 'seconds since 2026-01-05T00:00:00'
+    reference_epoch = "seconds since 2026-01-05T00:00:00"
     start_sec = 21560.0
     end_sec = 21570.0
     orbit_time = np.linspace(start_sec - 20.0, end_sec + 20.0, 9)
-    orbit_position = np.column_stack([
-        7.0e6 + 12.0 * (orbit_time - start_sec),
-        1.5e6 + 45.0 * (orbit_time - start_sec),
-        2.0e6 - 8.0 * (orbit_time - start_sec),
-    ])
+    orbit_position = np.column_stack(
+        [
+            7.0e6 + 12.0 * (orbit_time - start_sec),
+            1.5e6 + 45.0 * (orbit_time - start_sec),
+            2.0e6 - 8.0 * (orbit_time - start_sec),
+        ]
+    )
     orbit_velocity = np.gradient(orbit_position, orbit_time, axis=0)
 
     return NISARMetadata(
-        format='NISAR',
-        dtype='complex64',
+        format="NISAR",
+        dtype="complex64",
         rows=rows,
         cols=cols,
         identification=NISARIdentification(
-            look_direction='left',
-            zero_doppler_start_time='2026-01-05T05:59:20Z',
-            zero_doppler_end_time='2026-01-05T05:59:30Z',
-            mission_id='NISAR',
+            look_direction="left",
+            zero_doppler_start_time="2026-01-05T05:59:20Z",
+            zero_doppler_end_time="2026-01-05T05:59:30Z",
+            mission_id="NISAR",
         ),
         orbit=NISAROrbit(
             time=orbit_time,
@@ -81,10 +82,14 @@ def _make_nisar_metadata(rows: int = 11, cols: int = 13) -> NISARMetadata:
             zero_doppler_time=np.linspace(start_sec, end_sec, n_az),
             height_above_ellipsoid=np.array([-100.0, 0.0, 100.0]),
             incidence_angle=np.repeat(
-                inc_grid[None, :, :].astype(np.float32), n_h, axis=0,
+                inc_grid[None, :, :].astype(np.float32),
+                n_h,
+                axis=0,
             ),
             elevation_angle=np.repeat(
-                (90.0 - inc_grid)[None, :, :].astype(np.float32), n_h, axis=0,
+                (90.0 - inc_grid)[None, :, :].astype(np.float32),
+                n_h,
+                axis=0,
             ),
         ),
     )
@@ -93,7 +98,11 @@ def _make_nisar_metadata(rows: int = 11, cols: int = 13) -> NISARMetadata:
 def test_build_compact_pol_sicd_metadata_from_nisar_is_geolocatable():
     """NISAR-based synthesis should populate the SICD geometry sections."""
     meta = _build_compact_pol_sicd_metadata(
-        _make_nisar_metadata(), 'H', rows=11, cols=13, transmit='R',
+        _make_nisar_metadata(),
+        "H",
+        rows=11,
+        cols=13,
+        transmit="R",
     )
 
     assert meta.geo_data is not None
@@ -104,7 +113,7 @@ def test_build_compact_pol_sicd_metadata_from_nisar_is_geolocatable():
     assert len(meta.geo_data.image_corners) == 4
 
     assert meta.grid is not None
-    assert meta.grid.type == 'PLANE'
+    assert meta.grid.type == "PLANE"
     assert meta.grid.row is not None
     assert meta.grid.col is not None
     assert meta.grid.time_coa_poly is not None
@@ -113,19 +122,19 @@ def test_build_compact_pol_sicd_metadata_from_nisar_is_geolocatable():
     assert meta.position.arp_poly is not None
 
     assert meta.scpcoa is not None
-    assert meta.scpcoa.side_of_track == 'L'
+    assert meta.scpcoa.side_of_track == "L"
     assert meta.scpcoa.arp_pos is not None
     assert meta.scpcoa.arp_vel is not None
     assert meta.scpcoa.slant_range == pytest.approx(800036.0)
     assert meta.scpcoa.incidence_ang == pytest.approx(36.25)
 
     assert meta.timeline is not None
-    assert meta.timeline.collect_start == '2026-01-05T05:59:20Z'
+    assert meta.timeline.collect_start == "2026-01-05T05:59:20Z"
     assert meta.timeline.collect_duration == pytest.approx(10.0)
     assert meta.radar_collection is not None
     assert meta.radar_collection.tx_frequency is not None
 
-    geo = SICDGeolocation(meta, backend='native')
+    geo = SICDGeolocation(meta, backend="native")
     assert geo._coa_proj is not None
 
     center = geo.image_to_latlon(5.0, 6.0)
@@ -134,72 +143,81 @@ def test_build_compact_pol_sicd_metadata_from_nisar_is_geolocatable():
     assert center[1] == pytest.approx(meta.geo_data.scp.llh.lon, abs=0.2)
 
 
-def _phase2_synthesis_input(labels, order: str | None = 'CYX'):
+def _phase2_synthesis_input(labels, order: str | None = "CYX"):
     meta = ImageMetadata(
-        format='test', rows=7, cols=9, dtype='complex64', bands=len(labels),
+        format="test",
+        rows=7,
+        cols=9,
+        dtype="complex64",
+        bands=len(labels),
         axis_order=order,
-        channel_metadata=[ChannelMetadata(index=index, name=label)
-                          for index, label in enumerate(labels)],
+        channel_metadata=[
+            ChannelMetadata(index=index, name=label) for index, label in enumerate(labels)
+        ],
     )
-    cube = np.broadcast_to(np.arange(len(labels), dtype=np.complex64)[:, None, None],
-                           (len(labels), 7, 9)).copy()
-    return (cube.transpose(1, 2, 0) if order == 'YXC' else cube), meta
+    cube = np.broadcast_to(
+        np.arange(len(labels), dtype=np.complex64)[:, None, None], (len(labels), 7, 9)
+    ).copy()
+    return (cube.transpose(1, 2, 0) if order == "YXC" else cube), meta
 
 
-@pytest.mark.parametrize('order', ['CYX', 'YXC', None])
+@pytest.mark.parametrize("order", ["CYX", "YXC", None])
 def test_phase2_synthesis_shuffled_labelled_views(order):
-    cube, meta = _phase2_synthesis_input(['VV', 'VH', 'noise', 'HH', 'HV'], order)
+    cube, meta = _phase2_synthesis_input(["VV", "VH", "noise", "HH", "HV"], order)
     *fields, mapping = _extract_quad_pol(cube, meta, None, None, None, None)
-    assert mapping == {'HH': 3, 'HV': 4, 'VH': 1, 'VV': 0}
-    for field, index in zip(fields, mapping.values()):
+    assert mapping == {"HH": 3, "HV": 4, "VH": 1, "VV": 0}
+    for field, index in zip(fields, mapping.values(), strict=True):
         assert np.all(field == index)
         assert np.shares_memory(field, cube)
 
 
-@pytest.mark.parametrize('labels, error', [
-    (['HH', 'unknown', 'VH', 'VV'], 'Missing'),
-    (['HH', 'HV', 'HV', 'VV'], 'Duplicate'),
-    (['XX', 'XY', 'YX', 'YY'], 'Missing'),
-    (['C11', 'C12_real', 'C12_imag', 'C22'], 'Packed'),
-    (['unknown'] * 5, 'exactly four'),
-])
+@pytest.mark.parametrize(
+    "labels, error",
+    [
+        (["HH", "unknown", "VH", "VV"], "Missing"),
+        (["HH", "HV", "HV", "VV"], "Duplicate"),
+        (["XX", "XY", "YX", "YY"], "Missing"),
+        (["C11", "C12_real", "C12_imag", "C22"], "Packed"),
+        (["unknown"] * 5, "exactly four"),
+    ],
+)
 def test_phase2_synthesis_rejects_unsafe_fallback(labels, error):
     cube, meta = _phase2_synthesis_input(labels)
     with pytest.raises(ValueError, match=error):
         _extract_quad_pol(cube, meta, None, None, None, None)
 
 
-@pytest.mark.parametrize('value', [0, -1, 5, 1.5, '1', True])
+@pytest.mark.parametrize("value", [0, -1, 5, 1.5, "1", True])
 def test_phase2_synthesis_validates_1_based_overrides(value):
-    cube, meta = _phase2_synthesis_input(['HH', 'HV', 'VH', 'VV'])
-    with pytest.raises(ValueError, match='override'):
+    cube, meta = _phase2_synthesis_input(["HH", "HV", "VH", "VV"])
+    with pytest.raises(ValueError, match="override"):
         _extract_quad_pol(cube, meta, value, None, None, None)
 
 
 def test_phase2_synthesis_complete_override_authoritative():
-    cube, meta = _phase2_synthesis_input(['HH', 'HH', 'HH', 'HH'])
+    cube, meta = _phase2_synthesis_input(["HH", "HH", "HH", "HH"])
     *_, mapping = _extract_quad_pol(cube, meta, 4, 3, 2, 1)
-    assert mapping == {'HH': 3, 'HV': 2, 'VH': 1, 'VV': 0}
-    with pytest.raises(ValueError, match='Duplicate band indices'):
+    assert mapping == {"HH": 3, "HV": 2, "VH": 1, "VV": 0}
+    with pytest.raises(ValueError, match="Duplicate band indices"):
         _extract_quad_pol(cube, meta, 1, 1, 2, 3)
 
 
 def test_phase2_synthesis_partial_override_no_fallback_fill():
-    cube, meta = _phase2_synthesis_input(['HH', 'unknown', 'VH', 'VV'])
+    cube, meta = _phase2_synthesis_input(["HH", "unknown", "VH", "VV"])
     *_, mapping = _extract_quad_pol(cube, meta, None, 2, None, None)
-    assert mapping == {'HH': 0, 'HV': 1, 'VH': 2, 'VV': 3}
-    with pytest.raises(ValueError, match='Missing'):
+    assert mapping == {"HH": 0, "HV": 1, "VH": 2, "VV": 3}
+    with pytest.raises(ValueError, match="Missing"):
         _extract_quad_pol(cube, meta, 1, None, None, None)
 
 
 def test_phase2_synthesis_unlabelled_canonical():
-    cube, meta = _phase2_synthesis_input(['band_0', 'band_1', 'band_2', 'band_3'])
+    cube, meta = _phase2_synthesis_input(["band_0", "band_1", "band_2", "band_3"])
     *_, mapping = _extract_quad_pol(cube, meta, None, None, None, None)
-    assert mapping == {'HH': 0, 'HV': 1, 'VH': 2, 'VV': 3}
+    assert mapping == {"HH": 0, "HV": 1, "VH": 2, "VV": 3}
 
 
 def test_phase2_synthesis_ambiguous_shape_rejected():
-    _, meta = _phase2_synthesis_input(['HH', 'HV', 'VH', 'VV'], None)
+    _, meta = _phase2_synthesis_input(["HH", "HV", "VH", "VV"], None)
     meta.rows = meta.cols = 4
-    with pytest.raises(ValueError, match='Ambiguous'):
+    with pytest.raises(ValueError, match="Ambiguous"):
         _extract_quad_pol(np.ones((4, 4, 4)), meta, 1, 2, 3, 4)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Dual-Pol Decomposition Base Classes - Shared interface and helpers.
 
@@ -24,14 +23,11 @@ compact-pol base class.
 # Standard library
 import dataclasses
 from abc import abstractmethod
-from typing import Any, Dict, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 # Third-party
 import numpy as np
 
-# GRDL internal
-from grdl.IO.models.base import ChannelMetadata
-from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.decomposition.pol_matrix import (
     build_target_vector_c,
@@ -39,6 +35,10 @@ from grdl.image_processing.decomposition.pol_matrix import (
     compute_dual_elements,
     stokes_from_c2,
 )
+
+# GRDL internal
+from grdl.IO.models.base import ChannelMetadata
+from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ImageMetadata
@@ -53,7 +53,7 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         shv: np.ndarray,
         svh: np.ndarray,
         svv: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """Bridge quad-pol interface to dual-pol decomposition.
 
         Parameters
@@ -80,40 +80,47 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         self,
         s_co: np.ndarray,
         s_cross: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """Decompose dual-pol data into algorithm-specific components."""
         ...
 
     def execute(
         self,
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         source: np.ndarray,
         **kwargs: Any,
     ) -> tuple:
         """Execute via universal protocol using dual-pol channel extraction."""
         self._metadata = metadata
-        explicit = any(name in kwargs for name in ('s_co', 's_cross'))
-        s_co = kwargs.pop('s_co', None)
-        s_cross = kwargs.pop('s_cross', None)
+        explicit = any(name in kwargs for name in ("s_co", "s_cross"))
+        s_co = kwargs.pop("s_co", None)
+        s_cross = kwargs.pop("s_cross", None)
         source_indices = []
         if explicit:
             if s_co is None or s_cross is None:
-                raise ValueError('Explicit dual-pol inputs require s_co and s_cross')
+                raise ValueError("Explicit dual-pol inputs require s_co and s_cross")
         else:
             axis = channel_axis(source.shape, metadata)
             cube = source if axis == 0 else source.transpose(2, 0, 1)
-            source_indices = list(resolve_raw_indices(cube.shape[0], metadata, 'dual'))
+            source_indices = list(resolve_raw_indices(cube.shape[0], metadata, "dual"))
             s_co, s_cross = (cube[index] for index in source_indices)
 
         components = self.decompose_dual(s_co, s_cross)
         first = next(iter(components.values()))
         updated = dataclasses.replace(
-            metadata, bands=len(components), rows=first.shape[0], cols=first.shape[1],
+            metadata,
+            bands=len(components),
+            rows=first.shape[0],
+            cols=first.shape[1],
             dtype=str(np.result_type(*(value.dtype for value in components.values()))),
-            axis_order='CYX',
+            axis_order="CYX",
             channel_metadata=[
-                ChannelMetadata(index=index, name=name, role='decomposition',
-                                source_indices=list(source_indices))
+                ChannelMetadata(
+                    index=index,
+                    name=name,
+                    role="decomposition",
+                    source_indices=list(source_indices),
+                )
                 for index, name in enumerate(components)
             ],
         )
@@ -122,33 +129,26 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
     @staticmethod
     def _validate_dual_inputs(s_co: np.ndarray, s_cross: np.ndarray) -> None:
         """Validate dual-pol inputs."""
-        for name, arr in [('s_co', s_co), ('s_cross', s_cross)]:
+        for name, arr in [("s_co", s_co), ("s_cross", s_cross)]:
             if not isinstance(arr, np.ndarray):
-                raise TypeError(
-                    f"{name} must be a numpy ndarray, got {type(arr).__name__}"
-                )
+                raise TypeError(f"{name} must be a numpy ndarray, got {type(arr).__name__}")
             if not np.iscomplexobj(arr):
-                raise TypeError(
-                    f"{name} must be complex-valued, got {arr.dtype}"
-                )
+                raise TypeError(f"{name} must be complex-valued, got {arr.dtype}")
             if arr.ndim != 2:
-                raise ValueError(
-                    f"{name} must be 2D (rows, cols), got {arr.ndim}D"
-                )
+                raise ValueError(f"{name} must be 2D (rows, cols), got {arr.ndim}D")
         if s_co.shape != s_cross.shape:
-            raise ValueError(
-                f"Shape mismatch: s_co {s_co.shape} vs s_cross {s_cross.shape}"
-            )
+            raise ValueError(f"Shape mismatch: s_co {s_co.shape} vs s_cross {s_cross.shape}")
 
     @staticmethod
     def _compute_c2(
         s_co: np.ndarray,
         s_cross: np.ndarray,
         window_size: int,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute averaged dual-pol covariance matrix elements (C2)."""
         return compute_dual_elements(
-            build_target_vector_c([s_co, s_cross]), window_size,
+            build_target_vector_c([s_co, s_cross]),
+            window_size,
         )
 
     @staticmethod
@@ -156,10 +156,11 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         s_co: np.ndarray,
         s_cross: np.ndarray,
         window_size: int,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute averaged dual-pol coherency matrix elements (T2)."""
         return compute_dual_elements(
-            build_target_vector_t([s_co, s_cross]), window_size,
+            build_target_vector_t([s_co, s_cross]),
+            window_size,
         )
 
     @staticmethod
@@ -169,7 +170,7 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
         c22: np.ndarray,
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Canonical Stokes and percentile-normalized magnitudes (not physical DoP)."""
         s0, s1, s2, s3 = stokes_from_c2(c11, c12, c22)
 
@@ -188,7 +189,7 @@ class DualPolDecompositionBase(PolarimetricDecomposition):
             max_v = np.nanmax(clipped)
             if not np.isfinite(max_v) or max_v <= np.finfo(np.float64).tiny:
                 return np.zeros_like(arr, dtype=np.float64)
-            return clipped / max_v
+            return cast(np.ndarray, clipped / max_v)
 
         s1_norm = _clip_norm(s1_abs)
         s2_norm = _clip_norm(s2_abs)
