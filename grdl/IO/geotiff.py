@@ -131,7 +131,7 @@ class GeoTIFFReader(ImageReader):
                 channel_metadata = []
                 descriptions = self.dataset.descriptions or []
                 for idx in range(1, self.dataset.count + 1):
-                    b_tags = self.dataset.tags(idx) or {}
+                    b_tags = dict(self.dataset.tags(idx) or {})
                     b_name = (
                         descriptions[idx - 1]
                         if idx - 1 < len(descriptions) and descriptions[idx - 1]
@@ -141,9 +141,35 @@ class GeoTIFFReader(ImageReader):
                         index=idx - 1,
                         name=b_name,
                         role='measurement',
-                        extras=dict(b_tags),
+                        extras=b_tags,
                     )
                     channel_metadata.append(ch)
+
+                # Check for sidecar wavelength CSV if wavelengths are missing
+                has_wl = any(
+                    any(k.lower() in ('wavelength', 'center') for k in ch.extras.keys())
+                    for ch in channel_metadata
+                )
+                if not has_wl and self.filepath.parent.exists():
+                    csv_candidates = list(self.filepath.parent.glob("*wavelength*.csv"))
+                    if csv_candidates:
+                        try:
+                            import csv
+                            with open(csv_candidates[0], 'r', encoding='utf-8-sig') as cf:
+                                reader_csv = csv.DictReader(cf)
+                                fieldnames = [f.strip().lower() for f in (reader_csv.fieldnames or [])]
+                                wl_col = next((f for f in (reader_csv.fieldnames or []) if 'wavelength' in f.lower() or 'center' in f.lower()), None)
+                                if wl_col:
+                                    for r_idx, row in enumerate(reader_csv):
+                                        if r_idx < len(channel_metadata):
+                                            val = row.get(wl_col)
+                                            if val:
+                                                try:
+                                                    channel_metadata[r_idx].extras['wavelength'] = float(val)
+                                                except ValueError:
+                                                    channel_metadata[r_idx].extras['wavelength'] = val
+                        except Exception as e_csv:
+                            logger.debug("Failed parsing sidecar wavelength CSV: %s", e_csv)
 
             self.metadata = ImageMetadata(
                 format='GeoTIFF',

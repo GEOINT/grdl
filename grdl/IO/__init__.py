@@ -54,6 +54,7 @@ from grdl.IO.models import (
 
 # Base format readers (IO level)
 from grdl.IO.geotiff import GeoTIFFReader
+from grdl.IO.hsi_collection import HSICollectionReader
 from grdl.IO.hdf5 import HDF5Reader
 from grdl.IO.jpeg2000 import JP2Reader
 from grdl.IO.nitf import NITFReader

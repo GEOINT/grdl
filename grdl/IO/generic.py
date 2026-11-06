@@ -868,6 +868,15 @@ def open_any(filepath: Union[str, Path]) -> ImageReader:
         if reader is not None:
             return reader
 
+    # --- Phase 0b: Check for directory-based collections (e.g. HSI multi-band) ---
+    if filepath.is_dir():
+        try:
+            from grdl.IO.hsi_collection import _is_hsi_collection_dir, HSICollectionReader
+            if _is_hsi_collection_dir(filepath):
+                return HSICollectionReader(filepath)
+        except Exception:
+            pass
+
     # --- Phase 1: Try modality-specific openers ---
     _openers = [
         ('grdl.IO.sar', 'open_sar'),

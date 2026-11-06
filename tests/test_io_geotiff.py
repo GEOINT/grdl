@@ -258,3 +258,31 @@ def test_metadata_channel_metadata_spectral_tags(tmp_path):
         assert channel_meta[0].extras['fwhm'] == '10.0'
         assert channel_meta[1].extras['wavelength'] == '550.0'
         assert channel_meta[2].extras['wavelength'] == '650.0'
+
+
+def test_metadata_channel_metadata_sidecar_csv(tmp_path):
+    """ChannelMetadata auto-detects and populates wavelengths from sidecar CSV (Issue #77)."""
+    from grdl.IO.geotiff import GeoTIFFReader
+
+    filepath = tmp_path / "wyvern_dragonette.tif"
+    csv_path = tmp_path / "wyvern_dragonette_wavelengths.csv"
+
+    # Create 4-band TIFF without internal wavelength tags
+    data = np.ones((4, 20, 20), dtype=np.float32)
+    with rasterio.open(
+        str(filepath), 'w', driver='GTiff',
+        height=20, width=20, count=4,
+        dtype='float32'
+    ) as ds:
+        ds.write(data)
+
+    # Write sidecar CSV
+    with open(csv_path, 'w', encoding='utf-8') as f:
+        f.write("band,wavelength\n1,503\n2,510\n3,519\n4,535\n")
+
+    with GeoTIFFReader(filepath) as reader:
+        channel_meta = reader.metadata.channel_metadata
+        assert channel_meta is not None, "channel_metadata should be populated from sidecar CSV"
+        assert len(channel_meta) == 4
+        assert channel_meta[0].extras.get('wavelength') == 503.0 or channel_meta[0].extras.get('wavelength') == '503'
+        assert channel_meta[3].extras.get('wavelength') == 535.0 or channel_meta[3].extras.get('wavelength') == '535'
