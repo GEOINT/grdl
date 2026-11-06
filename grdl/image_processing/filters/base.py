@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Polarimetric Filter Base - Shared array and execution contracts.
 
@@ -28,21 +27,21 @@ Modified
 import dataclasses
 import warnings
 from abc import abstractmethod
-from typing import Any, Optional
+from typing import Any, cast
 
 import numpy as np
 
-from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.exceptions import ValidationError
 from grdl.image_processing.base import BandwiseTransformMixin, ImageTransform
 from grdl.image_processing.decomposition.pol_matrix import (
-    _make_matrix_channel_metadata,
+    make_matrix_channel_metadata,
     pack_matrix,
     prepare_polarimetric_matrix,
     validate_matrix_type,
 )
 from grdl.image_processing.filters._validation import validate_kernel_size
 from grdl.image_processing.filters.sar_base import SARFilter
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
 class PolarimetricFilter(SARFilter):
@@ -55,7 +54,7 @@ class PolarimetricFilter(SARFilter):
 
     _supports_images = False
     _legacy_packed = False
-    matrix_type: Optional[str] = None
+    matrix_type: str | None = None
 
     def _resolve_params(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Validate effective settings without mutating instance defaults."""
@@ -65,21 +64,21 @@ class PolarimetricFilter(SARFilter):
             raise ValidationError(str(error)) from error
         for name, value in params.items():
             if isinstance(value, (int, float)) and not np.isfinite(value):
-                raise ValidationError(f'{name} must be finite, got {value!r}')
-        validate_kernel_size(params['kernel_size'])
-        if 'nlook' in params and params['nlook'] <= 0:
-            raise ValidationError('nlook must be > 0')
-        if 'similarity_threshold' in params and params['similarity_threshold'] <= 0:
-            raise ValidationError('similarity_threshold must be in (0, 1]')
+                raise ValidationError(f"{name} must be finite, got {value!r}")
+        validate_kernel_size(params["kernel_size"])
+        if "nlook" in params and params["nlook"] <= 0:
+            raise ValidationError("nlook must be > 0")
+        if "similarity_threshold" in params and params["similarity_threshold"] <= 0:
+            raise ValidationError("similarity_threshold must be in (0, 1]")
         return params
 
     def apply(
         self,
         source: np.ndarray,
         *,
-        input_kind: Optional[str] = None,
-        matrix_type: Optional[str] = None,
-        channel_metadata: Optional[list[ChannelMetadata]] = None,
+        input_kind: str | None = None,
+        matrix_type: str | None = None,
+        channel_metadata: list[ChannelMetadata] | None = None,
         **kwargs: Any,
     ) -> np.ndarray:
         """Filter canonical arrays without changing a formed matrix's basis.
@@ -123,34 +122,42 @@ class PolarimetricFilter(SARFilter):
             If settings, representation, dimensions, dtype, or finite-value
             requirements are violated. Layout arguments are not accepted.
         """
-        if 'axis_order' in kwargs:
-            raise ValidationError('apply() expects canonical CYX/CCYX; normalize layout at the IO boundary')
+        if "axis_order" in kwargs:
+            raise ValidationError(
+                "apply() expects canonical CYX/CCYX; normalize layout at the IO boundary"
+            )
         params = self._resolve_params(kwargs)
         kind = validate_matrix_type(self.matrix_type if matrix_type is None else matrix_type)
         if input_kind is None:
             if source.ndim == 4:
-                input_kind = 'matrix'
+                input_kind = "matrix"
             elif self._supports_images:
-                input_kind = 'image'
+                input_kind = "image"
             elif self._legacy_packed and source.ndim == 3 and not np.iscomplexobj(source):
-                input_kind = 'packed'
+                input_kind = "packed"
             else:
                 raise ValidationError(
                     'Specify input_kind="channels" and explicit matrix_type for SLC input; '
-                    'filter_channels() is deprecated'
+                    "filter_channels() is deprecated"
                 )
-        if input_kind == 'image':
+        if input_kind == "image":
             if not self._supports_images:
-                raise ValidationError(f'{type(self).__name__} does not support independent images')
-            if source.dtype.kind not in 'fciub' or not np.isfinite(source).all():
-                raise ValidationError('Image input must be numeric and contain no non-finite values')
-            return BandwiseTransformMixin.apply(self, source, **params)
+                raise ValidationError(f"{type(self).__name__} does not support independent images")
+            if source.dtype.kind not in "fciub" or not np.isfinite(source).all():
+                raise ValidationError(
+                    "Image input must be numeric and contain no non-finite values"
+                )
+            return BandwiseTransformMixin.apply(
+                cast(BandwiseTransformMixin, self), source, **params
+            )
         matrix = prepare_polarimetric_matrix(
-            source, input_kind=input_kind, matrix_type=kind,
+            source,
+            input_kind=input_kind,
+            matrix_type=kind,
             channel_metadata=channel_metadata,
         )
         result = self._filter_matrix(matrix, params)
-        return pack_matrix(result) if input_kind == 'packed' else result
+        return pack_matrix(result) if input_kind == "packed" else result
 
     def execute(self, metadata: ImageMetadata, source: np.ndarray, **kwargs: Any) -> tuple:
         """Adapt labelled input to apply(), returning canonical output metadata.
@@ -180,19 +187,23 @@ class PolarimetricFilter(SARFilter):
             raise ValidationError(str(error)) from error
         options = dict(kwargs)
         if source.ndim == 3 and np.iscomplexobj(source) and not self._supports_images:
-            options.setdefault('input_kind', 'channels')
-        options.setdefault('channel_metadata', canonical_metadata.channel_metadata)
+            options.setdefault("input_kind", "channels")
+        options.setdefault("channel_metadata", canonical_metadata.channel_metadata)
         result = self.apply(source, **options)
         if result.ndim != 4:
             return result, self._update_metadata_for_result(canonical_metadata, result)
         dimension = result.shape[0]
-        kind = validate_matrix_type(options.get('matrix_type', self.matrix_type))
+        kind = validate_matrix_type(options.get("matrix_type", self.matrix_type))
         descriptors = canonical_metadata.channel_metadata if source.ndim == 4 else None
         if descriptors is None or len(descriptors) != dimension * dimension:
-            descriptors = _make_matrix_channel_metadata(dimension, kind or 'M')
+            descriptors = make_matrix_channel_metadata(dimension, kind or "M")
         updated = dataclasses.replace(
-            canonical_metadata, rows=result.shape[-2], cols=result.shape[-1],
-            bands=dimension * dimension, axis_order='CCYX', dtype=str(result.dtype),
+            canonical_metadata,
+            rows=result.shape[-2],
+            cols=result.shape[-1],
+            bands=dimension * dimension,
+            axis_order="CCYX",
+            dtype=str(result.dtype),
             channel_metadata=descriptors,
         )
         return result, updated
@@ -205,17 +216,18 @@ class PolarimetricFilter(SARFilter):
         """
         warnings.warn(
             'filter_matrix() is deprecated; use apply(..., input_kind="matrix")',
-            DeprecationWarning, stacklevel=2,
+            DeprecationWarning,
+            stacklevel=2,
         )
-        return self.apply(matrix, input_kind='matrix')
+        return self.apply(matrix, input_kind="matrix")
 
     def filter_channels(
         self,
         shh: np.ndarray,
         shv: np.ndarray,
-        svh: Optional[np.ndarray] = None,
-        svv: Optional[np.ndarray] = None,
-        matrix_type: str = 'C3',
+        svh: np.ndarray | None = None,
+        svv: np.ndarray | None = None,
+        matrix_type: str = "C3",
     ) -> np.ndarray:
         """Stack matching 2D SLC arrays through the deprecated adapter.
 
@@ -226,7 +238,8 @@ class PolarimetricFilter(SARFilter):
         """
         warnings.warn(
             'filter_channels() is deprecated; use apply(..., input_kind="channels")',
-            DeprecationWarning, stacklevel=2,
+            DeprecationWarning,
+            stacklevel=2,
         )
         channels = [shh, shv]
         if svh is not None:
@@ -234,9 +247,11 @@ class PolarimetricFilter(SARFilter):
         if svv is not None:
             channels.append(svv)
         if any(channel.ndim != 2 or channel.shape != shh.shape for channel in channels):
-            raise ValidationError('SLC channels must be 2D with matching shapes')
+            raise ValidationError("SLC channels must be 2D with matching shapes")
         return self.apply(
-            np.stack(channels), input_kind='channels', matrix_type=matrix_type,
+            np.stack(channels),
+            input_kind="channels",
+            matrix_type=matrix_type,
         )
 
     @abstractmethod

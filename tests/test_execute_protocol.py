@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Execute Protocol Tests.
 
@@ -23,25 +22,25 @@ Created
 2026-02-12
 """
 
-from typing import Any, Dict, Optional, Tuple
+import dataclasses
+from typing import Any
 
 import numpy as np
 import pytest
 from shapely.geometry import box
 
-from grdl.IO.models.base import ChannelMetadata, ImageMetadata
+from grdl.image_processing import Pipeline
 from grdl.image_processing.base import ImageProcessor, ImageTransform
+from grdl.image_processing.decomposition.base import PolarimetricDecomposition
 from grdl.image_processing.detection.base import ImageDetector
 from grdl.image_processing.detection.models import Detection, DetectionSet
-from grdl.image_processing import Pipeline
-from grdl.image_processing.decomposition.base import PolarimetricDecomposition
-
-
 from grdl.image_processing.versioning import processor_version
+from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 # ---------------------------------------------------------------------------
 # Concrete test doubles
 # ---------------------------------------------------------------------------
+
 
 @processor_version("1.0.0")
 class DoubleTransform(ImageTransform):
@@ -87,17 +86,17 @@ class StubDetector(ImageDetector):
         self.last_geolocation = geolocation
         det = Detection(
             pixel_geometry=box(0, 0, 10, 10),
-            properties={'test': True},
+            properties={"test": True},
             confidence=0.9,
         )
         return DetectionSet(
             detections=[det],
-            detector_name='StubDetector',
-            detector_version='1.0.0',
+            detector_name="StubDetector",
+            detector_version="1.0.0",
         )
 
     @property
-    def output_fields(self) -> Tuple[str, ...]:
+    def output_fields(self) -> tuple[str, ...]:
         return ()
 
 
@@ -111,18 +110,17 @@ class StubDecomposition(PolarimetricDecomposition):
         shv: np.ndarray,
         svh: np.ndarray,
         svv: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         return {
-            'alpha': shh + svv,
-            'beta': shh - svv,
+            "alpha": shh + svv,
+            "beta": shh - svv,
         }
 
     @property
-    def component_names(self) -> Tuple[str, ...]:
-        return ('alpha', 'beta')
+    def component_names(self) -> tuple[str, ...]:
+        return ("alpha", "beta")
 
-    def to_rgb(self, components, representation='db',
-               percentile_low=2.0, percentile_high=98.0):
+    def to_rgb(self, components, representation="db", percentile_low=2.0, percentile_high=98.0):
         return np.zeros((10, 10, 3), dtype=np.float32), None
 
 
@@ -137,6 +135,7 @@ class BareProcessor(ImageProcessor):
 @processor_version("1.0.0")
 class EmptyProcessor(ImageProcessor):
     """ImageProcessor subclass with no action method — tests error path."""
+
     pass
 
 
@@ -144,11 +143,16 @@ class EmptyProcessor(ImageProcessor):
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def meta():
     return ImageMetadata(
-        format='test', rows=10, cols=12, dtype='float32',
-        bands=3, crs='EPSG:4326',
+        format="test",
+        rows=10,
+        cols=12,
+        dtype="float32",
+        bands=3,
+        crs="EPSG:4326",
     )
 
 
@@ -171,6 +175,7 @@ def source_2d():
 # ImageTransform execute() tests
 # ---------------------------------------------------------------------------
 
+
 class TestTransformExecute:
 
     def test_delegates_to_apply(self, meta, source_3band):
@@ -184,7 +189,7 @@ class TestTransformExecute:
         """Returned metadata reflects the output dtype."""
         t = DoubleTransform()
         _, out_meta = t.execute(meta, source_3band)
-        assert out_meta.dtype == 'float64'
+        assert out_meta.dtype == "float64"
 
     def test_metadata_shape_updated(self, meta, source_3band):
         """Returned metadata reflects the output rows/cols/bands."""
@@ -205,11 +210,15 @@ class TestTransformExecute:
         """CYX metadata preserves channel-first interpretation."""
         t = DoubleTransform()
         cyx_meta = ImageMetadata(
-            format='test', rows=10, cols=12, dtype='float32',
-            bands=3, axis_order='CYX',
+            format="test",
+            rows=10,
+            cols=12,
+            dtype="float32",
+            bands=3,
+            axis_order="CYX",
         )
         _, out_meta = t.execute(cyx_meta, source_cyx)
-        assert out_meta.axis_order == 'CYX'
+        assert out_meta.axis_order == "CYX"
         assert out_meta.rows == 10
         assert out_meta.cols == 12
         assert out_meta.bands == 3
@@ -218,7 +227,7 @@ class TestTransformExecute:
         """Input metadata is not mutated."""
         t = DoubleTransform()
         t.execute(meta, source_3band)
-        assert meta.dtype == 'float32'
+        assert meta.dtype == "float32"
         assert meta.rows == 10
         assert meta.cols == 12
 
@@ -235,13 +244,14 @@ class TestTransformExecute:
         inspector = MetadataInspectingTransform()
         pipe = Pipeline([DoubleTransform(), inspector])
         _, out_meta = pipe.execute(meta, source_2d)
-        assert inspector.seen_metadata.dtype == 'float64'
-        assert out_meta.dtype == 'float64'
+        assert inspector.seen_metadata.dtype == "float64"
+        assert out_meta.dtype == "float64"
 
 
 # ---------------------------------------------------------------------------
 # ImageDetector execute() tests
 # ---------------------------------------------------------------------------
+
 
 class TestDetectorExecute:
 
@@ -270,12 +280,13 @@ class TestDetectorExecute:
         d = StubDetector()
         d.execute(meta, source_3band)
         assert d.seen_metadata is meta
-        assert d.seen_metadata.crs == 'EPSG:4326'
+        assert d.seen_metadata.crs == "EPSG:4326"
 
 
 # ---------------------------------------------------------------------------
 # PolarimetricDecomposition execute() tests
 # ---------------------------------------------------------------------------
+
 
 class TestDecompositionExecute:
 
@@ -289,11 +300,15 @@ class TestDecompositionExecute:
 
         dec = StubDecomposition()
         result, out_meta = dec.execute(
-            meta, np.empty((10, 12)),
-            shh=shh, shv=shv, svh=svh, svv=svv,
+            meta,
+            np.empty((10, 12)),
+            shh=shh,
+            shv=shv,
+            svh=svh,
+            svv=svv,
         )
         assert isinstance(result, dict)
-        assert set(result.keys()) == {'alpha', 'beta'}
+        assert set(result.keys()) == {"alpha", "beta"}
 
     def test_decomposition_metadata_has_components(self, meta):
         """Decomposition execute returns component-aware metadata."""
@@ -305,15 +320,20 @@ class TestDecompositionExecute:
 
         dec = StubDecomposition()
         _, out_meta = dec.execute(
-            meta, np.empty((10, 12)),
-            shh=shh, shv=shv, svh=svh, svv=svv,
+            meta,
+            np.empty((10, 12)),
+            shh=shh,
+            shv=shv,
+            svh=svh,
+            svv=svv,
         )
         assert out_meta.bands == 2
-        assert out_meta.axis_order == 'CYX'
-        assert out_meta.channel_metadata[0].name == 'alpha'
+        assert out_meta.axis_order == "CYX"
+        assert out_meta.channel_metadata[0].name == "alpha"
 
     def test_decomposition_extracts_cyx_channels(self):
         """CYX source arrays are unpacked correctly by execute()."""
+
         class CapturingDecomposition(StubDecomposition):
             seen = None
 
@@ -322,13 +342,17 @@ class TestDecompositionExecute:
                 return super().decompose(shh, shv, svh, svv)
 
         meta = ImageMetadata(
-            format='test', rows=10, cols=12, dtype='complex64',
-            bands=4, axis_order='CYX',
+            format="test",
+            rows=10,
+            cols=12,
+            dtype="complex64",
+            bands=4,
+            axis_order="CYX",
             channel_metadata=[
-                ChannelMetadata(index=0, name='HH'),
-                ChannelMetadata(index=1, name='HV'),
-                ChannelMetadata(index=2, name='VH'),
-                ChannelMetadata(index=3, name='VV'),
+                ChannelMetadata(index=0, name="HH"),
+                ChannelMetadata(index=1, name="HV"),
+                ChannelMetadata(index=2, name="VH"),
+                ChannelMetadata(index=3, name="VV"),
             ],
         )
         source = np.zeros((4, 10, 12), dtype=np.complex64)
@@ -342,11 +366,12 @@ class TestDecompositionExecute:
         assert np.all(dec.seen[1] == 2)
         assert np.all(dec.seen[2] == 3)
         assert np.all(dec.seen[3] == 4)
-        np.testing.assert_allclose(result['alpha'], source[0] + source[3])
+        np.testing.assert_allclose(result["alpha"], source[0] + source[3])
 
     def test_delegates_to_decompose_via_bands(self, meta):
         """execute() extracts channels from 4-band source array."""
         source = np.random.rand(10, 12, 4).astype(np.complex64)
+        meta = dataclasses.replace(meta, bands=4, dtype="complex64", axis_order="YXC")
         dec = StubDecomposition()
         result, out_meta = dec.execute(meta, source)
         assert isinstance(result, dict)
@@ -354,6 +379,7 @@ class TestDecompositionExecute:
 
     def test_decomposition_infers_cyx_when_axis_missing(self):
         """CYX extraction is inferred from metadata bands/channels."""
+
         class CapturingDecomposition(StubDecomposition):
             seen = None
 
@@ -362,13 +388,16 @@ class TestDecompositionExecute:
                 return super().decompose(shh, shv, svh, svv)
 
         meta = ImageMetadata(
-            format='test', rows=10, cols=12, dtype='complex64',
+            format="test",
+            rows=10,
+            cols=12,
+            dtype="complex64",
             bands=4,
             channel_metadata=[
-                ChannelMetadata(index=0, name='HH'),
-                ChannelMetadata(index=1, name='HV'),
-                ChannelMetadata(index=2, name='VH'),
-                ChannelMetadata(index=3, name='VV'),
+                ChannelMetadata(index=0, name="HH"),
+                ChannelMetadata(index=1, name="HV"),
+                ChannelMetadata(index=2, name="VH"),
+                ChannelMetadata(index=3, name="VV"),
             ],
         )
         source = np.zeros((4, 10, 12), dtype=np.complex64)
@@ -386,6 +415,7 @@ class TestDecompositionExecute:
     def test_metadata_bands_updated(self, meta):
         """Returned metadata bands = number of components."""
         source = np.random.rand(10, 12, 4).astype(np.complex64)
+        meta = dataclasses.replace(meta, bands=4, dtype="complex64", axis_order="YXC")
         dec = StubDecomposition()
         _, out_meta = dec.execute(meta, source)
         assert out_meta.bands == 2  # alpha, beta
@@ -394,6 +424,7 @@ class TestDecompositionExecute:
 # ---------------------------------------------------------------------------
 # ImageProcessor fallback probing
 # ---------------------------------------------------------------------------
+
 
 class TestFallbackProbing:
 

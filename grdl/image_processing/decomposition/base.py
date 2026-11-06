@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Polarimetric Decomposition Base Classes - Abstract interfaces for decompositions.
 
@@ -34,14 +33,16 @@ Modified
 # Standard library
 import dataclasses
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 # Third-party
 import numpy as np
 
-# GRDL internal
 from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.tiling import WindowedTileHalo
+
+# GRDL internal
+from grdl.IO.models.polarization import channel_axis, resolve_raw_indices
 
 if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
@@ -80,7 +81,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
     def execute(
         self,
-        metadata: 'ImageMetadata',
+        metadata: "ImageMetadata",
         source: np.ndarray,
         **kwargs: Any,
     ) -> tuple:
@@ -88,7 +89,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
         Quad-pol scattering matrix channels can be provided as keyword
         arguments (``shh``, ``shv``, ``svh``, ``svv``) or extracted from
-        a 4-band source array (last axis).
+        a labelled CYX/YXC cube or an unlabelled canonical 4-band cube.
 
         Parameters
         ----------
@@ -103,65 +104,52 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         tuple[Dict[str, np.ndarray], ImageMetadata]
         """
         self._metadata = metadata
-        shh = kwargs.pop('shh', None)
-        shv = kwargs.pop('shv', None)
-        svh = kwargs.pop('svh', None)
-        svv = kwargs.pop('svv', None)
-        if shh is None and source.ndim == 3:
-            axis_order = getattr(metadata, 'axis_order', None)
-
-            if axis_order in ('CYX', 'YXC'):
-                inferred_order = axis_order
-            else:
-                inferred_order = None
-                channel_metadata = getattr(metadata, 'channel_metadata', None)
-                if channel_metadata is not None:
-                    n_channels = len(channel_metadata)
-                    if source.shape[0] == n_channels and source.shape[-1] != n_channels:
-                        inferred_order = 'CYX'
-                    elif source.shape[-1] == n_channels and source.shape[0] != n_channels:
-                        inferred_order = 'YXC'
-                if inferred_order is None:
-                    bands = getattr(metadata, 'bands', None)
-                    if bands is not None:
-                        if source.shape[0] == bands and source.shape[-1] != bands:
-                            inferred_order = 'CYX'
-                        elif source.shape[-1] == bands and source.shape[0] != bands:
-                            inferred_order = 'YXC'
-
-            if inferred_order == 'CYX' and source.shape[0] >= 4:
-                shh = source[0]
-                shv = source[1]
-                svh = source[2]
-                svv = source[3]
-            elif inferred_order == 'YXC' and source.shape[-1] >= 4:
-                shh = source[..., 0]
-                shv = source[..., 1]
-                svh = source[..., 2]
-                svv = source[..., 3]
-            elif source.shape[0] >= 4:
-                shh = source[0]
-                shv = source[1]
-                svh = source[2]
-                svv = source[3]
-            elif source.shape[-1] >= 4:
-                shh = source[..., 0]
-                shv = source[..., 1]
-                svh = source[..., 2]
-                svv = source[..., 3]
+        explicit = any(name in kwargs for name in ("shh", "shv", "svh", "svv"))
+        shh = kwargs.pop("shh", None)
+        shv = kwargs.pop("shv", None)
+        svh = kwargs.pop("svh", None)
+        svv = kwargs.pop("svv", None)
+        resolved = None
+        if explicit and any(channel is None for channel in (shh, shv, svh, svv)):
+            raise ValueError("Explicit full-pol inputs require shh, shv, svh and svv")
+        if not explicit:
+            axis = channel_axis(source.shape, metadata)
+            resolved = resolve_raw_indices(source.shape[axis], metadata, "full")
+            cube = source if axis == 0 else source.transpose(2, 0, 1)
+            shh, shv, svh, svv = (cube[index] for index in resolved)
         components = self.decompose(shh, shv, svh, svv)
+        channels = self._build_component_metadata(metadata)
+        channels = [
+            dataclasses.replace(
+                channel,
+                source_indices=(
+                    (
+                        [resolved[index] for index in channel.source_indices]
+                        if channel.source_indices
+                        else list(resolved)
+                    )
+                    if resolved is not None
+                    else []
+                ),
+            )
+            for channel in channels
+        ]
+        output_shape = next(iter(components.values())).shape
         updated = dataclasses.replace(
             metadata,
+            rows=output_shape[0],
+            cols=output_shape[1],
+            dtype=str(np.result_type(*(value.dtype for value in components.values()))),
             bands=len(components),
-            axis_order='CYX',
-            channel_metadata=self._build_component_metadata(metadata),
+            axis_order="CYX",
+            channel_metadata=channels,
         )
         return components, updated
 
     def _build_component_metadata(
         self,
-        metadata: 'ImageMetadata',
-    ) -> list['ChannelMetadata']:
+        metadata: "ImageMetadata",
+    ) -> list["ChannelMetadata"]:
         """Build per-component metadata for decomposition outputs."""
         from grdl.IO.models.base import ChannelMetadata
 
@@ -169,7 +157,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
             ChannelMetadata(
                 index=i,
                 name=name,
-                role='decomposition',
+                role="decomposition",
                 source_indices=[],
             )
             for i, name in enumerate(self.component_names)
@@ -182,7 +170,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         shv: np.ndarray,
         svh: np.ndarray,
         svv: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """
         Decompose quad-pol scattering matrix into named complex components.
 
@@ -215,7 +203,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
     @property
     @abstractmethod
-    def component_names(self) -> Tuple[str, ...]:
+    def component_names(self) -> tuple[str, ...]:
         """
         Names of the decomposition components.
 
@@ -230,12 +218,12 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
     @abstractmethod
     def to_rgb(
         self,
-        components: Dict[str, np.ndarray],
-        representation: str = 'db',
+        components: dict[str, np.ndarray],
+        representation: str = "db",
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-        channels: Optional[List[str]] = None,
-    ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        channels: list[str] | None = None,
+    ) -> tuple[np.ndarray, "ImageMetadata"]:
         """
         Create an RGB composite from decomposition components.
 
@@ -294,13 +282,11 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         ValueError
             If any input is not 2D or shapes do not match.
         """
-        channels = {'shh': shh, 'shv': shv, 'svh': svh, 'svv': svv}
+        channels = {"shh": shh, "shv": shv, "svh": svh, "svv": svv}
 
         for name, arr in channels.items():
             if not isinstance(arr, np.ndarray):
-                raise TypeError(
-                    f"{name} must be a numpy ndarray, got {type(arr).__name__}"
-                )
+                raise TypeError(f"{name} must be a numpy ndarray, got {type(arr).__name__}")
             if not np.iscomplexobj(arr):
                 raise TypeError(
                     f"{name} must be complex-valued (complex64 or complex128), "
@@ -308,8 +294,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
                 )
             if arr.ndim != 2:
                 raise ValueError(
-                    f"{name} must be 2D (rows, cols), got {arr.ndim}D "
-                    f"with shape {arr.shape}"
+                    f"{name} must be 2D (rows, cols), got {arr.ndim}D " f"with shape {arr.shape}"
                 )
 
         shape = shh.shape
@@ -325,7 +310,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         precomputed_method: str,
     ) -> None:
         """Reject ``decompose()`` calls that try to build a 1x1 averaged matrix."""
-        window_size = getattr(self, 'window_size', None)
+        window_size = getattr(self, "window_size", None)
         if window_size is not None and window_size < 3:
             raise ValueError(
                 f"{type(self).__name__}.decompose() requires window_size >= 3 "
@@ -338,9 +323,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
     # Conversion methods (concrete)
     # ------------------------------------------------------------------
 
-    def to_power(
-        self, components: Dict[str, np.ndarray]
-    ) -> Dict[str, np.ndarray]:
+    def to_power(self, components: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """
         Convert complex components to power (|z|^2).
 
@@ -356,9 +339,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         """
         return {k: np.abs(v) ** 2 for k, v in components.items()}
 
-    def to_magnitude(
-        self, components: Dict[str, np.ndarray]
-    ) -> Dict[str, np.ndarray]:
+    def to_magnitude(self, components: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """
         Convert complex components to magnitude (|z|).
 
@@ -376,9 +357,9 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
     def to_db(
         self,
-        components: Dict[str, np.ndarray],
+        components: dict[str, np.ndarray],
         floor: float = -50.0,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """
         Convert complex components to magnitude in dB.
 
@@ -408,7 +389,7 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
     def _apply_power_representation(
         self,
         arr: np.ndarray,
-        representation: str = 'db',
+        representation: str = "db",
     ) -> np.ndarray:
         """
         Convert a real-valued power-like image for display normalization.
@@ -426,14 +407,14 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
             Converted real-valued image.
         """
         arr = np.real(np.asarray(arr, dtype=np.float64))
-        if representation == 'power':
+        if representation == "power":
             return arr
-        if representation == 'magnitude':
-            return np.sqrt(np.clip(arr, 0.0, None))
-        if representation == 'db':
+        if representation == "magnitude":
+            return cast(np.ndarray, np.sqrt(np.clip(arr, 0.0, None)))
+        if representation == "db":
             tiny = np.finfo(np.float64).tiny
-            with np.errstate(divide='ignore', invalid='ignore'):
-                return 10.0 * np.log10(np.maximum(arr, tiny))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return cast(np.ndarray, 10.0 * np.log10(np.maximum(arr, tiny)))
         raise ValueError(
             f"representation must be one of ['db', 'magnitude', 'power'], got {representation!r}"
         )
@@ -443,8 +424,8 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
         arr: np.ndarray,
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        vmin: float | None = None,
+        vmax: float | None = None,
     ) -> np.ndarray:
         """
         Percentile-stretch an array to [0, 1].
@@ -494,14 +475,14 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
 
     def _build_power_rgb(
         self,
-        components: Dict[str, np.ndarray],
-        channel_map: List[Tuple[str, str]],
+        components: dict[str, np.ndarray],
+        channel_map: list[tuple[str, str]],
         format_name: str,
-        representation: str = 'db',
+        representation: str = "db",
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-        channels: Optional[List[str]] = None,
-    ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        channels: list[str] | None = None,
+    ) -> tuple[np.ndarray, "ImageMetadata"]:
         """Build an RGB composite from real-valued power-like components.
 
         Applies ``_apply_power_representation`` then ``_percentile_stretch``
@@ -546,20 +527,16 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
             If any component key is missing from *components*, or the
             resolved channel selection does not contain exactly 3 entries.
         """
-        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+        from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
-        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
+        _roles = ("rgb_red", "rgb_green", "rgb_blue")
         if channels is not None:
             if len(channels) != 3:
-                raise ValueError(
-                    f"channels must have exactly 3 entries, got {len(channels)}"
-                )
-            channel_map = list(zip(channels, _roles))
+                raise ValueError(f"channels must have exactly 3 entries, got {len(channels)}")
+            channel_map = list(zip(channels, _roles, strict=True))
 
         if len(channel_map) != 3:
-            raise ValueError(
-                f"channel_map must have exactly 3 entries, got {len(channel_map)}"
-            )
+            raise ValueError(f"channel_map must have exactly 3 entries, got {len(channel_map)}")
 
         missing = {k for k, _ in channel_map} - set(components.keys())
         if missing:
@@ -580,8 +557,8 @@ class PolarimetricDecomposition(WindowedTileHalo, ImageProcessor):
             rows=rgb.shape[1],
             cols=rgb.shape[2],
             bands=3,
-            dtype='float32',
-            axis_order='CYX',
+            dtype="float32",
+            axis_order="CYX",
             channel_metadata=[
                 ChannelMetadata(index=i, name=key, role=role)
                 for i, (key, role) in enumerate(channel_map)

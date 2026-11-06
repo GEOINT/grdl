@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Spatial Filter Tests - General, SAR scalar, phase, IDAN, and Wishart filters.
 
@@ -33,10 +32,14 @@ Modified
 2026-02-11
 """
 
-import pytest
+import warnings
+
 import numpy as np
+import pytest
+from scipy.ndimage import gaussian_filter
 
 from grdl.exceptions import ValidationError
+from grdl.image_processing.decomposition import CoherencyMatrix, CovarianceMatrix
 from grdl.image_processing.filters import (
     ComplexLeeFilter,
     EnhancedLeeFilter,
@@ -52,16 +55,77 @@ from grdl.image_processing.filters import (
     StdDevFilter,
     WishartFilter,
 )
-from grdl.image_processing.decomposition import CoherencyMatrix, CovarianceMatrix
 from grdl.image_processing.filters._validation import (
     validate_kernel_size,
     validate_mode,
 )
+from grdl.image_processing.filters.linear import boxcar_mean
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("window", [3, 7])
+@pytest.mark.parametrize("mode", ["reflect", "constant", "nearest", "wrap"])
+def test_mean_and_boxcar_share_kernel(dtype, window, mode):
+    source = np.random.default_rng(17).normal(size=(9, 11)).astype(dtype)
+    original = source.copy()
+    mean = MeanFilter(kernel_size=window, mode=mode)
+    np.testing.assert_array_equal(mean.apply(source), boxcar_mean(source, window, mode))
+    complex_source = source + 1j * source[::-1]
+    result = boxcar_mean(complex_source, window, mode)
+    expected = mean.apply(complex_source.real) + 1j * mean.apply(complex_source.imag)
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(mean.apply(complex_source), expected)
+    assert mean.apply(complex_source).dtype == complex_source.dtype
+    assert result.dtype == complex_source.dtype
+    np.testing.assert_array_equal(source, original)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize(
+    "processor",
+    [
+        MeanFilter(kernel_size=5),
+        GaussianFilter(sigma=1.2),
+        ComplexLeeFilter(kernel_size=5, enl=4),
+        LeeSigmaFilter(kernel_size=5, enl=4),
+        EnhancedLeeFilter(kernel_size=5, enl=4),
+    ],
+)
+def test_complex_filters_dispatch_every_channel(processor, dtype):
+    rng = np.random.default_rng(41)
+    source = (rng.normal(size=(4, 17, 19)) + 1j * rng.normal(size=(4, 17, 19))).astype(dtype)
+    original = source.copy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", np.exceptions.ComplexWarning)
+        result = processor.apply(source)
+        expected = np.stack([processor.apply(band) for band in source])
+    assert np.iscomplexobj(result)
+    assert result.shape == source.shape
+    assert np.all(np.max(np.abs(result.imag), axis=(1, 2)) > 0)
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(source, original)
+    if isinstance(processor, GaussianFilter):
+        reference = np.stack(
+            [
+                gaussian_filter(band.real, sigma=1.2) + 1j * gaussian_filter(band.imag, sigma=1.2)
+                for band in source
+            ]
+        )
+        assert result.dtype == dtype
+        np.testing.assert_allclose(result, reference, rtol=1e-5, atol=1e-6)
+
+
+def test_boxcar_unit_window_and_reflected_edge():
+    source = np.zeros((5, 5), dtype=np.float64)
+    source[0, 0] = 9
+    assert boxcar_mean(source, 1) is source
+    np.testing.assert_array_equal(boxcar_mean(source, 3)[:2, :2], [[4, 2], [2, 1]])
 
 
 # ---------------------------------------------------------------------------
 # Validation helper tests
 # ---------------------------------------------------------------------------
+
 
 class TestValidation:
     """Test shared validation helpers."""
@@ -88,18 +152,19 @@ class TestValidation:
 
     def test_valid_modes(self):
         """Test that valid modes pass."""
-        for mode in ('reflect', 'constant', 'nearest', 'wrap'):
+        for mode in ("reflect", "constant", "nearest", "wrap"):
             validate_mode(mode)
 
     def test_invalid_mode_raises(self):
         """Test that invalid mode raises ValidationError."""
         with pytest.raises(ValidationError, match="mode"):
-            validate_mode('mirror')
+            validate_mode("mirror")
 
 
 # ---------------------------------------------------------------------------
 # MeanFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestMeanFilter:
     """Test MeanFilter correctness and parameters."""
@@ -160,7 +225,7 @@ class TestMeanFilter:
 
     def test_mode_options(self, random_image):
         """All boundary modes produce valid output."""
-        for mode in ('reflect', 'constant', 'nearest', 'wrap'):
+        for mode in ("reflect", "constant", "nearest", "wrap"):
             f = MeanFilter(kernel_size=3, mode=mode)
             result = f.apply(random_image)
             assert result.shape == random_image.shape
@@ -170,6 +235,7 @@ class TestMeanFilter:
 # ---------------------------------------------------------------------------
 # GaussianFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestGaussianFilter:
     """Test GaussianFilter correctness and parameters."""
@@ -215,6 +281,7 @@ class TestGaussianFilter:
 # MedianFilter tests
 # ---------------------------------------------------------------------------
 
+
 class TestMedianFilter:
     """Test MedianFilter correctness and parameters."""
 
@@ -254,6 +321,7 @@ class TestMedianFilter:
 # MinFilter tests
 # ---------------------------------------------------------------------------
 
+
 class TestMinFilter:
     """Test MinFilter correctness and parameters."""
 
@@ -284,6 +352,7 @@ class TestMinFilter:
 # MaxFilter tests
 # ---------------------------------------------------------------------------
 
+
 class TestMaxFilter:
     """Test MaxFilter correctness and parameters."""
 
@@ -313,6 +382,7 @@ class TestMaxFilter:
 # ---------------------------------------------------------------------------
 # StdDevFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestStdDevFilter:
     """Test StdDevFilter correctness and parameters."""
@@ -363,6 +433,7 @@ class TestStdDevFilter:
 # ---------------------------------------------------------------------------
 # LeeFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestLeeFilter:
     """Test LeeFilter correctness and parameters."""
@@ -428,7 +499,10 @@ class TestLeeFilter:
         f = LeeFilter(kernel_size=7)
         with pytest.raises(ValidationError, match="ComplexLeeFilter"):
             f.apply(np.ones((20, 20), dtype=np.complex64))
+
+
 # ---------------------------------------------------------------------------
+
 
 class TestComplexLeeFilter:
     """Test ComplexLeeFilter correctness and parameters."""
@@ -496,10 +570,8 @@ class TestComplexLeeFilter:
         z = amp * np.exp(1j * phase)
         f = ComplexLeeFilter(kernel_size=7, enl=1.0)
         result = f.apply(z)
-        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
-        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
-            np.var(np.abs(result) ** 2), 1e-12
-        )
+        enl_before = np.mean(amp**2) ** 2 / max(np.var(amp**2), 1e-12)
+        enl_after = np.mean(np.abs(result) ** 2) ** 2 / max(np.var(np.abs(result) ** 2), 1e-12)
         assert enl_after > enl_before
 
     def test_bandwise_3d(self):
@@ -544,6 +616,7 @@ class TestComplexLeeFilter:
 # ---------------------------------------------------------------------------
 # EnhancedLeeFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestEnhancedLeeFilter:
     """Test EnhancedLeeFilter correctness and parameters."""
@@ -604,10 +677,8 @@ class TestEnhancedLeeFilter:
         amp = rng.rayleigh(scale=5.0, size=(100, 100))
         z = amp * np.exp(1j * rng.uniform(-np.pi, np.pi, (100, 100)))
         result = EnhancedLeeFilter(kernel_size=7, enl=1.0).apply(z)
-        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
-        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
-            np.var(np.abs(result) ** 2), 1e-12
-        )
+        enl_before = np.mean(amp**2) ** 2 / max(np.var(amp**2), 1e-12)
+        enl_after = np.mean(np.abs(result) ** 2) ** 2 / max(np.var(np.abs(result) ** 2), 1e-12)
         assert enl_after > enl_before
 
     def test_auto_enl_estimation(self):
@@ -627,7 +698,7 @@ class TestEnhancedLeeFilter:
         rng = np.random.RandomState(5)
         noisy = rng.rayleigh(scale=10.0, size=(80, 80))
         # ENL=100 → cu=0.1, cmax≈1.01; Rayleigh ci≈0.52 is in (cu, cmax)
-        r_low  = EnhancedLeeFilter(kernel_size=7, enl=100.0, damp=0.1).apply(noisy)
+        r_low = EnhancedLeeFilter(kernel_size=7, enl=100.0, damp=0.1).apply(noisy)
         r_high = EnhancedLeeFilter(kernel_size=7, enl=100.0, damp=5.0).apply(noisy)
         # damp=0.1: W → 1 → output → mean → lower variance
         # damp=5.0: W → 0 → output → pixel → higher variance
@@ -651,6 +722,7 @@ class TestEnhancedLeeFilter:
 # ---------------------------------------------------------------------------
 # LeeSigmaFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestLeeSigmaFilter:
     """Test LeeSigmaFilter correctness and parameters."""
@@ -720,7 +792,7 @@ class TestLeeSigmaFilter:
         """Higher sigma selects more neighbours → more smoothing → lower variance."""
         rng = np.random.RandomState(4)
         noisy = np.full((80, 80), 100.0) * (1.0 + rng.randn(80, 80) * 0.5)
-        r_low  = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.5).apply(noisy)
+        r_low = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.5).apply(noisy)
         r_high = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.99).apply(noisy)
         assert np.var(r_high) < np.var(r_low)
 
@@ -779,10 +851,8 @@ class TestLeeSigmaFilter:
         z = amp * np.exp(1j * phase)
         f = LeeSigmaFilter(kernel_size=7, enl=1.0, sigma=0.9)
         result = f.apply(z)
-        enl_before = np.mean(amp ** 2) ** 2 / max(np.var(amp ** 2), 1e-12)
-        enl_after  = np.mean(np.abs(result) ** 2) ** 2 / max(
-            np.var(np.abs(result) ** 2), 1e-12
-        )
+        enl_before = np.mean(amp**2) ** 2 / max(np.var(amp**2), 1e-12)
+        enl_after = np.mean(np.abs(result) ** 2) ** 2 / max(np.var(np.abs(result) ** 2), 1e-12)
         assert enl_after > enl_before
 
     def test_complex_amplitude_matches_real_input(self):
@@ -800,6 +870,7 @@ class TestLeeSigmaFilter:
 # ---------------------------------------------------------------------------
 # IDANFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestIDANFilter:
     """Tests for IDANFilter correctness, shape preservation, and validation."""
@@ -898,17 +969,19 @@ class TestIDANFilter:
     def test_filter_matrix_shape_preserved(self):
         """filter_matrix output shape matches (N, N, rows, cols) input."""
         rng = np.random.default_rng(10)
-        N, R, C = 2, 10, 10
+        R, C = 10, 10
         # Build a Hermitian positive-semidefinite C2 from random SLC
         s_rh = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
         s_rv = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
         c11 = np.abs(s_rh) ** 2
         c22 = np.abs(s_rv) ** 2
         c12 = s_rh * np.conj(s_rv)
-        mat = np.array([
-            [c11, c12],
-            [np.conj(c12), c22],
-        ])  # (2, 2, R, C)
+        mat = np.array(
+            [
+                [c11, c12],
+                [np.conj(c12), c22],
+            ]
+        )  # (2, 2, R, C)
         f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
         out = f.filter_matrix(mat)
         assert out.shape == mat.shape
@@ -932,12 +1005,14 @@ class TestIDANFilter:
         rng = np.random.default_rng(20)
         R, C = 10, 10
         shh = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
-        shv = (0.3 * (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C)))).astype(np.complex64)
+        shv = (0.3 * (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C)))).astype(
+            np.complex64
+        )
         svh = shv.copy()
         svv = (rng.standard_normal((R, C)) + 1j * rng.standard_normal((R, C))).astype(np.complex64)
 
         f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
-        out = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
+        out = f.filter_channels(shh, shv, svh, svv, matrix_type="C3")
         assert out.shape == (3, 3, R, C)
 
     def test_filter_channels_invalid_type_raises(self):
@@ -945,8 +1020,8 @@ class TestIDANFilter:
         rng = np.random.default_rng(21)
         slc = (rng.standard_normal((8, 8)) + 1j * rng.standard_normal((8, 8))).astype(np.complex64)
         f = IDANFilter(kernel_size=3, max_pixels=8, enl=1.0)
-        with pytest.raises(ValidationError, match='matrix_type'):
-            f.filter_channels(slc, slc, slc, slc, matrix_type='X4')
+        with pytest.raises(ValidationError, match="matrix_type"):
+            f.filter_channels(slc, slc, slc, slc, matrix_type="X4")
 
     # ---- ENL auto-estimation ------------------------------------------
 
@@ -963,16 +1038,23 @@ class TestIDANFilter:
 # WishartFilter tests
 # ---------------------------------------------------------------------------
 
+
 class TestWishartFilter:
     """Focused API tests for Wishart matrix workflows."""
 
     @staticmethod
     def _quad_pol_slc(rows=8, cols=8, seed=123):
         rng = np.random.default_rng(seed)
-        shh = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(np.complex64)
-        shv = (0.3 * (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols)))).astype(np.complex64)
+        shh = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(
+            np.complex64
+        )
+        shv = (
+            0.3 * (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols)))
+        ).astype(np.complex64)
         svh = shv.copy()
-        svv = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(np.complex64)
+        svv = (rng.standard_normal((rows, cols)) + 1j * rng.standard_normal((rows, cols))).astype(
+            np.complex64
+        )
         return shh, shv, svh, svv
 
     def test_filter_matrix_shape_preserved_for_t3(self):
@@ -981,7 +1063,7 @@ class TestWishartFilter:
         channels = np.stack([shh, shv, svh, svv], axis=0)
         t3 = CoherencyMatrix(window_size=1).compute(channels)
 
-        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type='T3')
+        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type="T3")
         out = f.filter_matrix(t3)
 
         assert out.shape == t3.shape
@@ -995,13 +1077,13 @@ class TestWishartFilter:
         channels = np.stack([shh, shv, svh, svv], axis=0)
         c3 = CovarianceMatrix(window_size=1).compute(channels)
 
-        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type='C3')
+        f = WishartFilter(kernel_size=3, enl=1.0, matrix_type="C3")
         out = f.apply(c3)
 
         assert out.shape == c3.shape
         assert np.iscomplexobj(out)
 
-    @pytest.mark.parametrize('input_kind', ['matrix', 'channels', 'packed'])
+    @pytest.mark.parametrize("input_kind", ["matrix", "channels", "packed"])
     def test_apply_logs_effective_settings(self, caplog, input_kind):
         """Each representation logs one processing message with call-time settings."""
         from grdl.image_processing.decomposition.pol_matrix import pack_matrix
@@ -1009,23 +1091,27 @@ class TestWishartFilter:
         channels = np.stack(self._quad_pol_slc())
         matrix = CoherencyMatrix(window_size=1).compute(channels)
         source = {
-            'matrix': matrix,
-            'channels': channels,
-            'packed': pack_matrix(matrix),
+            "matrix": matrix,
+            "channels": channels,
+            "packed": pack_matrix(matrix),
         }[input_kind]
         filtering = WishartFilter(kernel_size=7)
-        logger_name = 'grdl.image_processing.filters.wishart'
-        with caplog.at_level('INFO', logger=logger_name):
+        logger_name = "grdl.image_processing.filters.wishart"
+        with caplog.at_level("INFO", logger=logger_name):
             filtering.apply(
-                source, input_kind=input_kind, matrix_type='T3',
-                kernel_size=3, sigma_range=2.0, min_weight_sum=0.25,
+                source,
+                input_kind=input_kind,
+                matrix_type="T3",
+                kernel_size=3,
+                sigma_range=2.0,
+                min_weight_sum=0.25,
             )
 
         records = [record for record in caplog.records if record.name == logger_name]
         assert len(records) == 1
         assert records[0].getMessage() == (
-            'WishartFilter: processing 3x3 matrix image (8x8 pixels) '
-            'with kernel_size=3, sigma_range=2, min_weight_sum=0.25, dtype=complex64'
+            "WishartFilter: processing 3x3 matrix image (8x8 pixels) "
+            "with kernel_size=3, sigma_range=2, min_weight_sum=0.25, dtype=complex64"
         )
         assert filtering.kernel_size == 7
 
@@ -1034,8 +1120,8 @@ class TestWishartFilter:
         shh, shv, svh, svv = self._quad_pol_slc(seed=125)
         f = WishartFilter(kernel_size=3, enl=1.0)
 
-        c3_out = f.filter_channels(shh, shv, svh, svv, matrix_type='C3')
-        t3_out = f.filter_channels(shh, shv, svh, svv, matrix_type='T3')
+        c3_out = f.filter_channels(shh, shv, svh, svv, matrix_type="C3")
+        t3_out = f.filter_channels(shh, shv, svh, svv, matrix_type="T3")
 
         assert c3_out.shape == (3, 3, shh.shape[0], shh.shape[1])
         assert t3_out.shape == (3, 3, shh.shape[0], shh.shape[1])
@@ -1045,8 +1131,8 @@ class TestWishartFilter:
         shh, shv, _, _ = self._quad_pol_slc(seed=126)
         f = WishartFilter(kernel_size=3, enl=1.0)
 
-        c2_out = f.filter_channels(shh, shv, matrix_type='C2')
-        t2_out = f.filter_channels(shh, shv, matrix_type='T2')
+        c2_out = f.filter_channels(shh, shv, matrix_type="C2")
+        t2_out = f.filter_channels(shh, shv, matrix_type="T2")
 
         assert c2_out.shape == (2, 2, shh.shape[0], shh.shape[1])
         assert t2_out.shape == (2, 2, shh.shape[0], shh.shape[1])
@@ -1055,23 +1141,24 @@ class TestWishartFilter:
         """Unknown matrix_type raises ValidationError."""
         shh, shv, svh, svv = self._quad_pol_slc(seed=127)
         f = WishartFilter(kernel_size=3, enl=1.0)
-        with pytest.raises(ValidationError, match='matrix_type'):
-            f.filter_channels(shh, shv, svh, svv, matrix_type='X4')
+        with pytest.raises(ValidationError, match="matrix_type"):
+            f.filter_channels(shh, shv, svh, svv, matrix_type="X4")
 
     def test_filter_channels_missing_quad_channels_raises(self):
         """T3 cannot be formed from only two channels."""
         shh, shv, _, _ = self._quad_pol_slc(seed=128)
         f = WishartFilter(kernel_size=3, enl=1.0)
-        with pytest.raises(ValidationError, match='requires.*3 reciprocal'):
-            f.filter_channels(shh, shv, matrix_type='T3')
+        with pytest.raises(ValidationError, match="requires.*3 reciprocal"):
+            f.filter_channels(shh, shv, matrix_type="T3")
 
-    @pytest.mark.parametrize('matrix_type', ['C3', 'T3'])
+    @pytest.mark.parametrize("matrix_type", ["C3", "T3"])
     def test_filter_channels_accepts_reciprocal_channels(self, matrix_type):
         """The adapter accepts the same reciprocal cube as canonical apply."""
         shh, shv, _, svv = self._quad_pol_slc(seed=128)
         filtering = WishartFilter(kernel_size=3, enl=1.0)
         expected = filtering.apply(
-            np.stack([shh, shv, svv]), input_kind='channels',
+            np.stack([shh, shv, svv]),
+            input_kind="channels",
             matrix_type=matrix_type,
         )
         with pytest.warns(DeprecationWarning):
@@ -1082,20 +1169,21 @@ class TestWishartFilter:
         """Non-square matrix dimensions raise ValidationError."""
         mat = np.zeros((2, 3, 8, 8), dtype=np.complex64)
         f = WishartFilter(kernel_size=3, enl=1.0)
-        with pytest.raises(ValidationError, match='square'):
+        with pytest.raises(ValidationError, match="square"):
             f.filter_matrix(mat)
 
     def test_filter_matrix_wrong_ndim_raises(self):
         """Non-4D matrix input raises ValidationError."""
         mat = np.zeros((3, 8, 8), dtype=np.complex64)
         f = WishartFilter(kernel_size=3, enl=1.0)
-        with pytest.raises(ValidationError, match='4D matrix'):
+        with pytest.raises(ValidationError, match="4D matrix"):
             f.filter_matrix(mat)
 
 
 # ---------------------------------------------------------------------------
 # PhaseGradientFilter tests
 # ---------------------------------------------------------------------------
+
 
 class TestPhaseGradientFilter:
     """Test PhaseGradientFilter correctness and parameters."""
@@ -1110,7 +1198,7 @@ class TestPhaseGradientFilter:
         """Constant complex image has zero phase gradient everywhere."""
         # All pixels have the same phase -> gradient is zero
         z = np.full((30, 30), 1.0 + 2.0j)
-        f = PhaseGradientFilter(kernel_size=3, direction='magnitude')
+        f = PhaseGradientFilter(kernel_size=3, direction="magnitude")
         result = f.apply(z)
         np.testing.assert_allclose(result, 0.0, atol=1e-10)
 
@@ -1121,7 +1209,7 @@ class TestPhaseGradientFilter:
         phase_rate = 0.1
         row_idx = np.arange(rows)[:, None] * np.ones((1, cols))
         z = np.exp(1j * phase_rate * row_idx)
-        f = PhaseGradientFilter(kernel_size=3, direction='row')
+        f = PhaseGradientFilter(kernel_size=3, direction="row")
         result = f.apply(z)
         # Interior pixels (away from boundaries) should be ~ phase_rate
         interior = result[5:-5, 5:-5]
@@ -1133,7 +1221,7 @@ class TestPhaseGradientFilter:
         phase_rate = 0.15
         col_idx = np.ones((rows, 1)) * np.arange(cols)[None, :]
         z = np.exp(1j * phase_rate * col_idx)
-        f = PhaseGradientFilter(kernel_size=3, direction='col')
+        f = PhaseGradientFilter(kernel_size=3, direction="col")
         result = f.apply(z)
         interior = result[5:-5, 5:-5]
         np.testing.assert_allclose(interior, phase_rate, atol=1e-6)
@@ -1141,8 +1229,8 @@ class TestPhaseGradientFilter:
     def test_magnitude_nonnegative(self):
         """Gradient magnitude is always non-negative."""
         rng = np.random.RandomState(42)
-        z = (rng.randn(40, 40) + 1j * rng.randn(40, 40))
-        f = PhaseGradientFilter(kernel_size=5, direction='magnitude')
+        z = rng.randn(40, 40) + 1j * rng.randn(40, 40)
+        f = PhaseGradientFilter(kernel_size=5, direction="magnitude")
         result = f.apply(z)
         assert np.all(result >= 0.0)
 
@@ -1170,7 +1258,7 @@ class TestPhaseGradientFilter:
     def test_invalid_direction_raises(self):
         """Invalid direction raises ValidationError."""
         with pytest.raises(ValidationError, match="direction"):
-            PhaseGradientFilter(direction='diagonal')
+            PhaseGradientFilter(direction="diagonal")
 
     def test_even_kernel_raises(self):
         """Even kernel size raises ValidationError."""
@@ -1181,7 +1269,7 @@ class TestPhaseGradientFilter:
         """All three direction options produce valid output."""
         rng = np.random.RandomState(99)
         z = rng.randn(30, 30) + 1j * rng.randn(30, 30)
-        for direction in ('magnitude', 'row', 'col'):
+        for direction in ("magnitude", "row", "col"):
             f = PhaseGradientFilter(kernel_size=5, direction=direction)
             result = f.apply(z)
             assert result.shape == z.shape
@@ -1195,6 +1283,7 @@ class TestPhaseGradientFilter:
 # ---------------------------------------------------------------------------
 # Cross-filter ordering tests
 # ---------------------------------------------------------------------------
+
 
 class TestFilterOrdering:
     """Test cross-filter ordering properties."""
@@ -1213,12 +1302,13 @@ class TestFilterOrdering:
 # Pipeline integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestPipelineIntegration:
     """Test filters compose correctly in a Pipeline."""
 
     def test_mean_then_percentile_stretch(self, random_image):
         """MeanFilter -> PercentileStretch pipeline works."""
-        from grdl.image_processing import Pipeline, PercentileStretch
+        from grdl.image_processing import PercentileStretch, Pipeline
 
         pipe = Pipeline([MeanFilter(kernel_size=3), PercentileStretch()])
         result = pipe.apply(random_image)

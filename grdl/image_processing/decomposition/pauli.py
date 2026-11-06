@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Pauli Decomposition - Quad-pol Pauli basis scattering matrix decomposition.
 
@@ -45,17 +44,17 @@ Modified
 
 # Standard library
 import logging
-from typing import Annotated, Dict, List, Optional, Tuple, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Annotated
 
 # Third-party
 import numpy as np
-from scipy.ndimage import uniform_filter
 
 # GRDL internal
 from grdl.image_processing.decomposition.base import PolarimetricDecomposition
-from grdl.image_processing.decomposition.pol_matrix import CoherencyMatrix
-from grdl.image_processing.versioning import processor_version, processor_tags
-from grdl.image_processing.params import Range, Desc
+from grdl.image_processing.filters.linear import boxcar_mean
+from grdl.image_processing.params import Desc, Range
+from grdl.image_processing.versioning import processor_tags, processor_version
 from grdl.vocabulary import ImageModality
 
 logger = logging.getLogger(__name__)
@@ -64,7 +63,7 @@ if TYPE_CHECKING:
     from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
 
-@processor_version('0.2.0')
+@processor_version("0.2.0")
 @processor_tags(modalities=[ImageModality.SAR])
 class PauliDecomposition(PolarimetricDecomposition):
     """
@@ -121,7 +120,7 @@ class PauliDecomposition(PolarimetricDecomposition):
     """
 
     @property
-    def component_names(self) -> Tuple[str, str, str]:
+    def component_names(self) -> tuple[str, str, str]:
         """
         Names of the Pauli decomposition components.
 
@@ -130,44 +129,41 @@ class PauliDecomposition(PolarimetricDecomposition):
         Tuple[str, str, str]
             ``('surface', 'double_bounce', 'volume')``.
         """
-        return ('surface', 'double_bounce', 'volume')
+        return ("surface", "double_bounce", "volume")
 
     def _build_component_metadata(
         self,
-        metadata: 'ImageMetadata',
-    ) -> list['ChannelMetadata']:
+        metadata: "ImageMetadata",
+    ) -> list["ChannelMetadata"]:
         """Return Pauli-specific output lineage metadata."""
         from grdl.IO.models.base import ChannelMetadata
 
         return [
             ChannelMetadata(
                 index=0,
-                name='surface',
-                role='decomposition',
+                name="surface",
+                role="decomposition",
                 source_indices=[0, 3],
             ),
             ChannelMetadata(
                 index=1,
-                name='double_bounce',
-                role='decomposition',
+                name="double_bounce",
+                role="decomposition",
                 source_indices=[0, 3],
             ),
             ChannelMetadata(
                 index=2,
-                name='volume',
-                role='decomposition',
+                name="volume",
+                role="decomposition",
                 source_indices=[1, 2],
             ),
         ]
 
-    window_size: Annotated[int, Range(min=1, max=31),
-                           Desc('Boxcar averaging window size')] = 1
+    window_size: Annotated[int, Range(min=1, max=31), Desc("Boxcar averaging window size")] = 1
 
     def __init__(self, window_size: int = 1) -> None:
         if window_size < 1 or window_size > 31 or window_size % 2 == 0:
-            raise ValueError(
-                f"window_size must be an odd integer in [1, 31], got {window_size}"
-            )
+            raise ValueError(f"window_size must be an odd integer in [1, 31], got {window_size}")
         self.window_size = window_size
 
     def decompose(
@@ -176,7 +172,7 @@ class PauliDecomposition(PolarimetricDecomposition):
         shv: np.ndarray | None = None,
         svh: np.ndarray | None = None,
         svv: np.ndarray | None = None,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """
         Decompose the scattering matrix into Pauli basis components.
 
@@ -236,16 +232,15 @@ class PauliDecomposition(PolarimetricDecomposition):
         """
         if svv is None:
             raise ValueError("svv must be provided.")
-        if shv is None and svh is None:
-            raise ValueError(
-                "At least one cross-pol channel (shv or svh) must be provided."
-            )
+        cross_sample = shv if shv is not None else svh
+        if cross_sample is None:
+            raise ValueError("At least one cross-pol channel (shv or svh) must be provided.")
 
         # Build the cross-pol term before validation so we can validate a
         # uniform set of 4 arrays with the base validator.
         if shv is not None and svh is not None:
             # Full bistatic / quad-pol: average both cross-pol channels.
-            cross_pol_term = shv + svh   # divided by sqrt(2) below with norm
+            cross_pol_term = shv + svh  # divided by sqrt(2) below with norm
             n_channels = 4
         elif shv is not None:
             # Monostatic, only HV: multiply by 2 (= sqrt(2) * sqrt(2) * shv)
@@ -254,57 +249,48 @@ class PauliDecomposition(PolarimetricDecomposition):
             n_channels = 3
         else:
             # Monostatic, only VH.
-            cross_pol_term = svh * 2.0
+            cross_pol_term = cross_sample * 2.0
             n_channels = 3
 
         # Validate co-pol channels and whichever cross-pol channels were given.
-        cross_sample = shv if shv is not None else svh
-        self._validate_scattering_matrix(
-            shh, cross_sample, cross_sample, svv
-        )
+        self._validate_scattering_matrix(shh, cross_sample, cross_sample, svv)
 
         logger.info(
             "Pauli decomposition: shape %s, %d channels, dtype %s, window_size=%d",
-            shh.shape, n_channels, shh.dtype, self.window_size,
+            shh.shape,
+            n_channels,
+            shh.dtype,
+            self.window_size,
         )
 
         if self.window_size > 1:
-            shh = self._boxcar_complex(shh, self.window_size)
-            cross_pol_term = self._boxcar_complex(cross_pol_term, self.window_size)
-            svv = self._boxcar_complex(svv, self.window_size)
+            shh = boxcar_mean(shh, self.window_size, mode="reflect")
+            cross_pol_term = boxcar_mean(cross_pol_term, self.window_size, mode="reflect")
+            svv = boxcar_mean(svv, self.window_size, mode="reflect")
 
         # Normalization constant in matching precision to avoid
         # silent upcast from complex64 to complex128.
-        if shh.dtype == np.complex64:
-            norm = np.float32(1.0 / np.sqrt(2.0))
-        else:
-            norm = 1.0 / np.sqrt(2.0)
+        norm = np.float32(1.0 / np.sqrt(2.0)) if shh.dtype == np.complex64 else 1.0 / np.sqrt(2.0)
 
         result = {
-            'surface': (shh + svv) * norm,
-            'double_bounce': (shh - svv) * norm,
-            'volume': cross_pol_term * norm,
+            "surface": (shh + svv) * norm,
+            "double_bounce": (shh - svv) * norm,
+            "volume": cross_pol_term * norm,
         }
 
         logger.debug(
             "Pauli magnitudes: surface=[%.4f, %.4f], "
             "double_bounce=[%.4f, %.4f], volume=[%.4f, %.4f]",
-            float(np.min(np.abs(result['surface']))),
-            float(np.max(np.abs(result['surface']))),
-            float(np.min(np.abs(result['double_bounce']))),
-            float(np.max(np.abs(result['double_bounce']))),
-            float(np.min(np.abs(result['volume']))),
-            float(np.max(np.abs(result['volume']))),
+            float(np.min(np.abs(result["surface"]))),
+            float(np.max(np.abs(result["surface"]))),
+            float(np.min(np.abs(result["double_bounce"]))),
+            float(np.max(np.abs(result["double_bounce"]))),
+            float(np.min(np.abs(result["volume"]))),
+            float(np.max(np.abs(result["volume"]))),
         )
         return result
 
-    @staticmethod
-    def _boxcar_complex(arr: np.ndarray, window_size: int) -> np.ndarray:
-        re = uniform_filter(np.real(arr), size=window_size, mode='reflect')
-        im = uniform_filter(np.imag(arr), size=window_size, mode='reflect')
-        return (re + 1j * im).astype(arr.dtype, copy=False)
-
-    def decompose_from_t3(self, t3: np.ndarray) -> Dict[str, np.ndarray]:
+    def decompose_from_t3(self, t3: np.ndarray) -> dict[str, np.ndarray]:
         """Decompose from a precomputed coherency matrix [T3].
 
         This interface returns **magnitude** components only (real-valued),
@@ -329,17 +315,15 @@ class PauliDecomposition(PolarimetricDecomposition):
             ``'surface'``, ``'double_bounce'``, ``'volume'``.
         """
         if t3.ndim != 4 or t3.shape[:2] != (3, 3):
-            raise ValueError(
-                f"Expected t3 shape (3, 3, rows, cols), got {t3.shape}"
-            )
+            raise ValueError(f"Expected t3 shape (3, 3, rows, cols), got {t3.shape}")
 
         return {
-            'surface': np.sqrt(np.maximum(np.real(t3[0, 0]), 0.0)),
-            'double_bounce': np.sqrt(np.maximum(np.real(t3[1, 1]), 0.0)),
-            'volume': np.sqrt(np.maximum(np.real(t3[2, 2]), 0.0)),
+            "surface": np.sqrt(np.maximum(np.real(t3[0, 0]), 0.0)),
+            "double_bounce": np.sqrt(np.maximum(np.real(t3[1, 1]), 0.0)),
+            "volume": np.sqrt(np.maximum(np.real(t3[2, 2]), 0.0)),
         }
 
-    def decompose_from_c3(self, c3: np.ndarray) -> Dict[str, np.ndarray]:
+    def decompose_from_c3(self, c3: np.ndarray) -> dict[str, np.ndarray]:
         """Decompose from a precomputed covariance matrix [C3].
 
         Converts [C3] to [T3] using the Pauli basis transform, then returns
@@ -357,16 +341,14 @@ class PauliDecomposition(PolarimetricDecomposition):
             ``'surface'``, ``'double_bounce'``, ``'volume'``.
         """
         if c3.ndim != 4 or c3.shape[:2] != (3, 3):
-            raise ValueError(
-                f"Expected c3 shape (3, 3, rows, cols), got {c3.shape}"
-            )
+            raise ValueError(f"Expected c3 shape (3, 3, rows, cols), got {c3.shape}")
 
         D = (1.0 / np.sqrt(2.0)) * np.array(
             [[1, 0, 1], [1, 0, -1], [0, np.sqrt(2), 0]], dtype=np.complex128
         )
-        c3_yx = c3.transpose(2, 3, 0, 1)       # (rows, cols, 3, 3)
-        t3_yx = D @ c3_yx @ D.T                 # (rows, cols, 3, 3)
-        t3 = t3_yx.transpose(2, 3, 0, 1)        # (3, 3, rows, cols)
+        c3_yx = c3.transpose(2, 3, 0, 1)  # (rows, cols, 3, 3)
+        t3_yx = D @ c3_yx @ D.T  # (rows, cols, 3, 3)
+        t3 = t3_yx.transpose(2, 3, 0, 1)  # (3, 3, rows, cols)
         return self.decompose_from_t3(t3)
 
     @classmethod
@@ -383,38 +365,50 @@ class PauliDecomposition(PolarimetricDecomposition):
 
         return [
             ChannelMetadata(
-                index=0, name='double_bounce', role='decomposition',
+                index=0,
+                name="double_bounce",
+                role="decomposition",
                 source_indices=[0, 3],
-                extras={'pauli_component': 'double_bounce',
-                        'formula': 'T3[1,1] = <|S_HH-S_VV|\u00b2>/2',
-                        'display': 'Red'},
+                extras={
+                    "pauli_component": "double_bounce",
+                    "formula": "T3[1,1] = <|S_HH-S_VV|\u00b2>/2",
+                    "display": "Red",
+                },
             ),
             ChannelMetadata(
-                index=1, name='volume', role='decomposition',
+                index=1,
+                name="volume",
+                role="decomposition",
                 source_indices=[1, 2],
-                extras={'pauli_component': 'volume',
-                        'formula': 'T3[2,2] = 2\u00b7<|S_HV|\u00b2>',
-                        'display': 'Green'},
+                extras={
+                    "pauli_component": "volume",
+                    "formula": "T3[2,2] = 2\u00b7<|S_HV|\u00b2>",
+                    "display": "Green",
+                },
             ),
             ChannelMetadata(
-                index=2, name='surface', role='decomposition',
+                index=2,
+                name="surface",
+                role="decomposition",
                 source_indices=[0, 3],
-                extras={'pauli_component': 'surface',
-                        'formula': 'T3[0,0] = <|S_HH+S_VV|\u00b2>/2',
-                        'display': 'Blue'},
+                extras={
+                    "pauli_component": "surface",
+                    "formula": "T3[0,0] = <|S_HH+S_VV|\u00b2>/2",
+                    "display": "Blue",
+                },
             ),
         ]
 
-    _RGB_CHANNELS = ['double_bounce', 'volume', 'surface']
+    _RGB_CHANNELS = ["double_bounce", "volume", "surface"]
 
     def to_rgb(
         self,
-        components: Dict[str, np.ndarray],
-        representation: str = 'db',
+        components: dict[str, np.ndarray],
+        representation: str = "db",
         percentile_low: float = 2.0,
         percentile_high: float = 98.0,
-        channels: Optional[List[str]] = None,
-    ) -> Tuple[np.ndarray, 'ImageMetadata']:
+        channels: list[str] | None = None,
+    ) -> tuple[np.ndarray, "ImageMetadata"]:
         """
         Create Pauli RGB composite.
 
@@ -455,27 +449,24 @@ class PauliDecomposition(PolarimetricDecomposition):
             If ``representation`` is not one of the supported values,
             or if required component keys are missing.
         """
-        from grdl.IO.models.base import ImageMetadata, ChannelMetadata
+        from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 
         channel_keys = list(channels) if channels is not None else self._RGB_CHANNELS
 
         if len(channel_keys) != 3:
-            raise ValueError(
-                f"channels must have exactly 3 entries, got {len(channel_keys)}"
-            )
+            raise ValueError(f"channels must have exactly 3 entries, got {len(channel_keys)}")
 
         required = set(channel_keys)
         missing = required - set(components.keys())
         if missing:
             raise ValueError(
-                f"Missing component keys: {missing}. "
-                f"Expected keys from decompose(): {required}"
+                f"Missing component keys: {missing}. " f"Expected keys from decompose(): {required}"
             )
 
-        converters = {
-            'db': self.to_db,
-            'magnitude': self.to_magnitude,
-            'power': self.to_power,
+        converters: dict[str, Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]] = {
+            "db": self.to_db,
+            "magnitude": self.to_magnitude,
+            "power": self.to_power,
         }
         if representation not in converters:
             raise ValueError(
@@ -491,17 +482,17 @@ class PauliDecomposition(PolarimetricDecomposition):
         ]
         rgb = np.stack(bands, axis=0)  # (3, rows, cols) float32
 
-        _roles = ('rgb_red', 'rgb_green', 'rgb_blue')
+        _roles = ("rgb_red", "rgb_green", "rgb_blue")
         metadata = ImageMetadata(
-            format='PauliRGB',
+            format="PauliRGB",
             rows=int(rgb.shape[1]),
             cols=int(rgb.shape[2]),
             dtype=str(rgb.dtype),
             bands=3,
-            axis_order='CYX',
+            axis_order="CYX",
             channel_metadata=[
                 ChannelMetadata(index=i, name=k, role=role)
-                for i, (k, role) in enumerate(zip(channel_keys, _roles))
+                for i, (k, role) in enumerate(zip(channel_keys, _roles, strict=True))
             ],
         )
         return rgb, metadata
