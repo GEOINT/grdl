@@ -186,6 +186,25 @@ def _classify_modality(
             confidence = 'high'
         clues.append(f"GDAL driver '{driver}'")
 
+    # --- Tag search for non-NITF files ---
+    if modality is None and tags:
+        tag_text = " ".join(f"{k} {v}" for k, v in tags.items()).upper()
+        for kw_set, mod_name in [
+            (_HSI_KEYWORDS, 'HSI'),
+            (_SAR_KEYWORDS, 'SAR'),
+            (_IR_KEYWORDS, 'IR'),
+            (_MSI_KEYWORDS, 'MSI'),
+            (_EO_KEYWORDS, 'EO'),
+        ]:
+            for kw in kw_set:
+                if kw in tag_text:
+                    modality = mod_name
+                    confidence = 'high'
+                    clues.append(f"keyword '{kw}' in metadata tags")
+                    break
+            if modality is not None:
+                break
+
     # --- Band count heuristics ---
     if modality is None:
         if bands > 100:

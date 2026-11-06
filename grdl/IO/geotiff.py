@@ -48,7 +48,7 @@ except ImportError:
 # GRDL internal
 from grdl.exceptions import DependencyError
 from grdl.IO.base import ImageReader, ImageWriter
-from grdl.IO.models import ImageMetadata
+from grdl.IO.models import ChannelMetadata, ImageMetadata
 from grdl.IO.performance import (
     ReadConfig,
     _ensure_gdal_threads,
@@ -125,6 +125,26 @@ class GeoTIFFReader(ImageReader):
 
             crs_str = str(self.dataset.crs) if self.dataset.crs else None
 
+            # Populate channel metadata (wavelength, fwhm, band description)
+            channel_metadata: Optional[List[ChannelMetadata]] = None
+            if self.dataset.count > 1:
+                channel_metadata = []
+                descriptions = self.dataset.descriptions or []
+                for idx in range(1, self.dataset.count + 1):
+                    b_tags = self.dataset.tags(idx) or {}
+                    b_name = (
+                        descriptions[idx - 1]
+                        if idx - 1 < len(descriptions) and descriptions[idx - 1]
+                        else f"band_{idx}"
+                    )
+                    ch = ChannelMetadata(
+                        index=idx - 1,
+                        name=b_name,
+                        role='measurement',
+                        extras=dict(b_tags),
+                    )
+                    channel_metadata.append(ch)
+
             self.metadata = ImageMetadata(
                 format='GeoTIFF',
                 rows=self.dataset.height,
@@ -137,6 +157,7 @@ class GeoTIFFReader(ImageReader):
                 transform=self.dataset.transform,
                 bounds=tuple(self.dataset.bounds),
                 pixel_resolution=self.dataset.res,
+                channel_metadata=channel_metadata,
                 extras=extras,
             )
 

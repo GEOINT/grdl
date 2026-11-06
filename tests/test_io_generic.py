@@ -698,3 +698,23 @@ class TestRetryIdentifiedReader:
 
             result = _retry_identified_reader(dummy, fallback)
             assert result is None
+
+
+def test_classify_modality_smallsat_hsi():
+    """_classify_modality identifies smallsat HSI sensors (<100 bands) as HSI (Issue #76)."""
+    from grdl.IO.generic import _classify_modality
+
+    # Case 1: 23 bands with HSI keyword in tags
+    modality, conf, clues = _classify_modality(
+        driver="GTiff", dtype="float32", bands=23,
+        tags={"IMAGETYPE": "HYPERSPECTRAL_L1C"}
+    )
+    assert modality == "HSI", f"Expected HSI, got {modality}"
+    assert conf == "high" or conf == "medium"
+
+    # Case 2: 23 bands with contiguous narrow-band spacing or HSI keyword in description
+    modality2, conf2, clues2 = _classify_modality(
+        driver="GTiff", dtype="float32", bands=23,
+        tags={"SENSOR_TYPE": "HSI"}
+    )
+    assert modality2 == "HSI", f"Expected HSI, got {modality2}"

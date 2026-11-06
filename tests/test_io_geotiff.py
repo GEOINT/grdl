@@ -228,3 +228,33 @@ def test_open_image_geotiff(single_band_tiff):
     filepath, _ = single_band_tiff
     with open_image(filepath) as reader:
         assert reader.metadata['format'] == 'GeoTIFF'
+
+
+def test_metadata_channel_metadata_spectral_tags(tmp_path):
+    """ChannelMetadata populates wavelengths and descriptions from band tags (Issue #75)."""
+    from grdl.IO.geotiff import GeoTIFFReader
+
+    filepath = tmp_path / "spectral_test.tif"
+    data = np.ones((3, 20, 20), dtype=np.float32)
+    with rasterio.open(
+        str(filepath), 'w', driver='GTiff',
+        height=20, width=20, count=3,
+        dtype='float32'
+    ) as ds:
+        ds.write(data)
+        ds.set_band_description(1, 'band 1 (450nm)')
+        ds.set_band_description(2, 'band 2 (550nm)')
+        ds.set_band_description(3, 'band 3 (650nm)')
+        ds.update_tags(1, wavelength='450.0', fwhm='10.0')
+        ds.update_tags(2, wavelength='550.0', fwhm='10.0')
+        ds.update_tags(3, wavelength='650.0', fwhm='10.0')
+
+    with GeoTIFFReader(filepath) as reader:
+        channel_meta = reader.metadata.channel_metadata
+        assert channel_meta is not None, "channel_metadata should be populated"
+        assert len(channel_meta) == 3
+        assert channel_meta[0].name == 'band 1 (450nm)'
+        assert channel_meta[0].extras['wavelength'] == '450.0'
+        assert channel_meta[0].extras['fwhm'] == '10.0'
+        assert channel_meta[1].extras['wavelength'] == '550.0'
+        assert channel_meta[2].extras['wavelength'] == '650.0'
