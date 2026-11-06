@@ -13,12 +13,20 @@ General Filters (scalar, band-independent)
         ``MaxFilter`` — local maximum (morphological dilation)
     Statistical
         ``StdDevFilter`` — local standard deviation via variance decomposition
+    Edge & Sharpening
+        ``SobelFilter`` — 3x3 Sobel gradient operator
+        ``LaplacianFilter`` — discrete Laplacian second-derivative edge detector
+        ``UnsharpMaskFilter`` — unsharp masking spatial sharpening
+        ``HighPassFilter`` — fine spatial detail filter
 
 SAR Scalar Filters (per-band; inherit ``BandwiseTransformMixin + SARFilter``)
     ``LeeFilter`` — Lee adaptive speckle filter for real-valued intensity
     ``ComplexLeeFilter`` — Lee adaptive speckle filter for complex SLC data
     ``EnhancedLeeFilter`` — amplitude-domain smoothing with target protection
     ``LeeSigmaFilter`` — Lee Sigma filter with probability-based neighbour selection
+    ``FrostFilter`` — exponentially damped adaptive speckle filter
+    ``KuanFilter`` — MMSE multiplicative speckle filter
+    ``BoxcarFilter`` — uniform moving average spatial filter
 
 Phase Filters
     ``PhaseGradientFilter`` — windowed phase gradient for complex SAR data
@@ -67,6 +75,17 @@ from grdl.image_processing.filters.rank import MaxFilter, MedianFilter, MinFilte
 from grdl.image_processing.filters.sar_base import SARFilter
 from grdl.image_processing.filters.standard_lee import ComplexLeeFilter, LeeFilter
 from grdl.image_processing.filters.statistical import StdDevFilter
+from grdl.image_processing.filters.edge import (
+    SobelFilter,
+    LaplacianFilter,
+    UnsharpMaskFilter,
+    HighPassFilter,
+)
+from grdl.image_processing.filters.sar_speckle import (
+    FrostFilter,
+    KuanFilter,
+    BoxcarFilter,
+)
 
 if TYPE_CHECKING:
     from grdl.image_processing.filters.idan import IDANFilter
@@ -106,4 +125,11 @@ __all__ = [
     "IDANFilter",
     "PhaseGradientFilter",
     "WishartFilter",
+    "SobelFilter",
+    "LaplacianFilter",
+    "UnsharpMaskFilter",
+    "HighPassFilter",
+    "FrostFilter",
+    "KuanFilter",
+    "BoxcarFilter",
 ]

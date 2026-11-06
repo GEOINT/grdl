@@ -206,6 +206,23 @@ from grdl.image_processing.filters import (
     LeeFilter,
     ComplexLeeFilter,
     PhaseGradientFilter,
+    SobelFilter,
+    LaplacianFilter,
+    UnsharpMaskFilter,
+    HighPassFilter,
+    FrostFilter,
+    KuanFilter,
+    BoxcarFilter,
+)
+from grdl.image_processing.fusion import (
+    BroveyPanSharpenTransform,
+    SimpleMeanFusionTransform,
+    brovey_pan_sharpen,
+    simple_mean_fusion,
+)
+from grdl.image_processing.spectral import (
+    SpectralIndexTransform,
+    compute_spectral_index,
 )
 from grdl.image_processing.pipeline import Pipeline
 from grdl.image_processing.versioning import (
@@ -267,6 +284,19 @@ __all__ = [
     'LeeFilter',
     'ComplexLeeFilter',
     'PhaseGradientFilter',
+    'SobelFilter',
+    'LaplacianFilter',
+    'UnsharpMaskFilter',
+    'HighPassFilter',
+    'FrostFilter',
+    'KuanFilter',
+    'BoxcarFilter',
+    'BroveyPanSharpenTransform',
+    'SimpleMeanFusionTransform',
+    'brovey_pan_sharpen',
+    'simple_mean_fusion',
+    'SpectralIndexTransform',
+    'compute_spectral_index',
     'Pipeline',
     'processor_version',
     'processor_tags',
