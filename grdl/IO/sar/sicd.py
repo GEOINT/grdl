@@ -1852,7 +1852,7 @@ class SICDReader(ImageReader):
 
     def __init__(self, filepath: Union[str, Path]) -> None:
         self.backend = require_sar_backend('SICD')
-        logger.info("SICD backend selected: %s", self.backend)
+        logger.debug("SICD backend selected: %s", self.backend)
         super().__init__(filepath)
 
     @staticmethod

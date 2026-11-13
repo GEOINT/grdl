@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-SAR Image Processing - SAR-specific transforms requiring sensor metadata.
+SAR Image Processing - SAR-specific transforms and array-level parameters.
 
 Provides image processing operations that operate on complex SAR imagery
 and require SAR metadata (bandwidth, weight functions, spatial frequency
-parameters) from the reader. All processors accept ``SICDMetadata`` at
-construction time.
+parameters) from the reader. Metadata-driven processors accept
+``SICDMetadata`` at construction time. Polarimetric parameter functions
+operate directly on arrays without metadata.
 
 Oversampling-aware: operations account for signal bandwidth occupying
 only a fraction of the DFT extent. Accepts both numpy arrays and
@@ -27,6 +28,11 @@ Sub-aperture Features
     and Shannon entropy feature maps from complex SAR imagery.
     Also exposes ``compute_dominance`` and ``compute_sublook_entropy``
     as standalone pure functions.
+
+Polarimetric Parameters (``pol_parameters.py``)
+    ``complex_correlation`` -- Global normalized complex correlation.
+    Differential phase, linear depolarization ratio, and coefficient of
+    variation are placeholders that raise ``NotImplementedError``.
 
 Image Formation (``image_formation/``)
     ``PolarFormatAlgorithm`` — Spotlight PFA (polar-to-rectangular
@@ -99,6 +105,13 @@ Modified
 from grdl.image_processing.sar.sublook import SublookDecomposition
 from grdl.image_processing.sar.multilook import MultilookDecomposition
 from grdl.image_processing.sar.csi import CSIProcessor
+from grdl.image_processing.sar.pol_parameters import (
+    complex_correlation,
+    differential_phase,
+    linear_depolarization_ratio,
+    coefficient_of_variation,
+)
+from grdl.image_processing.sar.polarization_rotation import rotate_quad_pol_to_hv
 from grdl.image_processing.sar.dominance import (
     DominanceFeatures,
     compute_dominance,
@@ -119,6 +132,11 @@ __all__ = [
     'SublookDecomposition',
     'MultilookDecomposition',
     'CSIProcessor',
+    'complex_correlation',
+    'differential_phase',
+    'linear_depolarization_ratio',
+    'coefficient_of_variation',
+    'rotate_quad_pol_to_hv',
     'DominanceFeatures',
     'compute_dominance',
     'compute_sublook_entropy',

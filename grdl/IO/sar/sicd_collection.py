@@ -62,6 +62,7 @@ from grdl.IO.base import ImageReader
 from grdl.IO.models.base import ChannelMetadata
 from grdl.IO.models.sicd import SICDCollectionMetadata, SICDMetadata
 from grdl.IO.sar.sicd import SICDReader
+from grdl.IO.sar.get_antenna_polarization import get_antenna_polarization
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +78,25 @@ _PASSTHROUGH_POLS = frozenset({'OTHER', 'UNKNOWN', 'SEQUENCE'})
 def _infer_polarization(sicd_meta: SICDMetadata) -> str:
     """Extract a two-letter polarization label from SICD metadata.
 
-    Inspects ``radar_collection.rcv_channels[0].tx_rcv_polarization``
-    first, then falls back to ``radar_collection.tx_polarization``.
-    Returns ``'UNKNOWN'`` with a warning if neither is present.
+    Inspects ``image_formation.rcv_chan_proc.chan_indices`` to determine
+    which channel from ``radar_collection.rcv_channels` was used to form
+    this image, then extracts ``tx_rcv_polarization`` from that channel.
+    Falls back to ``radar_collection.tx_polarization`` if channels are
+    not available. Returns ``'UNKNOWN'`` with a warning if neither is present.
 
     The NGA SICD standard encodes combined Tx/Rcv polarization in the
     form ``'Tx:Rcv'`` (e.g. ``'V:V'``, ``'H:V'``).  This helper strips
     the colon to produce the conventional two-letter codes used across
     GRDL (``'VV'``, ``'HV'``, etc.).
+
+    For X/Y polarizations, uses antenna orientation angle to map to H/V/S
+    when angles are within tolerance (default ±5 degrees) of cardinal H/V axes.
+    This handles cases where X/Y metadata labels should be treated as H/V
+    due to small angular offsets (e.g., X at 2 degrees from H).
+
+    Note: ``rcv_channels`` describes all receive channels availabel during
+    collection (hardware setup), while ``chan_indices`` specifies which
+    channel(s) were actually used to form this specific image.
 
     Parameters
     ----------
@@ -103,14 +115,36 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
     rcv_channels = getattr(rc, 'rcv_channels', None) if rc else None
 
     if rcv_channels:
-        if len(rcv_channels) > 1:
-            logger.warning(
-                "SICD file has %d rcv_channels; using channel index 0 for "
-                "polarization inference.  Pass explicit polarization= labels "
-                "to open_sicd_collection() to override.",
-                len(rcv_channels),
-            )
-        pol_str = getattr(rcv_channels[0], 'tx_rcv_polarization', None)
+        # Check which channel was actually used to form this image
+        # ImageFormation/RcvChanProc/ChanIndex specifies the channel (1-based)
+        im_form = getattr(sicd_meta, 'image_formation', None)
+        rcv_chan_proc = getattr(im_form, 'rcv_chan_proc', None) if im_form else None
+        chan_indices = getattr(rcv_chan_proc, 'chan_indices', None) if rcv_chan_proc else None
+
+        # Determine which channel to use (defaul to 0 if chan_indices is not available)
+        if chan_indices and len(chan_indices) > 0:
+            # Use the first channel index (1-based) to select the receive channel
+            channel_idx = chan_indices[0] - 1
+            if len(chan_indices) > 0:
+                logger.warning(
+                    "IMage formed from %d channels; using first (%d) for "
+                    "polarization inference. Pass explicit polarization= labels "
+                    "to open_sicd_collection() to override.",
+                    len(chan_indices), chan_indices[0],
+                )
+        else:
+            # No chan_indices, use default behavior
+            channel_idx = 0
+
+            if len(rcv_channels) > 1:
+                logger.warning(
+                    "SICD file has %d rcv_channels but no ChanIndex; using channel 0 for "
+                    "polarization inference.  Pass explicit polarization= labels "
+                    "to open_sicd_collection() to override.",
+                    len(rcv_channels),
+                )
+
+        pol_str = getattr(rcv_channels[channel_idx], 'tx_rcv_polarization', None)
         if pol_str:
             pol_upper = pol_str.upper()
             if pol_upper in _PASSTHROUGH_POLS:
@@ -118,8 +152,27 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
             if ':' in pol_str:
                 # 'V:V' → 'VV', 'H:V' → 'HV', etc.
                 parts = pol_str.split(':', maxsplit=1)
-                return (parts[0] + parts[1]).upper()
-            return pol_upper
+                inferred = (parts[0] + parts[1]).upper()
+            else:
+                inferred = pol_upper
+
+            # For X/Y polarizations, sue antenna angles to determine if they
+            # should be mapped to H/V/S based on angular tolerance.
+            if inferred.startswith('X') or inferred.startswith('Y'):
+                try:
+                    antenna_pol, _ = get_antenna_polarization(sicd_meta)
+                    # get_antenna_polization already applies tolerance checking
+                    # and maps X->H, Y->V when angles are within tolerance.
+                    if isinstance(antenna_pol, str):
+                        return antenna_pol
+                    # if list (multiple channels), use first element
+                    if isinstance(antenna_pol, list) and antenna_pol:
+                        return antenna_pol[0]
+                except Exception:
+                    # If antenna polarization fails, fall back to metdata label
+                    pass
+
+            return inferred
 
     # ---- Fallback: tx_polarization (single char, e.g. 'V') ------------
     tx_pol = getattr(rc, 'tx_polarization', None) if rc else None

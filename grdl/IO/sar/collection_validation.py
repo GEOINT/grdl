@@ -43,7 +43,7 @@ import numpy as np
 # GRDL internal
 from grdl.IO.sar.get_antenna_polarization import get_antenna_polarization
 
-_LINEAR = frozenset({'HH', 'HV', 'VH', 'VV'})
+_LINEAR = frozenset({'HH', 'HV', 'VH', 'VV', 'XX', 'XY', 'YX', 'YY'})
 _CIRCULAR = frozenset({'RH', 'RV', 'RR', 'RL', 'LH', 'LV', 'LR', 'LL'})
 _EARTH_RADIUS_M = 6371008.8
 
@@ -486,7 +486,9 @@ def validate_sicd_collection(
              [_get(m, 'scpcoa', 'side_of_track') for m in metadata],
              'side_of_track_mismatch', 'error')
     cores = [_get(m, 'collection_info', 'core_name') for m in metadata]
-    if len({c for c in cores if c is not None}) > 1:
+    # Compare only first 21 characters of core_name to avoid minor differences like polarizaiton
+    core_prefixes = {c[:21] for c in cores if c is not None}
+    if len({c for c in core_prefixes if c is not None}) > 1:
         rep._add('warning', 'core_name_differs',
                  f'core_name differs: {sorted({c for c in cores if c})}')
 
