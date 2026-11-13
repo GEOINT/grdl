@@ -683,8 +683,13 @@ class TestRoundTrip:
         finally:
             reader.close()
 
-    def test_rgb_round_trip_band_first(self, tmp_path):
+    @pytest.mark.parametrize('backend', ['sarkit', 'sarpy'])
+    def test_rgb_round_trip_band_first(self, tmp_path, monkeypatch, backend):
         from grdl.IO.sar import SIDDReader
+        pytest.importorskip(backend)
+        monkeypatch.setattr(
+            'grdl.IO.sar.sidd.require_sar_backend', lambda _: backend,
+        )
         grid = _enu_grid(pixel=8.0, half=200.0)
         data = np.random.randint(
             0, 256, (3, grid.rows, grid.cols),
@@ -693,10 +698,16 @@ class TestRoundTrip:
 
         reader = SIDDReader(str(path))
         try:
+            assert reader.backend == backend
             assert reader.metadata.display.num_bands == 3
             back = reader.read_full()
-            assert back.shape == (grid.rows, grid.cols, 3)
-            assert np.array_equal(back, np.moveaxis(data, 0, -1))
+            assert back.shape == data.shape
+            assert np.array_equal(back, data)
+            assert reader.metadata.bands == 3
+            assert reader.metadata.axis_order == 'CYX'
+            assert np.array_equal(
+                reader.read_chip(2, 7, 4, 12), data[:, 2:7, 4:12],
+            )
         finally:
             reader.close()
 
@@ -710,7 +721,9 @@ class TestRoundTrip:
 
         reader = SIDDReader(str(path))
         try:
-            assert np.array_equal(reader.read_full(), data)
+            assert np.array_equal(
+                reader.read_full(), np.moveaxis(data, -1, 0),
+            )
         finally:
             reader.close()
 

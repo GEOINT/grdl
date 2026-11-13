@@ -11,7 +11,7 @@ import logging
 import math
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Literal
@@ -50,6 +50,7 @@ class PolarizationCollection:
     reader_kwargs: dict[str, str | list[str]]
     validation: CollectionReport
     status: CollectionStatus
+    iid: str | None = None
 
     @property
     def polarizations(self) -> list[str]:
@@ -61,6 +62,7 @@ class PolarizationCollection:
         paths = [str(p) for p in self.filepaths]
         return {
             "source": paths if self.reader == "grdl.IO.sar.SICDCollectionReader" else paths[0],
+            "iid": self.iid,
             "reader": self.reader,
             "reader_kwargs": self.reader_kwargs,
             "polarizations": self.polarizations,
@@ -104,6 +106,8 @@ class CollectionDiscoveryReport:
         """Serialize the complete report, including unsuccessful inputs."""
         return {
             "schema_version": 1,
+            "file_identifier": "SICD_COLLECTION_CATALOG",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "collections": [c.to_dict() for c in self.collections],
             "problems": [{**asdict(p), "filepath": str(p.filepath)} for p in self.problems],
         }
@@ -307,17 +311,31 @@ def group_sicd_collections(
     return output
 
 
+def _nitf_iid(result: ScanResult) -> str | None:
+    """Return the first 22 characters of the SICD collection identifier."""
+    metadata = result.metadata_ref
+    if not isinstance(metadata, SICDMetadata) or metadata.collection_info is None:
+        return None
+    value = metadata.collection_info.core_name
+    if not value:
+        return None
+    return str(value).strip()[:22] or None
+
+
 def _sicd_candidate(
     results: list[ScanResult],
     report: CollectionReport,
     status: CollectionStatus,
 ) -> PolarizationCollection:
+    paths = [r.filepath.resolve() for r in results]
+    iid = _nitf_iid(results[0]) if results else None
     return PolarizationCollection(
-        [r.filepath.resolve() for r in results],
+        paths,
         "grdl.IO.sar.SICDCollectionReader",
         {"polarizations": report.polarizations},
         report,
         status,
+        iid
     )
 
 

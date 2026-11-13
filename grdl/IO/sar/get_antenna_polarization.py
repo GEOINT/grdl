@@ -1,5 +1,34 @@
+# -*- coding: utf-8 -*-
 """
-Antenna Polarization Computation from SICD Metadata
+Antenna Polarization - Compute polarization from SICD metadata.
+
+Evaluates antenna unit-vector polynomials at a selected aperture time,
+transforms them into the local SEZ frame, and maps transmit and receive
+polarizations to labels and angles. Accepts typed SICD metadata or a
+metadata dictionary.
+
+Dependencies
+------------
+sarpy
+
+Author
+------
+Jason Fritz, PhD
+43161141+stryder-vtx@users.noreply.github.com
+
+License
+-------
+MIT License
+Copyright (c) 2024 geoint.org
+See LICENSE file for full text.
+
+Created
+-------
+2026-10-15
+
+Modified
+--------
+2026-11-11
 """
 
 from pathlib import Path
@@ -12,7 +41,7 @@ from grdl.IO.models.sicd import SICDMetadata
 
 def get_antenna_polarization(
     meta: SICDMetadata | dict[str, Any],
-    ap_perceent: float = 50.0,
+    ap_percent: float = 50.0,
     ang_tol: float = 5.0,
     save_units_path: str | None = None,
 ) -> tuple[str | list[str], dict[str, float | list[float]]]:
@@ -23,7 +52,7 @@ def get_antenna_polarization(
     ----------
     meta : dict
         SICD metadata dictionary.
-    ap_perceent : float, optional
+    ap_percent : float, optional
         Antenna polarization percentage threshold, by default 50.0.
     ang_tol : float, optional
         Angular tolerance in degrees, by default 5.0.
@@ -58,7 +87,7 @@ def get_antenna_polarization(
     # Compute collect time based on aperture percentage
     timeline = _metadata_field(meta, "timeline")
     collect_duration = _metadata_field(timeline, "collect_duration")
-    curr_time = collect_duration * (ap_perceent / 100.0)
+    curr_time = collect_duration * (ap_percent / 100.0)
 
     # Evaluate polynomials at the computed collect time to get antenna unit vectors (ECF)
     x_unit_ecf = _eval_vector_poly(x_coefs, curr_time)
@@ -83,7 +112,7 @@ def get_antenna_polarization(
 
     # Compute polarization angles based on SEZ unit vectors
     # Angle from horizontal = arcsin(zenith component of SEZ unit vector)
-    x_ang = np.degrees(np.arcsin(z_unit_sez[2]))
+    x_ang = np.degrees(np.arcsin(x_unit_sez[2]))
     y_ang = 90.0 + x_ang
 
     # Map transmit polarization
@@ -311,7 +340,7 @@ def _extract_antenna_polynomials(
 
     # Extract X-axis polynomial
     # In GRDL: antenna.x_asis_poly is XYZPoly with x, y, z as Poly1D objects
-    # Poly1D.coefs is already in ascending order (matches numpy convenction)
+    # Poly1D.coefs is already in ascending order (matches numpy convention)
     x_axis = _metadata_field(antenna, "x_axis_poly")
     x_coefs = np.array(
         [
@@ -436,6 +465,14 @@ def _map_polarization(
     elif pol_char == "V":
         # V maps to y-axis (0 from vertical)
         return "V", y_ang
+
+    elif pol_char == "S":
+        # Use angle closest to 45 degrees
+        if abs(x_ang - 45) < abs(45 - y_ang):
+            pol_ang = x_ang
+        else:
+            pol_ang = y_ang
+        return "S", pol_ang
 
     elif pol_char == "X":
         # Check if within tolerance of cardinal angles

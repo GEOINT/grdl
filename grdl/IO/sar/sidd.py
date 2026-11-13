@@ -1937,11 +1937,16 @@ class SIDDReader(ImageReader):
             )
             pixel_type = xml.findtext('{*}Display/{*}PixelType')
             dtype_str = _PIXEL_DTYPE_MAP.get(pixel_type, 'uint8')
+            num_bands = _xml_int(xml, '{*}Display/{*}NumBands')
+            if num_bands is None:
+                num_bands = 3 if pixel_type == 'RGB24I' else 1
 
             self.metadata = SIDDMetadata(
                 format='SIDD',
                 rows=int(num_rows) if num_rows else 0,
                 cols=int(num_cols) if num_cols else 0,
+                bands=num_bands,
+                axis_order='CYX' if num_bands > 1 else 'YX',
                 dtype=dtype_str,
                 backend='sarkit',
                 num_images=num_images,
@@ -2053,11 +2058,16 @@ class SIDDReader(ImageReader):
                 _safe_get(sm, 'Display'), 'PixelType'
             )
             dtype_str = _PIXEL_DTYPE_MAP.get(pixel_type, 'uint8')
+            num_bands = _safe_get(_safe_get(sm, 'Display'), 'NumBands')
+            if num_bands is None:
+                num_bands = 3 if pixel_type == 'RGB24I' else 1
 
             self.metadata = SIDDMetadata(
                 format='SIDD',
                 rows=num_rows,
                 cols=num_cols,
+                bands=num_bands,
+                axis_order='CYX' if num_bands > 1 else 'YX',
                 dtype=dtype_str,
                 backend='sarpy',
                 num_images=num_images,
@@ -2093,13 +2103,12 @@ class SIDDReader(ImageReader):
 
     @staticmethod
     def _to_bands(data: np.ndarray) -> np.ndarray:
-        """Flatten a structured RGB array to a plain band axis.
+        """Convert backend pixels to canonical channel-first arrays.
 
         NITF stores ``RGB24I`` products band-interleaved by pixel,
         and the backends surface that as a structured array with
-        one field per band.  GRDL's readers hand back plain numpy
-        arrays, so a structured result becomes ``(rows, cols,
-        bands)`` with the fields stacked in order.
+        one field per band or a plain channel-last array.  Both
+        become ``(bands, rows, cols)``, preserving band order.
 
         Parameters
         ----------
@@ -2109,15 +2118,17 @@ class SIDDReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Unstructured array.  Single-band and already-plain
-            input is returned unchanged.
+            Unstructured channel-first array.  Single-band input
+            remains two-dimensional.
         """
         if data.dtype.names is None:
+            if data.ndim == 3:
+                return np.moveaxis(data, -1, 0)
             return data
         fields = data.dtype.names
         if len(fields) == 1:
             return data[fields[0]]
-        return np.stack([data[name] for name in fields], axis=-1)
+        return np.stack([data[name] for name in fields], axis=0)
 
     def read_chip(
         self,
@@ -2146,7 +2157,7 @@ class SIDDReader(ImageReader):
         -------
         np.ndarray
             Image chip data.  Shape ``(rows, cols)`` for a single-band
-            product, ``(rows, cols, bands)`` for a multi-band one such
+            product, ``(bands, rows, cols)`` for a multi-band one such
             as ``RGB24I``.
 
         Raises
@@ -2164,7 +2175,9 @@ class SIDDReader(ImageReader):
                 self._cached_image = self._to_bands(
                     self._read_image_sarkit(),
                 )
-            return self._cached_image[row_start:row_end, col_start:col_end]
+            return self._cached_image[
+                ..., row_start:row_end, col_start:col_end,
+            ]
         else:
             return self._to_bands(
                 self._reader[row_start:row_end, col_start:col_end,
@@ -2183,7 +2196,7 @@ class SIDDReader(ImageReader):
         -------
         np.ndarray
             Full product image data.  Shape ``(rows, cols)`` for a
-            single-band product, ``(rows, cols, bands)`` for a
+            single-band product, ``(bands, rows, cols)`` for a
             multi-band one such as ``RGB24I``.
         """
         if self.backend == 'sarkit':
