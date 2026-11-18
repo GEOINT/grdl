@@ -312,16 +312,18 @@ def _has_dted_files(
     """Layout-agnostic probe: any DTED file discoverable under *dem_dir*?
 
     Recognizes both the standard layout (``<root>/<lon>/<lat>.dt?``) and
-    nested archive layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``).
+    nested archive layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``
+    and ``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``).
 
     When ``bbox`` is supplied, only the cells overlapping the bbox (plus
     a 1-cell halo) are probed via the same candidate-path generator the
     loader uses — bounded ``Path.is_file()`` work instead of a recursive
     scan of the entire archive.
 
-    Without a bbox, a shallow scan of both layout roots is used (the
+    Without a bbox, a shallow scan of all layout roots is used (the
     longitude directories directly under the root, and those under
-    ``<root>/dted/dted{2,1,0}``). ``rglob`` is intentionally avoided:
+    ``<root>/dted/dted{2,1,0}`` or ``<root>/dted/{2,1,0}``).
+    ``rglob`` is intentionally avoided:
     against a 19 000-tile archive the recursive walk is the dominant
     cost.
     """
@@ -348,12 +350,12 @@ def _has_dted_files(
                     return True
         return False
 
-    # No bbox: shallow, case-insensitive scan of both layout roots.
+    # No bbox: shallow, case-insensitive scan of all layout roots.
     import os as _os
     import re as _re
     lon_re = _re.compile(r'^[ew]\d{3}$', _re.IGNORECASE)
     res_re = _re.compile(r'^dted$', _re.IGNORECASE)
-    res_sub_re = _re.compile(r'^dted[012]$', _re.IGNORECASE)
+    res_sub_re = _re.compile(r'^(?:dted)?[012]$', _re.IGNORECASE)
 
     def _lon_dir_has_tile(lon_dir_path: str) -> bool:
         try:
@@ -386,7 +388,7 @@ def _has_dted_files(
     # Standard layout: <root>/<lon_dir>/...
     if _has_lon_dir_with_tile(dem_dir_str):
         return True
-    # Nested archive layout: <root>/dted/dted{0,1,2}/<lon_dir>/... with
+    # Nested archives: <root>/dted/dted{0,1,2}/... or numeric variants, with
     # case-insensitive matching on the 'dted' and 'dted{N}' directories.
     try:
         with _os.scandir(dem_dir_str) as it:
@@ -425,7 +427,8 @@ def _try_dted(
     to the bbox-aware :class:`DTEDElevation` if the tiled backend is
     unavailable. Both probe the standard layout and nested archive
     layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) via the shared,
-    OS-independent discovery. Returns ``None`` when no DTED files are
+    OS-independent discovery, including the numeric variant
+    ``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``. Returns ``None`` when no DTED files are
     present, when no tiles index, or when a supplied ``location`` has no
     coverage.
 
