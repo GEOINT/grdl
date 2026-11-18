@@ -19,6 +19,8 @@ The GRDL suite separates shared core standards from modality-specific component 
 - **Execution Engine (`grdl-runtime`)** — Reference headless workflow engine supporting CPU, tiled, and GPU execution with automatic catalog discovery across installed `grdl.catalogs` packages.
 - **Applications & Evaluation (`grdk`, `grdl-te`)** — `grdk` provides the interactive imagery viewer, visual workflow canvas, and macro recording powered by `grdl-runtime`; `grdl-te` provides quantitative, fit-for-purpose evaluation and benchmarking against curated labeled scenario datasets.
 
+For organizations building proprietary, CUI, or classified components on offline/air-gapped networks, see the [Federated Catalogs for Offline & Multi-Enclave Environments](docs/federated_catalogs.md) guide.
+
 ### Design Principles
 
 For spatial filtering, see the [filter usage guide](grdl/image_processing/filters/README.md)
