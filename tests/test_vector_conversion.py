@@ -3,6 +3,9 @@
 
 import numpy as np
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import box
 
 from grdl.vector.models import Feature, FeatureSet

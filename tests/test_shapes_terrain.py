@@ -35,6 +35,9 @@ Modified
 
 import numpy as np
 import pytest
+
+pytest.importorskip('shapely')
+
 from rasterio.transform import Affine
 
 from grdl.geolocation.elevation.constant import ConstantElevation

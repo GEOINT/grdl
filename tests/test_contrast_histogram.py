@@ -35,6 +35,10 @@ class TestHistogramEqualization:
 
 
 class TestCLAHE:
+    @pytest.fixture(autouse=True)
+    def _require_skimage(self):
+        pytest.importorskip("skimage")
+
     def test_dtype_and_range(self):
         rng = np.random.default_rng(0)
         x = rng.standard_normal((64, 64)).astype(np.float32)

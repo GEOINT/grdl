@@ -44,8 +44,59 @@ from typing import Tuple
 # Third-party
 import numpy as np
 from scipy.ndimage import binary_dilation
-from skimage.draw import polygon_perimeter as _sk_polygon_perimeter
-from skimage.draw import line as _sk_line
+try:
+    from skimage.draw import polygon_perimeter as _sk_polygon_perimeter
+    from skimage.draw import line as _sk_line
+except ImportError:
+    def _sk_line(r0: int, c0: int, r1: int, c1: int):
+        """Pure-NumPy Bresenham integer line rasterizer."""
+        r0, c0, r1, c1 = int(r0), int(c0), int(r1), int(c1)
+        dr = abs(r1 - r0)
+        dc = abs(c1 - c0)
+        sr = 1 if r1 >= r0 else -1
+        sc = 1 if c1 >= c0 else -1
+        n = max(dr, dc) + 1
+        rr = np.empty(n, dtype=np.intp)
+        cc = np.empty(n, dtype=np.intp)
+        r, c = r0, c0
+        err = dr - dc
+        for i in range(n):
+            rr[i] = r
+            cc[i] = c
+            e2 = 2 * err
+            if e2 > -dc:
+                err -= dc
+                r += sr
+            if e2 < dr:
+                err += dr
+                c += sc
+        return rr, cc
+
+    def _sk_polygon_perimeter(r, c, shape=None, clip=False):
+        """Pure-NumPy fallback matching skimage.draw.polygon_perimeter."""
+        r_arr = np.rint(np.asarray(r, dtype=np.float64)).astype(np.intp)
+        c_arr = np.rint(np.asarray(c, dtype=np.float64)).astype(np.intp)
+        n_verts = len(r_arr)
+        if n_verts == 0:
+            return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp)
+        rr_parts = []
+        cc_parts = []
+        for i in range(n_verts):
+            j = (i + 1) % n_verts
+            seg_r, seg_c = _sk_line(r_arr[i], c_arr[i], r_arr[j], c_arr[j])
+            if len(seg_r) > 1:
+                seg_r = seg_r[:-1]
+                seg_c = seg_c[:-1]
+            rr_parts.append(seg_r)
+            cc_parts.append(seg_c)
+        rr = np.concatenate(rr_parts) if rr_parts else np.empty(0, dtype=np.intp)
+        cc = np.concatenate(cc_parts) if cc_parts else np.empty(0, dtype=np.intp)
+        if clip and shape is not None:
+            rows, cols = shape
+            mask = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
+            rr = rr[mask]
+            cc = cc[mask]
+        return rr, cc
 
 
 def rasterize_polygon(

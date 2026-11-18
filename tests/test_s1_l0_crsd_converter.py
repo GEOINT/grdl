@@ -36,6 +36,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
+pytest.importorskip("lxml")
+
 # GRDL internal — converters
 from grdl.IO.sar.sentinel1_l0.crsd_converter import (
     _gps_seconds_to_utc,

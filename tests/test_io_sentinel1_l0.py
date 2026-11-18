@@ -1638,7 +1638,7 @@ def test_burst_reader_preserves_original_packet_indices(
     detection may normalize local indexing for array math, but
     BurstInfo packet ranges must retain original packet positions.
     """
-    import pandas as pd
+    pd = pytest.importorskip("pandas")
 
     from grdl.IO.sar.sentinel1_l0 import decoder as dec_mod
     from grdl.IO.sar.sentinel1_l0.burst_reader import BurstReader

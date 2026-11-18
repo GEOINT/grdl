@@ -39,6 +39,9 @@ from types import SimpleNamespace
 # Third-party
 import numpy as np
 import pytest
+
+pytest.importorskip("pyproj")
+
 import pyproj
 
 # GRDL internal

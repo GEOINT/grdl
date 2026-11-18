@@ -38,6 +38,9 @@ Modified
 
 import numpy as np
 import pytest
+
+pytest.importorskip("shapely")
+
 from rasterio.transform import Affine
 from scipy import ndimage
 from shapely.geometry import box

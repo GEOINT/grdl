@@ -1066,7 +1066,10 @@ class Orthorectifier(ImageTransform):
             no affine can be stated without knowing the grid's CRS.
         """
         from grdl.image_processing.ortho.enu_grid import ENUGrid
-        from grdl.image_processing.ortho.utm_grid import UTMGrid
+        try:
+            from grdl.image_processing.ortho.utm_grid import UTMGrid
+        except ImportError:
+            UTMGrid = ()  # type: ignore[assignment,misc]
 
         grid = self.output_grid
 

@@ -69,6 +69,14 @@ from grdl.discovery.multi_channel_collections import (
 )
 from grdl._version import __version__
 
+
+def get_catalog_path():
+    """Return the path to the bundled GRDL component catalog YAML."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent.parent / "catalog.yaml"
+
+
 __all__ = [
     'DiscoveryPlugin',
     'PluginRegistry',
@@ -88,4 +96,5 @@ __all__ = [
     'PolarizationCollection',
     'discover_polarization_collections',
     'group_sicd_collections',
+    'get_catalog_path',
 ]

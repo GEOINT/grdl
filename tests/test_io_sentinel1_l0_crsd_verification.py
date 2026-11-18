@@ -31,6 +31,8 @@ from pathlib import Path
 # Third-party
 import pytest
 
+pytest.importorskip("lxml")
+
 # GRDL internal
 import grdl.IO.sar.sentinel1_l0.crsd_verification as cv
 

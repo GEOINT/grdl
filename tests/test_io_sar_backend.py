@@ -31,7 +31,9 @@ from unittest import mock
 
 def test_require_sar_backend_returns_string():
     """require_sar_backend returns 'sarkit' or 'sarpy'."""
-    from grdl.IO.sar._backend import require_sar_backend
+    from grdl.IO.sar._backend import _HAS_SARKIT, _HAS_SARPY, require_sar_backend
+    if not (_HAS_SARKIT or _HAS_SARPY):
+        pytest.skip("Neither sarkit nor sarpy installed")
     result = require_sar_backend('TEST')
     assert result in ('sarkit', 'sarpy')
 

@@ -2,6 +2,9 @@
 """Tests for grdl.vector.spatial — Spatial operators."""
 
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import Point, box, Polygon
 
 from grdl.vector.models import Feature, FeatureSet

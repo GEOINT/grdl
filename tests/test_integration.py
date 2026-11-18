@@ -124,6 +124,7 @@ class TestDetectionPipeline:
 
     def test_detect_and_export_geojson(self):
         """Full pipeline: image → detector → geo-register → GeoJSON."""
+        pytest.importorskip("shapely")
         from shapely.geometry import Point
         from grdl.image_processing.detection.models import (
             Detection, DetectionSet,
@@ -181,6 +182,7 @@ class TestDetectionPipeline:
 
     def test_detect_with_geo_registration(self):
         """Detections should get geographic coordinates from geolocation."""
+        pytest.importorskip("shapely")
         from shapely.geometry import Point
         from grdl.image_processing.detection.models import (
             Detection, DetectionSet,

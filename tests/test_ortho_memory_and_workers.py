@@ -61,6 +61,7 @@ def geocoded(tmp_path):
 
 def _open(path):
     """Reader plus geolocation for a geocoded raster."""
+    pytest.importorskip("pyproj")
     from grdl.IO.geotiff import GeoTIFFReader
 
     reader = GeoTIFFReader(str(path))

@@ -38,7 +38,6 @@ Modified
 2026-04-18
 """
 
-from grdl.shapes.arc import Arc
 from grdl.shapes.backend import (
     ComputeBackend,
     detect_backend,
@@ -52,19 +51,24 @@ from grdl.shapes.base import (
     to_pixels_batch,
     rasterize_batch,
 )
-from grdl.shapes.circle import Circle
-from grdl.shapes.combine import (
-    combine_evidence,
-    convolve_ellipses,
-    intersect_shapes,
-    minkowski_sum,
-    union_shapes,
-)
-from grdl.shapes.cueing import cued_detect
-from grdl.shapes.display import burn_shape, overlay_shape, overlay_shapes
-from grdl.shapes.ellipse import Ellipse, GeodesicEllipse
-from grdl.shapes.polygon import GeoPolygon
 from grdl.shapes.rasterize import rasterize_polygon
+
+try:
+    from grdl.shapes.arc import Arc
+    from grdl.shapes.circle import Circle
+    from grdl.shapes.combine import (
+        combine_evidence,
+        convolve_ellipses,
+        intersect_shapes,
+        minkowski_sum,
+        union_shapes,
+    )
+    from grdl.shapes.cueing import cued_detect
+    from grdl.shapes.display import burn_shape, overlay_shape, overlay_shapes
+    from grdl.shapes.ellipse import Ellipse, GeodesicEllipse
+    from grdl.shapes.polygon import GeoPolygon
+except ImportError:
+    pass
 
 
 # Bind batch ops onto the backend module for discoverability

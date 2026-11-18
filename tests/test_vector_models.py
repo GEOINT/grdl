@@ -4,6 +4,9 @@
 import warnings
 
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import Point, Polygon, box, LineString
 
 from grdl.vector.models import Feature, FieldSchema, FeatureSet

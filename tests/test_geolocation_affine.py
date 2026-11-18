@@ -34,6 +34,7 @@ Modified
 """
 
 import pytest
+pytest.importorskip("pyproj")
 import numpy as np
 
 from rasterio.transform import Affine

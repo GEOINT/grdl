@@ -42,6 +42,9 @@ class TestSICDReader:
 
     def test_file_not_found(self):
         """FileNotFoundError for non-existent file."""
+        from grdl.IO.sar._backend import _HAS_SARKIT, _HAS_SARPY
+        if not (_HAS_SARKIT or _HAS_SARPY):
+            pytest.skip("Neither sarkit nor sarpy installed")
         from grdl.IO.sar.sicd import SICDReader
         with pytest.raises(FileNotFoundError):
             SICDReader('/nonexistent/file.nitf')
@@ -62,6 +65,7 @@ class TestSICDReader:
         sarpy_chip = np.ones((16, 16), dtype=np.complex64)
         sarpy_reader.__getitem__.return_value = sarpy_chip
 
+        pytest.importorskip("sarpy")
         with mock.patch('sarpy.io.complex.converter.open_complex', return_value=sarpy_reader) as open_complex:
             chip = reader.read_chip(0, 16, 0, 16)
 
@@ -88,6 +92,7 @@ class TestSICDReader:
         sarpy_chip = np.ones((16, 16), dtype=np.complex64)
         sarpy_reader.__getitem__.return_value = sarpy_chip
 
+        pytest.importorskip("sarpy")
         with mock.patch('sarpy.io.complex.converter.open_complex', return_value=sarpy_reader) as open_complex:
             chip = reader.read_chip(0, 16, 0, 16)
 
@@ -104,6 +109,9 @@ class TestCPHDReader:
 
     def test_file_not_found(self):
         """FileNotFoundError for non-existent file."""
+        from grdl.IO.sar._backend import _HAS_SARKIT, _HAS_SARPY
+        if not (_HAS_SARKIT or _HAS_SARPY):
+            pytest.skip("Neither sarkit nor sarpy installed")
         from grdl.IO.sar.cphd import CPHDReader
         with pytest.raises(FileNotFoundError):
             CPHDReader('/nonexistent/file.cphd')

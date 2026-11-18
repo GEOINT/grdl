@@ -4,6 +4,8 @@
 import pytest
 import numpy as np
 
+pytest.importorskip("pyproj")
+
 from grdl.image_processing.ortho.web_mercator_grid import WebMercatorGrid
 from grdl.image_processing.ortho.ortho import OutputGridProtocol
 

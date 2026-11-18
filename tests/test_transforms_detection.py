@@ -29,6 +29,9 @@ Modified
 
 import numpy as np
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import Point, Polygon, box
 
 from grdl.coregistration.base import RegistrationResult

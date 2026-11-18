@@ -4,6 +4,8 @@
 import numpy as np
 import pytest
 
+pytest.importorskip("shapely")
+
 from grdl.vector.coords import (
     CoordSet,
     coords_from_geojson,

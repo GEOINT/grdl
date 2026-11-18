@@ -16,7 +16,6 @@ from grdl.discovery import (
     discover_polarization_collections,
     group_sicd_collections,
 )
-from grdl.example.discover_polarization_collections import main
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.IO.models.biomass import BIOMASSMetadata
 from grdl.IO.models.common import XYZ, LatLonHAE
@@ -376,6 +375,7 @@ def test_sentinel1_swaths_are_separate(tmp_path):
 
 
 def test_cli_json_output_and_no_overwrite(tmp_path, capsys):
+    main = pytest.importorskip("grdl.example.discover_polarization_collections").main
     report = group_sicd_collections([_scan(tmp_path, "HH"), _scan(tmp_path, "VV")])
     target = tmp_path / "collections.json"
     with patch(
@@ -393,6 +393,7 @@ def test_cli_json_output_and_no_overwrite(tmp_path, capsys):
 
 
 def test_cli_reports_errors_and_returns_nonzero(tmp_path, capsys):
+    main = pytest.importorskip("grdl.example.discover_polarization_collections").main
     report = group_sicd_collections([ScanResult(filepath=tmp_path / "bad", error="unreadable")])
     with patch(
         "grdl.example.discover_polarization_collections.discover_polarization_collections",

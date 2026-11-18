@@ -359,6 +359,7 @@ def test_pfa_to_sicd_metadata_method(cphd_meta, geometry, pfa) -> None:
 
 def test_sarpy_roundtrip(cphd_meta, geometry, pfa) -> None:
     """Resulting SICDMetadata converts to sarpy SICDType without raising."""
+    pytest.importorskip("sarpy")
     from grdl.IO.sar.sicd_writer import _sicd_metadata_to_sarpy
 
     sicd_meta = pfa.to_sicd_metadata(cphd_meta, geometry, image_shape=(64, 64))

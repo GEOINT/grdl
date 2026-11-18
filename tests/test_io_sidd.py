@@ -322,6 +322,9 @@ class TestSIDDReader:
 
     def test_file_not_found(self):
         """FileNotFoundError for non-existent file."""
+        from grdl.IO.sar._backend import _HAS_SARKIT, _HAS_SARPY
+        if not (_HAS_SARKIT or _HAS_SARPY):
+            pytest.skip("Neither sarkit nor sarpy installed")
         from grdl.IO.sar.sidd import SIDDReader
         with pytest.raises(FileNotFoundError):
             SIDDReader('/nonexistent/file.nitf')
@@ -698,6 +701,7 @@ class TestSIDDWriter:
         except ImportError:
             pytest.skip("sarpy not installed")
 
+        pytest.importorskip("sarpy")
         writer = _mono_writer(SIDDWriter, rows=10, cols=10)
         with pytest.raises(ValueError, match='pixel footprint'):
             writer.write(np.zeros(100, dtype=np.uint8))
@@ -709,6 +713,7 @@ class TestSIDDWriter:
         except ImportError:
             pytest.skip("sarpy not installed")
 
+        pytest.importorskip("sarpy")
         writer = _mono_writer(SIDDWriter, rows=10, cols=10)
         with pytest.raises(ValueError, match='requires dtype uint8'):
             writer.write(np.zeros((10, 10), dtype=np.float32))
@@ -843,6 +848,7 @@ class TestJ2KCompression:
         class _Reader:
             jbp = {'ImageSegments': [seg]}
 
+        pytest.importorskip("sarkit")
         with mock.patch(
             'sarkit.sidd._io.product_image_segment_mapping',
             return_value={'SIDD001': [0]},
@@ -870,6 +876,7 @@ class TestJ2KCompression:
         class _Reader:
             jbp = {'ImageSegments': [seg]}
 
+        pytest.importorskip("sarkit")
         with mock.patch(
             'sarkit.sidd._io.product_image_segment_mapping',
             return_value={'SIDD001': [0]},

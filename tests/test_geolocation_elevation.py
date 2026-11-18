@@ -374,6 +374,7 @@ class TestGeolocationElevationIntegration:
 
     def test_no_elevation_by_default(self):
         """Test that elevation is None when no dem_path is provided."""
+        pytest.importorskip("pyproj")
         from grdl.geolocation.eo.affine import AffineGeolocation
         from rasterio.transform import Affine as RioAffine
 
@@ -389,6 +390,7 @@ class TestGeolocationElevationIntegration:
         now returns ``ConstantElevation`` when the directory contains no
         usable DEM tiles so callers see correct behavior.
         """
+        pytest.importorskip("pyproj")
         from grdl.geolocation.eo.affine import AffineGeolocation
         from grdl.geolocation.elevation.constant import ConstantElevation
         from rasterio.transform import Affine as RioAffine

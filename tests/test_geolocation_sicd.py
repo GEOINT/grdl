@@ -203,6 +203,10 @@ class TestConstruction:
 class TestForwardTransform:
     """Test image_to_latlon dispatch paths with mocked projection."""
 
+    @pytest.fixture(autouse=True)
+    def _require_sarpy(self):
+        pytest.importorskip("sarpy")
+
     @patch(
         'grdl.geolocation.sar.sicd.image_to_ground_geo',
         side_effect=_mock_image_to_ground_geo,
@@ -271,6 +275,10 @@ class TestForwardTransform:
 class TestInverseTransform:
     """Test latlon_to_image dispatch paths with mocked projection."""
 
+    @pytest.fixture(autouse=True)
+    def _require_sarpy(self):
+        pytest.importorskip("sarpy")
+
     @patch(
         'sarpy.geometry.point_projection.ground_to_image_geo',
         side_effect=_mock_ground_to_image_geo,
@@ -334,6 +342,10 @@ class TestInverseTransform:
 class TestRoundTrip:
     """Test forward-inverse round-trip with mocked projection."""
 
+    @pytest.fixture(autouse=True)
+    def _require_sarpy(self):
+        pytest.importorskip("sarpy")
+
     @patch(
         'sarpy.geometry.point_projection.ground_to_image_geo',
         side_effect=_mock_ground_to_image_geo,
@@ -382,6 +394,7 @@ class TestFromReader:
 
     def test_from_sarpy_reader(self, metadata):
         """Test from_reader with sarpy backend."""
+        pytest.importorskip("sarpy")
         sarpy_meta = MagicMock(name='SICDType')
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
@@ -392,15 +405,12 @@ class TestFromReader:
         assert geo.backend == 'sarpy'
         assert geo.shape == (2048, 4096)
 
-    @patch(
-        'sarpy.io.complex.converter.open_complex',
-    )
-    def test_from_sarkit_reader_with_sarpy_available(self, mock_open, metadata):
+    def test_from_sarkit_reader_with_sarpy_available(self, metadata):
         """Test from_reader with sarkit reader promotes to sarpy for projection."""
+        pytest.importorskip("sarpy")
         sarpy_meta = MagicMock(name='SICDType')
         mock_sarpy_reader = MagicMock()
         mock_sarpy_reader.sicd_meta = sarpy_meta
-        mock_open.return_value = mock_sarpy_reader
 
         mock_reader = MagicMock()
         mock_reader.metadata = metadata
@@ -408,10 +418,14 @@ class TestFromReader:
         mock_reader.filepath = '/fake/path.nitf'
         mock_reader._xmltree = MagicMock(name='XMLTree')
 
-        geo = SICDGeolocation.from_reader(mock_reader)
-        assert geo.backend == 'sarpy'
-        assert geo.shape == (2048, 4096)
-        mock_open.assert_called_once_with('/fake/path.nitf')
+        with patch(
+            'sarpy.io.complex.converter.open_complex',
+            return_value=mock_sarpy_reader,
+        ) as mock_open:
+            geo = SICDGeolocation.from_reader(mock_reader)
+            assert geo.backend == 'sarpy'
+            assert geo.shape == (2048, 4096)
+            mock_open.assert_called_once_with('/fake/path.nitf')
 
     @patch('grdl.geolocation.sar.sicd._HAS_SARPY', False)
     def test_from_sarkit_reader_sarpy_unavailable(self, metadata):

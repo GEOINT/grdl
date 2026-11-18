@@ -37,6 +37,10 @@ Modified
 
 import numpy as np
 import pytest
+
+pytest.importorskip('pyproj')
+pytest.importorskip('shapely')
+
 from pyproj import Geod
 from rasterio.transform import Affine
 

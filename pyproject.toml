@@ -111,7 +111,7 @@ dev = [
 Repository = "https://github.com/geoint-org/GRDL"
 
 [project.entry-points."grdl.catalogs"]
-grdl = "grdl:get_catalog_path"
+grdl = "grdl.discovery:get_catalog_path"
 
 [tool.setuptools]
 include-package-data = true
@@ -145,3 +145,8 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = [
+    "benchmark: performance benchmark tests",
+]

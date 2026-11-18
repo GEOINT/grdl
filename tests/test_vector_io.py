@@ -6,6 +6,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import Point, box
 
 from grdl.vector.models import Feature, FieldSchema, FeatureSet

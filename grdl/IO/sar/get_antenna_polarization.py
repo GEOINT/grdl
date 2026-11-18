@@ -38,7 +38,10 @@ def get_antenna_polarization(
     """
 
     # Import here to avoid circular dependencies if needed
-    from sarpy.geometry.geocoords import ecf_to_geodetic
+    try:
+        from sarpy.geometry.geocoords import ecf_to_geodetic
+    except ImportError:
+        from grdl.geolocation.coordinates import ecef_to_geodetic as ecf_to_geodetic
 
     from grdl.geolocation.ecf_sez import ecf_to_sez
 

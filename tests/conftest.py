@@ -94,3 +94,24 @@ def two_region_image():
     image = np.zeros((20, 40))
     image[:, 20:] = 200.0
     return image
+
+
+try:
+    import pytest_benchmark  # noqa: F401
+except ImportError:
+    class _FallbackBenchmark:
+        """Minimal fallback when pytest-benchmark is not installed."""
+
+        def __init__(self) -> None:
+            self.extra_info: dict = {}
+
+        def __call__(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        def pedantic(self, target, args=(), kwargs=None, **_opts):
+            return target(*args, **(kwargs or {}))
+
+    @pytest.fixture
+    def benchmark():
+        """Provide a simple pass-through benchmark fixture without pytest-benchmark."""
+        return _FallbackBenchmark()

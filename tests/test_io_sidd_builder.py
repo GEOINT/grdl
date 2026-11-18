@@ -35,6 +35,8 @@ Modified
 import numpy as np
 import pytest
 
+pytest.importorskip("pyproj")
+
 # GRDL internal
 from grdl.exceptions import ValidationError
 from grdl.geolocation.coordinates import geodetic_to_ecef

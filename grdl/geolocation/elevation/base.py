@@ -62,7 +62,10 @@ def _world_to_array_index(
         Fractional column and row indices (float64) into the data array,
         where integer values fall exactly on pixel centres (posts).
     """
-    px_cols, px_rows = inv_transform * (x, y)
+    try:
+        px_cols, px_rows = inv_transform @ (x, y)
+    except TypeError:
+        px_cols, px_rows = inv_transform * (x, y)
     return (
         np.asarray(px_cols, dtype=np.float64) - 0.5,
         np.asarray(px_rows, dtype=np.float64) - 0.5,

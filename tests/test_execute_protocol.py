@@ -27,6 +27,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+
+pytest.importorskip("shapely")
+
 from shapely.geometry import box
 
 from grdl.image_processing import Pipeline

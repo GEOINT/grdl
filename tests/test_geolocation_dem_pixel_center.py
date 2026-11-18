@@ -72,7 +72,7 @@ def _write(path, Z):
 
 
 def _expected(Z, order=1):
-    c, r = (~_transform()) * (LON, LAT)
+    c, r = (~_transform()) @ (LON, LAT)
     return map_coordinates(Z.astype(float), [r - 0.5, c - 0.5], order=order)
 
 
@@ -83,7 +83,7 @@ def Z():
 
 def test_reference_differs_from_uncorrected(Z):
     """Sanity: the half-pixel shift matters for this synthetic surface."""
-    c, r = (~_transform()) * (LON, LAT)
+    c, r = (~_transform()) @ (LON, LAT)
     shifted = map_coordinates(Z.astype(float), [r, c], order=1)
     assert np.max(np.abs(shifted - _expected(Z))) > 1.0
 

@@ -4,6 +4,8 @@
 import pytest
 import numpy as np
 
+pytest.importorskip("pyproj")
+
 from grdl.image_processing.ortho.utm_grid import UTMGrid
 from grdl.image_processing.ortho.ortho import OutputGridProtocol
 

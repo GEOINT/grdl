@@ -90,7 +90,7 @@ def detect_backend(prefer: str = 'auto') -> str:
     if _NUMBA_AVAILABLE:
         return 'numba'
 
-    if _TORCH_AVAILABLE:
+    if _TORCH_AVAILABLE and torch is not None:
         if torch.cuda.is_available():
             return 'torch_gpu'
         if (hasattr(torch.backends, 'mps')
