@@ -8,6 +8,17 @@ GEOINT (Geospatial Intelligence) development requires stitching together domain-
 
 GRDL solves this by providing a library of **small, focused modules** that each do one thing well. If it's 2D correlated data, GRDL is built to work with it. Developers pick the pieces they need and compose them into workflows without inheriting a monolithic framework.
 
+### Ecosystem Architecture
+
+The GRDL suite separates shared core standards from modality-specific component catalogs, workflow execution, desktop applications, and quantitative operational testing:
+
+![GRDL Ecosystem Architecture](docs/images/grdl_ecosystem_architecture.jpg)
+
+- **GRDL Core Framework (`grdl`)** — Common imagery readers/writers, sensor geolocation & terrain/DEM lookup, orthorectification, shapes/vectors, and shared processor interfaces.
+- **Domain Component Catalogs (`grdl-sar`, `grdl-eo`)** — Curated SAR (image formation, polarimetry, CFAR, speckle filtering) and EO/optical (pan-sharpening, spectral indices, spatial/edge filters) component libraries built on GRDL's common APIs.
+- **Execution Engine (`grdl-runtime`)** — Reference headless workflow engine supporting CPU, tiled, and GPU execution with automatic catalog discovery across installed `grdl.catalogs` packages.
+- **Applications & Evaluation (`grdk`, `grdl-te`)** — `grdk` provides the interactive imagery viewer, visual workflow canvas, and macro recording powered by `grdl-runtime`; `grdl-te` provides quantitative, fit-for-purpose evaluation and benchmarking against curated labeled scenario datasets.
+
 ### Design Principles
 
 For spatial filtering, see the [filter usage guide](grdl/image_processing/filters/README.md)
