@@ -1,13 +1,13 @@
 """Report directory polarization collections using the GRDL discovery API.
 
-Run with ``python -m grdl.example.discover_polarization_collections --help``.
+Run with ``python -m grdl.discovery.polarization_collections_cli --help``.
 This script inventories metadata; it never runs image processing.
 
 The thin reporting script uses the same API:
 
 ```bash
-conda run -n grdx python -m grdl.example.discover_polarization_collections /data/imagery
-conda run -n grdx python -m grdl.example.discover_polarization_collections /data/imagery \
+python -m grdl.discovery.polarization_collections_cli /data/imagery
+python -m grdl.discovery.polarization_collections_cli /data/imagery \
     --format json --output collections.json
 ```
 

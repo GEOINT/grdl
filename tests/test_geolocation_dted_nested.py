@@ -2,9 +2,10 @@
 """
 Tests for DTEDElevation nested-archive discovery and bbox probing.
 
-``DTEDElevation`` supports two on-disk layouts: the standard
-``<root>/<lon>/<lat>.dt?`` and the nested archive
-``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``. When a scene ``bbox`` is
+``DTEDElevation`` supports three on-disk layouts: the standard
+``<root>/<lon>/<lat>.dt?`` and the nested archives
+``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?`` and
+``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``. When a scene ``bbox`` is
 supplied, discovery probes candidate paths for each overlapping cell in
 resolution-priority order; otherwise a recursive scan handles the
 standard layout. These tests cover both modes plus the layout-agnostic
@@ -101,10 +102,10 @@ def _make_dted_tile(
         dst.write(data, 1)
 
 
-@pytest.fixture
-def nested_archive(tmp_path):
-    """Nested DTED archive: <root>/dted/dted2/e116/n34.dt2 (+ neighbors)."""
-    base = tmp_path / "dted" / "dted2"
+@pytest.fixture(params=["dted2", "2"])
+def nested_archive(tmp_path, request):
+    """Nested DTED archive with prefixed or numeric resolution directories."""
+    base = tmp_path / "dted" / request.param
     _make_dted_tile(base / "e116" / "n34.dt2", 116, 34)
     _make_dted_tile(base / "e117" / "n34.dt2", 117, 34)
     return tmp_path
@@ -122,18 +123,21 @@ class TestCandidatePaths:
         assert _lat_base_name(-12) == "s12"
 
     def test_priority_order(self, tmp_path):
-        """Nested dted2/dted1/dted0 then standard, .dt2 before .dt0."""
+        """Prefixed then numeric nested dirs, then standard; .dt2 first."""
         cands = list(_dted_candidate_paths(tmp_path, 116, 34))
         rel = [str(p.relative_to(tmp_path)) for p in cands]
-        # First four are the .dt2 candidates: nested then standard.
+        # First seven are the .dt2 candidates: nested then standard.
         assert rel[0] == str(Path("dted/dted2/e116/n34.dt2"))
         assert rel[1] == str(Path("dted/dted1/e116/n34.dt2"))
         assert rel[2] == str(Path("dted/dted0/e116/n34.dt2"))
-        assert rel[3] == str(Path("e116/n34.dt2"))
+        assert rel[3] == str(Path("dted/2/e116/n34.dt2"))
+        assert rel[4] == str(Path("dted/1/e116/n34.dt2"))
+        assert rel[5] == str(Path("dted/0/e116/n34.dt2"))
+        assert rel[6] == str(Path("e116/n34.dt2"))
         # .dt2 group strictly precedes the .dt1 and .dt0 groups.
         first_dt1 = next(i for i, r in enumerate(rel) if r.endswith(".dt1"))
         first_dt0 = next(i for i, r in enumerate(rel) if r.endswith(".dt0"))
-        assert 3 < first_dt1 < first_dt0
+        assert 6 < first_dt1 < first_dt0
 
 
 # ── bbox discovery of nested layout ─────────────────────────────────
@@ -172,15 +176,19 @@ class TestBboxDiscovery:
         )
         assert elev._tile_index[(116, 34)].suffix == ".dt2"
 
-    def test_falls_back_to_lower_resolution(self, tmp_path):
-        """Only .dt1 present → that cell selects the .dt1 file."""
+    @pytest.mark.parametrize("res_dir", ["dted1", "1", "0"])
+    def test_falls_back_to_lower_resolution(self, tmp_path, res_dir):
+        """A lower-resolution tile is selected when it is the only one."""
+        extension = f".dt{res_dir[-1]}"
         _make_dted_tile(
-            tmp_path / "dted" / "dted1" / "e116" / "n34.dt1", 116, 34,
+            tmp_path / "dted" / res_dir / "e116" / f"n34{extension}",
+            116, 34,
         )
         elev = DTEDElevation(
             str(tmp_path), bbox=(116.2, 34.2, 116.8, 34.8),
         )
-        assert elev._tile_index[(116, 34)].suffix == ".dt1"
+        assert elev._tile_index[(116, 34)].suffix == extension
+        assert _has_dted_files(tmp_path)
 
     def test_standard_layout_still_discovered_with_bbox(self, tmp_path):
         """bbox discovery also finds the plain <root>/<lon>/<lat>.dt? form."""
@@ -330,14 +338,17 @@ class TestCaseInsensitiveDiscovery:
         assert found is not None
         assert found.name == "N34.DT2"
 
-    def test_find_uppercase_nested(self, tmp_path):
-        nested = tmp_path / "DTED" / "DTED2" / "E116"
+    @pytest.mark.parametrize("res_dir", ["DTED2", "2"])
+    def test_find_uppercase_nested(self, tmp_path, res_dir):
+        nested = tmp_path / "DTED" / res_dir / "E116"
         nested.mkdir(parents=True)
         (nested / "N34.DT2").write_bytes(b"x")
         cache = _CaseInsensitiveDirCache()
         found = _find_dted_file(tmp_path, 116, 34, cache)
         assert found is not None
-        assert found.parent.parent.name == "DTED2"
+        assert found.parent.parent.name == res_dir
+        assert _has_dted_files(tmp_path)
+        assert _has_dted_files(tmp_path, bbox=(116.2, 34.2, 116.8, 34.8))
 
     def test_dir_cache_scans_each_dir_once(self, tmp_path, monkeypatch):
         """A bbox-style sweep must not re-scan shared parent directories."""

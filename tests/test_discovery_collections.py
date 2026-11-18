@@ -3,6 +3,7 @@
 import json
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from grdl.discovery import (
     discover_polarization_collections,
     group_sicd_collections,
 )
-from grdl.example.discover_polarization_collections import main
+from grdl.discovery.polarization_collections_cli import main
 from grdl.IO.models.base import ChannelMetadata, ImageMetadata
 from grdl.IO.models.biomass import BIOMASSMetadata
 from grdl.IO.models.common import XYZ, LatLonHAE
@@ -59,6 +60,18 @@ def _scan(tmp_path: Path, pol: str, name: str | None = None, **kwargs) -> ScanRe
     return ScanResult(filepath=tmp_path / (name or f"{pol}.nitf"), format="SICD", metadata_ref=meta)
 
 
+def _manifest_content(manifest):
+    content = manifest.copy()
+    assert datetime.fromisoformat(content.pop('generated_at')).tzinfo is not None
+    return content
+
+
+def test_cli_import_preserves_public_discovery_function():
+    import grdl.discovery as discovery
+
+    assert discovery.discover_polarization_collections is discover_polarization_collections
+
+
 def test_quad_order_is_stable_and_manifest_is_json_safe(tmp_path):
     results = [_scan(tmp_path, p) for p in ("VV", "HV", "HH", "VH")]
     report = group_sicd_collections(results)
@@ -74,7 +87,9 @@ def test_quad_order_is_stable_and_manifest_is_json_safe(tmp_path):
     assert entry["source"] == [str(p) for p in collection.filepaths]
     assert entry["reader_kwargs"] == {"polarizations": collection.polarizations}
     assert entry["validation"]["issues"][0]["code"] == "core_name_differs"
-    assert group_sicd_collections(reversed(results)).to_dict() == report.to_dict()
+    assert _manifest_content(
+        group_sicd_collections(reversed(results)).to_dict()
+    ) == _manifest_content(report.to_dict())
 
 
 @pytest.mark.parametrize(
@@ -379,23 +394,26 @@ def test_cli_json_output_and_no_overwrite(tmp_path, capsys):
     report = group_sicd_collections([_scan(tmp_path, "HH"), _scan(tmp_path, "VV")])
     target = tmp_path / "collections.json"
     with patch(
-        "grdl.example.discover_polarization_collections.discover_polarization_collections",
+        "grdl.discovery.polarization_collections_cli.discover_polarization_collections",
         return_value=report,
     ):
         assert main([str(tmp_path), "--format", "json"]) == 0
-        assert json.loads(capsys.readouterr().out) == report.to_dict()
+        assert _manifest_content(json.loads(capsys.readouterr().out)) == _manifest_content(
+            report.to_dict()
+        )
         assert main([str(tmp_path), "--format", "json", "--output", str(target)]) == 0
-        assert json.loads(target.read_text()) == report.to_dict()
+        written = json.loads(target.read_text())
+        assert _manifest_content(written) == _manifest_content(report.to_dict())
         with pytest.raises(SystemExit) as exc:
             main([str(tmp_path), "--format", "json", "--output", str(target)])
         assert exc.value.code == 2
-        assert json.loads(target.read_text()) == report.to_dict()
+        assert json.loads(target.read_text()) == written
 
 
 def test_cli_reports_errors_and_returns_nonzero(tmp_path, capsys):
     report = group_sicd_collections([ScanResult(filepath=tmp_path / "bad", error="unreadable")])
     with patch(
-        "grdl.example.discover_polarization_collections.discover_polarization_collections",
+        "grdl.discovery.polarization_collections_cli.discover_polarization_collections",
         return_value=report,
     ):
         assert main([str(tmp_path)]) == 1
@@ -403,7 +421,8 @@ def test_cli_reports_errors_and_returns_nonzero(tmp_path, capsys):
 
 
 def test_empty_directory_and_invalid_workers(tmp_path):
-    assert discover_polarization_collections(tmp_path).to_dict() == {
+    assert _manifest_content(discover_polarization_collections(tmp_path).to_dict()) == {
+        "file_identifier": "SICD_COLLECTION_CATALOG",
         "schema_version": 1,
         "collections": [],
         "problems": [],

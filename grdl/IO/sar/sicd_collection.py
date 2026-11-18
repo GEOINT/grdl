@@ -51,6 +51,7 @@ Modified
 
 # Standard library
 import logging
+from numbers import Integral
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -82,7 +83,8 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
     which channel from ``radar_collection.rcv_channels` was used to form
     this image, then extracts ``tx_rcv_polarization`` from that channel.
     Falls back to ``radar_collection.tx_polarization`` if channels are
-    not available. Returns ``'UNKNOWN'`` with a warning if neither is present.
+    unavailable or the selected 1-based channel index is invalid. Returns
+    ``'UNKNOWN'`` with a warning if neither supplies a usable label.
 
     The NGA SICD standard encodes combined Tx/Rcv polarization in the
     form ``'Tx:Rcv'`` (e.g. ``'V:V'``, ``'H:V'``).  This helper strips
@@ -124,10 +126,20 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
         # Determine which channel to use (defaul to 0 if chan_indices is not available)
         if chan_indices and len(chan_indices) > 0:
             # Use the first channel index (1-based) to select the receive channel
-            channel_idx = chan_indices[0] - 1
-            if len(chan_indices) > 0:
+            channel_index = chan_indices[0]
+            channel_idx = None
+            if (isinstance(channel_index, bool) or not isinstance(channel_index, Integral)
+                    or not 1 <= channel_index <= len(rcv_channels)):
                 logger.warning(
-                    "IMage formed from %d channels; using first (%d) for "
+                    "Invalid receive channel index %r for %d channels; "
+                    "falling back to transmit polarization metadata.",
+                    channel_index, len(rcv_channels),
+                )
+            else:
+                channel_idx = channel_index - 1
+            if channel_idx is not None and len(chan_indices) > 1:
+                logger.warning(
+                    "Image formed from %d channels; using first (%d) for "
                     "polarization inference. Pass explicit polarization= labels "
                     "to open_sicd_collection() to override.",
                     len(chan_indices), chan_indices[0],
@@ -144,7 +156,10 @@ def _infer_polarization(sicd_meta: SICDMetadata) -> str:
                     len(rcv_channels),
                 )
 
-        pol_str = getattr(rcv_channels[channel_idx], 'tx_rcv_polarization', None)
+        pol_str = (
+            getattr(rcv_channels[channel_idx], 'tx_rcv_polarization', None)
+            if channel_idx is not None else None
+        )
         if pol_str:
             pol_upper = pol_str.upper()
             if pol_upper in _PASSTHROUGH_POLS:

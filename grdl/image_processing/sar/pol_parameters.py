@@ -35,7 +35,7 @@ import numpy as np
 
 from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.filters.base import PolarimetricFilter
-from grdl.image_processing.filters.linear import boxcar_mean
+from grdl.image_processing.filters.linear import GaussianFilter, MeanFilter, boxcar_mean
 
 __all__ = [
     'complex_correlation',
@@ -43,6 +43,48 @@ __all__ = [
     'linear_depolarization_ratio',
     'coefficient_of_variation',
 ]
+
+
+def _validate_filtered_covariance(
+    cross: np.ndarray,
+    first_power: np.ndarray,
+    second_power: np.ndarray,
+    lower_cross: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Validate C2 statistics with a per-pixel, dtype-scaled tolerance."""
+    terms = (cross, first_power, second_power)
+    if lower_cross is not None:
+        terms += (lower_cross,)
+    precision = max(
+        np.finfo(np.real(term).dtype).eps if term.dtype.kind in 'fc'
+        else np.finfo(np.float64).eps
+        for term in terms
+    )
+    tolerance = 64 * precision
+    scale = np.maximum.reduce([
+        np.maximum(np.abs(np.real(term)), np.abs(np.imag(term))) for term in terms
+    ])
+    scale = np.where(scale > 0, scale, 1)
+    normalized_first = np.real(first_power) / scale
+    normalized_second = np.real(second_power) / scale
+    if (np.any(np.abs(np.imag(first_power) / scale) > tolerance)
+            or np.any(np.abs(np.imag(second_power) / scale) > tolerance)):
+        raise ValueError('Spatial filter must return real covariance diagonal powers')
+    if (np.any(normalized_first < -tolerance)
+            or np.any(normalized_second < -tolerance)):
+        raise ValueError('Spatial filter must return nonnegative covariance powers')
+    cross_real = np.real(cross) / scale
+    cross_imag = np.imag(cross) / scale
+    if lower_cross is not None and np.any(np.hypot(
+            cross_real - np.real(lower_cross) / scale,
+            cross_imag + np.imag(lower_cross) / scale) > tolerance):
+        raise ValueError('Spatial filter must return a Hermitian covariance matrix')
+    bound = np.sqrt(np.maximum(normalized_first, 0)) * np.sqrt(
+        np.maximum(normalized_second, 0)
+    )
+    if np.any(np.hypot(cross_real, cross_imag) > bound + tolerance):
+        raise ValueError('Spatial filter must return positive semidefinite covariance statistics')
+    return np.maximum(np.real(first_power), 0), np.maximum(np.real(second_power), 0)
 
 
 def complex_correlation(
@@ -88,11 +130,16 @@ def complex_correlation(
         transforms (e.g. MeanFilter or GaussianFilter) filter the complex
         cross-product and each real power image separately. The filter must
         preserve shape, finite values, complex cross-products, and valid
-        covariance statistics. It owns its window and boundary settings;
+        covariance statistics. Filtered powers, Hermitian symmetry, and
+        positive semidefiniteness are checked with a dtype-scaled roundoff
+        tolerance. It owns its window and boundary settings;
         ``window_size`` and ``mode`` are ignored. Scalar output pools the
         filtered products over the image before normalization, rather than
-        averaging normalized correlation values. Input amplitudes share one
-        scale so joint filters retain the relative channel powers.
+        averaging normalized correlation values. The built-in MeanFilter
+        and GaussianFilter use independent channel scales, which cancel in
+        their normalized linear statistics. Other filters share one scale
+        to retain relative channel powers, and reject input dynamic ranges
+        that underflow nonzero covariance terms in complex128 precision.
 
     Returns
     -------
@@ -141,21 +188,37 @@ def complex_correlation(
     second = second.astype(np.complex128)
     first_scale = max(np.max(np.abs(np.real(first))), np.max(np.abs(np.imag(first))))
     second_scale = max(np.max(np.abs(np.real(second))), np.max(np.abs(np.imag(second))))
+    common_scaling = spatial_filter is not None and type(spatial_filter) not in (
+        MeanFilter, GaussianFilter,
+    )
+    first_nonzero = first != 0 if common_scaling else None
+    second_nonzero = second != 0 if common_scaling else None
+    if common_scaling:
+        first_scale = second_scale = max(first_scale, second_scale)
+    for array, scale in ((first, first_scale), (second, second_scale)):
+        if scale > 0:
+            if scale < np.finfo(np.float64).tiny:
+                np.divide(np.real(array), scale, out=np.real(array))
+                np.divide(np.imag(array), scale, out=np.imag(array))
+            else:
+                array /= scale
     if spatial_filter is None and not return_map:
         if first_scale == 0 or second_scale == 0:
             raise ValueError('Each input must have nonzero energy')
-        first = first / first_scale
-        second = second / second_scale
         return complex(
             np.vdot(second, first) / np.linalg.norm(first) / np.linalg.norm(second)
         )
     if spatial_filter is not None:
-        common_scale = max(first_scale, second_scale)
-        first = first / common_scale if common_scale > 0 else first
-        second = second / common_scale if common_scale > 0 else second
         cross = first * np.conj(second)
         first_power = np.abs(first)**2
         second_power = np.abs(second)**2
+        if first_nonzero is not None and second_nonzero is not None and (
+                np.any(first_nonzero & (first_power == 0))
+                or np.any(second_nonzero & (second_power == 0))
+                or np.any(first_nonzero & second_nonzero & (cross == 0))):
+            raise ValueError(
+                'Input dynamic range underflows nonzero common-scale covariance terms'
+            )
         if isinstance(spatial_filter, PolarimetricFilter):
             matrix = np.empty((2, 2, *first.shape), dtype=np.complex128)
             matrix[0, 0] = first_power
@@ -168,8 +231,9 @@ def complex_correlation(
             if filtered.shape != matrix.shape or not np.isfinite(filtered).all():
                 raise ValueError('Spatial filter must preserve matrix shape and finite values')
             cross = filtered[0, 1]
-            first_power = np.real(filtered[0, 0])
-            second_power = np.real(filtered[1, 1])
+            first_power, second_power = _validate_filtered_covariance(
+                cross, filtered[0, 0], filtered[1, 1], filtered[1, 0],
+            )
         else:
             cross, first_power, second_power = (
                 np.asarray(spatial_filter.apply(term))
@@ -180,9 +244,10 @@ def complex_correlation(
                 raise ValueError('Spatial filter must preserve image shape and finite values')
             if np.iscomplexobj(first_power) or np.iscomplexobj(second_power):
                 raise ValueError('Spatial filter must return real power images')
+            first_power, second_power = _validate_filtered_covariance(
+                cross, first_power, second_power,
+            )
     else:
-        first = first / first_scale if first_scale > 0 else first
-        second = second / second_scale if second_scale > 0 else second
         cross = boxcar_mean(first * np.conj(second), window_size, mode=mode)
         first_power = boxcar_mean(np.abs(first)**2, window_size, mode=mode)
         second_power = boxcar_mean(np.abs(second)**2, window_size, mode=mode)
