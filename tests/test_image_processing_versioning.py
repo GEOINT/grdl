@@ -189,11 +189,11 @@ class TestMissingVersionWarning:
             _AbstractMiddle()
 
     def test_existing_classes_have_versions(self):
-        """Orthorectifier and PauliDecomposition are decorated."""
-        from grdl.image_processing.decomposition.pauli import PauliDecomposition
+        """Orthorectifier and MeanFilter are decorated."""
+        from grdl.image_processing.filters.linear import MeanFilter
         from grdl.image_processing.ortho.ortho import Orthorectifier
 
-        assert hasattr(PauliDecomposition, '__processor_version__')
+        assert hasattr(MeanFilter, '__processor_version__')
         assert hasattr(Orthorectifier, '__processor_version__')
 
 

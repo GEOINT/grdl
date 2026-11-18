@@ -90,10 +90,16 @@ def processor_version(version: Optional[str] = None):
         if version:
             cls.__processor_version__ = version
         else:
-            try:
-                cls.__processor_version__ = importlib.metadata.version('grdl')
-            except importlib.metadata.PackageNotFoundError:
-                cls.__processor_version__ = "unknown"
+            top_pkg = getattr(cls, '__module__', 'grdl').split('.')[0]
+            candidates = (top_pkg.replace('_', '-'), top_pkg, 'grdl')
+            resolved = "unknown"
+            for dist_name in candidates:
+                try:
+                    resolved = importlib.metadata.version(dist_name)
+                    break
+                except importlib.metadata.PackageNotFoundError:
+                    continue
+            cls.__processor_version__ = resolved
         return cls
     return decorator
 

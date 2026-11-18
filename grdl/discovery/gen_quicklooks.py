@@ -517,7 +517,10 @@ class QuicklookGenerator:
         np.ndarray
             Float32 mean-power image, same spatial shape as *image_cpu*.
         """
-        from grdl.image_processing.sar.multilook import MultilookDecomposition
+        try:
+            from grdl_sar.subaperture.multilook import MultilookDecomposition
+        except ImportError:
+            from grdl.image_processing.sar.multilook import MultilookDecomposition
 
         ml = MultilookDecomposition(
             metadata=sicd_metadata,

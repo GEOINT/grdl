@@ -33,6 +33,8 @@ Modified
 
 __author__ = "Duane Smalley"
 
+from pathlib import Path
+
 from grdl._version import __version__
 
 from grdl.exceptions import (
@@ -75,7 +77,13 @@ try:
 except ImportError:
     pass
 
+def get_catalog_path() -> Path:
+    """Return the path to the bundled ``grdl`` ``catalog.yaml`` artifact."""
+    return Path(__file__).resolve().parent / "catalog.yaml"
+
+
 __all__ = [
+    'get_catalog_path',
     'GrdlError',
     'ValidationError',
     'ProcessorError',

@@ -1,0 +1,918 @@
+catalog_meta:
+  format_version: 1
+  package: grdl
+  package_version: 0.8.1
+  next_id: 24
+artifacts:
+- id: 1
+  name: Brighter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: 'MangisDensity preset: brighter (dmin=60, mmult=40).'
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.Brighter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      dmin:
+        type: number
+        description: Dynamic range floor (0–255)
+        minimum: 0.0
+        maximum: 254.999
+        default: 30.0
+      mmult:
+        type: number
+        description: Contrast parameter
+        minimum: 1.0
+        maximum: 200.0
+        default: 40.0
+      eps:
+        type: number
+        description: Floor offset for log of zero
+        minimum: 1.0e-12
+        maximum: 1.0
+        default: 1.0e-05
+    additionalProperties: false
+- id: 2
+  name: Darker
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: 'MangisDensity preset: darker (dmin=0, mmult=40).'
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.Darker
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      dmin:
+        type: number
+        description: Dynamic range floor (0–255)
+        minimum: 0.0
+        maximum: 254.999
+        default: 30.0
+      mmult:
+        type: number
+        description: Contrast parameter
+        minimum: 1.0
+        maximum: 200.0
+        default: 40.0
+      eps:
+        type: number
+        description: Floor offset for log of zero
+        minimum: 1.0e-12
+        maximum: 1.0
+        default: 1.0e-05
+    additionalProperties: false
+- id: 3
+  name: GDM
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Generalized Density Mapping with graze/slope-aware cutoffs.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.GDM
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      graze_deg:
+        type: number
+        description: Graze angle in degrees
+        minimum: 0.0
+        maximum: 90.0
+        default: 30.0
+      slope_deg:
+        type: number
+        description: Slope angle in degrees
+        minimum: -90.0
+        maximum: 90.0
+        default: 0.0
+      weighting:
+        type: string
+        description: Taper weighting (uniform|taylor)
+        default: uniform
+    additionalProperties: false
+- id: 4
+  name: HighContrast
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: 'MangisDensity preset: high contrast (dmin=30, mmult=4).'
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.HighContrast
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      dmin:
+        type: number
+        description: Dynamic range floor (0–255)
+        minimum: 0.0
+        maximum: 254.999
+        default: 30.0
+      mmult:
+        type: number
+        description: Contrast parameter
+        minimum: 1.0
+        maximum: 200.0
+        default: 40.0
+      eps:
+        type: number
+        description: Floor offset for log of zero
+        minimum: 1.0e-12
+        maximum: 1.0
+        default: 1.0e-05
+    additionalProperties: false
+- id: 5
+  name: MangisDensity
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Mangis 1994 logarithmic density remap (sarpy Density).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.MangisDensity
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      dmin:
+        type: number
+        description: Dynamic range floor (0–255)
+        minimum: 0.0
+        maximum: 254.999
+        default: 30.0
+      mmult:
+        type: number
+        description: Contrast parameter
+        minimum: 1.0
+        maximum: 200.0
+        default: 40.0
+      eps:
+        type: number
+        description: Floor offset for log of zero
+        minimum: 1.0e-12
+        maximum: 1.0
+        default: 1.0e-05
+    additionalProperties: false
+- id: 6
+  name: PEDF
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Piecewise Extended Density Format (sarpy PEDF).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.density.PEDF
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      dmin:
+        type: number
+        description: Dynamic range floor (0–255)
+        minimum: 0.0
+        maximum: 254.999
+        default: 30.0
+      mmult:
+        type: number
+        description: Contrast parameter
+        minimum: 1.0
+        maximum: 200.0
+        default: 40.0
+      eps:
+        type: number
+        description: Floor offset for log of zero
+        minimum: 1.0e-12
+        maximum: 1.0
+        default: 1.0e-05
+    additionalProperties: false
+- id: 7
+  name: GammaCorrection
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Gamma (power-law) correction on [0, 1] input.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.gamma.GammaCorrection
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    - PAN
+    - HSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      gamma:
+        type: number
+        description: Gamma exponent (>1 brightens, <1 darkens)
+        minimum: 0.01
+        maximum: 100.0
+        default: 1.0
+    additionalProperties: false
+- id: 8
+  name: CLAHE
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Contrast-Limited Adaptive Histogram Equalization (skimage).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.histogram.CLAHE
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    - PAN
+    - HSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: CLAHE tile side length in pixels
+        minimum: 4
+        maximum: 4096
+        default: 64
+      clip_limit:
+        type: number
+        description: Normalized contrast clipping limit
+        minimum: 0.0
+        maximum: 1.0
+        default: 0.01
+    additionalProperties: false
+- id: 9
+  name: HistogramEqualization
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Global histogram equalization (CDF remap).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.histogram.HistogramEqualization
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    - PAN
+    - HSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      n_bins:
+        type: integer
+        description: Histogram bin count
+        minimum: 8
+        maximum: 65536
+        default: 256
+    additionalProperties: false
+- id: 10
+  name: LinearStretch
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Linear contrast stretch with optional explicit min/max.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.linear.LinearStretch
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    - PAN
+    - HSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      min_value:
+        type: number
+        description: Lower threshold; None → input min
+        default: null
+      max_value:
+        type: number
+        description: Upper threshold; None → input max
+        default: null
+    additionalProperties: false
+- id: 11
+  name: LogStretch
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Bounded log2 stretch (sarpy Logarithmic).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.logarithmic.LogStretch
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      min_value:
+        type: number
+        description: Lower clip threshold; None → input min
+        default: null
+      max_value:
+        type: number
+        description: Upper clip threshold; None → input max
+        default: null
+    additionalProperties: false
+- id: 12
+  name: NRLStretch
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Linear-to-log knee remap (sarpy NRL).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.nrl.NRLStretch
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      knee:
+        type: number
+        description: Knee location in [0, 1] output
+        minimum: 0.001
+        maximum: 0.999
+        default: 0.8
+      percentile:
+        type: number
+        description: Percentile for linear→log changeover
+        minimum: 0.0
+        maximum: 100.0
+        default: 99.0
+    additionalProperties: false
+- id: 13
+  name: SigmoidStretch
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Sigmoid (logistic S-curve) stretch on [0, 1] input.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.contrast.sigmoid.SigmoidStretch
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    modalities:
+    - SAR
+    - EO
+    - MSI
+    - PAN
+    - HSI
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      center:
+        type: number
+        description: Midpoint of the S-curve in [0, 1]
+        minimum: 0.0
+        maximum: 1.0
+        default: 0.5
+      slope:
+        type: number
+        description: Curve steepness
+        minimum: 0.1
+        maximum: 100.0
+        default: 10.0
+    additionalProperties: false
+- id: 14
+  name: GaussianFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Gaussian smoothing filter using separable convolution.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.linear.GaussianFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      sigma:
+        type: number
+        description: Gaussian standard deviation
+        minimum: 0.1
+        maximum: 100.0
+        default: 1.0
+      truncate:
+        type: number
+        description: Truncate filter at this many sigmas
+        minimum: 1.0
+        maximum: 10.0
+        default: 4.0
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 15
+  name: MeanFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Spatial mean (box) filter using separable uniform convolution.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.linear.MeanFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: Square kernel side length (odd)
+        minimum: 3
+        maximum: 101
+        default: 3
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 16
+  name: MaxFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Local maximum filter (morphological dilation).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.rank.MaxFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: Square kernel side length (odd)
+        minimum: 3
+        maximum: 101
+        default: 3
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 17
+  name: MedianFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Spatial median filter for noise removal.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.rank.MedianFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: Square kernel side length (odd)
+        minimum: 3
+        maximum: 101
+        default: 3
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 18
+  name: MinFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Local minimum filter (morphological erosion).
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.rank.MinFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: Square kernel side length (odd)
+        minimum: 3
+        maximum: 101
+        default: 3
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 19
+  name: StdDevFilter
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Local standard deviation filter via the variance decomposition trick.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.filters.statistical.StdDevFilter
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - filters
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      kernel_size:
+        type: integer
+        description: Square kernel side length (odd)
+        minimum: 3
+        maximum: 101
+        default: 3
+      mode:
+        type: string
+        description: Boundary handling mode
+        enum:
+        - reflect
+        - constant
+        - nearest
+        - wrap
+        default: reflect
+    additionalProperties: false
+- id: 20
+  name: PercentileStretch
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Percentile-based contrast stretch to [0, 1].
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.intensity.PercentileStretch
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      plow:
+        type: number
+        description: Lower percentile
+        minimum: 0.0
+        maximum: 100.0
+        default: 2.0
+      phigh:
+        type: number
+        description: Upper percentile
+        minimum: 0.0
+        maximum: 100.0
+        default: 98.0
+    additionalProperties: false
+- id: 21
+  name: ToDecibels
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Convert complex or real-valued imagery to magnitude in decibels.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.intensity.ToDecibels
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags:
+    category:
+    - enhance
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      floor_db:
+        type: number
+        description: Minimum dB floor
+        maximum: 0.0
+        default: -60.0
+    additionalProperties: false
+- id: 22
+  name: Orthorectifier
+  version: 0.1.0
+  artifact_type: grdl_processor
+  description: Orthorectify imagery from native geometry to a regular geographic grid.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.ortho.ortho.Orthorectifier
+  processor_version: 0.1.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags: {}
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      interpolation:
+        type: string
+        description: Resampling interpolation method
+        enum:
+        - nearest
+        - bilinear
+        - bicubic
+        - lanczos
+        default: bilinear
+    additionalProperties: false
+- id: 23
+  name: Pipeline
+  version: 1.0.0
+  artifact_type: grdl_processor
+  description: Sequential chain of image transforms.
+  author: geoint.org
+  license: MIT
+  pypi_package: grdl
+  conda_package: grdl
+  conda_channel: conda-forge
+  processor_class: grdl.image_processing.pipeline.Pipeline
+  processor_version: 1.0.0
+  processor_type: transform
+  yaml_definition: null
+  python_dsl: null
+  tags: {}
+  requires_global_pass: false
+  alternatives: []
+  param_schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties: {}
+    additionalProperties: false
+remote_versions: []

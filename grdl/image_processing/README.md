@@ -1,21 +1,29 @@
-# `grdl.image_processing` — Image Transforms, Detection, Decomposition, Formation
+# `grdl.image_processing` — Core Framework & Modality-Agnostic Processors
 
-Top-level module for everything that turns one image into another or
-into a structured output. Concrete sub-domains:
+Top-level framework module providing base processor ABCs, parameter/versioning
+decorators, generic spatial filters, orthorectification, intensity transforms,
+and sequential pipeline composition.
 
-- **Filters** — spatial and statistical filters (Lee, Gaussian, median,
-  phase gradient, ...)
-- **Decomposition** — polarimetric (Pauli quad-pol, DualPolHAlpha)
-- **Detection** — `Detection` / `DetectionSet` data models + CFAR
-  variants (CA, GO, SO, OS)
-- **SAR** — sublook decomposition, CSI RGB composite, dominance
-  features, image formation (PFA, RDA, FFBP, StripmapPFA)
+> **Modality Component Catalogs**: Modality-specific processors have been
+> extracted into dedicated `geoint.org` sister packages:
+> - **`grdl-sar`** (`grdl_sar`): SAR speckle & polarimetric filters, 24 polarimetric decompositions, CFAR detectors, sub-aperture analysis, and image formation (PFA, RDA, FFBP, StripmapPFA).
+> - **`grdl-eo`** (`grdl_eo`): Pan-sharpening/fusion, spectral indices (NDVI, NDWI, NDBI, SAVI), and optical edge/sharpening filters.
+>
+> Legacy imports under `grdl.image_processing.*` remain available via deprecated compatibility shims when `grdl-sar` / `grdl-eo` are installed.
+
+Core sub-domains in `grdl`:
+
+- **Base Contracts** — `ImageProcessor`, `ImageTransform`, `BandwiseTransformMixin`,
+  `ImageDetector`, `PolarimetricDecomposition`, `ImageFormationAlgorithm`
+- **Generic Filters** — `MeanFilter`, `GaussianFilter`, `MedianFilter`, `MinFilter`,
+  `MaxFilter`, `StdDevFilter`
+- **Detection Models** — `Detection` / `DetectionSet`, `Fields`, `DATA_DICTIONARY`
 - **Ortho** — orthorectification, output grids, accelerated resampling,
   point-ROI helper. See [ortho/README.md](ortho/README.md).
 - **Intensity** — `ToDecibels`, `PercentileStretch` (also re-exported
   from [`grdl.contrast`](../contrast/README.md))
 - **Versioning & metadata** — `@processor_version`, `@processor_tags`,
-  `Annotated` tunable parameters
+  `@globalprocessor`, `Annotated` tunable parameters
 - **Pipeline** — sequential composition (optional; everything also
   works without it)
 

@@ -4,11 +4,16 @@
 
 ## Overview
 
-The `image_processing` module provides all raster-to-raster transforms,
-raster-to-vector detections, and spectral decompositions in GRDL. Every
-processor inherits from `ImageProcessor`, which provides version
-tracking, tunable parameter validation, and a uniform `execute()`
-protocol for grdl-runtime integration.
+The `image_processing` module provides the core processor framework, base
+ABCs, tunable parameter & versioning decorators, and modality-agnostic
+transforms (linear/rank/statistical filters, orthorectification, intensity
+transforms, and sequential `Pipeline` composition). Every processor inherits
+from `ImageProcessor`, which provides version tracking, tunable parameter
+validation, and a uniform `execute()` protocol for `grdl-runtime` integration.
+
+Modality-specific processor implementations live in the `geoint.org`
+component catalog packages **`grdl-sar`** (`grdl_sar`) and **`grdl-eo`**
+(`grdl_eo`), with deprecated compatibility redirects in `_compat.py`.
 
 ---
 

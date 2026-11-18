@@ -51,6 +51,12 @@ Modified
 from grdl.discovery.base import DiscoveryPlugin, PluginRegistry
 from grdl.discovery.scanner import MetadataScanner, ScanResult, compute_beam_footprint
 from grdl.discovery.catalog import LocalCatalog
+from grdl.discovery.catalog_builder import (
+    build_catalog_data,
+    discover_package_processors,
+    export_catalog_yaml,
+    extract_param_schema,
+)
 from grdl.discovery.synthesizer import DataSynthesizer
 from grdl.discovery.plugins import GRDLCatalogPlugin
 from grdl.discovery.gen_quicklooks import QuicklookGenerator
@@ -70,6 +76,10 @@ __all__ = [
     'ScanResult',
     'compute_beam_footprint',
     'LocalCatalog',
+    'build_catalog_data',
+    'discover_package_processors',
+    'export_catalog_yaml',
+    'extract_param_schema',
     'DataSynthesizer',
     'GRDLCatalogPlugin',
     'QuicklookGenerator',

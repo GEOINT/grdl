@@ -1,133 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-SAR Image Processing - SAR-specific transforms requiring sensor metadata.
+SAR Sub-module Compatibility Re-exports.
 
-Provides image processing operations that operate on complex SAR imagery
-and require SAR metadata (bandwidth, weight functions, spatial frequency
-parameters) from the reader. All processors accept ``SICDMetadata`` at
-construction time.
-
-Oversampling-aware: operations account for signal bandwidth occupying
-only a fraction of the DFT extent. Accepts both numpy arrays and
-PyTorch tensors (GPU-accelerated FFTs); always returns numpy arrays.
-
-Sub-aperture Decomposition
-    ``SublookDecomposition`` — 1D spectral splitting along azimuth or
-    range into N sub-aperture looks. Output: ``(N, rows, cols)``.
-
-    ``MultilookDecomposition`` — 2D spectral splitting into an M x N
-    grid of sub-aperture looks using ``Tiler`` from ``grdl.data_prep``
-    for frequency bin partitioning. Output: ``(M, N, rows, cols)``.
-
-    ``CSIProcessor`` — Coherent Shape Index (color sub-aperture) RGB
-    composite. Man-made targets appear coloured; natural clutter greyscale.
-
-Sub-aperture Features
-    ``DominanceFeatures`` — ImageTransform producing dominance ratio
-    and Shannon entropy feature maps from complex SAR imagery.
-    Also exposes ``compute_dominance`` and ``compute_sublook_entropy``
-    as standalone pure functions.
-
-Image Formation (``image_formation/``)
-    ``PolarFormatAlgorithm`` — Spotlight PFA (polar-to-rectangular
-    resampling + 2D IFFT).
-
-    ``StripmapPFA`` — Stripmap PFA variant with subaperture stitching.
-
-    ``RangeDopplerAlgorithm`` — Range-Doppler Algorithm for stripmap SAR
-    (range compression, RCMC, azimuth compression).
-
-    ``FastBackProjection`` — FFT-accelerated backprojection with
-    subaperture leaf-tree structure.
-
-    ``CollectionGeometry`` — Coordinate systems and geometry from CPHD
-    per-vector parameters.
-
-    ``PolarGrid`` — Polar k-space grid computation for PFA.
-
-    ``SubaperturePartitioner`` — Partition aperture for FFBP processing.
-
-Usage
------
-1D sublook decomposition:
-
-    >>> from grdl.IO.sar import SICDReader
-    >>> from grdl.image_processing.sar import SublookDecomposition
-    >>>
-    >>> with SICDReader('image.nitf') as reader:
-    ...     image = reader.read_full()
-    ...     sublook = SublookDecomposition(reader.metadata, num_looks=3,
-    ...                                    overlap=0.1, deweight=True)
-    ...     looks = sublook.decompose(image)   # (3, rows, cols) complex
-    ...     db = sublook.to_db(looks)          # (3, rows, cols) float
-
-2D multilook decomposition:
-
-    >>> from grdl.image_processing.sar import MultilookDecomposition
-    >>>
-    >>> with SICDReader('image.nitf') as reader:
-    ...     image = reader.read_full()
-    ...     ml = MultilookDecomposition(reader.metadata,
-    ...                                looks_rg=3, looks_az=3)
-    ...     grid = ml.decompose(image)     # (3, 3, rows, cols) complex
-    ...     flat = ml.to_flat_stack(grid)  # (9, rows, cols) complex
-
-Dependencies
-------------
-torch (optional, for GPU-accelerated FFT path)
-
-Author
-------
-Duane Smalley, PhD
-170194430+DDSmalls@users.noreply.github.com
-
-License
--------
-MIT License
-Copyright (c) 2024 geoint.org
-See LICENSE file for full text.
-
-Created
--------
-2026-02-10
-
-Modified
---------
-2026-02-26
+Base ABC ``ImageFormationAlgorithm`` remains in ``grdl``. Concrete SAR
+processors live in ``grdl-sar`` (``grdl_sar.subaperture``,
+``grdl_sar.image_formation``).
 """
 
-from grdl.image_processing.sar.sublook import SublookDecomposition
-from grdl.image_processing.sar.multilook import MultilookDecomposition
-from grdl.image_processing.sar.csi import CSIProcessor
-from grdl.image_processing.sar.dominance import (
-    DominanceFeatures,
-    compute_dominance,
-    compute_sublook_entropy,
-)
-from grdl.image_processing.sar.image_formation import (
-    ImageFormationAlgorithm,
-    CollectionGeometry,
-    PolarGrid,
-    PolarFormatAlgorithm,
-    SubaperturePartitioner,
-    StripmapPFA,
-    RangeDopplerAlgorithm,
-    FastBackProjection,
-)
+from importlib import import_module
+import warnings
+
+from grdl.image_processing.sar.image_formation.base import ImageFormationAlgorithm
+
+
+def __getattr__(name: str):
+    for mod_name in ("grdl_sar.subaperture", "grdl_sar.image_formation"):
+        try:
+            mod = import_module(mod_name)
+            if hasattr(mod, name):
+                warnings.warn(
+                    f"grdl.image_processing.sar.{name} is deprecated and has moved to {mod_name}; "
+                    f"import from {mod_name} instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                return getattr(mod, name)
+        except ImportError:
+            continue
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    'SublookDecomposition',
-    'MultilookDecomposition',
-    'CSIProcessor',
-    'DominanceFeatures',
-    'compute_dominance',
-    'compute_sublook_entropy',
-    'ImageFormationAlgorithm',
-    'CollectionGeometry',
-    'PolarGrid',
-    'PolarFormatAlgorithm',
-    'SubaperturePartitioner',
-    'StripmapPFA',
-    'RangeDopplerAlgorithm',
-    'FastBackProjection',
+    "ImageFormationAlgorithm",
 ]

@@ -43,11 +43,11 @@ from grdl.IO.models.cphd import (
     CPHDTxWaveform,
 )
 from grdl.IO.sar.cphd_to_sicd import build_sicd_metadata
-from grdl.image_processing.sar.image_formation import (
-    CollectionGeometry,
-    PolarFormatAlgorithm,
-    PolarGrid,
-)
+
+_ifp = pytest.importorskip("grdl_sar.image_formation")
+CollectionGeometry = _ifp.CollectionGeometry
+PolarFormatAlgorithm = _ifp.PolarFormatAlgorithm
+PolarGrid = _ifp.PolarGrid
 
 
 # ===================================================================

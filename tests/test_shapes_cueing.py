@@ -39,9 +39,13 @@ Modified
 import numpy as np
 import pytest
 from rasterio.transform import Affine
+from scipy import ndimage
+from shapely.geometry import box
 
 from grdl.geolocation.eo.affine import AffineGeolocation
-from grdl.image_processing.detection.cfar import CACFARDetector
+from grdl.image_processing.detection.base import ImageDetector
+from grdl.image_processing.detection.models import Detection, DetectionSet
+from grdl.image_processing.versioning import processor_version
 from grdl.shapes import Circle, cued_detect
 
 
@@ -65,11 +69,41 @@ def _make_image_with_two_targets():
     return img
 
 
+@processor_version("1.0.0")
+class _ThresholdDetector(ImageDetector):
+    """Minimal core ImageDetector used to test shape cueing without grdl-sar."""
+
+    @property
+    def output_fields(self):
+        return ()
+
+    def detect(self, source, geolocation=None, valid_mask=None, **kwargs):
+        data = np.asarray(source)
+        binary = data > 50.0
+        if valid_mask is not None:
+            binary = binary & np.asarray(valid_mask, dtype=bool)
+        labeled, count = ndimage.label(binary)
+        detections = []
+        for idx in range(1, count + 1):
+            rows, cols = np.where(labeled == idx)
+            r0, r1 = int(rows.min()), int(rows.max()) + 1
+            c0, c1 = int(cols.min()), int(cols.max()) + 1
+            pix_geom = box(c0, r0, c1, r1)
+            geo_geom = None
+            if geolocation is not None:
+                lat0, lon0, _ = geolocation.image_to_latlon(r0, c0)
+                lat1, lon1, _ = geolocation.image_to_latlon(r1, c1)
+                geo_geom = box(min(lon0, lon1), min(lat0, lat1), max(lon0, lon1), max(lat0, lat1))
+            detections.append(Detection(pixel_geometry=pix_geom, geo_geometry=geo_geom, confidence=1.0))
+        return DetectionSet(
+            detections=detections,
+            detector_name="_ThresholdDetector",
+            detector_version="1.0.0",
+        )
+
+
 def _cfar():
-    return CACFARDetector(
-        guard_cells=4, training_cells=8, pfa=1e-4, min_pixels=2,
-        assumption='gaussian',
-    )
+    return _ThresholdDetector()
 
 
 class TestValidMaskKwarg:

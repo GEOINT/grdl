@@ -110,6 +110,9 @@ dev = [
 [project.urls]
 Repository = "https://github.com/geoint-org/GRDL"
 
+[project.entry-points."grdl.catalogs"]
+grdl = "grdl:get_catalog_path"
+
 [tool.setuptools]
 include-package-data = true
 
@@ -117,7 +120,7 @@ include-package-data = true
 include = ["grdl*"]
 
 [tool.setuptools.package-data]
-grdl = ["**/*.md", "py.typed"]
+grdl = ["**/*.md", "py.typed", "catalog.yaml"]
 
 [tool.setuptools.data-files]
 "share/grdl" = ["README.md", "ARCHITECTURE.md", "LICENSE"]

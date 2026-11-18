@@ -69,6 +69,7 @@ class ProcessorCategory(Enum):
     MATH = "math"
     ANALYZE = "analyze"
     NOISE = "noise"
+    IMAGE_FORMATION = "image_formation"
 
 
 class DetectionType(Enum):
