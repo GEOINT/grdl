@@ -226,12 +226,15 @@ class PolarimetricMode(Enum):
         Returns
         -------
         PolarimetricMode or None
-            - ``QUAD_POL`` — all four HH/HV/VH/VV channels present.
+            - ``QUAD_POL`` — all four channels (HH/HV/VH/VV or XX/XY/YX/YY) present.
             - ``DUAL_POL`` — exactly two channels from a recognised pair.
             - ``SINGLE_POL`` — one polarization channel detected.
             - ``None`` — no polarization metadata found.
         """
-        _QUAD = frozenset({'HH', 'HV', 'VH', 'VV'})
+        _QUAD_SETS = (
+            frozenset({'HH', 'HV', 'VH', 'VV'}),
+            frozenset({'XX', 'XY', 'YX', 'YY'}),
+        )
         _DUAL_PAIRS = (
             frozenset({'HH', 'HV'}),
             frozenset({'VV', 'VH'}),
@@ -257,7 +260,7 @@ class PolarimetricMode(Enum):
                 if isinstance(getattr(ch, 'polarization', None), str)
                 and ch.polarization.strip()
             )
-            if _QUAD.issubset(pols):
+            if any(quad_set.issubset(pols) for quad_set in _QUAD_SETS):
                 return cls.QUAD_POL
             if len(pols) == 2 and pols in _DUAL_PAIRS:
                 return cls.DUAL_POL

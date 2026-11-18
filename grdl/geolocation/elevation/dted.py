@@ -6,7 +6,7 @@ Reads Digital Terrain Elevation Data (DTED) tiles using rasterio/GDAL.
 Supports DTED Level 0, 1, and 2 (.dt0, .dt1, .dt2). Tiles are indexed by
 floor(lat)/floor(lon) and opened on demand for efficient batch queries.
 
-Two on-disk layouts are supported. The standard layout places longitude
+Three on-disk layouts are supported. The standard layout places longitude
 directories directly under the root::
 
     dted_root/
@@ -31,9 +31,12 @@ directory (the layout NGA ships its archives in)::
             dted0/
                 ...
 
+The other nested layout uses numeric resolution directories instead:
+``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``.
+
 When a scene ``bbox`` is supplied, tiles are discovered by probing the
 candidate paths for each cell directly (highest resolution first), which
-covers both layouts without a recursive directory walk. Without a bbox,
+covers all three layouts without a recursive directory walk. Without a bbox,
 a recursive scan discovers tiles at any depth.
 
 Dependencies
@@ -91,8 +94,8 @@ _DTED_EXTENSIONS = ('.dt2', '.dt1', '.dt0')
 
 # Resolution subdirectories used by nested DTED archive layouts, in
 # resolution-priority order. A nested archive stores each tile under
-# ``<root>/dted/dted{2,1,0}/<lon_dir>/<lat_base><ext>``.
-_DTED_RES_DIRS = ('dted2', 'dted1', 'dted0')
+# ``<root>/dted/dted{2,1,0}/<lon_dir>/<lat_base><ext>`` or numeric variants.
+_DTED_RES_DIRS = ('dted2', 'dted1', 'dted0', '2', '1', '0')
 
 
 def _lon_dir_name(lon: int) -> str:
@@ -142,6 +145,9 @@ def _dted_candidate_components(
         ('dted', 'dted2', '<lon_dir>', '<lat_base><ext>')
         ('dted', 'dted1', '<lon_dir>', '<lat_base><ext>')
         ('dted', 'dted0', '<lon_dir>', '<lat_base><ext>')
+        ('dted', '2', '<lon_dir>', '<lat_base><ext>')
+        ('dted', '1', '<lon_dir>', '<lat_base><ext>')
+        ('dted', '0', '<lon_dir>', '<lat_base><ext>')
         ('<lon_dir>', '<lat_base><ext>')
 
     Components are the canonical lowercase DTED names. Case-insensitive
@@ -296,7 +302,8 @@ def _discover_dted_tiles(root: Path) -> Dict[Tuple[int, int], Path]:
     """Discover DTED tiles under *root* without a bbox, OS-independently.
 
     Scans the standard layout (``<root>/<lon>/<lat>.dt?``) and the nested
-    archive layout (``<root>/dted/dted{0,1,2}/<lon>/<lat>.dt?``) one
+    archive layouts (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?`` and
+    ``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``) one
     directory level deep, selecting the highest-resolution file per cell.
     Directory and file casing is irrelevant (parsing lowercases). No
     recursive ``rglob`` is performed — this is the bounded scan used by
@@ -347,7 +354,7 @@ def _discover_dted_tiles(root: Path) -> Dict[Tuple[int, int], Path]:
 
     # Standard layout.
     _scan_layout_root(root)
-    # Nested archive layout: <root>/dted/dted{0,1,2}/...
+    # Nested archive layouts: <root>/dted/dted{2,1,0}/... or numeric variants.
     cache = _CaseInsensitiveDirCache()
     for res_dir in _DTED_RES_DIRS:
         nested = cache.resolve(root, ('dted', res_dir))
@@ -411,7 +418,8 @@ class DTEDElevation(ElevationModel):
     interpolation) are enumerated and each candidate path is probed
     directly in resolution-priority order — covering both the standard
     layout (``<root>/<lon>/<lat>.dt?``) and nested archive layouts
-    (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?``) without a recursive
+    (``<root>/dted/dted{2,1,0}/<lon>/<lat>.dt?`` and
+    ``<root>/dted/{2,1,0}/<lon>/<lat>.dt?``) without a recursive
     directory walk. Without a bbox, the directory tree is scanned
     recursively, discovering standard-layout tiles at any depth.
 

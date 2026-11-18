@@ -320,6 +320,54 @@ class TestSIDDMetadata:
 class TestSIDDReader:
     """Tests for SIDDReader."""
 
+    @pytest.mark.parametrize('backend', ['sarkit', 'sarpy'])
+    @pytest.mark.parametrize('structured', [False, True])
+    @pytest.mark.parametrize('num_bands', [1, 3])
+    def test_canonical_pixel_order(self, backend, structured, num_bands):
+        """Backend layouts produce CYX RGB and unchanged YX mono chips."""
+        from grdl.IO.models.sidd import SIDDMetadata
+        from grdl.IO.sar.sidd import SIDDReader
+
+        expected = np.arange(num_bands * 6 * 9, dtype=np.uint8).reshape(
+            num_bands, 6, 9,
+        )
+        if structured:
+            raw = np.empty(
+                (6, 9), dtype=[
+                    (f'band{index}', 'uint8') for index in range(num_bands)
+                ],
+            )
+            for index, name in enumerate(raw.dtype.names):
+                raw[name] = expected[index]
+        elif num_bands == 1:
+            raw = expected[0]
+        else:
+            raw = np.moveaxis(expected, 0, -1)
+        if num_bands == 1:
+            expected = expected[0]
+
+        reader = object.__new__(SIDDReader)
+        reader.backend = backend
+        reader.image_index = 0
+        reader.metadata = SIDDMetadata(
+            format='SIDD', rows=6, cols=9, dtype='uint8',
+        )
+        reader._cached_image = None
+        if backend == 'sarkit':
+            reader._read_image_sarkit = mock.Mock(return_value=raw)
+        else:
+            reader._reader = mock.MagicMock()
+            reader._reader.__getitem__.side_effect = (
+                lambda key: raw[key[0], key[1]]
+            )
+
+        assert np.array_equal(
+            reader.read_chip(1, 5, 2, 8), expected[..., 1:5, 2:8],
+        )
+        assert np.array_equal(reader.read_full(), expected)
+        if backend == 'sarkit':
+            reader._read_image_sarkit.assert_called_once_with()
+
     def test_file_not_found(self):
         """FileNotFoundError for non-existent file."""
         from grdl.IO.sar.sidd import SIDDReader

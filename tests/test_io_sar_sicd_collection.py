@@ -46,6 +46,8 @@ from grdl.IO.models.sicd import (
     SICDRadarCollection,
     SICDRcvChannel,
     SICDCollectionMetadata,
+    SICDImageFormation,
+    SICDRcvChanProc,
 )
 from grdl.vocabulary import PolarimetricMode
 
@@ -137,6 +139,40 @@ def _make_collection(
 # ---------------------------------------------------------------------------
 
 class TestInferPolarization:
+
+    @pytest.mark.parametrize('index', [0, -1, 3, 1.5, '1', True])
+    @pytest.mark.parametrize('tx_pol, expected', [('V', 'V'), (None, 'UNKNOWN')])
+    def test_invalid_receive_index_uses_fallback(self, caplog, index, tx_pol, expected):
+        meta = _make_sicd_meta()
+        meta.radar_collection.tx_polarization = tx_pol
+        meta.radar_collection.rcv_channels.append(
+            SICDRcvChannel(tx_rcv_polarization='V:V'),
+        )
+        meta.image_formation = SICDImageFormation(
+            rcv_chan_proc=SICDRcvChanProc(chan_indices=[index]),
+        )
+        assert _infer_polarization(meta) == expected
+        assert 'Invalid receive channel index' in caplog.text
+
+    @pytest.mark.parametrize('index, expected', [(1, 'HH'), (2, 'VV')])
+    def test_valid_receive_index_selects_channel(self, caplog, index, expected):
+        meta = _make_sicd_meta()
+        meta.radar_collection.rcv_channels.append(
+            SICDRcvChannel(tx_rcv_polarization='V:V'),
+        )
+        meta.image_formation = SICDImageFormation(
+            rcv_chan_proc=SICDRcvChanProc(chan_indices=[index]),
+        )
+        assert _infer_polarization(meta) == expected
+        assert 'Image formed from' not in caplog.text
+
+    def test_multiple_receive_indices_warns(self, caplog):
+        meta = _make_sicd_meta()
+        meta.image_formation = SICDImageFormation(
+            rcv_chan_proc=SICDRcvChanProc(chan_indices=[1, 1]),
+        )
+        assert _infer_polarization(meta) == 'HH'
+        assert 'Image formed from 2 channels' in caplog.text
 
     def test_vv(self):
         meta = _make_sicd_meta(tx_rcv_polarization='V:V')

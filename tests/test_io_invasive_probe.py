@@ -764,6 +764,40 @@ h5py = pytest.importorskip("h5py", reason="h5py not installed")
 class TestProbeHDF5:
     """Tests for HDF5 probing (requires h5py)."""
 
+    @pytest.mark.parametrize('channel_shape', [(), (1,), (3,), (2, 3)])
+    def test_reader_channel_first(self, tmp_path, channel_shape):
+        shape = (7, 11) + channel_shape
+        data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+        path = tmp_path / 'cube.h5'
+        with h5py.File(path, 'w') as handle:
+            handle.create_dataset('image', data=data)
+
+        expected = np.moveaxis(data.reshape(7, 11, -1), -1, 0)
+        num_bands = expected.shape[0]
+        if num_bands == 1:
+            expected = expected[0]
+
+        with InvasiveProbeReader(path) as reader:
+            np.testing.assert_array_equal(reader.read_full(), expected)
+            np.testing.assert_array_equal(
+                reader.read_chip(1, 5, 2, 9), expected[..., 1:5, 2:9],
+            )
+            np.testing.assert_array_equal(
+                reader.read_chip(2, 2, 2, 9), expected[..., 2:2, 2:9],
+            )
+            assert reader.metadata.bands == num_bands
+            assert reader.metadata.axis_order == (
+                'CYX' if num_bands > 1 else 'YX'
+            )
+            if num_bands > 1:
+                np.testing.assert_array_equal(
+                    reader.read_chip(1, 5, 2, 9, bands=[2, 0]),
+                    expected[[2, 0], 1:5, 2:9],
+                )
+                np.testing.assert_array_equal(
+                    reader.read_full(bands=[1]), expected[1],
+                )
+
     def test_hdf5_dataset_discovery(self, tmp_path):
         from grdl.IO.probe import _probe_hdf5_walk
 

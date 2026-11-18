@@ -309,7 +309,7 @@ def _probe_hdf5_walk(filepath: Path) -> ProbeEvidence:
         if best_ds is not None:
             ev.rows = best_ds.shape[0]
             ev.cols = best_ds.shape[1]
-            ev.bands = best_ds.shape[2] if best_ds.ndim >= 3 else 1
+            ev.bands = int(np.prod(best_ds.shape[2:]))
             ev.dtype = str(best_ds.dtype)
             ev.loading_strategy = 'hdf5'
             ev.loading_hint = {'dataset_path': best_path}
@@ -1327,6 +1327,7 @@ class InvasiveProbeReader(ImageReader):
             cols=self.evidence.cols,
             dtype=self.evidence.dtype,
             bands=self.evidence.bands,
+            axis_order='CYX' if (self.evidence.bands or 1) > 1 else 'YX',
             crs=self.evidence.crs,
             extras=extras,
         )
@@ -1432,7 +1433,8 @@ class InvasiveProbeReader(ImageReader):
         Returns
         -------
         np.ndarray
-            Image chip.
+            Image chip with shape ``(rows, cols)`` for one band or
+            ``(bands, rows, cols)`` for multiple bands.
 
         Raises
         ------
@@ -1497,14 +1499,15 @@ class InvasiveProbeReader(ImageReader):
         if ds.ndim == 2:
             data = ds[row_start:row_end, col_start:col_end]
         elif ds.ndim >= 3:
+            data = ds[row_start:row_end, col_start:col_end, ...]
+            num_bands = int(np.prod(data.shape[2:]))
+            data = np.moveaxis(
+                data.reshape(data.shape[0], data.shape[1], num_bands), -1, 0,
+            )
             if bands is not None:
-                data = ds[
-                    row_start:row_end, col_start:col_end, bands
-                ]
-            else:
-                data = ds[
-                    row_start:row_end, col_start:col_end, ...
-                ]
+                data = data[bands]
+            if data.shape[0] == 1:
+                data = data[0]
         else:
             raise ValueError(
                 f"Dataset {ds_path} has {ds.ndim} dimensions"
